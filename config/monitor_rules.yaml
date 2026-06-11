@@ -1,0 +1,23 @@
+rules:
+  - name: device_offline
+    description: "设备心跳超时"
+    condition:
+      type: heartbeat_timeout
+      params:
+        multiplier: 3
+    severity: warning
+    cooldown_seconds: 300
+    notify: true
+
+  - name: disk_high
+    description: "磁盘使用率过高"
+    condition:
+      type: threshold
+      params:
+        capability: system_metrics
+        field: disk_usage_percent
+        operator: ">"
+        value: 90
+    severity: critical
+    cooldown_seconds: 1800
+    notify: true

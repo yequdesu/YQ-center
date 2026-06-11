@@ -1,0 +1,21 @@
+# YeQu Gateway 主配置
+gateway:
+  host: "127.0.0.1"
+  port: 9800
+  unix_socket: "~/.local/share/yequ-gateway/gateway.sock"
+
+data:
+  dir: "~/.local/share/yequ-gateway"
+
+monitor:
+  scan_interval_seconds: 30
+
+collector:
+  interval_seconds: 60
+
+agent:
+  anthropic_api_key: ""  # Phase 2 启用
+  model: "claude-sonnet-4-6"
+
+notify:
+  log_file: "~/.local/share/yequ-gateway/gateway.log"
