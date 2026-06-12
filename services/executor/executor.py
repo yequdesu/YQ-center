@@ -20,7 +20,7 @@ import requests
 
 GATEWAY = os.environ.get("YEQ_GATEWAY", "http://127.0.0.1:9800")
 DEVICE_ID = f"{socket.gethostname()}-executor"
-HEARTBEAT_INTERVAL = 60
+HEARTBEAT_INTERVAL = 10  # local service — can heartbeat fast
 COMMAND_POLL_INTERVAL = 3
 SCRIPT_TIMEOUT = 30
 TOKEN = None

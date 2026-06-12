@@ -354,7 +354,11 @@ class ToolHandler:
 
         caps = store.get_capabilities(args["device_id"])
         intervals = [c.interval_seconds for c in caps] or [60]
-        expected = min(min(intervals), 300)  # shortest interval, capped
+        # Local services and gateway: tighter window (they heartbeat fast)
+        if device.source_type in ("service", "gateway"):
+            expected = 15
+        else:
+            expected = min(min(intervals), 300)  # shortest interval, capped
 
         if device.last_hello_at:
             ts = device.last_hello_at.replace("Z", "+00:00")
