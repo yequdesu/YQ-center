@@ -346,44 +346,62 @@ class ToolHandler:
     def _tool_check_device_online(self, args: dict) -> dict:
         from yequ.registry.store import DeviceStore
         from datetime import datetime, timezone, timedelta
+        import time as _time
 
         store = DeviceStore(self.db_path)
         device = store.get_device(args["device_id"])
         if device is None:
             return {"device_id": args["device_id"], "error": "device not found"}
 
-        caps = store.get_capabilities(args["device_id"])
-        intervals = [c.interval_seconds for c in caps] or [60]
-        # Local services and gateway: tighter window (they heartbeat fast)
-        if device.source_type in ("service", "gateway"):
-            expected = 15
-        else:
-            expected = min(min(intervals), 300)  # shortest interval, capped
-
+        # Fast path: heartbeat is fresh → definitely online
         if device.last_hello_at:
             ts = device.last_hello_at.replace("Z", "+00:00")
             last = datetime.fromisoformat(ts)
             age = (datetime.now(timezone.utc) - last).total_seconds()
-            if age < expected * 2:
-                status = "online"
-                note = f"心跳正常，{int(age)}秒前"
-            elif age < expected * 5:
-                status = "stale"
-                note = f"心跳延迟，{int(age)}秒前，可能网络不稳定"
+            if device.source_type in ("service", "gateway"):
+                expected = 15
             else:
-                status = "offline"
-                note = f"心跳丢失，{int(age)}秒前，设备已离线"
-        else:
-            status = "unknown"
-            age = None
-            note = "从未收到心跳" if not device.is_local else "本地设备，不走心跳"
+                caps = store.get_capabilities(args["device_id"])
+                intervals = [c.interval_seconds for c in caps] or [60]
+                expected = min(min(intervals), 300)
+            if age < expected * 2:
+                return {
+                    "device_id": args["device_id"], "status": "online",
+                    "method": "heartbeat",
+                    "last_heartbeat_age_seconds": int(age),
+                    "note": f"心跳正常，{int(age)}秒前",
+                }
 
+        # Slow path: send a ping via the command channel, wait for reply
+        if device.is_local or device.source_type in ("service", "gateway"):
+            cmd_id = store.enqueue_command(args["device_id"], "ping", {})
+            # Poll for result — local services poll every 3s
+            for attempt in range(6):
+                _time.sleep(2)
+                result = self._tool_check_command_result({"command_id": cmd_id})
+                if result.get("result"):
+                    return {
+                        "device_id": args["device_id"], "status": "online",
+                        "method": "active_ping",
+                        "ping_roundtrip_attempts": attempt + 1,
+                        "note": f"主动 ping 成功，{ (attempt+1)*2 }秒内响应",
+                    }
+            return {
+                "device_id": args["device_id"], "status": "offline",
+                "method": "active_ping",
+                "note": "主动 ping 无响应，设备可能已离线",
+            }
+
+        # Remote device: just report what we know
+        if device.last_hello_at:
+            return {
+                "device_id": args["device_id"], "status": "stale",
+                "method": "heartbeat",
+                "note": f"心跳延迟，无法主动 ping（设备在 NAT 后）",
+            }
         return {
-            "device_id": args["device_id"],
-            "status": status,
-            "last_heartbeat_age_seconds": int(age) if age else None,
-            "expected_interval": expected,
-            "note": note,
+            "device_id": args["device_id"], "status": "unknown",
+            "note": "从未收到心跳",
         }
 
     def _tool_check_command_result(self, args: dict) -> dict:
