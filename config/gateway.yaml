@@ -1,7 +1,7 @@
 agent:
-  provider: anthropic
-  model: claude-sonnet-4-6
-  api_key: ""
+  api_key: sk-30f662ee16c9477291e508e2580ee442
+  model: deepseek-v4-flash
+  provider: deepseek
 collector:
   interval_seconds: 60
 data:

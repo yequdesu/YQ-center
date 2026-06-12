@@ -452,31 +452,39 @@ async function sendChat() {
     const decoder = new TextDecoder();
     let buf = '';
     let agentDiv = null;
+    let eventType = '';
 
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
       buf += decoder.decode(value, {stream: true});
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const type = line.includes('event: tool_call') ? 'tool_call' :
-                     line.includes('event: token') ? 'token' :
-                     line.includes('event: done') ? 'done' :
-                     line.includes('event: error') ? 'error' : null;
+      // Parse SSE: "event: <type>\ndata: <json>\n\n"
+      // Process complete frames only
+      while (buf.includes('\n\n')) {
+        const idx = buf.indexOf('\n\n');
+        const frame = buf.substring(0, idx);
+        buf = buf.substring(idx + 2);
+
+        let type = '';
+        let data = '';
+
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event: ')) type = line.substring(7).trim();
+          else if (line.startsWith('data: ')) data = line.substring(6);
+        }
+
         if (!type) continue;
 
         try {
-          const data = JSON.parse(line.replace(/^data: /, ''));
+          const payload = data ? JSON.parse(data) : null;
           if (type === 'tool_call') {
-            msgs.innerHTML += `<div class="chat-msg tool">[calling ${esc(data.name)}...]</div>`;
+            msgs.innerHTML += `<div class="chat-msg tool">[calling ${esc(payload?.name||'')}...]</div>`;
           } else if (type === 'token') {
             if (!agentDiv) { agentDiv = document.createElement('div'); agentDiv.className = 'chat-msg agent'; msgs.appendChild(agentDiv); }
-            agentDiv.textContent += data;
+            agentDiv.textContent += String(payload ?? '');
           } else if (type === 'error') {
-            msgs.innerHTML += `<div class="chat-msg tool">Error: ${esc(data)}</div>`;
+            msgs.innerHTML += `<div class="chat-msg tool" style="color:#f85149">Error: ${esc(String(payload))}</div>`;
           }
         } catch(e) {}
       }

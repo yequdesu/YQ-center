@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse, FileResponse
 from starlette.routing import Route
 
+from yequ.agent.providers import StreamEvent
 from yequ.protocol.messages import (
     HelloRegistration,
     HelloHeartbeat,
@@ -377,11 +378,32 @@ class GatewayApp:
         agent = create_agent(config=self.agent_config, db_path=self.db_path,
                              data_dir=os.path.dirname(self.db_path))
 
+        # Run sync agent in thread to avoid blocking event loop
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def run_agent():
+            try:
+                for event in agent.ask_stream(query):
+                    queue.put_nowait(event)
+                queue.put_nowait(None)  # sentinel: done
+            except Exception as e:
+                queue.put_nowait(StreamEvent(type="error", data=str(e)))
+                queue.put_nowait(None)
+
+        import threading
+        threading.Thread(target=run_agent, daemon=True).start()
+
         async def generate():
-            for event in agent.ask_stream(query):
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=120)
+                except asyncio.TimeoutError:
+                    yield f"event: error\ndata: {json.dumps('timeout')}\n\n"
+                    return
+                if event is None:
+                    return
                 data = json.dumps(event.data, ensure_ascii=False) if event.data else "{}"
                 yield f"event: {event.type}\ndata: {data}\n\n"
-                await asyncio.sleep(0)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
