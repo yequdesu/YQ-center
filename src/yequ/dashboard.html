@@ -400,6 +400,12 @@ function connectEventStream() {
            'command_timeout','capability_added'].includes(ev.event_type)) {
         loadDevices();
       }
+      // Notify in chat when a command completes
+      if (ev.event_type === 'command_completed' && document.getElementById('chat-panel').classList.contains('open')) {
+        const msgs = document.getElementById('chat-messages');
+        msgs.innerHTML += `<div class="chat-msg tool" style="color:#3fb950">[command completed] ${esc(ev.title)}</div>`;
+        msgs.scrollTop = msgs.scrollHeight;
+      }
     } catch(ex) {}
   });
   es.onerror = () => {

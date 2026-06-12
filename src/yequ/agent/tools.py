@@ -504,7 +504,7 @@ class ToolHandler:
         # For local services, wait for the result immediately (they poll every 3s)
         if device.source_type in ("service", "gateway") or device.is_local:
             import time as _time
-            for _ in range(5):
+            for _ in range(6):
                 _time.sleep(2)
                 r = self._tool_check_command_result({"command_id": command_id})
                 if r.get("result"):
@@ -523,5 +523,5 @@ class ToolHandler:
             "command_id": command_id,
             "action": action,
             "params": params,
-            "note": "Command queued. Device will execute on next poll cycle (~3s for local services).",
+            "note": "Command queued. DO NOT call check_command_result repeatedly — the result will arrive asynchronously. Tell the user the command ID and that they will be notified when complete.",
         }
