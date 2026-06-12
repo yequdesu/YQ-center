@@ -61,7 +61,7 @@ class DeviceStore:
 
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO devices (device_id, token, source_type, labels_json, status, is_local, created_at, updated_at)
+                """INSERT OR REPLACE INTO devices (device_id, token, source_type, labels_json, status, is_local, created_at, updated_at)
                    VALUES (:device_id, :token, :source_type, :labels_json, :status, :is_local, :created_at, :updated_at)""",
                 {**row, "created_at": now, "updated_at": now},
             )

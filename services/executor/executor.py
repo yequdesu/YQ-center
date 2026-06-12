@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""YeQu Executor Service — 本机指令执行器。
+"""YeQu Executor Service — 本机通用指令执行器。
 
-独立进程，通过 YQP 协议接入 Gateway。与 Core 完全对等解耦。
-注册 → 声明 actions → 轮询指令 → 执行 → 上报。
+通过名为 script 的壳执行 Agent 下发的任意操作。
+Scripts 位于 ./scripts/ 目录，每个可执行文件即一个可调用能力。
 """
 
 import atexit
@@ -22,101 +22,71 @@ GATEWAY = os.environ.get("YEQ_GATEWAY", "http://127.0.0.1:9800")
 DEVICE_ID = f"{socket.gethostname()}-executor"
 HEARTBEAT_INTERVAL = 60
 COMMAND_POLL_INTERVAL = 3
+SCRIPT_TIMEOUT = 30
 TOKEN = None
 running = True
 
-ACTIONS = [
-    {
-        "name": "run_diagnostics",
-        "display": "运行诊断",
-        "description": "执行系统诊断（system/network/disk/memory）",
-        "params": {
-            "target": {
-                "type": "string",
-                "enum": ["system", "network", "disk", "memory"],
-            }
-        },
-    },
-    {
-        "name": "check_service",
-        "display": "检查服务状态",
-        "description": "查询 systemd 服务是否运行中",
-        "params": {"service_name": {"type": "string"}},
-    },
-    {
-        "name": "read_log",
-        "display": "读取日志",
-        "description": "读取指定文件最后 N 行",
-        "params": {
-            "path": {"type": "string"},
-            "lines": {"type": "integer"},
-        },
-    },
-]
+SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
 
-ALLOWED_LOG_PATHS = {
-    "/var/log/syslog",
-    "/var/log/messages",
-    "/var/log/dmesg",
-    os.path.expanduser("~/.local/share/yequ-gateway/gateway.log"),
-    "/var/log/nginx/access.log",
-    "/var/log/nginx/error.log",
-}
+
+def _list_scripts():
+    """Return all executable scripts with their descriptions."""
+    scripts = []
+    if not os.path.isdir(SCRIPT_DIR):
+        return scripts
+    for f in sorted(os.listdir(SCRIPT_DIR)):
+        path = os.path.join(SCRIPT_DIR, f)
+        if not os.access(path, os.X_OK):
+            continue
+        desc = ""
+        try:
+            with open(path) as fh:
+                first = fh.readline()
+                if first.startswith("# description:") or first.startswith("# description："):
+                    desc = first.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        scripts.append({"name": f, "description": desc})
+    return scripts
+
+
+def _exec_script(name, args):
+    """Run a named script with optional arguments. Returns {status, output}."""
+    path = os.path.join(SCRIPT_DIR, name)
+    if not os.path.isfile(path):
+        return {"status": "error", "output": f"Script not found: {name}"}
+    if not os.access(path, os.X_OK):
+        return {"status": "error", "output": f"Script not executable: {name}"}
+    try:
+        cmd = [path] + (args or [])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCRIPT_TIMEOUT)
+        return {
+            "status": "ok" if r.returncode == 0 else "error",
+            "output": (r.stdout + r.stderr)[:16384],
+            "exit_code": r.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": f"Script timed out ({SCRIPT_TIMEOUT}s)"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
 
 
 def execute(action, params):
     try:
-        if action == "run_diagnostics":
-            return _diagnostics(params.get("target", "system"))
-        elif action == "check_service":
-            return _check_service(params.get("service_name", ""))
-        elif action == "read_log":
-            return _read_log(params.get("path", ""), params.get("lines", 50))
+        if action == "list_scripts":
+            return {"status": "ok", "scripts": _list_scripts()}
+        elif action == "exec":
+            name = params.get("script", "")
+            args = params.get("args", [])
+            if not name:
+                return {"status": "error", "output": "script name is required"}
+            return _exec_script(name, args)
         elif action in ("ping", "set_interval", "restart_collector"):
             return {"status": "ok", "output": action}
         else:
             return {"status": "error", "output": f"Unknown action: {action}"}
     except Exception as e:
         return {"status": "error", "output": str(e)}
-
-
-def _diagnostics(target):
-    cmds = {
-        "system": (["uptime"], "系统概览"),
-        "network": (["ss", "-tlnp"], "监听端口"),
-        "disk": (["df", "-h", "/"], "磁盘使用"),
-        "memory": (["free", "-h"], "内存使用"),
-    }
-    entry = cmds.get(target)
-    if not entry:
-        return {"status": "error", "output": f"Unknown target: {target}"}
-    r = subprocess.run(entry[0], capture_output=True, text=True, timeout=10)
-    return {
-        "status": "ok",
-        "output": r.stdout[:4096] or r.stderr[:1024],
-    }
-
-
-def _check_service(name):
-    if not name or not all(c.isalnum() or c in "-_." for c in name):
-        return {"status": "error", "output": "Invalid service name"}
-    r = subprocess.run(
-        ["systemctl", "is-active", name],
-        capture_output=True, text=True, timeout=5,
-    )
-    return {"status": "ok", "output": f"Service {name}: {r.stdout.strip()}"}
-
-
-def _read_log(path, lines):
-    if not path:
-        return {"status": "error", "output": "path is required"}
-    if path not in ALLOWED_LOG_PATHS and not path.startswith("/var/log/"):
-        return {"status": "error", "output": f"Path not allowed: {path}"}
-    if not os.path.exists(path):
-        return {"status": "error", "output": f"File not found: {path}"}
-    n = max(1, min(int(lines), 500))
-    r = subprocess.run(["tail", "-n", str(n), path], capture_output=True, text=True, timeout=5)
-    return {"status": "ok", "output": r.stdout[:8192]}
 
 
 def api(method, path, data=None):
@@ -126,8 +96,8 @@ def api(method, path, data=None):
             return requests.get(url, params=data, timeout=10).json()
         else:
             return requests.post(url, json=data, timeout=10).json()
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        return {"status": "error"}
 
 
 def register():
@@ -141,18 +111,34 @@ def register():
                 "os": platform.system(), "hostname": socket.gethostname(),
                 "source_type": "service",
             },
-            "actions": ACTIONS,
+            "actions": [
+                {
+                    "name": "list_scripts",
+                    "display": "列出可用脚本",
+                    "description": "返回 scripts/ 目录中所有可执行脚本及其说明",
+                    "params": {},
+                },
+                {
+                    "name": "exec",
+                    "display": "执行脚本",
+                    "description": "执行 scripts/ 目录中的指定脚本。先用 list_scripts 查看有哪些可用。",
+                    "params": {
+                        "script": {"type": "string", "description": "脚本文件名"},
+                        "args": {"type": "array", "description": "传递给脚本的参数列表"},
+                    },
+                },
+            ],
         })
         if resp.get("status") == "approved":
             TOKEN = resp["token"]
-            print(f"[executor] Approved. Token: {TOKEN[:16]}...")
+            available = _list_scripts()
+            print(f"[executor] Approved. {len(available)} scripts available: {[s['name'] for s in available]}")
             return
         retry += 1
         wait = resp.get("retry_after", 30)
         if retry <= 10:
             print(f"[executor] Pending (attempt {retry}), retry in {wait}s")
         time.sleep(wait)
-    print("[executor] Registration timed out")
 
 
 def heartbeat_loop():
@@ -177,12 +163,14 @@ def command_loop():
             if cmds:
                 results = []
                 for cmd in cmds:
-                    print(f"[executor] {cmd['action']}")
-                    r = execute(cmd["action"], cmd.get("params", {}))
+                    action = cmd["action"]
+                    params = cmd.get("params", {})
+                    print(f"[executor] {action} {params.get('script','')}")
+                    r = execute(action, params)
                     results.append({
                         "command_id": cmd["command_id"],
                         "status": r["status"],
-                        "output": r.get("output", ""),
+                        "output": r.get("output", json.dumps(r, ensure_ascii=False)),
                     })
                 api("POST", "/ingest", {
                     "protocol": "yqp/1.0", "message_type": "ingest",
@@ -218,7 +206,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: setattr(sys.modules[__name__], 'running', False))
 
     print(f"[executor] Gateway: {GATEWAY}")
-    print(f"[executor] Device ID: {DEVICE_ID}")
+    print(f"[executor] Device: {DEVICE_ID}")
 
     register()
     if TOKEN is None:
@@ -233,4 +221,5 @@ def main():
 
 
 if __name__ == "__main__":
+    import json
     main()
