@@ -1,14 +1,9 @@
 """Agent core — pi-agent-core inspired event-driven loop.
 
-The agent loop is:
-  while True:
-    response = stream_fn(messages, tools)
-    if tool_calls:
-      execute tools, append results, continue
-    else:
-      return text
+The agent loop is a generator that yields events AS THEY HAPPEN:
+  tool_call → execute → next round → tool_call → ... → text → done
 
-Clean, debuggable, no streaming compatibility issues.
+No buffering. No collecting-then-yielding.
 """
 
 from __future__ import annotations
@@ -62,25 +57,25 @@ class Agent:
     # ── Public API ────────────────────────────────────────────────
 
     def ask(self, question: str) -> str:
-        """Blocking call: run the agent loop, return final answer."""
-        text, _tool_calls, _events = self._run(question)
+        """Blocking call: collect all events, return final text."""
+        text = ""
+        for event in self._generate(question):
+            if event.type == "text":
+                text = event.data
         return text or "（Agent 未返回文本回答）"
 
     def ask_stream(self, question: str) -> Iterator[AgentEvent]:
-        """Streaming: run the agent loop, yield events as they happen."""
-        _text, _tool_calls, events = self._run(question)
-        yield from events
+        """Streaming: yield events as they happen — tool calls, then text."""
+        yield from self._generate(question)
 
-    # ── Core Loop ─────────────────────────────────────────────────
+    # ── Core Generator ────────────────────────────────────────────
 
-    def _run(self, question: str) -> tuple[str, list[dict], list[AgentEvent]]:
-        """The agent loop. Returns (final_text, tool_calls_made, all_events)."""
-        events: list[AgentEvent] = []
+    def _generate(self, question: str) -> Iterator[AgentEvent]:
+        """The agent loop as a generator. Yields events immediately."""
         messages: list[dict] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
         ]
-
         tool_calls_made: list[dict] = []
         final_text = ""
 
@@ -88,11 +83,11 @@ class Agent:
             response = self.stream_fn(messages, self.tools)
 
             if response.tool_calls:
-                # Execute tools, append results to conversation
                 for tc in response.tool_calls:
-                    events.append(AgentEvent(type="tool_call", data={
+                    # Yield tool_call event IMMEDIATELY, before executing
+                    yield AgentEvent(type="tool_call", data={
                         "name": tc.name, "arguments": tc.arguments, "id": tc.id,
-                    }))
+                    })
                     result = self.handler.execute(tc.name, tc.arguments)
                     tool_calls_made.append({"name": tc.name, "arguments": tc.arguments})
 
@@ -115,20 +110,19 @@ class Agent:
                     })
                 continue  # Next round with tool results
 
-            # No tool calls — this is the final answer
+            # No tool calls — final answer
             if response.text:
                 final_text = response.text
-                events.append(AgentEvent(type="text", data=final_text))
-            events.append(AgentEvent(type="done"))
+                yield AgentEvent(type="text", data=final_text)
+            yield AgentEvent(type="done")
             self._log_conversation(question, final_text, tool_calls_made)
-            return final_text, tool_calls_made, events
+            return
 
         # Max rounds reached
         final_text = "已达到最大对话轮次，请简化问题。"
-        events.append(AgentEvent(type="text", data=final_text))
-        events.append(AgentEvent(type="done"))
+        yield AgentEvent(type="text", data=final_text)
+        yield AgentEvent(type="done")
         self._log_conversation(question, final_text, tool_calls_made)
-        return final_text, tool_calls_made, events
 
     # ── Conversation Logging ──────────────────────────────────────
 
