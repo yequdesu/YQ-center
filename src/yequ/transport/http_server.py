@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse, FileResponse
 from starlette.routing import Route
 
-from yequ.agent.providers import StreamEvent
+from yequ.agent.core import AgentEvent
 from yequ.protocol.messages import (
     HelloRegistration,
     HelloHeartbeat,
@@ -385,7 +385,7 @@ class GatewayApp:
                 try:
                     return list(agent.ask_stream(query))
                 except Exception as e:
-                    return [StreamEvent(type="error", data=str(e))]
+                    return [AgentEvent(type="error", data=str(e))]
 
             try:
                 events = await asyncio.wait_for(

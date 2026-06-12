@@ -1,19 +1,42 @@
-"""LLM provider abstraction — multiple backends with presets and streaming."""
+"""LLM provider abstraction — pi-agent-core inspired StreamFn pattern.
+
+A provider is a simple callable:
+    (messages, tools) -> (text, tool_calls)
+
+No class hierarchy needed. Just functions with presets.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+# ── Types ──────────────────────────────────────────────────────────
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
 
 
-# ── Presets ──────────────────────────────────────────────────────────
+@dataclass
+class LLMResponse:
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
-# Each preset: (sdk_style, env_key, default_model, default_base_url)
-# sdk_style: "anthropic" or "openai"
-PROVIDER_PRESETS: dict[str, dict[str, str]] = {
+
+# StreamFn: (messages, tools) -> LLMResponse
+StreamFn = Callable[[list[dict], list[dict] | None], LLMResponse]
+
+# ── Provider Presets ───────────────────────────────────────────────
+
+PRESETS: dict[str, dict] = {
     "anthropic": {
         "sdk": "anthropic",
         "env_key": "ANTHROPIC_API_KEY",
@@ -40,112 +63,46 @@ PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     },
     "ollama": {
         "sdk": "openai",
-        "env_key": "",  # no key needed for local
+        "env_key": "",
         "default_model": "llama3",
         "default_base_url": "http://localhost:11434/v1",
     },
     "custom": {
         "sdk": "openai",
         "env_key": "CUSTOM_API_KEY",
-        "default_model": "gpt-4o",
+        "default_model": "",
         "default_base_url": "",
     },
 }
 
+# ── Anthropic-SDK StreamFn ─────────────────────────────────────────
 
-# ── Data Types ───────────────────────────────────────────────────────
+def _make_anthropic_fn(api_key: str, model: str, base_url: str | None = None,
+                       env_key: str = "ANTHROPIC_API_KEY") -> StreamFn:
+    """Create a StreamFn using the Anthropic Python SDK."""
+    key = api_key or os.environ.get(env_key, "")
 
-@dataclass
-class ToolCall:
-    """A tool call the LLM wants to make."""
-    id: str
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
+    def stream_fn(messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
+        if not key:
+            return LLMResponse(text="未配置 API Key")
 
-
-@dataclass
-class AgentResponse:
-    """Unified response from any LLM provider."""
-    text: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
-
-
-@dataclass
-class StreamEvent:
-    """One event in a streaming response."""
-    type: str  # "token" | "tool_call" | "done" | "error"
-    data: Any = None
-
-
-class LLMProvider(ABC):
-    """Abstract LLM provider interface."""
-
-    @abstractmethod
-    def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> AgentResponse:
-        """Send messages to the LLM, return unified response."""
-        ...
-
-    def stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> Iterator[StreamEvent]:
-        """Stream the LLM response. Falls back to non-stream chat + yield full text."""
-        resp = self.chat(messages, tools)
-        if resp.tool_calls:
-            for tc in resp.tool_calls:
-                yield StreamEvent(type="tool_call", data={
-                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
-                })
-        if resp.text:
-            yield StreamEvent(type="token", data=resp.text)
-        yield StreamEvent(type="done")
-
-
-# ── Anthropic-SDK Providers ──────────────────────────────────────────
-
-class AnthropicProvider(LLMProvider):
-    """Claude via Anthropic SDK. Also used for DeepSeek (Anthropic-compatible API)."""
-
-    def __init__(self, api_key: str = "", model: str = "claude-sonnet-4-6",
-                 base_url: str | None = None, env_key: str = "ANTHROPIC_API_KEY"):
-        self.api_key = api_key or os.environ.get(env_key, "")
-        self.model = model
-        self.base_url = base_url
-
-    def _build_client(self):
         from anthropic import Anthropic
-        kwargs = dict(api_key=self.api_key)
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        return Anthropic(**kwargs)
 
-    def _prepare_messages(self, messages: list[dict[str, Any]]):
+        client_kwargs = dict(api_key=key)
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = Anthropic(**client_kwargs)
+
+        # Build Anthropic-format messages
         system_prompt = ""
         api_messages = []
         for m in messages:
             if m["role"] == "system":
                 system_prompt = m["content"]
             else:
-                api_messages.append({"role": m["role"], "content": m["content"]})
-        return system_prompt, api_messages
+                api_messages.append({"role": m["role"], "content": str(m["content"])})
 
-    def chat(self, messages, tools=None) -> AgentResponse:
-        if not self.api_key:
-            return AgentResponse(text="未配置 API Key。请在 gateway.yaml 设置 api_key 或对应的环境变量。")
-
-        try:
-            client = self._build_client()
-        except Exception as e:
-            return AgentResponse(text=f"无法初始化客户端: {e}")
-
-        system_prompt, api_messages = self._prepare_messages(messages)
-
-        kwargs = dict(model=self.model, max_tokens=1024, messages=api_messages)
+        kwargs = dict(model=model, max_tokens=1024, messages=api_messages)
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
@@ -154,7 +111,8 @@ class AnthropicProvider(LLMProvider):
         try:
             resp = client.messages.create(**kwargs)
         except Exception as e:
-            return AgentResponse(text=f"API 调用失败: {e}")
+            logger.error("LLM API error: %s", e)
+            return LLMResponse(text=f"API error: {e}")
 
         text = ""
         tool_calls = []
@@ -162,60 +120,37 @@ class AnthropicProvider(LLMProvider):
             if block.type == "text":
                 text += block.text
             elif block.type == "tool_use":
-                tool_calls.append(ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    arguments=block.input if isinstance(block.input, dict) else json.loads(block.input),
-                ))
+                args = block.input if isinstance(block.input, dict) else json.loads(str(block.input))
+                tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=args))
 
-        return AgentResponse(text=text, tool_calls=tool_calls)
+        if not text and not tool_calls:
+            block_info = [(b.type, str(getattr(b, 'text', ''))[:80]) for b in resp.content]
+            logger.warning("LLM returned no text/tool_use. Blocks: %s", block_info)
 
-    def stream(self, messages, tools=None) -> Iterator[StreamEvent]:
-        """Stream via non-streaming API call. Yields tool calls first, then full text.
+        return LLMResponse(text=text, tool_calls=tool_calls)
 
-        Uses client.messages.create() instead of client.messages.stream()
-        because DeepSeek's streaming protocol is incompatible with the Anthropic SDK
-        event iterator, causing indefinite blocking.
-        """
-        resp = self.chat(messages, tools)
-        if resp.tool_calls:
-            for tc in resp.tool_calls:
-                yield StreamEvent(type="tool_call", data={
-                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
-                })
-        if resp.text:
-            yield StreamEvent(type="token", data=resp.text)
-        if not resp.text and not resp.tool_calls:
-            yield StreamEvent(type="error", data="Empty response from LLM")
-        yield StreamEvent(type="done")
+    return stream_fn
 
+# ── OpenAI-SDK StreamFn ────────────────────────────────────────────
 
-# ── OpenAI-SDK Providers ─────────────────────────────────────────────
+def _make_openai_fn(api_key: str, model: str, base_url: str | None = None,
+                    env_key: str = "OPENAI_API_KEY") -> StreamFn:
+    """Create a StreamFn using the OpenAI Python SDK."""
+    key = api_key or os.environ.get(env_key, "")
+    # ollama doesn't need a key
+    if not key and base_url != "http://localhost:11434/v1":
+        pass  # will error on first call
 
-class OpenAIProvider(LLMProvider):
-    """OpenAI / compatible API. Used for OpenAI, GLM, Ollama, custom endpoints."""
-
-    def __init__(self, api_key: str = "", model: str = "gpt-4o",
-                 base_url: str | None = None, env_key: str = "OPENAI_API_KEY"):
-        self.api_key = api_key or os.environ.get(env_key, "")
-        self.model = model
-        self.base_url = base_url
-
-    def _build_client(self):
-        from openai import OpenAI
-        kwargs = dict(api_key=self.api_key or "sk-placeholder")
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        return OpenAI(**kwargs)
-
-    def chat(self, messages, tools=None) -> AgentResponse:
-        if not self.api_key and self.base_url not in (None, "", "http://localhost:11434/v1"):
-            return AgentResponse(text="未配置 API Key。请在 gateway.yaml 设置 api_key 或对应的环境变量。")
-
+    def stream_fn(messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
         try:
-            client = self._build_client()
-        except Exception as e:
-            return AgentResponse(text=f"无法初始化客户端: {e}")
+            from openai import OpenAI
+        except ImportError:
+            return LLMResponse(text="openai package not installed")
+
+        client_kwargs = dict(api_key=key or "sk-placeholder")
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
 
         openai_tools = None
         if tools:
@@ -223,81 +158,45 @@ class OpenAIProvider(LLMProvider):
 
         try:
             resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=openai_tools,
-            )
+                model=model, messages=messages, tools=openai_tools)
         except Exception as e:
-            return AgentResponse(text=f"API 调用失败: {e}")
+            logger.error("LLM API error: %s", e)
+            return LLMResponse(text=f"API error: {e}")
 
         choice = resp.choices[0]
-        text = ""
+        text = choice.message.content or ""
         tool_calls = []
-        if choice.message.content:
-            text = choice.message.content
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
                 args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
                 tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
 
-        return AgentResponse(text=text, tool_calls=tool_calls)
+        return LLMResponse(text=text, tool_calls=tool_calls)
 
-    def stream(self, messages, tools=None) -> Iterator[StreamEvent]:
-        """OpenAI streaming — falls back to non-streaming chat + yield tokens."""
-        resp = self.chat(messages, tools)
-        if resp.tool_calls:
-            for tc in resp.tool_calls:
-                yield StreamEvent(type="tool_call", data={
-                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
-                })
-        if resp.text:
-            yield StreamEvent(type="token", data=resp.text)
-        yield StreamEvent(type="done")
+    return stream_fn
 
+# ── Factory ────────────────────────────────────────────────────────
 
-# ── Factory ──────────────────────────────────────────────────────────
-
-# Map sdk_style → provider class
-_SDK_CLASSES = {
-    "anthropic": AnthropicProvider,
-    "openai": OpenAIProvider,
+_SDK_BUILDERS = {
+    "anthropic": _make_anthropic_fn,
+    "openai": _make_openai_fn,
 }
 
 
-def get_preset(provider_name: str) -> dict[str, str] | None:
-    """Get preset config for a provider, or None if unknown."""
-    return PROVIDER_PRESETS.get(provider_name)
-
-
-def list_presets() -> list[str]:
-    """List all available provider presets."""
-    return list(PROVIDER_PRESETS.keys())
-
-
-def create_provider(provider: str, api_key: str = "", model: str = "",
-                    base_url: str = "") -> LLMProvider:
-    """Factory: create an LLM provider from config.
-
-    For preset providers (anthropic, deepseek, openai, glm, ollama),
-    the api_key/model/base_url are optional and fall back to preset defaults.
-    For "custom", base_url is required.
-    """
-    preset = get_preset(provider)
+def create_stream_fn(provider: str, api_key: str = "", model: str = "",
+                     base_url: str = "") -> StreamFn:
+    """Create a StreamFn callable from provider config."""
+    preset = PRESETS.get(provider)
     if preset is None:
-        # Treat unknown providers as openai-compatible custom
-        sdk_class = OpenAIProvider
-        env_key = "CUSTOM_API_KEY"
-        default_model = model or "gpt-4o"
-        default_base = base_url
-    else:
-        sdk_class = _SDK_CLASSES[preset["sdk"]]
-        env_key = preset["env_key"]
-        default_model = model or preset["default_model"]
-        default_base = base_url or preset["default_base_url"]
+        # Treat unknown providers as OpenAI-compatible custom
+        return _make_openai_fn(api_key=api_key, model=model or "gpt-4o",
+                               base_url=base_url or None,
+                               env_key="CUSTOM_API_KEY")
 
-    return sdk_class(
+    builder = _SDK_BUILDERS[preset["sdk"]]
+    return builder(
         api_key=api_key,
-        model=default_model,
-        base_url=default_base or None,
-        env_key=env_key,
+        model=model or preset["default_model"],
+        base_url=base_url or preset["default_base_url"] or None,
+        env_key=preset["env_key"],
     )
