@@ -11,6 +11,7 @@ GATEWAY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     device_id TEXT PRIMARY KEY,
     token TEXT UNIQUE NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'device',
     labels_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active',
     is_local INTEGER NOT NULL DEFAULT 0,

@@ -19,6 +19,7 @@ class DeviceStatus(str, Enum):
 class Device:
     device_id: str
     token: str
+    source_type: str = "device"
     labels: dict[str, str] = field(default_factory=dict)
     status: DeviceStatus = DeviceStatus.ACTIVE
     is_local: bool = False
@@ -30,6 +31,7 @@ class Device:
         return {
             "device_id": self.device_id,
             "token": self.token,
+            "source_type": self.source_type,
             "labels_json": json.dumps(self.labels, ensure_ascii=False),
             "status": self.status.value,
             "is_local": 1 if self.is_local else 0,
@@ -41,6 +43,7 @@ class Device:
         return cls(
             device_id=row["device_id"],
             token=row["token"],
+            source_type=row.get("source_type", "device"),
             labels=json.loads(row["labels_json"]),
             status=DeviceStatus(row["status"]),
             is_local=bool(row["is_local"]),

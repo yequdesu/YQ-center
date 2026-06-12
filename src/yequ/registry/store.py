@@ -44,12 +44,14 @@ class DeviceStore:
         device_id: str,
         labels: dict[str, str] | None = None,
         is_local: bool = False,
+        source_type: str = "device",
     ) -> Device:
         token = _generate_token()
         now = now_iso()
         device = Device(
             device_id=device_id,
             token=token,
+            source_type=source_type,
             labels=labels or {},
             is_local=is_local,
             created_at=now,
@@ -59,8 +61,8 @@ class DeviceStore:
 
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO devices (device_id, token, labels_json, status, is_local, created_at, updated_at)
-                   VALUES (:device_id, :token, :labels_json, :status, :is_local, :created_at, :updated_at)""",
+                """INSERT INTO devices (device_id, token, source_type, labels_json, status, is_local, created_at, updated_at)
+                   VALUES (:device_id, :token, :source_type, :labels_json, :status, :is_local, :created_at, :updated_at)""",
                 {**row, "created_at": now, "updated_at": now},
             )
             conn.commit()

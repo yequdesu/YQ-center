@@ -278,6 +278,7 @@ class GatewayApp:
 
         device = self.store.register_device(
             device_id=device_id, labels=labels,
+            source_type=info.get("source_type", "device"),
         )
 
         # Auto-create declared capabilities from the registration
@@ -574,6 +575,7 @@ class GatewayApp:
     def _device_dict(d):
         return {
             "device_id": d.device_id,
+            "source_type": d.source_type,
             "status": d.display_status,
             "is_local": d.is_local,
             "labels": d.labels,

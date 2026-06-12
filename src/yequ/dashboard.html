@@ -103,8 +103,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; ba
 </div>
 
 <div id="sidebar">
+  <div class="section-title">Gateway</div>
+  <div id="device-list-gateway"></div>
+  <div class="section-title">Services</div>
+  <div id="device-list-service"></div>
   <div class="section-title">Devices</div>
-  <div id="device-list"></div>
+  <div id="device-list-device"></div>
   <div class="section-title">Pending Approvals</div>
   <div id="pending-list"></div>
 </div>
@@ -198,16 +202,23 @@ async function loadDevices() {
   }
 }
 
-function renderDevices(devices) {
-  const el = document.getElementById('device-list');
-  if (!devices.length) { el.innerHTML = '<div class="empty">No devices</div>'; return; }
-  el.innerHTML = devices.map(d => `
+function renderDeviceGroup(devices, type, containerId) {
+  const el = document.getElementById(containerId);
+  const filtered = devices.filter(d => (d.source_type || 'device') === type);
+  if (!filtered.length) { el.innerHTML = '<div class="empty">-</div>'; return; }
+  el.innerHTML = filtered.map(d => `
     <div class="device-item${selectedDevice===d.device_id?' active':''}" onclick="selectDevice('${d.device_id}')">
       <span class="status-dot ${d.status}"></span>
       <span class="name">${esc(d.device_id)}</span>
       <div class="meta">${d.status}${d.labels?.role?' · '+d.labels.role:''}${d.last_hello_at?' · '+ago(d.last_hello_at):''}</div>
     </div>
   `).join('');
+}
+
+function renderDevices(devices) {
+  renderDeviceGroup(devices, 'gateway', 'device-list-gateway');
+  renderDeviceGroup(devices, 'service', 'device-list-service');
+  renderDeviceGroup(devices, 'device', 'device-list-device');
 }
 
 async function loadPending() {

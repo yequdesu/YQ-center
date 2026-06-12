@@ -33,6 +33,7 @@ class CollectorRunner:
                 device_id=hostname,
                 labels={"role": "server", "location": "local"},
                 is_local=True,
+                source_type="gateway",
             )
             # Register standard capabilities
             self.store.add_capability(hostname, {
