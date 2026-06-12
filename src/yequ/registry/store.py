@@ -212,6 +212,20 @@ class DeviceStore:
             ).fetchone()
             return row["retry_count"] if row else 0
 
+    def list_pending_registrations(self) -> list[dict[str, Any]]:
+        """Return all non-expired pending registrations."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pending_registrations WHERE expires_at > datetime('now') ORDER BY registered_at DESC"
+            ).fetchall()
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["device_info"] = json.loads(d.pop("device_info_json"))
+            result.append(d)
+        return result
+
     def remove_pending_registration(self, device_id: str) -> None:
         with self._conn() as conn:
             conn.execute(

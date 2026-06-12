@@ -168,8 +168,9 @@ let llmConfigured = false;
 let llmProvider = '';
 
 async function init() {
-  await Promise.all([loadDevices(), loadEvents(), loadMonitor(), loadLLMConfig()]);
+  await Promise.all([loadDevices(), loadPending(), loadEvents(), loadMonitor(), loadLLMConfig()]);
   setInterval(loadDevices, 3000);
+  setInterval(loadPending, 5000);
   setInterval(updateClock, 1000);
   connectEventStream();
   updateClock();
@@ -189,7 +190,6 @@ async function loadDevices() {
   const resp = await fetch('/api/devices');
   const data = await resp.json();
   renderDevices(data.devices);
-  renderPending(data.devices);
   // Auto-refresh selected device detail
   if (selectedDevice) {
     const detailResp = await fetch(`/api/devices/${selectedDevice}`);
@@ -209,20 +209,24 @@ function renderDevices(devices) {
   `).join('');
 }
 
-function renderPending(devices) {
-  // For now, pending devices are those with status "unknown" (never hello'd, not local)
-  const pending = devices.filter(d => d.status === 'unknown');
+async function loadPending() {
+  const resp = await fetch('/api/pending');
+  const data = await resp.json();
   const el = document.getElementById('pending-list');
-  if (!pending.length) { el.innerHTML = '<div class="empty">None</div>'; return; }
-  el.innerHTML = pending.map(d => `
+  if (!data.pending.length) { el.innerHTML = '<div class="empty">None</div>'; return; }
+  el.innerHTML = data.pending.map(p => `
     <div class="pending-item">
-      <div class="name">${esc(d.device_id)}</div>
+      <div class="name">${esc(p.device_id)}</div>
+      <div class="meta">${esc(JSON.stringify(p.device_info))} · ${ago(p.registered_at)}</div>
       <div class="actions">
-        <button class="btn primary small" onclick="approveDevice('${d.device_id}')">Approve</button>
-        <button class="btn danger small" onclick="revokeDevice('${d.device_id}')">Revoke</button>
+        <button class="btn primary small" onclick="approveDevice('${p.device_id}')">Approve</button>
       </div>
     </div>
   `).join('');
+}
+
+function renderPending(devices) {
+  // handled by loadPending() now
 }
 
 async function selectDevice(id) {

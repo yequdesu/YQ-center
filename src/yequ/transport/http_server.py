@@ -140,6 +140,20 @@ class GatewayApp:
                   pending_commands=[self._command_dict(c) for c in commands])
         return JSONResponse(ack.to_dict())
 
+    # ── REST: Pending ────────────────────────────────────────────
+
+    async def api_pending(self, request):
+        pending = self.store.list_pending_registrations()
+        return JSONResponse({
+            "pending": [{
+                "device_id": p["device_id"],
+                "device_info": p["device_info"],
+                "registered_at": p["registered_at"],
+                "retry_count": p["retry_count"],
+            } for p in pending],
+            "total": len(pending),
+        })
+
     # ── REST: Devices ────────────────────────────────────────────
 
     async def api_devices(self, request):
@@ -488,6 +502,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/hello", gateway.handle_hello, methods=["POST"]),
         Route("/ingest", gateway.handle_ingest, methods=["POST"]),
         # Devices
+        Route("/api/pending", gateway.api_pending, methods=["GET"]),
         Route("/api/devices", gateway.api_devices, methods=["GET"]),
         Route("/api/devices/{device_id}", gateway.api_device_detail, methods=["GET"]),
         Route("/api/devices/{device_id}/approve", gateway.api_device_approve, methods=["POST"]),
