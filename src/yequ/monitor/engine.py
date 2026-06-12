@@ -92,17 +92,20 @@ class MonitorEngine:
             }
 
             for rule in active:
-                result = evaluate_rule(rule, device_info, self.db_path)
+                raw = evaluate_rule(rule, device_info, self.db_path)
+                # evaluate_rule may return a single RuleResult or a list of RuleResults
+                results_list = raw if isinstance(raw, list) else [raw]
 
-                if result.triggered:
-                    cooldown_key = f"{rule.name}:{device.device_id}"
-                    now = time.time()
-                    last = self._last_fired.get(cooldown_key, 0)
+                for result in results_list:
+                    if result.triggered:
+                        cooldown_key = f"{rule.name}:{device.device_id}"
+                        now = time.time()
+                        last = self._last_fired.get(cooldown_key, 0)
 
-                    if now - last >= rule.cooldown_seconds:
-                        self._last_fired[cooldown_key] = now
-                        self._handle_alert(result, rule)
-                        results.append(result)
+                        if now - last >= rule.cooldown_seconds:
+                            self._last_fired[cooldown_key] = now
+                            self._handle_alert(result, rule)
+                            results.append(result)
 
         return results
 

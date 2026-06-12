@@ -21,3 +21,22 @@ rules:
     severity: critical
     cooldown_seconds: 1800
     notify: true
+
+  - name: capability_silent
+    description: "Capability 静默超时"
+    condition:
+      type: capability_silent
+      params:
+        multiplier: 5
+    severity: warning
+    cooldown_seconds: 600
+    notify: true
+
+  - name: command_timeout
+    description: "指令超时未完成"
+    condition:
+      type: command_timeout
+      params: {}
+    severity: warning
+    cooldown_seconds: 300
+    notify: true

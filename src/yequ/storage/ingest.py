@@ -33,6 +33,29 @@ def ingest_snapshot(
         )
         conn.commit()
 
+    # Schema validation (best-effort, never blocks data storage)
+    try:
+        from jsonschema import validate, ValidationError
+        with get_connection(db_path) as conn:
+            cap_row = conn.execute(
+                "SELECT schema_json FROM capabilities WHERE device_id = ? AND name = ? AND is_approved = 1",
+                (device_id, capability),
+            ).fetchone()
+        if cap_row:
+            schema = json.loads(cap_row["schema_json"])
+            if schema and schema.get("type"):
+                validate(instance=payload, schema=schema)
+    except ValidationError as e:
+        from yequ.message_queue import mq
+        mq.publish("yequ:events", {
+            "event_type": "data_schema_mismatch", "severity": "warning",
+            "title": f"数据格式不匹配: {capability} on {device_id}",
+            "body": str(e.message),
+            "device_id": device_id,
+        })
+    except Exception:
+        pass
+
 
 def ingest_metric(
     db_path: str,

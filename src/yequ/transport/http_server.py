@@ -106,6 +106,11 @@ class GatewayApp:
             info["_capabilities"] = msg.capabilities
             info["_actions"] = getattr(msg, 'actions', [])
             self.store.add_pending_registration(msg.device_id, info)
+            mq.publish("yequ:events", {
+                "event_type": "device_registered", "severity": "info",
+                "title": f"设备请求注册: {msg.device_id}",
+                "device_id": msg.device_id,
+            })
             retry_count = 0
         else:
             retry_count = self.store.increment_retry(msg.device_id)
@@ -161,6 +166,12 @@ class GatewayApp:
                 if image_url:
                     result["image_url"] = image_url
                 self.store.record_command_result(cid, _json.dumps(result, ensure_ascii=False))
+                mq.publish("yequ:events", {
+                    "event_type": "command_completed", "severity": "info",
+                    "title": f"指令完成: {result.get('status', 'unknown')}",
+                    "device_id": dev_id,
+                    "data": {"command_id": cid, "image_url": result.get("image_url")},
+                })
         except Exception:
             pass
 
@@ -401,6 +412,11 @@ class GatewayApp:
 
         self.store.add_capability(device_id, body)
         self.store.approve_capability(device_id, name)
+        mq.publish("yequ:events", {
+            "event_type": "capability_added", "severity": "info",
+            "title": f"新能力: {name}",
+            "device_id": device_id,
+        })
         return JSONResponse({"status": "ok", "device_id": device_id, "capability": name})
 
     async def api_device_revoke(self, request):

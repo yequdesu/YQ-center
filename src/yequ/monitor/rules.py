@@ -165,9 +165,70 @@ class ThresholdRule:
         )
 
 
+class CapabilitySilentRule:
+    """Checks if any capability has stopped reporting data."""
+
+    @staticmethod
+    def evaluate(rule, device, db_path, **kwargs):
+        from yequ.storage.query import get_latest_snapshot
+        caps = device.get("capabilities", [])
+        results = []
+        for cap in caps:
+            snap = get_latest_snapshot(db_path, device["device_id"], cap["name"])
+            if snap is None:
+                continue
+            interval = cap.get("interval_seconds", 60)
+            age = _age_seconds(snap["timestamp"])
+            if age > interval * rule.condition_params.get("multiplier", 5):
+                results.append(RuleResult(
+                    rule_name=rule.name, triggered=True,
+                    severity=rule.severity,
+                    title=f"Capability静默: {cap['name']} on {device['device_id']}",
+                    body=f"{int(age)}s 无数据 (interval={interval}s)",
+                    device_id=device["device_id"],
+                ))
+        return results
+
+
+class CommandTimeoutRule:
+    """Checks for commands that were delivered but never completed."""
+
+    @staticmethod
+    def evaluate(rule, device, db_path, **kwargs):
+        from yequ.storage.database import get_connection
+        with get_connection(db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM pending_commands WHERE device_id = ? AND delivered = 1 "
+                "AND result_json IS NULL AND created_at < datetime('now', '-15 minutes')",
+                (device["device_id"],),
+            ).fetchall()
+        results = []
+        for row in rows:
+            results.append(RuleResult(
+                rule_name=rule.name, triggered=True,
+                severity="warning",
+                title=f"指令超时: {row['action']} on {device['device_id']}",
+                body=f"command_id={row['command_id']}, created={row['created_at']}",
+                device_id=device["device_id"],
+            ))
+        return results
+
+
+def _age_seconds(ts: str) -> float:
+    """Calculate age of a timestamp in seconds."""
+    from datetime import datetime, timezone
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - t).total_seconds()
+    except Exception:
+        return 0
+
+
 RULE_EVALUATORS = {
     "heartbeat_timeout": HeartbeatTimeoutRule,
     "threshold": ThresholdRule,
+    "capability_silent": CapabilitySilentRule,
+    "command_timeout": CommandTimeoutRule,
 }
 
 
