@@ -189,23 +189,30 @@ class AnthropicProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
 
+        had_tokens = False
         try:
             with client.messages.stream(**kwargs) as stream:
                 for event in stream:
                     if event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
+                            had_tokens = True
                             yield StreamEvent(type="token", data=event.delta.text)
                     elif event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
-                            pass  # tool_use start — wait for input_json_delta
+                            pass
                     elif event.type == "content_block_stop":
                         pass
         except Exception as e:
             yield StreamEvent(type="error", data=str(e))
             return
 
-        # Collect tool calls from the final message
         final = stream.get_final_message()
+        # Yield text from final message if not already streamed (DeepSeek compatibility)
+        if not had_tokens:
+            for block in final.content:
+                if block.type == "text":
+                    yield StreamEvent(type="token", data=block.text)
+        # Yield tool calls from final message
         for block in final.content:
             if block.type == "tool_use":
                 yield StreamEvent(type="tool_call", data={
