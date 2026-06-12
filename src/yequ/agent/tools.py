@@ -107,6 +107,17 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "check_device_online",
+        "description": "主动检查设备是否在线。根据最近心跳时间判断：fresh=在线，stale=可能离线，gone=确定离线。比等巡检告警更快。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "要检查的设备ID"},
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
         "name": "list_device_actions",
         "description": "查询指定设备支持哪些操作指令（action）。返回设备声明过的可执行操作列表。",
         "input_schema": {
@@ -331,6 +342,45 @@ class ToolHandler:
                 content = open(path).read()
                 return {"path": path, "content": content}
         return {"error": "Network topology file not found", "checked_paths": candidates}
+
+    def _tool_check_device_online(self, args: dict) -> dict:
+        from yequ.registry.store import DeviceStore
+        from datetime import datetime, timezone, timedelta
+
+        store = DeviceStore(self.db_path)
+        device = store.get_device(args["device_id"])
+        if device is None:
+            return {"device_id": args["device_id"], "error": "device not found"}
+
+        caps = store.get_capabilities(args["device_id"])
+        intervals = [c.interval_seconds for c in caps] or [60]
+        expected = min(min(intervals), 300)  # shortest interval, capped
+
+        if device.last_hello_at:
+            ts = device.last_hello_at.replace("Z", "+00:00")
+            last = datetime.fromisoformat(ts)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            if age < expected * 2:
+                status = "online"
+                note = f"心跳正常，{int(age)}秒前"
+            elif age < expected * 5:
+                status = "stale"
+                note = f"心跳延迟，{int(age)}秒前，可能网络不稳定"
+            else:
+                status = "offline"
+                note = f"心跳丢失，{int(age)}秒前，设备已离线"
+        else:
+            status = "unknown"
+            age = None
+            note = "从未收到心跳" if not device.is_local else "本地设备，不走心跳"
+
+        return {
+            "device_id": args["device_id"],
+            "status": status,
+            "last_heartbeat_age_seconds": int(age) if age else None,
+            "expected_interval": expected,
+            "note": note,
+        }
 
     def _tool_check_command_result(self, args: dict) -> dict:
         from yequ.storage.database import get_connection
