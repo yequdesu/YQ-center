@@ -156,9 +156,9 @@ let llmProvider = '';
 
 async function init() {
   await Promise.all([loadDevices(), loadEvents(), loadMonitor(), loadLLMConfig()]);
-  setInterval(loadDevices, 10000);
-  setInterval(loadEvents, 15000);
+  setInterval(loadDevices, 3000);
   setInterval(updateClock, 1000);
+  connectEventStream();
   updateClock();
 }
 init();
@@ -170,6 +170,18 @@ async function loadDevices() {
   const data = await resp.json();
   renderDevices(data.devices);
   renderPending(data.devices);
+}
+
+async function loadDevices() {
+  const resp = await fetch('/api/devices');
+  const data = await resp.json();
+  renderDevices(data.devices);
+  renderPending(data.devices);
+  // Auto-refresh selected device detail
+  if (selectedDevice) {
+    const detailResp = await fetch(`/api/devices/${selectedDevice}`);
+    renderDeviceDetail(await detailResp.json());
+  }
 }
 
 function renderDevices(devices) {
@@ -211,6 +223,54 @@ async function selectDevice(id) {
   renderDeviceDetail(data);
 }
 
+function formatMetric(key, val) {
+  // Return {label, value, unit, cls} for a metric field
+  const label = key.replace(/_/g, ' ');
+  let cls = '';
+  let unit = '';
+
+  if (typeof val === 'number') {
+    // Detect type by field name pattern
+    if (key.endsWith('_percent') || key.endsWith('_usage') || key === 'cpu_percent' || key === 'memory_percent' || key === 'disk_usage_percent') {
+      val = val.toFixed(1);
+      unit = '%';
+      if (val > 90) cls = 'critical';
+      else if (val > 75) cls = 'warning';
+    } else if (key.endsWith('_gb')) {
+      val = val.toFixed(1);
+      unit = 'GB';
+    } else if (key.endsWith('_mb')) {
+      val = val.toFixed(1);
+      unit = 'MB';
+    } else if (key.includes('bytes')) {
+      if (val >= 1e12) { val = (val/1e12).toFixed(2); unit = 'TB'; }
+      else if (val >= 1e9) { val = (val/1e9).toFixed(1); unit = 'GB'; }
+      else if (val >= 1e6) { val = (val/1e6).toFixed(1); unit = 'MB'; }
+      else if (val >= 1e3) { val = (val/1e3).toFixed(1); unit = 'KB'; }
+      else { val = val.toFixed(0); unit = 'B'; }
+    } else if (key === 'boot_time' || key.includes('boot')) {
+      val = new Date(val * 1000).toLocaleString();
+      unit = '';
+    } else if (key === 'cpu_count' || key.includes('_count')) {
+      val = val.toFixed(0);
+      unit = '';
+    } else if (key.includes('load')) {
+      val = val.toFixed(2);
+      unit = '';
+    } else {
+      val = val < 100 ? val.toFixed(1) : val.toFixed(0);
+      unit = '';
+    }
+  } else if (typeof val === 'string') {
+    val = esc(val);
+    if (val.length > 40) val = val.substring(0, 37) + '...';
+  } else if (typeof val === 'boolean') {
+    val = val ? 'yes' : 'no';
+  }
+
+  return {label, value: String(val), unit, cls};
+}
+
 function renderDeviceDetail(data) {
   const el = document.getElementById('device-detail');
   if (data.error) { el.innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
@@ -223,19 +283,12 @@ function renderDeviceDetail(data) {
     html += '<div class="section-title">Metrics</div><div class="metrics-grid">';
     for (const [cap, snap] of Object.entries(snapshots)) {
       for (const [key, val] of Object.entries(snap.data)) {
-        if (typeof val === 'number') {
-          let cls = '';
-          if (key.includes('percent') || key.includes('usage')) {
-            if (val > 90) cls = 'critical';
-            else if (val > 75) cls = 'warning';
-          }
-          const label = key.replace(/_/g, ' ');
-          html += `<div class="metric-card ${cls}">
-            <div class="label">${esc(label)}</div>
-            <div class="value">${typeof val==='number'?val.toFixed(1):val}</div>
-            <div class="unit">${key.includes('percent')||key.includes('usage')?'%':''}</div>
-          </div>`;
-        }
+        const m = formatMetric(key, val);
+        html += `<div class="metric-card ${m.cls}">
+          <div class="label">${esc(m.label)}</div>
+          <div class="value"${m.unit?'':''}>${m.value}</div>
+          <div class="unit">${m.unit}</div>
+        </div>`;
       }
     }
     html += '</div>';
@@ -260,15 +313,46 @@ function renderDeviceDetail(data) {
 async function loadEvents() {
   const resp = await fetch('/api/events?limit=30');
   const data = await resp.json();
+  renderEvents(data.events);
+}
+
+function renderEvents(events) {
   const el = document.getElementById('events-list');
-  if (!data.events.length) { el.innerHTML = '<div class="empty">No events</div>'; return; }
-  el.innerHTML = data.events.map(e => `
+  if (!events.length) { el.innerHTML = '<div class="empty">No events</div>'; return; }
+  el.innerHTML = events.map(e => `
     <div class="event-item ${e.severity}">
       <div class="ts">${ago(e.timestamp)}</div>
       <strong>${esc(e.title)}</strong>
       ${e.body?`<div>${esc(e.body)}</div>`:''}
     </div>
   `).join('');
+}
+
+function connectEventStream() {
+  const es = new EventSource('/api/events/stream');
+  es.addEventListener('connected', () => { /* connected */ });
+  es.addEventListener('event', (e) => {
+    try {
+      const ev = JSON.parse(e.data);
+      const el = document.getElementById('events-list');
+      // Remove empty placeholder if present
+      if (el.querySelector('.empty')) el.innerHTML = '';
+      el.insertAdjacentHTML('afterbegin', `
+        <div class="event-item ${ev.severity}">
+          <div class="ts">now</div>
+          <strong>${esc(ev.title)}</strong>
+          ${ev.body?`<div>${esc(ev.body)}</div>`:''}
+        </div>
+      `);
+      // Keep max 50 items
+      while (el.children.length > 50) el.lastChild.remove();
+    } catch(ex) {}
+  });
+  es.onerror = () => {
+    // Reconnect after 5s on error
+    es.close();
+    setTimeout(connectEventStream, 5000);
+  };
 }
 
 // ── Monitor ───────────────────────────────────────────────────────
