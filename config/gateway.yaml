@@ -1,6 +1,6 @@
 # YeQu Gateway 主配置
 gateway:
-  host: "127.0.0.1"
+  host: "0.0.0.0"  # 接受来自 WireGuard、局域网、本机的连接
   port: 9800
   unix_socket: "~/.local/share/yequ-gateway/gateway.sock"
 
