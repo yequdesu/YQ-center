@@ -8,7 +8,6 @@ from yequ.protocol.messages import (
     HelloResponse,
     RegistrationResponse,
     parse_hello,
-    parse_ingest,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
     "HelloResponse",
     "RegistrationResponse",
     "parse_hello",
-    "parse_ingest",
 ]

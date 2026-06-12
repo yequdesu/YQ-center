@@ -94,17 +94,15 @@ class LLMProvider(ABC):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> Iterator[StreamEvent]:
-        """Stream the LLM response. Override for real streaming; default falls back to non-stream."""
+        """Stream the LLM response. Falls back to non-stream chat + yield full text."""
         resp = self.chat(messages, tools)
         if resp.tool_calls:
             for tc in resp.tool_calls:
-                yield StreamEvent(type="tool_call", data={"name": tc.name, "arguments": tc.arguments, "id": tc.id})
-        # Split text into chunks for fake streaming
+                yield StreamEvent(type="tool_call", data={
+                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
+                })
         if resp.text:
-            chunk_size = 4
-            text = resp.text
-            for i in range(0, len(text), chunk_size):
-                yield StreamEvent(type="token", data=text[i:i+chunk_size])
+            yield StreamEvent(type="token", data=resp.text)
         yield StreamEvent(type="done")
 
 
@@ -272,7 +270,16 @@ class OpenAIProvider(LLMProvider):
         return AgentResponse(text=text, tool_calls=tool_calls)
 
     def stream(self, messages, tools=None) -> Iterator[StreamEvent]:
-        pass  # Placeholder — OpenAI streaming via SDK
+        """OpenAI streaming — falls back to non-streaming chat + yield tokens."""
+        resp = self.chat(messages, tools)
+        if resp.tool_calls:
+            for tc in resp.tool_calls:
+                yield StreamEvent(type="tool_call", data={
+                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
+                })
+        if resp.text:
+            yield StreamEvent(type="token", data=resp.text)
+        yield StreamEvent(type="done")
 
 
 # ── Factory ──────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ class EventBus:
         try:
             self._subscribers.remove(q)
         except ValueError:
-            pass
+            logger.debug("Unsubscribe: queue not found in subscribers")
 
     @property
     def subscriber_count(self) -> int:

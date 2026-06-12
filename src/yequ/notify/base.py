@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class Severity(str, Enum):
@@ -25,15 +28,9 @@ class Notification:
     metadata: dict = field(default_factory=dict)
 
     def format(self) -> str:
-        prefix = {
-            Severity.CRITICAL: "🔴",
-            Severity.WARNING: "⚠️",
-            Severity.INFO: "ℹ️",
-        }.get(self.severity, "")
-
-        lines = [f"{prefix} Gateway Alert: {self.title}"]
+        lines = [f"[{self.severity.upper()}] Gateway Alert: {self.title}"]
         if self.device_id:
-            lines.append(f"设备: {self.device_id}")
+            lines.append(f"Device: {self.device_id}")
         if self.body:
             lines.append(self.body)
         return "\n".join(lines)
@@ -84,6 +81,5 @@ class NotifyRouter:
                 if name != "log":
                     try:
                         adapter.send(notification)
-                    except Exception:
-                        # Don't let one adapter failure break others
-                        pass
+                    except Exception as e:
+                        logger.warning("Notify adapter '%s' failed: %s", name, e)

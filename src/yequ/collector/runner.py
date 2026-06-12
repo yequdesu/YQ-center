@@ -5,17 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import socket
-from datetime import datetime, timezone
 
 from yequ.collector.system import collect_system_metrics
 from yequ.registry.store import DeviceStore
 from yequ.storage.ingest import ingest_snapshot, ingest_metric
+from yequ.utils import now_iso
 
 logger = logging.getLogger(__name__)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class CollectorRunner:
@@ -63,7 +59,7 @@ class CollectorRunner:
         """Collect system metrics and ingest as snapshot + individual metric points."""
         hostname = socket.gethostname()
         device = self.ensure_local_device()
-        ts = _now()
+        ts = now_iso()
 
         try:
             metrics = collect_system_metrics()

@@ -43,18 +43,14 @@ def _setup_components(config: Config):
     notify = NotifyRouter(log_path=config.notify.log_file)
     runner = CollectorRunner(db_path=db_path, device_store=store)
 
-    # Load monitor rules
     rules = []
     if os.path.exists(DEFAULT_RULES_PATH):
         rules = load_rules_from_yaml(DEFAULT_RULES_PATH)
 
     monitor = MonitorEngine(
-        db_path=db_path,
-        device_store=store,
-        notify_router=notify,
-        rules=rules,
+        db_path=db_path, device_store=store,
+        notify_router=notify, rules=rules,
     )
-
     return db_path, store, notify, runner, monitor
 
 
@@ -69,7 +65,6 @@ def main(ctx, config_path, debug):
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
-
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
 
@@ -81,33 +76,20 @@ def serve(ctx):
     config = load_config(ctx.obj["config_path"])
     db_path, store, notify, runner, monitor = _setup_components(config)
 
-    # Wire event bus to monitor engine for SSE streaming
     from yequ.events_bus import bus as event_bus
     monitor._event_bus = event_bus
 
-    # Ensure local device
     local_device = runner.ensure_local_device()
-    click.echo(f"✓ Local device: {local_device.device_id}")
+    click.echo(f"[ok] Local device: {local_device.device_id}")
 
-    # Start Unix socket
-    from yequ.transport.local_ipc import LocalIPCTransport
-    ipc = LocalIPCTransport(config.gateway.unix_socket)
-    ipc.start()
-    click.echo(f"✓ IPC socket: {config.gateway.unix_socket}")
-
-    # Start HTTP server with agent config
     from yequ.transport.http_server import create_app
     import uvicorn
 
     app = create_app(
-        db_path=db_path,
-        device_store=store,
-        notify_router=notify,
-        collector_runner=runner,
-        agent_config=config.agent,
+        db_path=db_path, device_store=store, notify_router=notify,
+        collector_runner=runner, agent_config=config.agent,
     )
 
-    # Start collector in background thread
     import threading
     import time
 
@@ -121,15 +103,12 @@ def serve(ctx):
                 logger.error("Collection error: %s", e)
             stop_collector.wait(config.collector.interval_seconds)
 
-    collector_thread = threading.Thread(target=collector_loop, daemon=True)
-    collector_thread.start()
+    threading.Thread(target=collector_loop, daemon=True).start()
     click.echo(f"Collector: every {config.collector.interval_seconds}s")
 
-    # Start monitor in background thread
     stop_monitor = threading.Event()
 
     def monitor_loop():
-        # Wait a bit for first data to arrive
         time.sleep(5)
         while not stop_monitor.is_set():
             try:
@@ -138,8 +117,7 @@ def serve(ctx):
                 logger.error("Monitor error: %s", e)
             stop_monitor.wait(config.monitor.scan_interval_seconds)
 
-    monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
-    monitor_thread.start()
+    threading.Thread(target=monitor_loop, daemon=True).start()
     click.echo(f"Monitor: every {config.monitor.scan_interval_seconds}s")
 
     click.echo(f"\nGateway listening on {config.gateway.host}:{config.gateway.port}")
@@ -149,18 +127,13 @@ def serve(ctx):
         click.echo("\nShutting down...")
         stop_collector.set()
         stop_monitor.set()
-        ipc.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    uvicorn.run(
-        app,
-        host=config.gateway.host,
-        port=config.gateway.port,
-        log_level="warning",
-    )
+    uvicorn.run(app, host=config.gateway.host, port=config.gateway.port,
+                log_level="warning")
 
 
 @main.command()
@@ -176,21 +149,16 @@ def devices(ctx):
         return
 
     for d in devices:
-        if d.last_hello_at:
-            status_icon = "🟢"
-        elif d.is_local:
-            status_icon = "🔵"  # local device, direct DB access, no hello
-        else:
-            status_icon = "⚪"  # never hello'd yet
+        status_text = f"[{d.display_status}]"
         labels = ", ".join(f"{k}={v}" for k, v in d.labels.items())
         local_tag = " [local]" if d.is_local else ""
-        click.echo(f"{status_icon} {d.device_id}{local_tag}")
+        click.echo(f"{status_text} {d.device_id}{local_tag}")
         if labels:
             click.echo(f"   Labels: {labels}")
         if d.last_hello_at:
             click.echo(f"   Last hello: {d.last_hello_at}")
         elif d.is_local:
-            click.echo(f"   (local device — direct DB access)")
+            click.echo(f"   (local device, direct DB access)")
         click.echo()
 
 
@@ -234,9 +202,10 @@ def events(ctx, device_id):
         click.echo("No events.")
         return
 
+    severity_labels = {"critical": "CRIT", "warning": "WARN", "info": "INFO"}
     for e in events:
-        icon = {"critical": "🔴", "warning": "⚠️", "info": "ℹ️"}.get(e["severity"], "")
-        click.echo(f"[{icon}] [{e['timestamp']}] {e['title']}")
+        label = severity_labels.get(e["severity"], e["severity"].upper())
+        click.echo(f"[{label}] [{e['timestamp']}] {e['title']}")
         if e["body"]:
             click.echo(f"   {e['body']}")
         click.echo()
@@ -246,21 +215,14 @@ def events(ctx, device_id):
 @click.argument("query")
 @click.pass_context
 def ask(ctx, query):
-    """Ask the Gateway anything in natural language — powered by LLM.
+    """Ask the Gateway anything in natural language, powered by LLM.
 
-    Requires a configured LLM provider in gateway.yaml:
-
-      agent:
-        provider: anthropic       # or openai
-        model: claude-sonnet-4-6
-        api_key: "sk-ant-..."     # or set ANTHROPIC_API_KEY env var
-
-    Without an API key, falls back to offline structured queries.
+    Requires a configured LLM provider in config/gateway.yaml.
+    Without an API key, falls back to offline keyword matching.
     """
     config = load_config(ctx.obj["config_path"])
     db_path, store, _, _, _ = _setup_components(config)
 
-    # If API key is configured, use the real AI agent
     api_key = config.agent.api_key
     if not api_key:
         import os as _os
@@ -269,21 +231,14 @@ def ask(ctx, query):
 
     if api_key:
         from yequ.agent.core import create_agent
-        agent = create_agent(
-            config=config.agent,
-            db_path=db_path,
-            data_dir=config.data.dir,
-        )
-        click.echo("⏳ 思考中...\n")
+        agent = create_agent(config=config.agent, db_path=db_path,
+                             data_dir=config.data.dir)
+        click.echo("Thinking...\n")
         answer = agent.ask(query)
         click.echo(answer)
     else:
-        # Fallback: offline keyword matching
-        click.echo("⚠️  未配置 LLM API Key，使用离线模式。\n")
-        click.echo("配置方法：编辑 config/gateway.yaml\n")
-        click.echo('  agent:')
-        click.echo('    provider: anthropic')
-        click.echo('    api_key: "sk-ant-..."')
+        click.echo("[no-api-key] LLM not configured, using offline mode.\n")
+        click.echo("To enable AI: set agent.api_key in config/gateway.yaml\n")
 
         query_lower = query.lower()
         if any(w in query_lower for w in ["alert", "alarm", "event", "告警", "事件", "报警", "异常"]):
@@ -300,7 +255,7 @@ def ask(ctx, query):
 @click.argument("action", type=click.Choice(["on", "off", "status"]))
 @click.pass_context
 def monitor(ctx, action):
-    """Control the inspector (mode B): on/off/status."""
+    """Control the inspector: on/off/status."""
     config = load_config(ctx.obj["config_path"])
     marker_path = os.path.join(config.data.dir, "monitor_enabled")
 

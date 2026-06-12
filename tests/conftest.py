@@ -21,7 +21,7 @@ def test_config_dict():
         "data": {"dir": "/tmp/yequ-test"},
         "monitor": {"scan_interval_seconds": 30},
         "collector": {"interval_seconds": 60},
-        "agent": {"anthropic_api_key": "", "model": "claude-sonnet-4-6"},
+        "agent": {"provider": "anthropic", "model": "claude-sonnet-4-6", "api_key": ""},
         "notify": {"log_file": "/tmp/yequ-test/gateway.log"},
     }
 

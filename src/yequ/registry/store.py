@@ -5,15 +5,11 @@ from __future__ import annotations
 import json
 import os
 import secrets
-from datetime import datetime, timezone
 from typing import Any
 
 from yequ.registry.models import Device, Capability
 from yequ.storage.database import get_connection
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+from yequ.utils import now_iso
 
 
 def _generate_token() -> str:
@@ -38,7 +34,7 @@ class DeviceStore:
         is_local: bool = False,
     ) -> Device:
         token = _generate_token()
-        now = _now()
+        now = now_iso()
         device = Device(
             device_id=device_id,
             token=token,
@@ -90,7 +86,7 @@ class DeviceStore:
         return [Device.from_row(dict(r)) for r in rows]
 
     def touch_hello(self, device_id: str) -> None:
-        now = _now()
+        now = now_iso()
         with self._conn() as conn:
             conn.execute(
                 "UPDATE devices SET last_hello_at = ?, updated_at = ? WHERE device_id = ?",
@@ -99,7 +95,7 @@ class DeviceStore:
             conn.commit()
 
     def revoke_device(self, device_id: str) -> None:
-        now = _now()
+        now = now_iso()
         with self._conn() as conn:
             conn.execute(
                 "UPDATE devices SET status = 'revoked', updated_at = ? WHERE device_id = ?",
@@ -108,7 +104,7 @@ class DeviceStore:
             conn.commit()
 
     def update_labels(self, device_id: str, labels: dict[str, str]) -> None:
-        now = _now()
+        now = now_iso()
         labels_json = json.dumps(labels, ensure_ascii=False)
         with self._conn() as conn:
             conn.execute(
@@ -165,7 +161,7 @@ class DeviceStore:
     # --- Pending Registrations ---
 
     def add_pending_registration(self, device_id: str, device_info: dict[str, Any]) -> None:
-        now = _now()
+        now = now_iso()
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO pending_registrations (device_id, device_info_json, registered_at, expires_at, retry_count)

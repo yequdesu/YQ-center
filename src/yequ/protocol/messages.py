@@ -128,10 +128,12 @@ class HelloResponse:
     """响应 Registration Hello（pending 状态）."""
     status: str = "pending"
     retry_after: int = 30
+    note: str | None = None
     protocol: str = PROTOCOL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        return {k: v for k, v in d.items() if v is not None}
 
 
 @dataclass
@@ -158,6 +160,3 @@ def parse_hello(raw: str) -> HelloRegistration | HelloHeartbeat:
         raise ValueError(f"Unknown hello_type: {hello_type}")
 
 
-def parse_ingest(raw: str) -> Ingest:
-    """解析 Ingest 消息."""
-    return Ingest.from_json(raw)

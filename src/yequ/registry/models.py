@@ -53,6 +53,14 @@ class Device:
         self.last_hello_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.status = DeviceStatus.ACTIVE
 
+    @property
+    def display_status(self) -> str:
+        if self.last_hello_at:
+            return "online"
+        if self.is_local:
+            return "local"
+        return "unknown"
+
 
 @dataclass
 class Capability:

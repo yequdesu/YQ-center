@@ -1,7 +1,6 @@
 import json
 import pytest
 from yequ.transport.http_server import create_app
-from yequ.transport.local_ipc import LocalIPCTransport
 from yequ.storage.database import init_database
 from yequ.registry.store import DeviceStore
 from yequ.notify.base import NotifyRouter

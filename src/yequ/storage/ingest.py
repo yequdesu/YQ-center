@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 from yequ.storage.database import get_connection
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+from yequ.utils import now_iso
 
 
 def ingest_snapshot(
@@ -21,7 +17,7 @@ def ingest_snapshot(
     timestamp: str | None = None,
 ) -> None:
     """Insert or update a snapshot. Upsert on (device_id, capability)."""
-    ts = timestamp or _now()
+    ts = timestamp or now_iso()
     payload_json = json.dumps(payload, ensure_ascii=False)
 
     with get_connection(db_path) as conn:
@@ -33,7 +29,7 @@ def ingest_snapshot(
                schema_version = excluded.schema_version,
                timestamp = excluded.timestamp,
                ingested_at = excluded.ingested_at""",
-            (device_id, capability, schema_version, payload_json, ts, _now()),
+            (device_id, capability, schema_version, payload_json, ts, now_iso()),
         )
         conn.commit()
 
@@ -48,13 +44,13 @@ def ingest_metric(
     timestamp: str | None = None,
 ) -> None:
     """Insert a single metric data point."""
-    ts = timestamp or _now()
+    ts = timestamp or now_iso()
 
     with get_connection(db_path) as conn:
         conn.execute(
             """INSERT INTO metrics (device_id, capability, metric_name, value, unit, timestamp, ingested_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (device_id, capability, metric_name, value, unit, ts, _now()),
+            (device_id, capability, metric_name, value, unit, ts, now_iso()),
         )
         conn.commit()
 
@@ -70,7 +66,7 @@ def ingest_event(
     timestamp: str | None = None,
 ) -> None:
     """Insert an event record."""
-    ts = timestamp or _now()
+    ts = timestamp or now_iso()
     metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
 
     with get_connection(db_path) as conn:

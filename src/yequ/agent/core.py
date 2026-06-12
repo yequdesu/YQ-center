@@ -6,12 +6,7 @@ import json
 import logging
 from typing import Any, Iterator
 
-from yequ.agent.providers import (
-    LLMProvider,
-    AgentResponse,
-    StreamEvent,
-    create_provider,
-)
+from yequ.agent.providers import StreamEvent, create_provider
 from yequ.agent.tools import TOOLS, ToolHandler
 from yequ.config import AgentConfig
 
@@ -157,9 +152,7 @@ class Agent:
                 continue
 
             if response.text:
-                # Fake streaming for providers without native streaming
-                for i in range(0, len(response.text), 4):
-                    yield StreamEvent(type="token", data=response.text[i:i+4])
+                yield StreamEvent(type="token", data=response.text)
                 yield StreamEvent(type="done")
                 return
 
