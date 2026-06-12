@@ -225,6 +225,24 @@ class GatewayApp:
                   pending_commands=[self._command_dict(c) for c in commands])
         return JSONResponse(ack.to_dict())
 
+    # ── YQP: Command Poll ─────────────────────────────────────────
+
+    async def handle_command_poll(self, request):
+        """Lightweight poll for pending commands. Device calls this every 2-3s.
+        Returns immediately — no waiting for heartbeat cycle.
+        """
+        device_id = request.query_params.get("device_id", "")
+        token = request.query_params.get("token", "")
+        device = self.store.get_device_by_token(token)
+        if device is None or device.device_id != device_id:
+            return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
+
+        commands = self.store.dequeue_commands(device_id)
+        return JSONResponse({
+            "status": "ok",
+            "pending_commands": [self._command_dict(c) for c in commands],
+        })
+
     # ── YQP: Ingest ──────────────────────────────────────────────
 
     async def handle_ingest(self, request):
@@ -704,6 +722,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/", dashboard, methods=["GET"]),
         # YQP
         Route("/hello", gateway.handle_hello, methods=["POST"]),
+        Route("/commands/pending", gateway.handle_command_poll, methods=["GET"]),
         Route("/ingest", gateway.handle_ingest, methods=["POST"]),
         # Devices
         Route("/api/media/{media_id}", gateway.serve_media, methods=["GET"]),
