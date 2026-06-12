@@ -91,14 +91,15 @@ TOOLS = [
     },
     {
         "name": "set_device_labels",
-        "description": "更新设备的标签（如 role, owner, location 等）",
+        "description": "更新设备的标签和/或类型。type可选值：device/service/gateway。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "device_id": {"type": "string"},
                 "labels": {"type": "object", "description": "要设置的标签键值对"},
+                "source_type": {"type": "string", "description": "设备类型：device/service/gateway"},
             },
-            "required": ["device_id", "labels"],
+            "required": ["device_id"],
         },
     },
     {
@@ -296,6 +297,7 @@ class ToolHandler:
                 labels["hostname"] = info["hostname"]
 
         device = store.register_device(device_id=device_id, labels=labels)
+        store.touch_hello(device_id)  # mark online immediately
 
         # Auto-create declared capabilities
         capabilities = pending.get("device_info", {}).get("_capabilities", [])
@@ -306,6 +308,15 @@ class ToolHandler:
             store.add_capability(device_id, cap_decl)
             store.approve_capability(device_id, cap_decl["name"])
             created += 1
+
+        # Auto-create declared actions
+        actions = pending.get("device_info", {}).get("_actions", [])
+        store.clear_actions(device_id)
+        for act_decl in actions:
+            if "name" not in act_decl:
+                continue
+            store.add_action(device_id, act_decl)
+            store.approve_action(device_id, act_decl["name"])
 
         store.remove_pending_registration(device_id)
         return {
@@ -329,8 +340,12 @@ class ToolHandler:
         from yequ.registry.store import DeviceStore
         store = DeviceStore(self.db_path)
         device_id = args["device_id"]
-        labels = args["labels"]
-        store.update_labels(device_id, labels)
+        labels = args.get("labels") or {}
+        source_type = args.get("source_type") or ""
+        if labels:
+            store.update_labels(device_id, labels)
+        if source_type:
+            store.update_source_type(device_id, source_type)
         return {"status": "ok", "device_id": device_id, "labels": labels}
 
     def _tool_get_monitor_rules(self, _args: dict) -> dict:
@@ -493,11 +508,21 @@ class ToolHandler:
             return {"error": f"Action '{action}' is blocked"}
 
         # Check if the device has declared this action
-        declared = {a["name"] for a in store.get_actions(device_id)}
+        declared = {a["name"]: a for a in store.get_actions(device_id)}
         builtin = {"set_interval", "restart_collector", "ping"}
-        allowed = declared | builtin
-        if action not in allowed:
-            return {"error": f"Unknown action: {action}. Device supports: {', '.join(sorted(allowed))}"}
+        if action not in declared and action not in builtin:
+            return {"error": f"Unknown action: {action}. Device supports: {', '.join(sorted(declared.keys() | builtin))}"}
+
+        # Auto-adapt legacy params to declared schema
+        if action in declared:
+            declared_params = declared[action].get("params", {})
+            if "command" in declared_params and "command" not in params:
+                # Agent sent {script, args} — convert to {command}
+                if params.get("script"):
+                    cmd = params["script"]
+                    if params.get("args"):
+                        cmd += " " + " ".join(str(a) for a in params["args"])
+                    params = {"command": cmd}
 
         command_id = store.enqueue_command(device_id, action, params)
 

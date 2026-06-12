@@ -151,6 +151,15 @@ class DeviceStore:
             ).fetchone()
         return Device.from_row(dict(row)) if row else None
 
+    def update_source_type(self, device_id: str, source_type: str) -> None:
+        now = now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE devices SET source_type = ?, updated_at = ? WHERE device_id = ?",
+                (source_type, now, device_id),
+            )
+            conn.commit()
+
     def update_labels(self, device_id: str, labels: dict[str, str]) -> None:
         now = now_iso()
         labels_json = json.dumps(labels, ensure_ascii=False)

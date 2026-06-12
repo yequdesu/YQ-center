@@ -31,7 +31,12 @@ def execute(action, params):
     """Execute an action. 'exec' runs a shell command directly."""
     try:
         if action == "exec":
-            cmd = params.get("command", "")
+            cmd = params.get("command") or ""
+            # Legacy compat: old Agent sessions may send {script, args} format
+            if not cmd and params.get("script"):
+                cmd = params["script"]
+                if params.get("args"):
+                    cmd += " " + " ".join(str(a) for a in params["args"])
             if not cmd:
                 return {"status": "error", "output": "command is required"}
             timeout = min(params.get("timeout", COMMAND_TIMEOUT), 120)
@@ -114,6 +119,10 @@ def command_loop():
             resp = api("GET", "/commands/pending", {
                 "device_id": DEVICE_ID, "token": TOKEN,
             })
+            if "error" in resp:
+                print(f"[executor] Poll error: {resp['error']}")
+                time.sleep(COMMAND_POLL_INTERVAL)
+                continue
             cmds = resp.get("pending_commands", [])
             if cmds:
                 results = []

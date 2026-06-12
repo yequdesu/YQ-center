@@ -94,8 +94,11 @@ class GatewayApp:
     def _handle_registration(self, msg):
         device = self.store.get_device(msg.device_id)
         if device:
-            # Re-registration: update actions and capabilities from new declaration
+            # Re-registration: update type, actions, capabilities from new declaration
             self.store.touch_hello(msg.device_id)
+            new_type = msg.device_info.get("source_type", "")
+            if new_type and new_type != device.source_type:
+                self.store.update_source_type(msg.device_id, new_type)
             if msg.actions:
                 self.store.clear_actions(msg.device_id)
                 for act in msg.actions:
@@ -155,27 +158,28 @@ class GatewayApp:
         return row["device_id"] if row else None
 
     def _process_command_results(self, raw_body: str | None) -> None:
-        """If the request includes command_results, record them.
-        Extract base64 images and save to media storage.
-        """
+        """If the request includes command_results, record them."""
         if not raw_body:
             return
         try:
             import json as _json
             data = _json.loads(raw_body)
             results = data.get("command_results", [])
+            if results:
+                logger.info("Processing %d command results", len(results))
             for r in results:
                 cid = r.get("command_id")
                 if not cid:
+                    logger.warning("Command result missing command_id: %s", r)
                     continue
+                # Look up device_id from the command record
+                dev_id = self._get_command_device(cid) or r.get("device_id", "unknown")
                 # Extract and save base64 image if present
                 image_b64 = r.get("image_base64")
                 image_url = None
                 if image_b64:
                     from yequ.storage.media import save_media
                     mime = r.get("image_mime", "image/png")
-                    # Look up device_id from the command record
-                    dev_id = self._get_command_device(cid) or r.get("device_id", "unknown")
                     media_id = save_media(
                         os.path.dirname(self.db_path),
                         dev_id,
@@ -190,16 +194,16 @@ class GatewayApp:
                 if image_url:
                     result["image_url"] = image_url
                 self.store.record_command_result(cid, _json.dumps(result, ensure_ascii=False))
-                logger.info("Command result recorded: %s for %s, publishing to MQ (subscribers: %d)",
-                            cid, dev_id, len(mq._subscribers))
+                logger.info("Command result recorded: %s for %s (subscribers: %d)",
+                            cid[:8], dev_id, len(mq._subscribers))
                 mq.publish("yequ:events", {
                     "event_type": "command_completed", "severity": "info",
                     "title": f"指令完成: {result.get('status', 'unknown')}",
                     "device_id": dev_id,
                     "data": {"command_id": cid, "image_url": result.get("image_url")},
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to process command results: %s", e)
 
     def _handle_goodbye(self, msg):
         device = self.store.get_device_by_token(msg.token)

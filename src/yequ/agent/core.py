@@ -19,39 +19,25 @@ from yequ.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """你是 YeQu Gateway 的运维助手，可以直接控制系统。宿主是 yequdesu。
+SYSTEM_PROMPT = """你是 YeQu Gateway 的运维助手。宿主是 yequdesu。你通过调用工具来操作系统，不能凭空编造。
 
-能力：查看设备状态、审批/撤销设备、修改标签、查询告警和指标、下发指令、控制巡检。
+【致命规则】你只能报告工具实际返回的结果。如果你没有调用工具，就不能声称执行了任何操作、不能提供 command_id 或 token。command_id 只能来自 send_command 工具的返回值。违反此规则会导致用户被误导——这是不可接受的。
 
-行为准则：
-- 用户说"做某事"，直接调用工具执行，不要反复确认
-- 用户说"有没有待审批""批准加入请求"→ 先用 list_pending 查看待审批列表，再用 approve_device 批准
-- 用户说"批准这台设备"→ approve_device；"标签改成xx"→ set_device_labels
-- 只有撤销设备时才需要确认一次
-- 发送指令后，如果设备是本地的（source_type=service/gateway），send_command 会自动等待结果返回
-- 如果 send_command 返回 status="queued"，说明设备暂时不可达或远程设备。告诉用户指令ID，不要反复调用 check_command_result 去轮询——结果到了会通过 Dashboard 通知
-- 不要问用户"要不要我帮你查""要不要等一下"——直接做或直接告知状态
-- 先查数据再回答，不编造。简洁直接，用中文
+工具速查：
+- 执行命令 → send_command(device_id="..-executor", action="exec", params={"command": "..."})
+- 查看设备 → list_devices 或 check_device_online
+- 批准设备 → approve_device（先 list_pending 查看待审批列表）
+- 撤销设备 → revoke_device（需要确认一次）
+- 查数据 → get_device_status / get_events / get_metrics
 
-关键：记住你自己做过什么。
-- 调用 send_command 后会得到 command_id，务必记住它
-- 调用 approve_device 后会得到 token，记住它
-- 用户问"刚才的指令ID是什么""刚才的token是什么"时，从你之前的工具调用结果中查找，不要说记不住
-- 对话历史中包含你所有工具调用的结果，你随时可以查阅
+行为：
+- 用户说"做某事"→ 调用工具。不要说"我可以帮你做"——直接调用工具
+- send_command 对本地服务（source_type=service/gateway）会自动等待结果，不要追问"要不要查"
+- 如果返回 queued，告诉用户结果到了会通知。不要反复轮询 check_command_result
+- 记住你调用工具得到的结果（command_id、token 等），对话历史可查阅
+- 用中文，简洁直接"""
 
-关于 executor 服务：
-- 本机有一个 executor service（device_id 以 -executor 结尾），它可以执行任意脚本
-- 用户让你"在本机执行某命令"时，先用 list_devices 找到 executor 设备，再用 list_device_actions 查看它的可用操作
-- executor 的 exec action 可以运行 scripts/ 目录下的脚本，先用 list_scripts 查看有哪些可用脚本
-- 不要对非 executor 设备调用 list_device_actions 去查找执行能力
-
-即时检测设备状态：
-- 用户说"检查某设备状态""检测""是否在线"→ 用 check_device_online，秒级返回
-- 不要用 send_command 去检测活跃性——send_command 走指令队列，要等心跳
-- check_device_online 直接读心跳时间戳，3秒内出结果
-- 只有真正需要设备做事时才用 send_command"""
-
-MAX_TOOL_ROUNDS = 20
+MAX_TOOL_ROUNDS = 30
 
 
 @dataclass
@@ -59,6 +45,28 @@ class AgentEvent:
     """One event emitted during an agent run."""
     type: str  # "tool_call" | "text" | "done" | "error"
     data: Any = None
+
+
+# UUID pattern for detecting hallucinated command IDs
+import re as _re
+_UUID_RE = _re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', _re.I)
+
+
+def _is_hallucinated_text(text: str, called_send_cmd: bool) -> bool:
+    """Check if the LLM's text response claims actions it didn't take."""
+    if not text:
+        return False
+    if called_send_cmd:
+        return False
+    # Keywords that indicate the LLM is describing (not doing) a send_command
+    triggers = ["指令ID", "command_id", "已下发", "已发送指令", "下发指令",
+                "指令已发送", "命令已下发"]
+    if any(t in text for t in triggers):
+        return True
+    # UUID pattern — LLM hallucinated a command ID
+    if _UUID_RE.search(text):
+        return True
+    return False
 
 
 class Agent:
@@ -94,57 +102,71 @@ class Agent:
     # ── Core Generator ────────────────────────────────────────────
 
     def _generate(self, question: str) -> Iterator[AgentEvent]:
-        """The agent loop as a generator. Yields events immediately."""
-        # Build messages from history + current question
+        """Pi-inspired agent loop with text gate and steering."""
         messages: list[dict] = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
-        # Include recent history (last 10 turns) for context
         for h in self._history[-20:]:
             messages.append(h)
         messages.append({"role": "user", "content": question})
 
         tool_calls_made: list[dict] = []
         final_text = ""
+        steering_attempts = 0
+        MAX_STEERING = 5
 
         for _round in range(MAX_TOOL_ROUNDS):
             response = self.stream_fn(messages, self.tools)
+            sent_cmd_this_round = any(
+                tc.name == "send_command" for tc in (response.tool_calls or [])
+            )
 
             if response.tool_calls:
+                steering_attempts = 0  # reset on real action
                 for tc in response.tool_calls:
-                    # Yield tool_call event IMMEDIATELY, before executing
                     yield AgentEvent(type="tool_call", data={
                         "name": tc.name, "arguments": tc.arguments, "id": tc.id,
                     })
                     result = self.handler.execute(tc.name, tc.arguments)
                     tool_calls_made.append({"name": tc.name, "arguments": tc.arguments})
 
+                    # Anthropic-native tool_use format
                     messages.append({
                         "role": "assistant",
-                        "content": json.dumps({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.arguments,
-                        }, ensure_ascii=False),
+                        "content": [{"type": "tool_use", "id": tc.id,
+                                     "name": tc.name, "input": tc.arguments}],
                     })
                     messages.append({
                         "role": "user",
-                        "content": json.dumps({
-                            "type": "tool_result",
-                            "tool_use_id": tc.id,
-                            "content": result,
-                        }, ensure_ascii=False),
+                        "content": [{"type": "tool_result", "tool_use_id": tc.id,
+                                     "content": result}],
                     })
-                continue  # Next round with tool results
+                continue
 
-            # No tool calls — final answer
+            # No tool calls — run text gate
+            if _is_hallucinated_text(response.text or "", sent_cmd_this_round):
+                steering_attempts += 1
+                if steering_attempts > MAX_STEERING:
+                    final_text = "Agent 未能正确调用工具，请重新描述你的需求。"
+                    yield AgentEvent(type="text", data=final_text)
+                    yield AgentEvent(type="done")
+                    return
+                # Steering: inject correction and continue
+                messages.append({
+                    "role": "user",
+                    "content": ("STOP. You described an action but did not call the tool. "
+                                "You MUST call the send_command tool with action='exec' "
+                                "and params={'command': '...'} RIGHT NOW. "
+                                "Do not describe — execute.")
+                })
+                continue
+
+            # Text passes gate — accept as final answer
             if response.text:
                 final_text = response.text
                 yield AgentEvent(type="text", data=final_text)
             yield AgentEvent(type="done")
             self._log_conversation(question, final_text, tool_calls_made)
-            # Remember this turn
             self._history.append({"role": "user", "content": question})
             self._history.append({"role": "assistant", "content": final_text})
             self._save_session()
@@ -202,6 +224,21 @@ class Agent:
                 model=self.config.model,
                 provider=self.config.provider,
             )
+        except Exception:
+            pass
+        # Debug log: write every conversation turn to a file
+        try:
+            import os as _os, json as _json
+            debug_path = _os.path.join(_os.path.dirname(self.db_path), "agent_debug.log")
+            entry = {
+                "timestamp": __import__('yequ.utils').now_iso(),
+                "question": question,
+                "answer": answer or "",
+                "tool_calls": tool_calls,
+                "model": self.config.model,
+            }
+            with open(debug_path, "a") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception:
             pass
 

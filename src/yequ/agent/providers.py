@@ -100,7 +100,7 @@ def _make_anthropic_fn(api_key: str, model: str, base_url: str | None = None,
             if m["role"] == "system":
                 system_prompt = m["content"]
             else:
-                api_messages.append({"role": m["role"], "content": str(m["content"])})
+                api_messages.append({"role": m["role"], "content": m["content"]})
 
         kwargs = dict(model=model, max_tokens=1024, messages=api_messages)
         if system_prompt:
