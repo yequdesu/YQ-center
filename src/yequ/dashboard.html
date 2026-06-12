@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YeQu Gateway Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: #0d1117; color: #c9d1d9; height: 100vh; display: grid; grid-template-rows: 48px 1fr; grid-template-columns: 260px 1fr 320px; grid-template-areas: "header header header" "sidebar main events"; gap: 1px; }
+#header { grid-area: header; background: #161b22; display: flex; align-items: center; padding: 0 16px; justify-content: space-between; border-bottom: 1px solid #30363d; }
+#header h1 { font-size: 14px; font-weight: 600; color: #58a6ff; }
+#header .controls { display: flex; gap: 8px; align-items: center; }
+#sidebar { grid-area: sidebar; background: #161b22; overflow-y: auto; padding: 12px; }
+#main { grid-area: main; overflow-y: auto; padding: 16px; }
+#events-panel { grid-area: events; background: #161b22; overflow-y: auto; padding: 12px; border-left: 1px solid #30363d; }
+
+.section-title { font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 8px; }
+.section-title:first-child { margin-top: 0; }
+
+/* Device list */
+.device-item { padding: 10px 12px; margin: 2px 0; border-radius: 6px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+.device-item:hover { background: #1c2128; border-color: #30363d; }
+.device-item.active { background: #1c2128; border-color: #58a6ff; }
+.device-item .name { font-size: 13px; font-weight: 500; }
+.device-item .meta { font-size: 11px; color: #8b949e; margin-top: 2px; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status-dot.online { background: #3fb950; }
+.status-dot.local { background: #58a6ff; }
+.status-dot.unknown { background: #8b949e; }
+
+/* Pending approvals */
+.pending-item { padding: 8px 12px; background: #1c2128; border-radius: 6px; margin: 4px 0; border: 1px solid #d29922; }
+.pending-item .actions { margin-top: 6px; display: flex; gap: 6px; }
+
+/* Metric cards */
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+.metric-card .label { font-size: 11px; color: #8b949e; }
+.metric-card .value { font-size: 24px; font-weight: 600; margin: 4px 0; }
+.metric-card .unit { font-size: 12px; color: #8b949e; }
+.metric-card.critical .value { color: #f85149; }
+.metric-card.warning .value { color: #d29922; }
+
+/* Events */
+.event-item { padding: 8px 10px; border-left: 3px solid #30363d; margin: 4px 0; font-size: 12px; }
+.event-item.critical { border-color: #f85149; }
+.event-item.warning { border-color: #d29922; }
+.event-item .ts { font-size: 10px; color: #8b949e; }
+
+/* Chat */
+#chat-toggle { position: fixed; bottom: 20px; right: 20px; width: 48px; height: 48px; border-radius: 50%; background: #238636; border: none; color: white; font-size: 20px; cursor: pointer; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+#chat-toggle:hover { background: #2ea043; }
+#chat-panel { position: fixed; bottom: 80px; right: 20px; width: 420px; height: 520px; background: #161b22; border: 1px solid #30363d; border-radius: 12px; display: none; flex-direction: column; z-index: 99; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+#chat-panel.open { display: flex; }
+#chat-messages { flex: 1; overflow-y: auto; padding: 12px; }
+#chat-input-area { padding: 12px; border-top: 1px solid #30363d; display: flex; gap: 8px; }
+#chat-input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; color: #c9d1d9; font-size: 13px; outline: none; }
+#chat-input:focus { border-color: #58a6ff; }
+.chat-msg { margin: 8px 0; font-size: 13px; line-height: 1.5; }
+.chat-msg.user { color: #58a6ff; }
+.chat-msg.agent { color: #c9d1d9; }
+.chat-msg.tool { color: #8b949e; font-size: 11px; font-style: italic; }
+.chat-msg .ts { font-size: 10px; color: #484f58; margin-right: 8px; }
+
+/* Buttons */
+.btn { padding: 5px 12px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #c9d1d9; font-size: 12px; cursor: pointer; font-family: inherit; }
+.btn:hover { background: #30363d; }
+.btn.primary { background: #238636; border-color: #2ea043; color: white; }
+.btn.primary:hover { background: #2ea043; }
+.btn.danger { background: #da3633; border-color: #f85149; color: white; }
+.btn.danger:hover { background: #f85149; }
+.btn.small { padding: 3px 8px; font-size: 11px; }
+
+/* Loading / empty */
+.empty { color: #484f58; font-size: 13px; text-align: center; padding: 20px; }
+.loading { color: #8b949e; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>YeQu Gateway</h1>
+  <div class="controls">
+    <span id="monitor-badge" class="loading">monitor: --</span>
+    <button class="btn small" onclick="toggleMonitor()" id="monitor-btn">toggle</button>
+    <span style="font-size:12px;color:#484f58" id="clock">--</span>
+  </div>
+</div>
+
+<div id="sidebar">
+  <div class="section-title">Devices</div>
+  <div id="device-list"></div>
+  <div class="section-title">Pending Approvals</div>
+  <div id="pending-list"></div>
+</div>
+
+<div id="main">
+  <div id="device-detail" class="empty">Select a device from the sidebar</div>
+</div>
+
+<div id="events-panel">
+  <div class="section-title">Events</div>
+  <div id="events-list"></div>
+</div>
+
+<button id="chat-toggle" onclick="toggleChat()">+</button>
+
+<div id="chat-panel">
+  <div id="chat-messages"></div>
+  <div id="chat-input-area">
+    <input type="text" id="chat-input" placeholder="Ask the Agent..." onkeydown="if(event.key==='Enter')sendChat()">
+    <button class="btn primary" onclick="sendChat()">Send</button>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+let selectedDevice = null;
+let chatStreaming = false;
+
+// ── Init ──────────────────────────────────────────────────────────
+
+async function init() {
+  await Promise.all([loadDevices(), loadEvents(), loadMonitor()]);
+  setInterval(loadDevices, 10000);
+  setInterval(loadEvents, 15000);
+  setInterval(updateClock, 1000);
+  updateClock();
+}
+init();
+
+// ── Devices ───────────────────────────────────────────────────────
+
+async function loadDevices() {
+  const resp = await fetch('/api/devices');
+  const data = await resp.json();
+  renderDevices(data.devices);
+  renderPending(data.devices);
+}
+
+function renderDevices(devices) {
+  const el = document.getElementById('device-list');
+  if (!devices.length) { el.innerHTML = '<div class="empty">No devices</div>'; return; }
+  el.innerHTML = devices.map(d => `
+    <div class="device-item${selectedDevice===d.device_id?' active':''}" onclick="selectDevice('${d.device_id}')">
+      <span class="status-dot ${d.status}"></span>
+      <span class="name">${esc(d.device_id)}</span>
+      <div class="meta">${d.status}${d.labels?.role?' · '+d.labels.role:''}${d.last_hello_at?' · '+ago(d.last_hello_at):''}</div>
+    </div>
+  `).join('');
+}
+
+function renderPending(devices) {
+  // For now, pending devices are those with status "unknown" (never hello'd, not local)
+  const pending = devices.filter(d => d.status === 'unknown');
+  const el = document.getElementById('pending-list');
+  if (!pending.length) { el.innerHTML = '<div class="empty">None</div>'; return; }
+  el.innerHTML = pending.map(d => `
+    <div class="pending-item">
+      <div class="name">${esc(d.device_id)}</div>
+      <div class="actions">
+        <button class="btn primary small" onclick="approveDevice('${d.device_id}')">Approve</button>
+        <button class="btn danger small" onclick="revokeDevice('${d.device_id}')">Revoke</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function selectDevice(id) {
+  selectedDevice = id;
+  document.querySelectorAll('.device-item').forEach(el => el.classList.remove('active'));
+  const item = [...document.querySelectorAll('.device-item')].find(el => el.textContent.includes(id));
+  if (item) item.classList.add('active');
+
+  const resp = await fetch(`/api/devices/${id}`);
+  const data = await resp.json();
+  renderDeviceDetail(data);
+}
+
+function renderDeviceDetail(data) {
+  const el = document.getElementById('device-detail');
+  if (data.error) { el.innerHTML = `<div class="empty">${esc(data.error)}</div>`; return; }
+
+  let html = `<h2 style="font-size:16px;margin-bottom:12px">${esc(data.device_id)}
+    <span style="font-size:12px;color:#8b949e;font-weight:normal"> · ${data.status} · ${Object.entries(data.labels||{}).map(([k,v])=>`${k}=${v}`).join(' ')}</span></h2>`;
+
+  const snapshots = data.snapshots || {};
+  if (Object.keys(snapshots).length) {
+    html += '<div class="section-title">Metrics</div><div class="metrics-grid">';
+    for (const [cap, snap] of Object.entries(snapshots)) {
+      for (const [key, val] of Object.entries(snap.data)) {
+        if (typeof val === 'number') {
+          let cls = '';
+          if (key.includes('percent') || key.includes('usage')) {
+            if (val > 90) cls = 'critical';
+            else if (val > 75) cls = 'warning';
+          }
+          const label = key.replace(/_/g, ' ');
+          html += `<div class="metric-card ${cls}">
+            <div class="label">${esc(label)}</div>
+            <div class="value">${typeof val==='number'?val.toFixed(1):val}</div>
+            <div class="unit">${key.includes('percent')||key.includes('usage')?'%':''}</div>
+          </div>`;
+        }
+      }
+    }
+    html += '</div>';
+  }
+
+  if (data.capabilities?.length) {
+    html += '<div class="section-title">Capabilities</div>';
+    html += data.capabilities.map(c =>
+      `<span class="btn small" style="margin:2px;cursor:default">${esc(c.display||c.name)} · ${c.interval}s · ${c.data_type}</span>`
+    ).join('');
+  }
+
+  if (!Object.keys(snapshots).length) {
+    html += '<div class="empty">No data yet — device has not reported metrics</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Events ────────────────────────────────────────────────────────
+
+async function loadEvents() {
+  const resp = await fetch('/api/events?limit=30');
+  const data = await resp.json();
+  const el = document.getElementById('events-list');
+  if (!data.events.length) { el.innerHTML = '<div class="empty">No events</div>'; return; }
+  el.innerHTML = data.events.map(e => `
+    <div class="event-item ${e.severity}">
+      <div class="ts">${ago(e.timestamp)}</div>
+      <strong>${esc(e.title)}</strong>
+      ${e.body?`<div>${esc(e.body)}</div>`:''}
+    </div>
+  `).join('');
+}
+
+// ── Monitor ───────────────────────────────────────────────────────
+
+async function loadMonitor() {
+  const resp = await fetch('/api/monitor');
+  const data = await resp.json();
+  document.getElementById('monitor-badge').textContent = `monitor: ${data.monitor_enabled?'ON':'OFF'}`;
+  document.getElementById('monitor-btn').textContent = data.monitor_enabled?'Disable':'Enable';
+}
+
+async function toggleMonitor() {
+  const badge = document.getElementById('monitor-badge').textContent;
+  const action = badge.includes('ON') ? 'off' : 'on';
+  await fetch(`/api/monitor/${action}`, {method:'POST'});
+  loadMonitor();
+}
+
+// ── Chat ──────────────────────────────────────────────────────────
+
+function toggleChat() {
+  const panel = document.getElementById('chat-panel');
+  panel.classList.toggle('open');
+  document.getElementById('chat-input').focus();
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const query = input.value.trim();
+  if (!query || chatStreaming) return;
+  input.value = '';
+  chatStreaming = true;
+
+  const msgs = document.getElementById('chat-messages');
+  msgs.innerHTML += `<div class="chat-msg user"><span class="ts">now</span> ${esc(query)}</div>`;
+
+  try {
+    const resp = await fetch('/api/ask/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query}),
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let agentDiv = null;
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const type = line.includes('event: tool_call') ? 'tool_call' :
+                     line.includes('event: token') ? 'token' :
+                     line.includes('event: done') ? 'done' :
+                     line.includes('event: error') ? 'error' : null;
+        if (!type) continue;
+
+        try {
+          const data = JSON.parse(line.replace(/^data: /, ''));
+          if (type === 'tool_call') {
+            msgs.innerHTML += `<div class="chat-msg tool">[calling ${esc(data.name)}...]</div>`;
+          } else if (type === 'token') {
+            if (!agentDiv) { agentDiv = document.createElement('div'); agentDiv.className = 'chat-msg agent'; msgs.appendChild(agentDiv); }
+            agentDiv.textContent += data;
+          } else if (type === 'error') {
+            msgs.innerHTML += `<div class="chat-msg tool">Error: ${esc(data)}</div>`;
+          }
+        } catch(e) {}
+      }
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+  } catch(e) {
+    msgs.innerHTML += `<div class="chat-msg tool">Connection error: ${esc(e.message)}</div>`;
+  }
+  chatStreaming = false;
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Actions ───────────────────────────────────────────────────────
+
+async function approveDevice(id) {
+  const resp = await fetch(`/api/devices/${id}/approve`, {method:'POST'});
+  const data = await resp.json();
+  alert(`Approved: ${data.device_id}\nToken: ${data.token}`);
+  loadDevices();
+}
+
+async function revokeDevice(id) {
+  if (!confirm(`Revoke ${id}?`)) return;
+  await fetch(`/api/devices/${id}`, {method:'DELETE'});
+  loadDevices();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+function esc(s) { return String(s).replace(/[<>&]/g, c => ({'<':'lt','>':'gt','&':'amp'})[c] ? `&${({'<':'lt','>':'gt','&':'amp'})[c]};` : c); }
+
+function ago(ts) {
+  const diff = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (diff < 60) return Math.floor(diff)+'s ago';
+  if (diff < 3600) return Math.floor(diff/60)+'m ago';
+  if (diff < 86400) return Math.floor(diff/3600)+'h ago';
+  return Math.floor(diff/86400)+'d ago';
+}
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}
+</script>
+</body>
+</html>

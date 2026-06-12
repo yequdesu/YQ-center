@@ -7,9 +7,11 @@ import json
 import logging
 import os
 
+import os as _os_module
+
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse, FileResponse
 from starlette.routing import Route
 
 from yequ.protocol.messages import (
@@ -384,7 +386,14 @@ def create_app(db_path, device_store, notify_router,
         notify_router=notify_router, collector_runner=collector_runner,
         agent_config=agent_config,
     )
+    dashboard_path = _os_module.path.join(_os_module.path.dirname(__file__), "..", "dashboard.html")
+
+    async def dashboard(request):
+        return FileResponse(dashboard_path)
+
     app = Starlette(routes=[
+        # Dashboard
+        Route("/", dashboard, methods=["GET"]),
         # YQP
         Route("/hello", gateway.handle_hello, methods=["POST"]),
         Route("/ingest", gateway.handle_ingest, methods=["POST"]),
