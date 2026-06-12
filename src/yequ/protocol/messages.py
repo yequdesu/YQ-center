@@ -17,9 +17,14 @@ def _new_uuid() -> str:
 
 @dataclass
 class HelloRegistration:
-    """首次注册 Hello，不带 token."""
+    """首次注册 Hello，不带 token.
+
+    capabilities 字段：设备声明自己可以提供的数据类型。
+    格式: [{"name": "...", "display": "...", "data_type": "snapshot"|"metric", ...}, ...]
+    """
     device_id: str
     device_info: dict[str, Any] = field(default_factory=dict)
+    capabilities: list[dict[str, Any]] = field(default_factory=list)
     hello_type: str = "registration"
     protocol: str = PROTOCOL_VERSION
     message_type: str = "hello"
@@ -33,6 +38,7 @@ class HelloRegistration:
         return cls(
             device_id=data["device_id"],
             device_info=data.get("device_info", {}),
+            capabilities=data.get("capabilities", []),
         )
 
 

@@ -81,7 +81,10 @@ class GatewayApp:
 
         pending = self.store.get_pending_registration(msg.device_id)
         if pending is None:
-            self.store.add_pending_registration(msg.device_id, msg.device_info)
+            # Store both device_info and capabilities in the pending record
+            info = dict(msg.device_info)
+            info["_capabilities"] = msg.capabilities
+            self.store.add_pending_registration(msg.device_id, info)
             retry_count = 0
         else:
             retry_count = self.store.increment_retry(msg.device_id)
@@ -165,12 +168,44 @@ class GatewayApp:
         if pending is None:
             return JSONResponse({"error": "no pending registration for this device"},
                                 status_code=404)
+
         device = self.store.register_device(
             device_id=device_id, labels={"role": "pending_approval"},
         )
+
+        # Auto-create declared capabilities from the registration
+        capabilities = pending.get("device_info", {}).get("_capabilities", [])
+        for cap_decl in capabilities:
+            if "name" not in cap_decl:
+                continue
+            self.store.add_capability(device_id, cap_decl)
+            self.store.approve_capability(device_id, cap_decl["name"])
+
         self.store.remove_pending_registration(device_id)
-        return JSONResponse({"status": "approved", "device_id": device_id,
-                             "token": device.token})
+        return JSONResponse({
+            "status": "approved", "device_id": device_id, "token": device.token,
+            "capabilities_created": len(capabilities),
+        })
+
+    async def api_device_add_capability(self, request):
+        """Allow an approved device to declare new capabilities post-registration."""
+        device_id = request.path_params["device_id"]
+        device = self.store.get_device(device_id)
+        if device is None:
+            return JSONResponse({"error": "device not found"}, status_code=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+        name = body.get("name", "")
+        if not name:
+            return JSONResponse({"error": "capability name is required"}, status_code=400)
+
+        self.store.add_capability(device_id, body)
+        self.store.approve_capability(device_id, name)
+        return JSONResponse({"status": "ok", "device_id": device_id, "capability": name})
 
     async def api_device_revoke(self, request):
         device_id = request.path_params["device_id"]
@@ -335,6 +370,8 @@ def create_app(db_path, device_store, notify_router,
         Route("/api/devices", gateway.api_devices, methods=["GET"]),
         Route("/api/devices/{device_id}", gateway.api_device_detail, methods=["GET"]),
         Route("/api/devices/{device_id}/approve", gateway.api_device_approve, methods=["POST"]),
+        Route("/api/devices/{device_id}/capabilities", gateway.api_device_add_capability,
+              methods=["POST"]),
         Route("/api/devices/{device_id}", gateway.api_device_revoke, methods=["DELETE"]),
         # Events
         Route("/api/events", gateway.api_events, methods=["GET"]),
