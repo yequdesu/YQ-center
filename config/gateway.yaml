@@ -14,3 +14,10 @@ monitor:
   scan_interval_seconds: 30
 notify:
   log_file: ~/.local/share/yequ-gateway/gateway.log
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
+  password: ""
+  enabled: true

@@ -44,6 +44,15 @@ class NotifyConfig:
 
 
 @dataclass
+class RedisConfig:
+    host: str = "127.0.0.1"
+    port: int = 6379
+    db: int = 0
+    password: str = ""
+    enabled: bool = True
+
+
+@dataclass
 class Config:
     gateway: GatewayConfig
     data: DataConfig
@@ -51,6 +60,7 @@ class Config:
     collector: CollectorConfig
     agent: AgentConfig
     notify: NotifyConfig
+    redis: RedisConfig = field(default_factory=RedisConfig)
 
 
 def _expand_path(path: str) -> str:
@@ -69,6 +79,7 @@ def load_config(path: str) -> Config:
     collector_raw = raw.get("collector", {})
     agent_raw = raw.get("agent", {})
     notify_raw = raw.get("notify", {})
+    redis_raw = raw.get("redis", {})
 
     return Config(
         gateway=GatewayConfig(
@@ -92,5 +103,12 @@ def load_config(path: str) -> Config:
         ),
         notify=NotifyConfig(
             log_file=_expand_path(notify_raw.get("log_file", "~/.local/share/yequ-gateway/gateway.log")),
+        ),
+        redis=RedisConfig(
+            host=redis_raw.get("host", "127.0.0.1"),
+            port=redis_raw.get("port", 6379),
+            db=redis_raw.get("db", 0),
+            password=redis_raw.get("password", ""),
+            enabled=redis_raw.get("enabled", True),
         ),
     )
