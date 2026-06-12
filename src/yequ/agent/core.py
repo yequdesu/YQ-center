@@ -33,7 +33,12 @@ SYSTEM_PROMPT = """你是 YeQu Gateway 的运维助手，可以直接控制系�
 - 调用 send_command 后会得到 command_id，务必记住它
 - 调用 approve_device 后会得到 token，记住它
 - 用户问"刚才的指令ID是什么""刚才的token是什么"时，从你之前的工具调用结果中查找，不要说记不住
-- 对话历史中包含你所有工具调用的结果，你随时可以查阅"""
+- 对话历史中包含你所有工具调用的结果，你随时可以查阅
+
+展示图片的方法：
+- 当 check_command_result 返回 image_url 时，用 ![描述](image_url) 格式展示
+- 例如：![截图](/api/media/DESKTOP-8SQBU8K-windows_2026-...)
+- 这样 Dashboard 就能直接显示缩略图"""
 
 MAX_TOOL_ROUNDS = 5
 
