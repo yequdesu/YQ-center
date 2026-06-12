@@ -1,6 +1,6 @@
-# YQP v1.0 — YeQu Protocol
+# YQP v2.0 — YeQu Protocol
 
-> 版本：1.0  
+> 版本：2.0  
 > YeQu Gateway 设备接入协议规范  
 > 实现本协议即可将任意终端接入 YeQu Gateway 个人数据中心
 
@@ -452,7 +452,54 @@ Content-Type: application/json
 
 ---
 
-## 6. 参考实现
+## 6. Goodbye — 主动下线
+
+终端退出前通知 Gateway 立即标记离线，不等心跳超时。
+
+```
+POST /hello
+
+{
+  "protocol": "yqp/1.0",
+  "message_type": "hello",
+  "hello_type": "goodbye",
+  "device_id": "my-device",
+  "token": "<token>"
+}
+```
+
+Gateway 收到后立刻清除 `last_hello_at`，设备状态变为 `offline`，创建 `device_offline` 事件。
+
+---
+
+## 7. 指令轮询 — commands/pending
+
+**独立于心跳周期的轻量轮询**，2-3 秒间隔。用于快速接收 Gateway 下发的指令。
+
+```
+GET /commands/pending?device_id=my-device&token=<token>
+```
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "pending_commands": [
+    {
+      "command_id": "uuid",
+      "action": "take_screenshot",
+      "params": {}
+    }
+  ]
+}
+```
+
+收到指令后立即执行，执行结果随下一次**任意已认证请求**（心跳或 ingest）通过 `command_results` 字段上报。
+
+---
+
+## 8. 参考实现
 
 ### Python 最小客户端
 
@@ -560,12 +607,15 @@ echo "Registration: $RESP"
 
 ---
 
-## 7. API 端点总览
+## 9. API 端点总览
 
 | 端点 | 方法 | 用途 | 需要 Token |
 |------|------|------|-----------|
-| `/hello` | POST | 注册 / 心跳 | 心跳需要 |
-| `/ingest` | POST | 上报数据 | 是 |
+| `/hello` | POST | 注册 / 心跳 / goodbye | 心跳需要 |
+| `/ingest` | POST | 上报数据 + command_results | 是 |
+| `/commands/pending` | GET | 轻量指令轮询（2-3s 间隔） | 是 |
 | `/api/devices/{id}/capabilities` | POST | 动态声明新 capability | 否 |
+| `/api/devices/{id}/actions` | GET | 查询已声明的操作列表 | 否 |
+| `/api/devices/{id}/rotate-token` | POST | Token 轮换 | 否 |
 
 Gateway 的完整 REST API（Dashboard、Agent 问答、审批等）不在 YQP 协议范围内，详见 Dashboard 交互。
