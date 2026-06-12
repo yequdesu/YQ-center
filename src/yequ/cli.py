@@ -121,6 +121,25 @@ def serve(ctx):
     threading.Thread(target=monitor_loop, daemon=True).start()
     click.echo(f"Monitor: every {config.monitor.scan_interval_seconds}s")
 
+    # Archive: run once on startup, then every 24 hours
+    stop_archive = threading.Event()
+
+    def archive_loop():
+        from yequ.storage.archive import run_archive_cycle
+        # First run after 5 minutes (let data accumulate)
+        stop_archive.wait(300)
+        while not stop_archive.is_set():
+            try:
+                result = run_archive_cycle(db_path)
+                if result["metrics_pruned"] or result["snapshots_pruned"]:
+                    logger.info("Archive cycle: %s", result)
+            except Exception as e:
+                logger.error("Archive error: %s", e)
+            stop_archive.wait(86400)  # 24 hours
+
+    threading.Thread(target=archive_loop, daemon=True).start()
+    click.echo("Archive: daily retention cleanup")
+
     click.echo(f"\nGateway listening on {config.gateway.host}:{config.gateway.port}")
     click.echo("Press Ctrl+C to stop\n")
 
@@ -128,6 +147,7 @@ def serve(ctx):
         click.echo("\nShutting down...")
         stop_collector.set()
         stop_monitor.set()
+        stop_archive.set()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
