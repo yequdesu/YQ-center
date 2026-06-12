@@ -345,6 +345,12 @@ class DeviceStore:
             )
             conn.commit()
 
+    def clear_actions(self, device_id: str) -> None:
+        """Remove all actions for a device (used on re-registration)."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM device_actions WHERE device_id = ?", (device_id,))
+            conn.commit()
+
     def get_actions(self, device_id: str) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(

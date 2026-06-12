@@ -375,8 +375,9 @@ class GatewayApp:
             self.store.add_capability(device_id, cap_decl)
             self.store.approve_capability(device_id, cap_decl["name"])
 
-        # Auto-create declared actions from the registration
+        # Auto-create declared actions (replace old ones)
         actions = pending.get("device_info", {}).get("_actions", [])
+        self.store.clear_actions(device_id)
         for act_decl in actions:
             if "name" not in act_decl:
                 continue
