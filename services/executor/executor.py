@@ -199,11 +199,17 @@ def goodbye():
     print("[executor] Shutdown complete")
 
 
+def shutdown(*_):
+    global running
+    running = False
+    goodbye()
+    sys.exit(0)
+
 def main():
     global running
     atexit.register(goodbye)
-    signal.signal(signal.SIGINT, lambda *_: setattr(sys.modules[__name__], 'running', False))
-    signal.signal(signal.SIGTERM, lambda *_: setattr(sys.modules[__name__], 'running', False))
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, shutdown)
 
     print(f"[executor] Gateway: {GATEWAY}")
     print(f"[executor] Device: {DEVICE_ID}")
