@@ -62,11 +62,14 @@ class HeartbeatTimeoutRule:
 
         now = _parse_iso(reference_time) if reference_time else datetime.now(timezone.utc)
 
-        # Find the longest hello interval from capabilities
+        # Use the shortest capability interval as heartbeat basis, capped at 300s.
+        # Long intervals (e.g., installed_software at 3600s) should not inflate
+        # the heartbeat timeout to hours.
         caps = device.get("capabilities", [])
-        max_interval = max((c.get("interval_seconds", 60) for c in caps), default=60)
+        intervals = [c.get("interval_seconds", 60) for c in caps] or [60]
+        base_interval = min(min(intervals), 300)
         multiplier = rule.condition_params.get("multiplier", 3)
-        threshold = timedelta(seconds=max_interval * multiplier)
+        threshold = timedelta(seconds=base_interval * multiplier)
 
         last = _parse_iso(last_hello)
         if now - last > threshold:
