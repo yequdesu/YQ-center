@@ -77,8 +77,8 @@ def serve(ctx):
     config = load_config(ctx.obj["config_path"])
     db_path, store, notify, runner, monitor = _setup_components(config)
 
-    from yequ.events_bus import bus as event_bus
-    monitor._event_bus = event_bus
+    from yequ.message_queue import mq
+    mq.configure(config.redis)
 
     local_device = runner.ensure_local_device()
     click.echo(f"[ok] Local device: {local_device.device_id}")
@@ -86,11 +86,9 @@ def serve(ctx):
     from yequ.transport.http_server import create_app
     import uvicorn
 
-    from yequ.events_bus import bus
     app = create_app(
         db_path=db_path, device_store=store, notify_router=notify,
         collector_runner=runner, agent_config=config.agent,
-        event_bus=bus,
     )
 
     import threading

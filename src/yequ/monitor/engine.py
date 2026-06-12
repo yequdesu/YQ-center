@@ -38,7 +38,6 @@ class MonitorEngine:
         self.data_dir = data_dir
         self.rules_path = rules_path
         self._last_fired: dict[str, float] = {}
-        self._event_bus = None
         self._rules_mtime: float = 0
 
     @property
@@ -136,17 +135,11 @@ class MonitorEngine:
                 device_id=result.device_id,
             ))
 
-        if self._event_bus is not None:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(self._event_bus.publish({
-                        "event_type": rule.name,
-                        "severity": result.severity,
-                        "title": result.title,
-                        "body": result.body,
-                        "device_id": result.device_id,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    }))
-            except RuntimeError:
-                pass
+        from yequ.message_queue import mq
+        mq.publish("yequ:events", {
+            "event_type": rule.name,
+            "severity": result.severity,
+            "title": result.title,
+            "body": result.body,
+            "device_id": result.device_id,
+        })

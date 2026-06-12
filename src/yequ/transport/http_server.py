@@ -35,6 +35,7 @@ from yequ.storage.query import (
     get_events,
 )
 from yequ.utils import now_iso
+from yequ.message_queue import mq
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,6 @@ class GatewayApp:
         self.collector = collector_runner
         self.agent_config = agent_config
         self._agent = None
-        self._event_bus_ref = None  # set externally
 
     @property
     def agent(self):
@@ -164,18 +164,6 @@ class GatewayApp:
         except Exception:
             pass
 
-    def _publish_bus(self, event: dict):
-        """Publish an event to the SSE bus if available."""
-        if self._event_bus_ref is None:
-            return
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._event_bus_ref.publish(event))
-        except RuntimeError:
-            pass
-
     def _handle_goodbye(self, msg):
         device = self.store.get_device_by_token(msg.token)
         if device is None or device.device_id != msg.device_id:
@@ -188,7 +176,7 @@ class GatewayApp:
         ingest_event(self.db_path, msg.device_id, "device_offline", "info",
                      f"设备主动下线: {msg.device_id}",
                      "设备发送了 goodbye 消息，正常关闭")
-        self._publish_bus({
+        mq.publish("yequ:events", {
             "event_type": "device_offline", "severity": "info",
             "title": f"设备主动下线: {msg.device_id}",
             "body": "正常关闭", "device_id": msg.device_id,
@@ -213,7 +201,7 @@ class GatewayApp:
             from yequ.storage.ingest import ingest_event
             ingest_event(self.db_path, msg.device_id, "device_online", "info",
                          f"设备恢复上线: {msg.device_id}", "心跳恢复")
-            self._publish_bus({
+            mq.publish("yequ:events", {
                 "event_type": "device_online", "severity": "info",
                 "title": f"设备恢复上线: {msg.device_id}",
                 "body": "心跳恢复", "device_id": msg.device_id,
@@ -377,7 +365,7 @@ class GatewayApp:
         ingest_event(self.db_path, device_id, "device_approved", "info",
                      f"设备已批准: {device_id}",
                      f"labels={labels}, capabilities={len(capabilities)}")
-        self._publish_bus({
+        mq.publish("yequ:events", {
             "event_type": "device_approved", "severity": "info",
             "title": f"设备已批准: {device_id}",
             "body": f"labels={labels}, {len(capabilities)} capabilities",
@@ -423,7 +411,7 @@ class GatewayApp:
         import time
         ingest_event(self.db_path, device_id, "device_revoked", "warning",
                      f"设备已撤销: {device_id}", "")
-        self._publish_bus({
+        mq.publish("yequ:events", {
             "event_type": "device_revoked", "severity": "warning",
             "title": f"设备已撤销: {device_id}",
             "body": "", "device_id": device_id,
@@ -479,7 +467,7 @@ class GatewayApp:
         ev_type = "monitor_enabled" if action == "on" else "monitor_disabled"
         ingest_event(self.db_path, "gateway", ev_type, "info",
                      f"巡检引擎已{'开启' if action == 'on' else '关闭'}", "")
-        self._publish_bus({
+        mq.publish("yequ:events", {
             "event_type": ev_type, "severity": "info",
             "title": f"巡检引擎已{'开启' if action == 'on' else '关闭'}",
             "body": "", "device_id": "gateway",
@@ -644,10 +632,8 @@ class GatewayApp:
     # ── SSE: Events Stream ───────────────────────────────────────
 
     async def api_events_stream(self, request):
-        from yequ.events_bus import bus
-
         async def generate():
-            q = await bus.subscribe()
+            q = await mq.subscribe()
             try:
                 yield "event: connected\ndata: {}\n\n"
                 while True:
@@ -660,7 +646,7 @@ class GatewayApp:
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
             finally:
-                bus.unsubscribe(q)
+                mq.unsubscribe(q)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -705,13 +691,12 @@ class GatewayApp:
 # ── App Factory ──────────────────────────────────────────────────
 
 def create_app(db_path, device_store, notify_router,
-               collector_runner=None, agent_config=None, event_bus=None):
+               collector_runner=None, agent_config=None):
     gateway = GatewayApp(
         db_path=db_path, device_store=device_store,
         notify_router=notify_router, collector_runner=collector_runner,
         agent_config=agent_config,
     )
-    gateway._event_bus_ref = event_bus
     dashboard_path = _os_module.path.join(_os_module.path.dirname(__file__), "..", "dashboard.html")
 
     async def dashboard(request):
