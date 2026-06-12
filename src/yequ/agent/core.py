@@ -30,6 +30,8 @@ class Agent:
     """YeQu Gateway AI Agent — LLM + tool use loop."""
 
     def __init__(self, config: AgentConfig, db_path: str, data_dir: str):
+        self.db_path = db_path
+        self.config = config
         self.provider = create_provider(
             provider=config.provider,
             api_key=config.api_key,
@@ -45,12 +47,15 @@ class Agent:
             {"role": "user", "content": question},
         ]
 
+        tool_calls_made = []
+
         max_rounds = 5
         for _ in range(max_rounds):
             response = self.provider.chat(messages, tools=self.tools)
 
             if response.tool_calls:
                 for tc in response.tool_calls:
+                    tool_calls_made.append({"name": tc.name, "arguments": tc.arguments})
                     result = self.handler.execute(tc.name, tc.arguments)
                     messages.append({
                         "role": "assistant",
@@ -69,9 +74,13 @@ class Agent:
                     })
                 continue
 
-            return response.text.strip() if response.text else "（Agent 未返回文本回答）"
+            answer = response.text.strip() if response.text else "（Agent 未返回文本回答）"
+            self._log_conversation(question, answer, tool_calls_made)
+            return answer
 
-        return "已达到最大对话轮次，请简化你的问题。"
+        answer = "已达到最大对话轮次，请简化你的问题。"
+        self._log_conversation(question, answer, tool_calls_made)
+        return answer
 
     def ask_stream(self, question: str) -> Iterator[StreamEvent]:
         """Process a question with streaming. Yields StreamEvent for SSE delivery.
@@ -157,6 +166,20 @@ class Agent:
                 return
 
         yield StreamEvent(type="done")
+
+    def _log_conversation(self, question: str, answer: str,
+                          tool_calls: list[dict]) -> None:
+        """Persist this conversation turn to the log."""
+        try:
+            from yequ.storage.audit import log_conversation
+            log_conversation(
+                self.db_path, question, answer,
+                tool_calls=tool_calls,
+                model=self.config.model,
+                provider=self.config.provider,
+            )
+        except Exception:
+            pass  # Conversation logging is best-effort
 
 
 def create_agent(config: AgentConfig, db_path: str, data_dir: str) -> Agent:

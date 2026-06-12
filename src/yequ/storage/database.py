@@ -52,6 +52,27 @@ CREATE TABLE IF NOT EXISTS pending_commands (
     expires_at TEXT,
     delivered INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    actor TEXT NOT NULL DEFAULT 'system',
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS conversation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    channel TEXT NOT NULL DEFAULT 'cli',
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
+    model TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT ''
+);
 """
 
 # Data DB schema (snapshots, metrics, events)

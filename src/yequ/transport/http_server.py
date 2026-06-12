@@ -259,6 +259,16 @@ class GatewayApp:
             f.write("1" if action == "on" else "0")
         return JSONResponse({"monitor_enabled": action == "on"})
 
+    # ── REST: Audit ──────────────────────────────────────────────
+
+    async def api_audit(self, request):
+        from yequ.storage.audit import get_audit_log
+        action = request.query_params.get("action")
+        actor = request.query_params.get("actor")
+        limit = int(request.query_params.get("limit", 50))
+        entries = get_audit_log(self.db_path, action=action, actor=actor, limit=limit)
+        return JSONResponse({"entries": entries, "total": len(entries)})
+
     # ── REST: Agent ──────────────────────────────────────────────
 
     async def api_ask(self, request):
@@ -392,6 +402,8 @@ def create_app(db_path, device_store, notify_router,
         # Monitor
         Route("/api/monitor", gateway.api_monitor, methods=["GET"]),
         Route("/api/monitor/{action}", gateway.api_monitor_toggle, methods=["POST"]),
+        # Audit
+        Route("/api/audit", gateway.api_audit, methods=["GET"]),
         # Agent
         Route("/api/ask", gateway.api_ask, methods=["POST"]),
         Route("/api/ask/stream", gateway.api_ask_stream, methods=["POST"]),

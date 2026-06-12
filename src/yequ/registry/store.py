@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 from typing import Any
 
 from yequ.registry.models import Device, Capability
+
+logger = logging.getLogger(__name__)
+
+
+def _audit(db_path, action, target_type, target_id, actor="system", detail=None):
+    """Record an audit entry. Best-effort; failures are logged but not raised."""
+    try:
+        from yequ.storage.audit import log_action
+        log_action(db_path, action, target_type, target_id, actor=actor, detail=detail)
+    except Exception as e:
+        logger.debug("Audit log skipped: %s", e)
 from yequ.storage.database import get_connection
 from yequ.utils import now_iso
 
@@ -53,6 +65,8 @@ class DeviceStore:
             )
             conn.commit()
 
+        _audit(self.db_path, "register_device", "device", device_id,
+               detail={"labels": labels or {}, "is_local": is_local})
         return device
 
     def get_device(self, device_id: str) -> Device | None:
@@ -102,6 +116,7 @@ class DeviceStore:
                 (now, device_id),
             )
             conn.commit()
+        _audit(self.db_path, "revoke_device", "device", device_id)
 
     def update_labels(self, device_id: str, labels: dict[str, str]) -> None:
         now = now_iso()
@@ -112,6 +127,7 @@ class DeviceStore:
                 (labels_json, now, device_id),
             )
             conn.commit()
+        _audit(self.db_path, "update_labels", "device", device_id, detail={"labels": labels})
 
     # --- Capability ---
 
@@ -219,6 +235,8 @@ class DeviceStore:
                  json.dumps(params or {}, ensure_ascii=False), expires_at),
             )
             conn.commit()
+        _audit(self.db_path, "enqueue_command", "device", device_id,
+               detail={"action": action, "params": params or {}})
         return command_id
 
     def dequeue_commands(self, device_id: str) -> list[dict]:
