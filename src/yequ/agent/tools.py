@@ -500,11 +500,28 @@ class ToolHandler:
             return {"error": f"Unknown action: {action}. Device supports: {', '.join(sorted(allowed))}"}
 
         command_id = store.enqueue_command(device_id, action, params)
+
+        # For local services, wait for the result immediately (they poll every 3s)
+        if device.source_type in ("service", "gateway") or device.is_local:
+            import time as _time
+            for _ in range(5):
+                _time.sleep(2)
+                r = self._tool_check_command_result({"command_id": command_id})
+                if r.get("result"):
+                    return {
+                        "status": "completed",
+                        "device_id": device_id,
+                        "command_id": command_id,
+                        "action": action,
+                        "result": r["result"],
+                        "note": "Executed and result received immediately",
+                    }
+
         return {
             "status": "queued",
             "device_id": device_id,
             "command_id": command_id,
             "action": action,
             "params": params,
-            "note": "Command will be delivered on device's next heartbeat or ingest Ack",
+            "note": "Command queued. Device will execute on next poll cycle (~3s for local services).",
         }
