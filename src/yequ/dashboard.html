@@ -400,10 +400,20 @@ function connectEventStream() {
            'command_timeout','capability_added'].includes(ev.event_type)) {
         loadDevices();
       }
-      // Notify in chat when a command completes
-      if (ev.event_type === 'command_completed' && document.getElementById('chat-panel').classList.contains('open')) {
+      // Notify in chat when a command completes — always, not just when chat open
+      if (ev.event_type === 'command_completed') {
+        // Ensure chat panel is visible so user sees the notification
+        const panel = document.getElementById('chat-panel');
+        if (!panel.classList.contains('open')) panel.classList.add('open');
         const msgs = document.getElementById('chat-messages');
-        msgs.innerHTML += `<div class="chat-msg tool" style="color:#3fb950">[command completed] ${esc(ev.title)}</div>`;
+        const cid = (ev.data && ev.data.command_id) ? ev.data.command_id : '';
+        msgs.innerHTML += `<div class="chat-msg tool" style="color:#3fb950">[command completed: ${esc(ev.title)}]</div>`;
+        // Auto-trigger Agent to check the result
+        if (cid) {
+          const input = document.getElementById('chat-input');
+          input.value = `check command ${cid} result`;
+          document.querySelector('#chat-input + .btn').click();
+        }
         msgs.scrollTop = msgs.scrollHeight;
       }
     } catch(ex) {}
