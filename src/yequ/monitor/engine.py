@@ -124,6 +124,10 @@ class MonitorEngine:
             result.body,
         )
 
+        # Update device status for offline alerts
+        if rule.name == "device_offline" and result.device_id:
+            self.store.mark_offline(result.device_id)
+
         if rule.notify:
             self.notify.send(Notification(
                 severity=severity,
