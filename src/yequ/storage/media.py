@@ -50,3 +50,26 @@ def get_media_path(data_dir: str, media_id: str) -> str | None:
         if f.startswith(media_id) and not f.endswith(".json"):
             return os.path.join(media_dir, f)
     return None
+
+
+import secrets as _secrets
+import time as _time
+
+_media_tokens: dict[str, tuple[str, float]] = {}
+
+def generate_media_token(media_id: str, ttl: int = 300) -> str:
+    """Generate a one-time access token for a media file."""
+    token = _secrets.token_urlsafe(32)
+    _media_tokens[media_id] = (token, _time.time() + ttl)
+    return token
+
+def validate_media_token(media_id: str, token: str) -> bool:
+    """Validate a one-time media access token."""
+    entry = _media_tokens.get(media_id)
+    if entry is None:
+        return False
+    stored_token, expires = entry
+    if _time.time() > expires:
+        del _media_tokens[media_id]
+        return False
+    return token == stored_token

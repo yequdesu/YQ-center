@@ -428,6 +428,29 @@ class ToolHandler:
         if device is None:
             return {"error": f"Device not found: {device_id}"}
 
+        # Pre-check: don't send commands to offline devices
+        if not device.is_local:
+            online = self._tool_check_device_online({"device_id": device_id})
+            status = online.get("status", "unknown")
+            if status == "offline":
+                return {"error": f"Device {device_id} is offline. Command rejected."}
+            if status == "unknown":
+                return {"error": f"Device {device_id} has never been online. Command rejected."}
+            if status == "stale":
+                pass  # Warn but allow
+
+        # Blocked commands list
+        BLOCKED = {"shutdown", "reboot", "format", "rm", "delete_all",
+                   "set_gateway_config", "access_other_device"}
+        if action in BLOCKED:
+            from yequ.message_queue import mq
+            mq.publish("yequ:events", {
+                "event_type": "action_blocked", "severity": "warning",
+                "title": f"禁止指令被调用: {action}",
+                "device_id": device_id,
+            })
+            return {"error": f"Action '{action}' is blocked"}
+
         # Check if the device has declared this action
         declared = {a["name"] for a in store.get_actions(device_id)}
         builtin = {"set_interval", "restart_collector", "ping"}

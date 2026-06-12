@@ -99,6 +99,15 @@ class GatewayApp:
                 config={"collector": {"interval_seconds": 60}},
             ).to_dict())
 
+        # Check for reinstall: same device_id was previously revoked
+        revoked = self.store.get_revoked_device(msg.device_id)
+        if revoked:
+            mq.publish("yequ:events", {
+                "event_type": "device_replaced", "severity": "warning",
+                "title": f"设备重装后重新注册: {msg.device_id}",
+                "device_id": msg.device_id,
+            })
+
         pending = self.store.get_pending_registration(msg.device_id)
         if pending is None:
             # Store device_info, capabilities, and actions in the pending record
@@ -160,7 +169,9 @@ class GatewayApp:
                         f"{cid}.png", image_b64, mime,
                     )
                     if media_id:
-                        image_url = f"/api/media/{media_id}"
+                        from yequ.storage.media import generate_media_token
+                        token = generate_media_token(media_id)
+                        image_url = f"/api/media/{media_id}?token={token}"
                 # Store result (with image URL instead of base64 data)
                 result = {k: v for k, v in r.items() if k != "image_base64"}
                 if image_url:
@@ -436,6 +447,19 @@ class GatewayApp:
 
         return JSONResponse({"status": "revoked", "device_id": device_id})
 
+    async def api_token_rotate(self, request):
+        device_id = request.path_params["device_id"]
+        device = self.store.get_device(device_id)
+        if device is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        new_token = self.store.rotate_token(device_id)
+        mq.publish("yequ:events", {
+            "event_type": "auth_suspicious", "severity": "info",
+            "title": f"Token已轮换: {device_id}",
+            "device_id": device_id,
+        })
+        return JSONResponse({"status": "ok", "device_id": device_id, "token": new_token})
+
     # ── REST: Events ─────────────────────────────────────────────
 
     async def api_events(self, request):
@@ -496,6 +520,12 @@ class GatewayApp:
 
     async def serve_media(self, request):
         media_id = request.path_params["media_id"]
+        token = request.query_params.get("token", "")
+        # Validate token if present (sensitive media)
+        if token:
+            from yequ.storage.media import validate_media_token
+            if not validate_media_token(media_id, token):
+                return JSONResponse({"error": "invalid or expired token"}, status_code=403)
         from yequ.storage.media import get_media_path
         path = get_media_path(os.path.dirname(self.db_path), media_id)
         if path is None:
@@ -736,6 +766,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/api/devices/{device_id}/capabilities", gateway.api_device_add_capability,
               methods=["POST"]),
         Route("/api/devices/{device_id}", gateway.api_device_revoke, methods=["DELETE"]),
+        Route("/api/devices/{device_id}/rotate-token", gateway.api_token_rotate, methods=["POST"]),
         # Events
         Route("/api/events", gateway.api_events, methods=["GET"]),
         # Metrics

@@ -130,6 +130,27 @@ class DeviceStore:
             conn.commit()
         _audit(self.db_path, "revoke_device", "device", device_id)
 
+    def rotate_token(self, device_id: str) -> str:
+        """Generate and assign a new token for a device."""
+        new_token = _generate_token()
+        now = now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE devices SET token = ?, updated_at = ? WHERE device_id = ?",
+                (new_token, now, device_id),
+            )
+            conn.commit()
+        return new_token
+
+    def get_revoked_device(self, device_id: str) -> Device | None:
+        """Check if a device was previously registered and revoked."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM devices WHERE device_id = ? AND status = 'revoked'",
+                (device_id,),
+            ).fetchone()
+        return Device.from_row(dict(row)) if row else None
+
     def update_labels(self, device_id: str, labels: dict[str, str]) -> None:
         now = now_iso()
         labels_json = json.dumps(labels, ensure_ascii=False)
