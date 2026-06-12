@@ -211,6 +211,13 @@ class CommandTimeoutRule:
                 body=f"command_id={row['command_id']}, created={row['created_at']}",
                 device_id=device["device_id"],
             ))
+            # Mark as timed out so it won't fire again
+            conn.execute(
+                "UPDATE pending_commands SET result_json = ? WHERE command_id = ?",
+                (json.dumps({"status": "timeout", "output": "command timed out"}), row["command_id"]),
+            )
+        if results:
+            conn.commit()
         return results
 
 
