@@ -78,15 +78,16 @@ class GatewayApp:
 
     async def handle_hello(self, request):
         try:
-            body = await request.body()
-            msg = parse_hello(body.decode("utf-8"))
+            raw = await request.body()
+            body_str = raw.decode("utf-8")
+            msg = parse_hello(body_str)
         except Exception as e:
             return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
 
         if isinstance(msg, HelloRegistration):
             return self._handle_registration(msg)
         elif isinstance(msg, HelloHeartbeat):
-            return self._handle_heartbeat(msg)
+            return self._handle_heartbeat(msg, raw_body=body_str)
         elif isinstance(msg, Goodbye):
             return self._handle_goodbye(msg)
 
@@ -100,9 +101,10 @@ class GatewayApp:
 
         pending = self.store.get_pending_registration(msg.device_id)
         if pending is None:
-            # Store both device_info and capabilities in the pending record
+            # Store device_info, capabilities, and actions in the pending record
             info = dict(msg.device_info)
             info["_capabilities"] = msg.capabilities
+            info["_actions"] = getattr(msg, 'actions', [])
             self.store.add_pending_registration(msg.device_id, info)
             retry_count = 0
         else:
@@ -114,6 +116,21 @@ class GatewayApp:
         if retry_count >= INITIAL_RETRIES + 10:
             resp.note = "请联系管理员审批"
         return JSONResponse(resp.to_dict())
+
+    def _process_command_results(self, raw_body: str | None) -> None:
+        """If the request includes command_results, record them."""
+        if not raw_body:
+            return
+        try:
+            import json as _json
+            data = _json.loads(raw_body)
+            results = data.get("command_results", [])
+            for r in results:
+                cid = r.get("command_id")
+                if cid:
+                    self.store.record_command_result(cid, _json.dumps(r, ensure_ascii=False))
+        except Exception:
+            pass
 
     def _publish_bus(self, event: dict):
         """Publish an event to the SSE bus if available."""
@@ -149,7 +166,7 @@ class GatewayApp:
         return JSONResponse(Ack(message_id="goodbye", status="ok",
                                 pending_commands=[]).to_dict())
 
-    def _handle_heartbeat(self, msg):
+    def _handle_heartbeat(self, msg, raw_body=None):
         device = self.store.get_device_by_token(msg.token)
         if device is None or device.device_id != msg.device_id:
             return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
@@ -157,7 +174,9 @@ class GatewayApp:
         was_offline = not device.last_hello_at
         self.store.touch_hello(msg.device_id)
 
-        # Device came back online
+        # Process command results if included in heartbeat
+        self._process_command_results(raw_body)
+
         if was_offline and not device.is_local:
             from yequ.storage.ingest import ingest_event
             ingest_event(self.db_path, msg.device_id, "device_online", "info",
@@ -289,6 +308,14 @@ class GatewayApp:
             self.store.add_capability(device_id, cap_decl)
             self.store.approve_capability(device_id, cap_decl["name"])
 
+        # Auto-create declared actions from the registration
+        actions = pending.get("device_info", {}).get("_actions", [])
+        for act_decl in actions:
+            if "name" not in act_decl:
+                continue
+            self.store.add_action(device_id, act_decl)
+            self.store.approve_action(device_id, act_decl["name"])
+
         self.store.remove_pending_registration(device_id)
 
         from yequ.storage.ingest import ingest_event
@@ -308,6 +335,11 @@ class GatewayApp:
             "status": "approved", "device_id": device_id, "token": device.token,
             "capabilities_created": len(capabilities),
         })
+
+    async def api_device_actions(self, request):
+        device_id = request.path_params["device_id"]
+        actions = self.store.get_actions(device_id)
+        return JSONResponse({"device_id": device_id, "actions": actions})
 
     async def api_device_add_capability(self, request):
         """Allow an approved device to declare new capabilities post-registration."""
@@ -631,6 +663,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/api/devices", gateway.api_devices, methods=["GET"]),
         Route("/api/devices/{device_id}", gateway.api_device_detail, methods=["GET"]),
         Route("/api/devices/{device_id}/approve", gateway.api_device_approve, methods=["POST"]),
+        Route("/api/devices/{device_id}/actions", gateway.api_device_actions, methods=["GET"]),
         Route("/api/devices/{device_id}/capabilities", gateway.api_device_add_capability,
               methods=["POST"]),
         Route("/api/devices/{device_id}", gateway.api_device_revoke, methods=["DELETE"]),

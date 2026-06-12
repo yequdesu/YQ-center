@@ -25,6 +25,7 @@ class HelloRegistration:
     device_id: str
     device_info: dict[str, Any] = field(default_factory=dict)
     capabilities: list[dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
     hello_type: str = "registration"
     protocol: str = PROTOCOL_VERSION
     message_type: str = "hello"
@@ -39,6 +40,7 @@ class HelloRegistration:
             device_id=data["device_id"],
             device_info=data.get("device_info", {}),
             capabilities=data.get("capabilities", []),
+            actions=data.get("actions", []),
         )
 
 

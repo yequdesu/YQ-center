@@ -51,7 +51,21 @@ CREATE TABLE IF NOT EXISTS pending_commands (
     params_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT,
-    delivered INTEGER NOT NULL DEFAULT 0
+    delivered INTEGER NOT NULL DEFAULT 0,
+    result_json TEXT,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS device_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    display TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    params_json TEXT NOT NULL DEFAULT '{}',
+    is_approved INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    UNIQUE(device_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

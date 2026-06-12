@@ -107,8 +107,19 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "list_device_actions",
+        "description": "查询指定设备支持哪些操作指令（action）。返回设备声明过的可执行操作列表。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "设备ID"},
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
         "name": "send_command",
-        "description": "向指定设备下发指令。当前支持的操作：set_interval（修改采集间隔）。",
+        "description": "向设备下发指令。先用 list_device_actions 查看设备支持哪些操作再调用。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -310,6 +321,13 @@ class ToolHandler:
                 return {"path": path, "content": content}
         return {"error": "Network topology file not found", "checked_paths": candidates}
 
+    def _tool_list_device_actions(self, args: dict) -> dict:
+        from yequ.registry.store import DeviceStore
+        store = DeviceStore(self.db_path)
+        device_id = args["device_id"]
+        actions = store.get_actions(device_id)
+        return {"device_id": device_id, "actions": actions}
+
     def _tool_send_command(self, args: dict) -> dict:
         from yequ.registry.store import DeviceStore
         store = DeviceStore(self.db_path)
@@ -321,9 +339,12 @@ class ToolHandler:
         if device is None:
             return {"error": f"Device not found: {device_id}"}
 
-        supported = {"set_interval", "restart_collector", "ping"}
-        if action not in supported:
-            return {"error": f"Unknown action: {action}. Supported: {', '.join(sorted(supported))}"}
+        # Check if the device has declared this action
+        declared = {a["name"] for a in store.get_actions(device_id)}
+        builtin = {"set_interval", "restart_collector", "ping"}
+        allowed = declared | builtin
+        if action not in allowed:
+            return {"error": f"Unknown action: {action}. Device supports: {', '.join(sorted(allowed))}"}
 
         command_id = store.enqueue_command(device_id, action, params)
         return {

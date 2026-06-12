@@ -292,3 +292,44 @@ class DeviceStore:
 
             conn.commit()
         return commands
+
+    def record_command_result(self, command_id: str, result_json: str) -> None:
+        """Record the result of a delivered command."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE pending_commands SET result_json = ?, completed_at = datetime('now') WHERE command_id = ?",
+                (result_json, command_id),
+            )
+            conn.commit()
+
+    # --- Device Actions ---
+
+    def add_action(self, device_id: str, decl: dict[str, Any]) -> None:
+        """Declare an action the device can perform."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO device_actions (device_id, name, display, description, params_json, is_approved)
+                   VALUES (?, ?, ?, ?, ?, 0)""",
+                (device_id, decl["name"], decl.get("display", decl["name"]),
+                 decl.get("description", ""),
+                 json.dumps(decl.get("params", {}), ensure_ascii=False)),
+            )
+            conn.commit()
+
+    def approve_action(self, device_id: str, name: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE device_actions SET is_approved = 1 WHERE device_id = ? AND name = ?",
+                (device_id, name),
+            )
+            conn.commit()
+
+    def get_actions(self, device_id: str) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM device_actions WHERE device_id = ? AND is_approved = 1",
+                (device_id,),
+            ).fetchall()
+        return [{"name": r["name"], "display": r["display"],
+                 "description": r["description"],
+                 "params": json.loads(r["params_json"])} for r in rows]
