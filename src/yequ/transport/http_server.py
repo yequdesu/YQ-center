@@ -59,6 +59,18 @@ class GatewayApp:
         self.notify = notify_router
         self.collector = collector_runner
         self.agent_config = agent_config
+        self._agent = None  # lazy singleton for conversation continuity
+
+    @property
+    def agent(self):
+        if self._agent is None and self.agent_config is not None:
+            from yequ.agent.core import Agent
+            self._agent = Agent(
+                config=self.agent_config,
+                db_path=self.db_path,
+                data_dir=os.path.dirname(self.db_path),
+            )
+        return self._agent
 
     # ── YQP: Hello ───────────────────────────────────────────────
 
@@ -346,6 +358,7 @@ class GatewayApp:
 
         # Persist to gateway.yaml
         self._save_agent_config()
+        self._agent = None  # reset agent so new config takes effect
 
         import os as _os
         env_map = {"anthropic": "ANTHROPIC_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
@@ -388,10 +401,7 @@ class GatewayApp:
             return JSONResponse({"error": "invalid JSON, expected {query: ...}"},
                                 status_code=400)
 
-        from yequ.agent.core import create_agent
-        agent = create_agent(config=self.agent_config, db_path=self.db_path,
-                             data_dir=os.path.dirname(self.db_path))
-        answer = agent.ask(query)
+        answer = self.agent.ask(query)
         return JSONResponse({"answer": answer})
 
     # ── SSE: Agent Streaming ─────────────────────────────────────
@@ -410,9 +420,7 @@ class GatewayApp:
                 self._sse_error("invalid JSON"),
                 media_type="text/event-stream")
 
-        from yequ.agent.core import create_agent
-        agent = create_agent(config=self.agent_config, db_path=self.db_path,
-                             data_dir=os.path.dirname(self.db_path))
+        agent = self.agent
 
         async def generate():
             import queue

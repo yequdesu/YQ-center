@@ -54,6 +54,7 @@ class Agent:
         )
         self.tools = TOOLS
         self.handler = ToolHandler(db_path=db_path, config_data_dir=data_dir)
+        self._history: list[dict] = []  # conversation context
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -73,10 +74,15 @@ class Agent:
 
     def _generate(self, question: str) -> Iterator[AgentEvent]:
         """The agent loop as a generator. Yields events immediately."""
+        # Build messages from history + current question
         messages: list[dict] = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": question},
         ]
+        # Include recent history (last 10 turns) for context
+        for h in self._history[-20:]:
+            messages.append(h)
+        messages.append({"role": "user", "content": question})
+
         tool_calls_made: list[dict] = []
         final_text = ""
 
@@ -117,6 +123,9 @@ class Agent:
                 yield AgentEvent(type="text", data=final_text)
             yield AgentEvent(type="done")
             self._log_conversation(question, final_text, tool_calls_made)
+            # Remember this turn
+            self._history.append({"role": "user", "content": question})
+            self._history.append({"role": "assistant", "content": final_text})
             return
 
         # Max rounds reached
@@ -124,6 +133,8 @@ class Agent:
         yield AgentEvent(type="text", data=final_text)
         yield AgentEvent(type="done")
         self._log_conversation(question, final_text, tool_calls_made)
+        self._history.append({"role": "user", "content": question})
+        self._history.append({"role": "assistant", "content": final_text})
 
     # ── Conversation Logging ──────────────────────────────────────
 
