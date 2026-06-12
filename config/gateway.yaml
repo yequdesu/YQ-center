@@ -1,22 +1,16 @@
-# YeQu Gateway 主配置
-gateway:
-  host: "0.0.0.0"  # 接受来自 WireGuard、局域网、本机的连接
-  port: 9800
-  unix_socket: "~/.local/share/yequ-gateway/gateway.sock"
-
-data:
-  dir: "~/.local/share/yequ-gateway"
-
-monitor:
-  scan_interval_seconds: 30
-
+agent:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  api_key: ""
 collector:
   interval_seconds: 60
-
-agent:
-  provider: anthropic           # anthropic | openai | ollama (future)
-  model: claude-sonnet-4-6      # or claude-opus-4-8, gpt-4o, etc.
-  api_key: ""                   # leave empty to use env var (ANTHROPIC_API_KEY)
-
+data:
+  dir: ~/.local/share/yequ-gateway
+gateway:
+  host: 0.0.0.0
+  port: 9800
+  unix_socket: ~/.local/share/yequ-gateway/gateway.sock
+monitor:
+  scan_interval_seconds: 30
 notify:
-  log_file: "~/.local/share/yequ-gateway/gateway.log"
+  log_file: ~/.local/share/yequ-gateway/gateway.log

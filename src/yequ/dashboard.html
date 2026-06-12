@@ -81,6 +81,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; ba
 <div id="header">
   <h1>YeQu Gateway</h1>
   <div class="controls">
+    <span id="llm-badge" class="loading" style="cursor:pointer" onclick="openSettings()">LLM: --</span>
     <span id="monitor-badge" class="loading">monitor: --</span>
     <button class="btn small" onclick="toggleMonitor()" id="monitor-btn">toggle</button>
     <span style="font-size:12px;color:#484f58" id="clock">--</span>
@@ -103,6 +104,35 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; ba
   <div id="events-list"></div>
 </div>
 
+<div id="settings-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center">
+  <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;width:400px;max-width:90vw">
+    <h2 style="font-size:16px;margin-bottom:16px;color:#58a6ff">LLM Settings</h2>
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">Provider</label>
+      <select id="settings-provider" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;color:#c9d1d9;font-size:13px">
+        <option value="anthropic">anthropic (Claude)</option>
+        <option value="deepseek">deepseek</option>
+        <option value="openai">openai (GPT)</option>
+        <option value="glm">glm (智谱)</option>
+        <option value="ollama">ollama (local)</option>
+        <option value="custom">custom</option>
+      </select>
+    </div>
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">Model</label>
+      <input id="settings-model" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;color:#c9d1d9;font-size:13px" placeholder="claude-sonnet-4-6">
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="font-size:12px;color:#8b949e;display:block;margin-bottom:4px">API Key</label>
+      <input id="settings-key" type="password" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;color:#c9d1d9;font-size:13px" placeholder="sk-... or use env var">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeSettings()">Cancel</button>
+      <button class="btn primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
 <button id="chat-toggle" onclick="toggleChat()">+</button>
 
 <div id="chat-panel">
@@ -121,8 +151,11 @@ let chatStreaming = false;
 
 // ── Init ──────────────────────────────────────────────────────────
 
+let llmConfigured = false;
+let llmProvider = '';
+
 async function init() {
-  await Promise.all([loadDevices(), loadEvents(), loadMonitor()]);
+  await Promise.all([loadDevices(), loadEvents(), loadMonitor(), loadLLMConfig()]);
   setInterval(loadDevices, 10000);
   setInterval(loadEvents, 15000);
   setInterval(updateClock, 1000);
@@ -262,11 +295,64 @@ function toggleChat() {
   document.getElementById('chat-input').focus();
 }
 
+// ── LLM Settings ───────────────────────────────────────────────────
+
+async function loadLLMConfig() {
+  try {
+    const resp = await fetch('/api/agent/config');
+    const data = await resp.json();
+    llmConfigured = data.api_key_configured;
+    llmProvider = data.provider || '';
+    document.getElementById('llm-badge').textContent = `LLM: ${data.provider}${llmConfigured?'':' (not set)'}`;
+    document.getElementById('llm-badge').style.color = llmConfigured ? '#3fb950' : '#d29922';
+    document.getElementById('settings-provider').value = data.provider || 'anthropic';
+    document.getElementById('settings-model').value = data.model || '';
+  } catch(e) {
+    document.getElementById('llm-badge').textContent = 'LLM: error';
+  }
+}
+
+function openSettings() {
+  document.getElementById('settings-modal').style.display = 'flex';
+  loadLLMConfig();
+}
+
+function closeSettings() {
+  document.getElementById('settings-modal').style.display = 'none';
+}
+
+async function saveSettings() {
+  const provider = document.getElementById('settings-provider').value;
+  const model = document.getElementById('settings-model').value;
+  const apiKey = document.getElementById('settings-key').value;
+
+  await fetch('/api/agent/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider, model, api_key: apiKey}),
+  });
+
+  closeSettings();
+  document.getElementById('settings-key').value = '';
+  await loadLLMConfig();
+}
+
+// ── Chat ──────────────────────────────────────────────────────────
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const query = input.value.trim();
   if (!query || chatStreaming) return;
   input.value = '';
+
+  if (!llmConfigured) {
+    const msgs = document.getElementById('chat-messages');
+    msgs.innerHTML += `<div class="chat-msg user"><span class="ts">now</span> ${esc(query)}</div>`;
+    msgs.innerHTML += `<div class="chat-msg tool" style="color:#d29922">LLM not configured. Click the LLM badge in the top bar to set up your provider and API key, then try again.</div>`;
+    msgs.scrollTop = msgs.scrollHeight;
+    return;
+  }
+
   chatStreaming = true;
 
   const msgs = document.getElementById('chat-messages');

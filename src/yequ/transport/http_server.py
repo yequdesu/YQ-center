@@ -271,6 +271,74 @@ class GatewayApp:
         entries = get_audit_log(self.db_path, action=action, actor=actor, limit=limit)
         return JSONResponse({"entries": entries, "total": len(entries)})
 
+    # ── REST: Agent Config ────────────────────────────────────────
+
+    async def api_agent_config_get(self, request):
+        if self.agent_config is None:
+            return JSONResponse({"error": "agent not configured"}, status_code=503)
+        import os as _os
+        env_map = {"anthropic": "ANTHROPIC_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+                    "openai": "OPENAI_API_KEY", "glm": "GLM_API_KEY"}
+        env_key = env_map.get(self.agent_config.provider, "")
+        return JSONResponse({
+            "provider": self.agent_config.provider,
+            "model": self.agent_config.model,
+            "api_key_configured": bool(self.agent_config.api_key or _os.environ.get(env_key)),
+        })
+
+    async def api_agent_config_set(self, request):
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+        provider = body.get("provider", "").strip()
+        model = body.get("model", "").strip()
+        api_key = body.get("api_key", "").strip()
+
+        if provider:
+            from yequ.agent.providers import get_preset
+            preset = get_preset(provider)
+            if preset is None:
+                return JSONResponse({"error": f"Unknown provider: {provider}. Available: anthropic, deepseek, openai, glm, ollama, custom"}, status_code=400)
+            self.agent_config.provider = provider
+        if model:
+            self.agent_config.model = model
+        if api_key:
+            self.agent_config.api_key = api_key
+
+        # Persist to gateway.yaml
+        self._save_agent_config()
+
+        import os as _os
+        env_map = {"anthropic": "ANTHROPIC_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+                    "openai": "OPENAI_API_KEY", "glm": "GLM_API_KEY"}
+        env_key = env_map.get(self.agent_config.provider, "")
+        return JSONResponse({
+            "provider": self.agent_config.provider,
+            "model": self.agent_config.model,
+            "api_key_configured": bool(self.agent_config.api_key or _os.environ.get(env_key)),
+        })
+
+    def _save_agent_config(self):
+        """Persist agent config back to gateway.yaml."""
+        import os as _os
+        # __file__ = src/yequ/transport/http_server.py → 4 levels up = project root
+        config_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
+        yaml_path = _os.path.join(config_dir, "config", "gateway.yaml")
+        try:
+            import yaml
+            with open(yaml_path) as f:
+                raw = yaml.safe_load(f)
+            raw.setdefault("agent", {})
+            raw["agent"]["provider"] = self.agent_config.provider
+            raw["agent"]["model"] = self.agent_config.model
+            raw["agent"]["api_key"] = self.agent_config.api_key
+            with open(yaml_path, "w") as f:
+                yaml.dump(raw, f, allow_unicode=True, default_flow_style=False)
+        except Exception as e:
+            logger.warning("Failed to persist agent config: %s", e)
+
     # ── REST: Agent ──────────────────────────────────────────────
 
     async def api_ask(self, request):
@@ -414,6 +482,8 @@ def create_app(db_path, device_store, notify_router,
         # Audit
         Route("/api/audit", gateway.api_audit, methods=["GET"]),
         # Agent
+        Route("/api/agent/config", gateway.api_agent_config_get, methods=["GET"]),
+        Route("/api/agent/config", gateway.api_agent_config_set, methods=["POST"]),
         Route("/api/ask", gateway.api_ask, methods=["POST"]),
         Route("/api/ask/stream", gateway.api_ask_stream, methods=["POST"]),
         # SSE
