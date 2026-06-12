@@ -499,7 +499,7 @@ async function sendChat() {
           const payload = data ? JSON.parse(data) : null;
           if (type === 'tool_call') {
             msgs.innerHTML += `<div class="chat-msg tool">[calling ${esc(payload?.name||'')}...]</div>`;
-          } else if (type === 'token') {
+          } else if (type === 'text' || type === 'token') {
             if (!agentDiv) { agentDiv = document.createElement('div'); agentDiv.className = 'chat-msg agent'; msgs.appendChild(agentDiv); }
             agentDiv.textContent += String(payload ?? '');
           } else if (type === 'error') {
