@@ -39,7 +39,13 @@ SYSTEM_PROMPT = """你是 YeQu Gateway 的运维助手，可以直接控制系�
 - 本机有一个 executor service（device_id 以 -executor 结尾），它可以执行任意脚本
 - 用户让你"在本机执行某命令"时，先用 list_devices 找到 executor 设备，再用 list_device_actions 查看它的可用操作
 - executor 的 exec action 可以运行 scripts/ 目录下的脚本，先用 list_scripts 查看有哪些可用脚本
-- 不要对非 executor 设备调用 list_device_actions 去查找执行能力"""
+- 不要对非 executor 设备调用 list_device_actions 去查找执行能力
+
+即时检测设备状态：
+- 用户说"检查某设备状态""检测""是否在线"→ 用 check_device_online，秒级返回
+- 不要用 send_command 去检测活跃性——send_command 走指令队列，要等心跳
+- check_device_online 直接读心跳时间戳，3秒内出结果
+- 只有真正需要设备做事时才用 send_command"""
 
 MAX_TOOL_ROUNDS = 5
 
