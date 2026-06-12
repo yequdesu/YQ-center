@@ -220,11 +220,26 @@ class ToolHandler:
         from yequ.registry.store import DeviceStore
         store = DeviceStore(self.db_path)
         device_id = args["device_id"]
-        labels = args.get("labels", {})
+        labels = args.get("labels") or {}
 
         pending = store.get_pending_registration(device_id)
         if pending is None:
             return {"error": f"No pending registration for device: {device_id}"}
+
+        # If no labels provided, derive from device_info
+        if not labels:
+            info = pending.get("device_info", {})
+            os_name = (info.get("os") or "").lower()
+            if "windows" in os_name:
+                labels["role"] = "desktop"
+            elif "android" in os_name:
+                labels["role"] = "phone"
+            elif "linux" in os_name:
+                labels["role"] = "server"
+            else:
+                labels["role"] = "device"
+            if info.get("hostname"):
+                labels["hostname"] = info["hostname"]
 
         device = store.register_device(device_id=device_id, labels=labels)
 

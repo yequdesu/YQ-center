@@ -195,8 +195,23 @@ class GatewayApp:
             return JSONResponse({"error": "no pending registration for this device"},
                                 status_code=404)
 
+        # Derive reasonable labels from device_info
+        info = pending.get("device_info", {})
+        labels = {}
+        os_name = (info.get("os") or "").lower()
+        if "windows" in os_name:
+            labels["role"] = "desktop"
+        elif "android" in os_name:
+            labels["role"] = "phone"
+        elif "linux" in os_name:
+            labels["role"] = "server"
+        else:
+            labels["role"] = "device"
+        if info.get("hostname"):
+            labels["hostname"] = info["hostname"]
+
         device = self.store.register_device(
-            device_id=device_id, labels={"role": "pending_approval"},
+            device_id=device_id, labels=labels,
         )
 
         # Auto-create declared capabilities from the registration
