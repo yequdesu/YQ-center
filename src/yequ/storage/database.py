@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS pending_registrations (
     expires_at TEXT NOT NULL DEFAULT (datetime('now', '+1 hour')),
     retry_count INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS pending_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT,
+    delivered INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Data DB schema (snapshots, metrics, events)

@@ -7,6 +7,8 @@ from yequ.protocol.messages import (
     Ack,
     HelloResponse,
     RegistrationResponse,
+    Query,
+    Alert,
     parse_hello,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
     "Ack",
     "HelloResponse",
     "RegistrationResponse",
+    "Query",
+    "Alert",
     "parse_hello",
 ]

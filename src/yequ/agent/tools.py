@@ -304,13 +304,15 @@ class ToolHandler:
         if device is None:
             return {"error": f"Device not found: {device_id}"}
 
-        if action not in ("set_interval",):
-            return {"error": f"Unknown action: {action}. Supported: set_interval"}
+        supported = {"set_interval", "restart_collector", "ping"}
+        if action not in supported:
+            return {"error": f"Unknown action: {action}. Supported: {', '.join(sorted(supported))}"}
 
-        # Command is queued; device picks it up on next Ack
+        command_id = store.enqueue_command(device_id, action, params)
         return {
             "status": "queued",
             "device_id": device_id,
+            "command_id": command_id,
             "action": action,
             "params": params,
             "note": "Command will be delivered on device's next heartbeat or ingest Ack",

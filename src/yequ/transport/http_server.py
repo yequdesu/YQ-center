@@ -102,9 +102,10 @@ class GatewayApp:
             return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
 
         self.store.touch_hello(msg.device_id)
-        return JSONResponse(Ack(
-            message_id="heartbeat", status="ok", pending_commands=[],
-        ).to_dict())
+        commands = self.store.dequeue_commands(msg.device_id)
+        ack = Ack(message_id="heartbeat", status="ok",
+                  pending_commands=[self._command_dict(c) for c in commands])
+        return JSONResponse(ack.to_dict())
 
     # ── YQP: Ingest ──────────────────────────────────────────────
 
@@ -131,7 +132,10 @@ class GatewayApp:
                     ingest_metric(self.db_path, msg.device_id, msg.capability,
                                   key, float(value), timestamp=msg.timestamp)
 
-        return JSONResponse(Ack(message_id=msg.message_id, status="ok").to_dict())
+        commands = self.store.dequeue_commands(msg.device_id)
+        ack = Ack(message_id=msg.message_id, status="ok",
+                  pending_commands=[self._command_dict(c) for c in commands])
+        return JSONResponse(ack.to_dict())
 
     # ── REST: Devices ────────────────────────────────────────────
 
@@ -350,6 +354,14 @@ class GatewayApp:
             "title": e["title"],
             "body": e["body"],
             "timestamp": e["timestamp"],
+        }
+
+    @staticmethod
+    def _command_dict(c):
+        return {
+            "command_id": c["command_id"],
+            "action": c["action"],
+            "params": c["params"],
         }
 
 

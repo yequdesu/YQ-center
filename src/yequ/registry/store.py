@@ -203,3 +203,48 @@ class DeviceStore:
                 (device_id,),
             )
             conn.commit()
+
+    # --- Command Queue ---
+
+    def enqueue_command(self, device_id: str, action: str, params: dict | None = None,
+                        expires_at: str | None = None) -> str:
+        """Queue a command for delivery on the device's next Ack. Returns command_id."""
+        import uuid
+        command_id = str(uuid.uuid4())
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO pending_commands (command_id, device_id, action, params_json, expires_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (command_id, device_id, action,
+                 json.dumps(params or {}, ensure_ascii=False), expires_at),
+            )
+            conn.commit()
+        return command_id
+
+    def dequeue_commands(self, device_id: str) -> list[dict]:
+        """Fetch and mark as delivered all pending commands for a device."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT command_id, action, params_json, expires_at
+                   FROM pending_commands
+                   WHERE device_id = ? AND delivered = 0
+                   AND (expires_at IS NULL OR expires_at > datetime('now'))
+                   ORDER BY created_at""",
+                (device_id,),
+            ).fetchall()
+
+            commands = []
+            for r in rows:
+                commands.append({
+                    "command_id": r["command_id"],
+                    "action": r["action"],
+                    "params": json.loads(r["params_json"]),
+                })
+                if r["expires_at"] is None:
+                    conn.execute(
+                        "UPDATE pending_commands SET delivered = 1 WHERE command_id = ?",
+                        (r["command_id"],),
+                    )
+
+            conn.commit()
+        return commands

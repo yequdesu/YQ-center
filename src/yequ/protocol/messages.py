@@ -154,6 +154,35 @@ class RegistrationResponse:
         return asdict(self)
 
 
+@dataclass
+class Query:
+    """Gateway 主动向设备拉取数据."""
+    query_id: str = field(default_factory=_new_uuid)
+    capability: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+    protocol: str = PROTOCOL_VERSION
+    message_type: str = "query"
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        return {k: v for k, v in d.items() if v}
+
+
+@dataclass
+class Alert:
+    """Gateway 向设备推送异常通知."""
+    device_id: str
+    severity: str  # info | warning | critical
+    title: str
+    body: str = ""
+    alert_id: str = field(default_factory=_new_uuid)
+    protocol: str = PROTOCOL_VERSION
+    message_type: str = "alert"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def parse_hello(raw: str) -> HelloRegistration | HelloHeartbeat:
     """根据 hello_type 自动解析 Hello 消息."""
     data = json.loads(raw)
