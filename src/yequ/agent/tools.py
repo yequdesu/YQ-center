@@ -396,12 +396,18 @@ class ToolHandler:
         result = None
         if r.get("result_json"):
             result = json.loads(r["result_json"])
+        # If result has image_url, convert to markdown so Agent passes it through
+        image_md = ""
+        if result and result.get("image_url"):
+            image_md = f"![screenshot]({result['image_url']})"
         return {
             "command_id": command_id,
             "device_id": r["device_id"],
             "action": r["action"],
             "delivered": bool(r["delivered"]),
             "result": result,
+            "image_markdown": image_md,
+            "_note": "If image_markdown is non-empty, include it verbatim in your reply so the user sees the image.",
         }
 
     def _tool_list_device_actions(self, args: dict) -> dict:
