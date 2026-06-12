@@ -118,8 +118,19 @@ TOOLS = [
         },
     },
     {
+        "name": "check_command_result",
+        "description": "查询之前下发的指令的执行结果。用 command_id 查询。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command_id": {"type": "string", "description": "指令ID"},
+            },
+            "required": ["command_id"],
+        },
+    },
+    {
         "name": "send_command",
-        "description": "向设备下发指令。先用 list_device_actions 查看设备支持哪些操作再调用。",
+        "description": "向设备下发指令。先用 list_device_actions 查看设备支持哪些操作再调用。指令发出后，设备在下一次心跳时收到并执行，执行结果在下下次心跳时返回。建议告知用户稍后查询结果。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -320,6 +331,28 @@ class ToolHandler:
                 content = open(path).read()
                 return {"path": path, "content": content}
         return {"error": "Network topology file not found", "checked_paths": candidates}
+
+    def _tool_check_command_result(self, args: dict) -> dict:
+        from yequ.storage.database import get_connection
+        command_id = args["command_id"]
+        with get_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_commands WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+        if row is None:
+            return {"error": f"Command not found: {command_id}"}
+        r = dict(row)
+        result = None
+        if r.get("result_json"):
+            result = json.loads(r["result_json"])
+        return {
+            "command_id": command_id,
+            "device_id": r["device_id"],
+            "action": r["action"],
+            "delivered": bool(r["delivered"]),
+            "result": result,
+        }
 
     def _tool_list_device_actions(self, args: dict) -> dict:
         from yequ.registry.store import DeviceStore
