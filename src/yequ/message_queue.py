@@ -51,7 +51,14 @@ class MessageQueue:
         event["timestamp"] = event.get("timestamp") or now_iso()
         if self._redis is not None:
             try:
-                self._redis.xadd(stream, event, maxlen=10000)
+                # Flatten nested dicts/lists to JSON strings (Redis xadd requires flat values)
+                flat = {}
+                for k, v in event.items():
+                    if isinstance(v, (dict, list)):
+                        flat[k] = json.dumps(v, ensure_ascii=False)
+                    else:
+                        flat[k] = v
+                self._redis.xadd(stream, flat, maxlen=10000)
             except Exception as e:
                 logger.warning("MQ: Redis publish failed (%s), using fallback", e)
                 self._fallback.append({"stream": stream, "event": event})
