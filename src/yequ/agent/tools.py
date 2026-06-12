@@ -59,6 +59,11 @@ TOOLS = [
     },
     # ── Management tools ──────────────────────────────────────────
     {
+        "name": "list_pending",
+        "description": "列出所有等待审批的设备注册请求。用户说'有没有待审批'或'批准'时先调这个。",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "approve_device",
         "description": "批准一个待注册的设备。直接调用即可，无需再次确认。",
         "input_schema": {
@@ -248,6 +253,20 @@ class ToolHandler:
         }
 
     # ── Management tools ─────────────────────────────────────────
+
+    def _tool_list_pending(self, _args: dict) -> dict:
+        from yequ.registry.store import DeviceStore
+        store = DeviceStore(self.db_path)
+        pending = store.list_pending_registrations()
+        return {
+            "pending": [{
+                "device_id": p["device_id"],
+                "device_info": p["device_info"],
+                "registered_at": p["registered_at"],
+                "retry_count": p["retry_count"],
+            } for p in pending],
+            "total": len(pending),
+        }
 
     def _tool_approve_device(self, args: dict) -> dict:
         from yequ.registry.store import DeviceStore
