@@ -50,6 +50,7 @@ def _setup_components(config: Config):
     monitor = MonitorEngine(
         db_path=db_path, device_store=store,
         notify_router=notify, rules=rules,
+        data_dir=data_dir, rules_path=DEFAULT_RULES_PATH,
     )
     return db_path, store, notify, runner, monitor
 
