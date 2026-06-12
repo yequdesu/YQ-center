@@ -42,7 +42,7 @@ class MessageQueue:
             self._redis.ping()
             logger.info("MQ: Redis connected %s:%d", redis_config.host, redis_config.port)
         except Exception as e:
-            logger.warning("MQ: Redis unavailable (%s), using memory fallback", e)
+            logger.info("MQ: Redis not available, using memory fallback")
             self._redis = None
 
     def publish(self, stream: str, event: dict) -> None:
