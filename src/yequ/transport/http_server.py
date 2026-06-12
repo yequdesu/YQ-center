@@ -366,6 +366,8 @@ class GatewayApp:
             device_id=device_id, labels=labels,
             source_type=info.get("source_type", "device"),
         )
+        # Device just contacted us via registration hello — mark as online immediately
+        self.store.touch_hello(device_id)
 
         # Auto-create declared capabilities from the registration
         capabilities = pending.get("device_info", {}).get("_capabilities", [])
