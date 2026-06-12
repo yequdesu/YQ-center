@@ -117,6 +117,16 @@ class GatewayApp:
             resp.note = "请联系管理员审批"
         return JSONResponse(resp.to_dict())
 
+    def _get_command_device(self, command_id: str) -> str | None:
+        """Look up which device a command was sent to."""
+        from yequ.storage.database import get_connection
+        with get_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT device_id FROM pending_commands WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+        return row["device_id"] if row else None
+
     def _process_command_results(self, raw_body: str | None) -> None:
         """If the request includes command_results, record them.
         Extract base64 images and save to media storage.
@@ -137,9 +147,11 @@ class GatewayApp:
                 if image_b64:
                     from yequ.storage.media import save_media
                     mime = r.get("image_mime", "image/png")
+                    # Look up device_id from the command record
+                    dev_id = self._get_command_device(cid) or r.get("device_id", "unknown")
                     media_id = save_media(
                         os.path.dirname(self.db_path),
-                        r.get("device_id", "unknown"),
+                        dev_id,
                         f"{cid}.png", image_b64, mime,
                     )
                     if media_id:
