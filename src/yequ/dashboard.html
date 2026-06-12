@@ -248,12 +248,16 @@ async function selectDevice(id) {
 }
 
 function formatMetric(key, val) {
-  // Return {label, value, unit, cls} for a metric field
   const label = key.replace(/_/g, ' ');
   let cls = '';
   let unit = '';
 
-  if (typeof val === 'number') {
+  // Nested objects/arrays — show summary, not raw dump
+  if (Array.isArray(val)) {
+    val = `${val.length} items`;
+  } else if (typeof val === 'object' && val !== null) {
+    val = `${Object.keys(val).length} fields`;
+  } else if (typeof val === 'number') {
     // Detect type by field name pattern
     if (key.endsWith('_percent') || key.endsWith('_usage') || key === 'cpu_percent' || key === 'memory_percent' || key === 'disk_usage_percent') {
       val = val.toFixed(1);

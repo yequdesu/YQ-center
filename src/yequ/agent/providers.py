@@ -119,13 +119,22 @@ def _make_anthropic_fn(api_key: str, model: str, base_url: str | None = None,
         for block in resp.content:
             if block.type == "text":
                 text += block.text
+            elif block.type == "thinking":
+                # DeepSeek reasoning models emit thinking blocks — skip them,
+                # the actual response comes in a separate text block or subsequent message
+                pass
             elif block.type == "tool_use":
                 args = block.input if isinstance(block.input, dict) else json.loads(str(block.input))
                 tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=args))
 
         if not text and not tool_calls:
-            block_info = [(b.type, str(getattr(b, 'text', ''))[:80]) for b in resp.content]
-            logger.warning("LLM returned no text/tool_use. Blocks: %s", block_info)
+            # If only thinking blocks, use the last one as fallback text
+            thinking_texts = [getattr(b, 'thinking', '') or getattr(b, 'text', '') for b in resp.content if b.type == 'thinking']
+            if thinking_texts:
+                text = '\n'.join(thinking_texts)
+            else:
+                block_info = [(b.type, str(getattr(b, 'text', ''))[:80]) for b in resp.content]
+                logger.warning("LLM returned no text/tool_use. Blocks: %s", block_info)
 
         return LLMResponse(text=text, tool_calls=tool_calls)
 
