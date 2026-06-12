@@ -14,8 +14,9 @@ collector:
   interval_seconds: 60
 
 agent:
-  anthropic_api_key: ""  # Phase 2 启用
-  model: "claude-sonnet-4-6"
+  provider: anthropic           # anthropic | openai | ollama (future)
+  model: claude-sonnet-4-6      # or claude-opus-4-8, gpt-4o, etc.
+  api_key: ""                   # leave empty to use env var (ANTHROPIC_API_KEY)
 
 notify:
   log_file: "~/.local/share/yequ-gateway/gateway.log"

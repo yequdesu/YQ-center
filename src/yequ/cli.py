@@ -241,26 +241,54 @@ def events(ctx, device_id):
 @click.argument("query")
 @click.pass_context
 def ask(ctx, query):
-    """Ask the Gateway a question (Phase 1: structured query).
+    """Ask the Gateway anything in natural language — powered by LLM.
 
-    Matches keywords to route to the right command. Falls back to status.
+    Requires a configured LLM provider in gateway.yaml:
+
+      agent:
+        provider: anthropic       # or openai
+        model: claude-sonnet-4-6
+        api_key: "sk-ant-..."     # or set ANTHROPIC_API_KEY env var
+
+    Without an API key, falls back to offline structured queries.
     """
-    query_lower = query.lower()
+    config = load_config(ctx.obj["config_path"])
+    db_path, store, _, _, _ = _setup_components(config)
 
-    # Event / alert keywords
-    if any(w in query_lower for w in ["alert", "alarm", "event", "events",
-                                       "告警", "事件", "报警", "异常"]):
-        ctx.invoke(events)
-    # Device list keywords
-    elif any(w in query_lower for w in ["device", "设备", "devices", "列表",
-                                         "有哪些", "几个"]):
-        ctx.invoke(devices)
-    # Monitor keywords
-    elif any(w in query_lower for w in ["monitor", "巡检", "监控"]):
-        ctx.invoke(monitor, action="status")
-    # Everything else → status (including "怎么样", "如何", "好吗", "状态" etc.)
+    # If API key is configured, use the real AI agent
+    api_key = config.agent.api_key
+    if not api_key:
+        import os as _os
+        env_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+        api_key = _os.environ.get(env_map.get(config.agent.provider, ""))
+
+    if api_key:
+        from yequ.agent.core import create_agent
+        agent = create_agent(
+            config=config.agent,
+            db_path=db_path,
+            data_dir=config.data.dir,
+        )
+        click.echo("⏳ 思考中...\n")
+        answer = agent.ask(query)
+        click.echo(answer)
     else:
-        ctx.invoke(status)
+        # Fallback: offline keyword matching
+        click.echo("⚠️  未配置 LLM API Key，使用离线模式。\n")
+        click.echo("配置方法：编辑 config/gateway.yaml\n")
+        click.echo('  agent:')
+        click.echo('    provider: anthropic')
+        click.echo('    api_key: "sk-ant-..."')
+
+        query_lower = query.lower()
+        if any(w in query_lower for w in ["alert", "alarm", "event", "告警", "事件", "报警", "异常"]):
+            ctx.invoke(events)
+        elif any(w in query_lower for w in ["device", "设备", "devices", "列表", "有哪些", "几个"]):
+            ctx.invoke(devices)
+        elif any(w in query_lower for w in ["monitor", "巡检", "监控"]):
+            ctx.invoke(monitor, action="status")
+        else:
+            ctx.invoke(status)
 
 
 @main.command()

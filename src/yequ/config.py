@@ -33,8 +33,9 @@ class CollectorConfig:
 
 @dataclass
 class AgentConfig:
-    anthropic_api_key: str = ""
+    provider: str = "anthropic"     # anthropic | openai | ollama
     model: str = "claude-sonnet-4-6"
+    api_key: str = ""               # API key (or use env var)
 
 
 @dataclass
@@ -85,8 +86,9 @@ def load_config(path: str) -> Config:
             interval_seconds=collector_raw.get("interval_seconds", 60),
         ),
         agent=AgentConfig(
-            anthropic_api_key=agent_raw.get("anthropic_api_key", ""),
+            provider=agent_raw.get("provider", "anthropic"),
             model=agent_raw.get("model", "claude-sonnet-4-6"),
+            api_key=agent_raw.get("api_key", ""),
         ),
         notify=NotifyConfig(
             log_file=_expand_path(notify_raw.get("log_file", "~/.local/share/yequ-gateway/gateway.log")),
