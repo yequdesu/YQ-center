@@ -94,6 +94,19 @@ class GatewayApp:
     def _handle_registration(self, msg):
         device = self.store.get_device(msg.device_id)
         if device:
+            # Re-registration: update actions and capabilities from new declaration
+            self.store.touch_hello(msg.device_id)
+            if msg.actions:
+                self.store.clear_actions(msg.device_id)
+                for act in msg.actions:
+                    if "name" in act:
+                        self.store.add_action(msg.device_id, act)
+                        self.store.approve_action(msg.device_id, act["name"])
+            if msg.capabilities:
+                for cap in msg.capabilities:
+                    if "name" in cap:
+                        self.store.add_capability(msg.device_id, cap)
+                        self.store.approve_capability(msg.device_id, cap["name"])
             return JSONResponse(RegistrationResponse(
                 status="approved", token=device.token,
                 config={"collector": {"interval_seconds": 60}},
