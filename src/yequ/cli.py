@@ -171,14 +171,21 @@ def devices(ctx):
         return
 
     for d in devices:
-        status_icon = "active" if d.last_hello_at else "pending"
+        if d.last_hello_at:
+            status_icon = "🟢"
+        elif d.is_local:
+            status_icon = "🔵"  # local device, direct DB access, no hello
+        else:
+            status_icon = "⚪"  # never hello'd yet
         labels = ", ".join(f"{k}={v}" for k, v in d.labels.items())
         local_tag = " [local]" if d.is_local else ""
-        click.echo(f"[{status_icon}] {d.device_id}{local_tag}")
+        click.echo(f"{status_icon} {d.device_id}{local_tag}")
         if labels:
             click.echo(f"   Labels: {labels}")
         if d.last_hello_at:
             click.echo(f"   Last hello: {d.last_hello_at}")
+        elif d.is_local:
+            click.echo(f"   (local device — direct DB access)")
         click.echo()
 
 
@@ -223,7 +230,7 @@ def events(ctx, device_id):
         return
 
     for e in events:
-        icon = {"critical": "CRIT", "warning": "WARN", "info": "INFO"}.get(e["severity"], "")
+        icon = {"critical": "🔴", "warning": "⚠️", "info": "ℹ️"}.get(e["severity"], "")
         click.echo(f"[{icon}] [{e['timestamp']}] {e['title']}")
         if e["body"]:
             click.echo(f"   {e['body']}")
@@ -234,18 +241,26 @@ def events(ctx, device_id):
 @click.argument("query")
 @click.pass_context
 def ask(ctx, query):
-    """Ask the Gateway a question (Phase 1: structured query)."""
+    """Ask the Gateway a question (Phase 1: structured query).
+
+    Matches keywords to route to the right command. Falls back to status.
+    """
     query_lower = query.lower()
 
-    if any(w in query_lower for w in ["status", "state", "状态"]):
-        ctx.invoke(status)
-    elif any(w in query_lower for w in ["device", "设备"]):
-        ctx.invoke(devices)
-    elif any(w in query_lower for w in ["alert", "alarm", "event", "events", "告警", "事件"]):
+    # Event / alert keywords
+    if any(w in query_lower for w in ["alert", "alarm", "event", "events",
+                                       "告警", "事件", "报警", "异常"]):
         ctx.invoke(events)
+    # Device list keywords
+    elif any(w in query_lower for w in ["device", "设备", "devices", "列表",
+                                         "有哪些", "几个"]):
+        ctx.invoke(devices)
+    # Monitor keywords
+    elif any(w in query_lower for w in ["monitor", "巡检", "监控"]):
+        ctx.invoke(monitor, action="status")
+    # Everything else → status (including "怎么样", "如何", "好吗", "状态" etc.)
     else:
-        click.echo(f"Unknown query: {query}")
-        click.echo("Try: status, devices, alerts")
+        ctx.invoke(status)
 
 
 @main.command()
