@@ -59,6 +59,9 @@ class Device:
             return "online"
         if self.is_local:
             return "local"
+        # Device was online before (has been approved/created) but now has no heartbeat
+        if self.created_at:
+            return "offline"
         return "unknown"
 
 
