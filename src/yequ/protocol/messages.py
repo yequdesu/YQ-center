@@ -139,7 +139,10 @@ class Ack:
             "message_type": self.message_type,
             "message_id": self.message_id,
             "status": self.status,
-            "pending_commands": [c.to_dict() for c in self.pending_commands],
+            "pending_commands": [
+                c.to_dict() if hasattr(c, 'to_dict') else c
+                for c in self.pending_commands
+            ],
         }
         if self.error:
             d["error"] = self.error
