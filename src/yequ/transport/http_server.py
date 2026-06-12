@@ -190,6 +190,8 @@ class GatewayApp:
                 if image_url:
                     result["image_url"] = image_url
                 self.store.record_command_result(cid, _json.dumps(result, ensure_ascii=False))
+                logger.info("Command result recorded: %s for %s, publishing to MQ (subscribers: %d)",
+                            cid, dev_id, len(mq._subscribers))
                 mq.publish("yequ:events", {
                     "event_type": "command_completed", "severity": "info",
                     "title": f"指令完成: {result.get('status', 'unknown')}",
@@ -699,6 +701,7 @@ class GatewayApp:
     async def api_events_stream(self, request):
         async def generate():
             q = await mq.subscribe()
+            logger.info("SSE subscriber connected (total: %d)", len(mq._subscribers))
             try:
                 yield "event: connected\ndata: {}\n\n"
                 while True:
@@ -706,6 +709,7 @@ class GatewayApp:
                         break
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=30)
+                        logger.info("SSE sending event: %s", event.get("event_type", "?"))
                         data = json.dumps(event, ensure_ascii=False)
                         yield f"event: event\ndata: {data}\n\n"
                     except asyncio.TimeoutError:
