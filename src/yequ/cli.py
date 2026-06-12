@@ -86,9 +86,11 @@ def serve(ctx):
     from yequ.transport.http_server import create_app
     import uvicorn
 
+    from yequ.events_bus import bus
     app = create_app(
         db_path=db_path, device_store=store, notify_router=notify,
         collector_runner=runner, agent_config=config.agent,
+        event_bus=bus,
     )
 
     import threading

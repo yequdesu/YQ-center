@@ -18,6 +18,7 @@ from yequ.agent.core import AgentEvent
 from yequ.protocol.messages import (
     HelloRegistration,
     HelloHeartbeat,
+    Goodbye,
     Ingest,
     Ack,
     HelloResponse,
@@ -59,7 +60,8 @@ class GatewayApp:
         self.notify = notify_router
         self.collector = collector_runner
         self.agent_config = agent_config
-        self._agent = None  # lazy singleton for conversation continuity
+        self._agent = None
+        self._event_bus_ref = None  # set externally
 
     @property
     def agent(self):
@@ -85,6 +87,8 @@ class GatewayApp:
             return self._handle_registration(msg)
         elif isinstance(msg, HelloHeartbeat):
             return self._handle_heartbeat(msg)
+        elif isinstance(msg, Goodbye):
+            return self._handle_goodbye(msg)
 
     def _handle_registration(self, msg):
         device = self.store.get_device(msg.device_id)
@@ -110,6 +114,37 @@ class GatewayApp:
         if retry_count >= INITIAL_RETRIES + 10:
             resp.note = "请联系管理员审批"
         return JSONResponse(resp.to_dict())
+
+    def _handle_goodbye(self, msg):
+        device = self.store.get_device_by_token(msg.token)
+        if device is None or device.device_id != msg.device_id:
+            return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
+
+        from yequ.storage.ingest import ingest_event
+        ingest_event(self.db_path, msg.device_id, "device_offline", "info",
+                     f"设备主动下线: {msg.device_id}",
+                     "设备发送了 goodbye 消息，正常关闭")
+
+        # Publish to event bus for real-time dashboard notification
+        import time
+        if hasattr(self, '_event_bus_ref') and self._event_bus_ref:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._event_bus_ref.publish({
+                        "event_type": "device_offline",
+                        "severity": "info",
+                        "title": f"设备主动下线: {msg.device_id}",
+                        "body": "正常关闭",
+                        "device_id": msg.device_id,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }))
+            except RuntimeError:
+                pass
+
+        return JSONResponse(Ack(message_id="goodbye", status="ok",
+                                pending_commands=[]).to_dict())
 
     def _handle_heartbeat(self, msg):
         device = self.store.get_device_by_token(msg.token)
@@ -514,12 +549,13 @@ class GatewayApp:
 # ── App Factory ──────────────────────────────────────────────────
 
 def create_app(db_path, device_store, notify_router,
-               collector_runner=None, agent_config=None):
+               collector_runner=None, agent_config=None, event_bus=None):
     gateway = GatewayApp(
         db_path=db_path, device_store=device_store,
         notify_router=notify_router, collector_runner=collector_runner,
         agent_config=agent_config,
     )
+    gateway._event_bus_ref = event_bus
     dashboard_path = _os_module.path.join(_os_module.path.dirname(__file__), "..", "dashboard.html")
 
     async def dashboard(request):

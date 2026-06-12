@@ -64,6 +64,21 @@ class HelloHeartbeat:
 
 
 @dataclass
+class Goodbye:
+    """设备主动通知 Gateway 即将离线."""
+    device_id: str
+    token: str
+    hello_type: str = "goodbye"
+    protocol: str = PROTOCOL_VERSION
+    message_type: str = "hello"
+
+    @classmethod
+    def from_json(cls, raw: str) -> "Goodbye":
+        data = json.loads(raw)
+        return cls(device_id=data["device_id"], token=data["token"])
+
+
+@dataclass
 class Command:
     """Gateway 下发给设备的指令."""
     action: str
@@ -183,7 +198,7 @@ class Alert:
         return asdict(self)
 
 
-def parse_hello(raw: str) -> HelloRegistration | HelloHeartbeat:
+def parse_hello(raw: str) -> HelloRegistration | HelloHeartbeat | Goodbye:
     """根据 hello_type 自动解析 Hello 消息."""
     data = json.loads(raw)
     hello_type = data.get("hello_type", "")
@@ -191,6 +206,8 @@ def parse_hello(raw: str) -> HelloRegistration | HelloHeartbeat:
         return HelloRegistration.from_json(raw)
     elif hello_type == "heartbeat":
         return HelloHeartbeat.from_json(raw)
+    elif hello_type == "goodbye":
+        return Goodbye.from_json(raw)
     else:
         raise ValueError(f"Unknown hello_type: {hello_type}")
 
