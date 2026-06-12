@@ -118,7 +118,9 @@ class GatewayApp:
         return JSONResponse(resp.to_dict())
 
     def _process_command_results(self, raw_body: str | None) -> None:
-        """If the request includes command_results, record them."""
+        """If the request includes command_results, record them.
+        Extract base64 images and save to media storage.
+        """
         if not raw_body:
             return
         try:
@@ -127,8 +129,26 @@ class GatewayApp:
             results = data.get("command_results", [])
             for r in results:
                 cid = r.get("command_id")
-                if cid:
-                    self.store.record_command_result(cid, _json.dumps(r, ensure_ascii=False))
+                if not cid:
+                    continue
+                # Extract and save base64 image if present
+                image_b64 = r.get("image_base64")
+                image_url = None
+                if image_b64:
+                    from yequ.storage.media import save_media
+                    mime = r.get("image_mime", "image/png")
+                    media_id = save_media(
+                        os.path.dirname(self.db_path),
+                        r.get("device_id", "unknown"),
+                        f"{cid}.png", image_b64, mime,
+                    )
+                    if media_id:
+                        image_url = f"/api/media/{media_id}"
+                # Store result (with image URL instead of base64 data)
+                result = {k: v for k, v in r.items() if k != "image_base64"}
+                if image_url:
+                    result["image_url"] = image_url
+                self.store.record_command_result(cid, _json.dumps(result, ensure_ascii=False))
         except Exception:
             pass
 
@@ -434,6 +454,18 @@ class GatewayApp:
 
         return JSONResponse({"monitor_enabled": action == "on"})
 
+    # ── REST: Media ──────────────────────────────────────────────
+
+    async def serve_media(self, request):
+        media_id = request.path_params["media_id"]
+        from yequ.storage.media import get_media_path
+        path = get_media_path(os.path.dirname(self.db_path), media_id)
+        if path is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        import mimetypes
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(path, media_type=mime or "image/png")
+
     # ── REST: Audit ──────────────────────────────────────────────
 
     async def api_audit(self, request):
@@ -658,6 +690,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/hello", gateway.handle_hello, methods=["POST"]),
         Route("/ingest", gateway.handle_ingest, methods=["POST"]),
         # Devices
+        Route("/api/media/{media_id}", gateway.serve_media, methods=["GET"]),
         Route("/api/pending", gateway.api_pending, methods=["GET"]),
         Route("/api/pending/{device_id}", gateway.api_pending_decline, methods=["DELETE"]),
         Route("/api/devices", gateway.api_devices, methods=["GET"]),
