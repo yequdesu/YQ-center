@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""YeQu Executor Service — 本机通用指令执行器。
+"""YeQu Executor Service — 本机命令执行器。
 
-通过名为 script 的壳执行 Agent 下发的任意操作。
-Scripts 位于 ./scripts/ 目录，每个可执行文件即一个可调用能力。
+Agent 下发 exec 指令 → 本机执行 shell 命令 → 返回输出。
+通过 YQP 协议接入 Gateway，与 Core 完全解耦。
 """
 
 import atexit
@@ -20,71 +20,35 @@ import requests
 
 GATEWAY = os.environ.get("YEQ_GATEWAY", "http://127.0.0.1:9800")
 DEVICE_ID = f"{socket.gethostname()}-executor"
-HEARTBEAT_INTERVAL = 10  # local service — can heartbeat fast
+HEARTBEAT_INTERVAL = 10
 COMMAND_POLL_INTERVAL = 3
-SCRIPT_TIMEOUT = 30
+COMMAND_TIMEOUT = 30
 TOKEN = None
 running = True
 
-SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
-
-
-def _list_scripts():
-    """Return all executable scripts with their descriptions."""
-    scripts = []
-    if not os.path.isdir(SCRIPT_DIR):
-        return scripts
-    for f in sorted(os.listdir(SCRIPT_DIR)):
-        path = os.path.join(SCRIPT_DIR, f)
-        if not os.access(path, os.X_OK):
-            continue
-        desc = ""
-        try:
-            with open(path) as fh:
-                first = fh.readline()
-                if first.startswith("# description:") or first.startswith("# description："):
-                    desc = first.split(":", 1)[1].strip()
-        except Exception:
-            pass
-        scripts.append({"name": f, "description": desc})
-    return scripts
-
-
-def _exec_script(name, args):
-    """Run a named script with optional arguments. Returns {status, output}."""
-    path = os.path.join(SCRIPT_DIR, name)
-    if not os.path.isfile(path):
-        return {"status": "error", "output": f"Script not found: {name}"}
-    if not os.access(path, os.X_OK):
-        return {"status": "error", "output": f"Script not executable: {name}"}
-    try:
-        cmd = [path] + (args or [])
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=SCRIPT_TIMEOUT)
-        return {
-            "status": "ok" if r.returncode == 0 else "error",
-            "output": (r.stdout + r.stderr)[:16384],
-            "exit_code": r.returncode,
-        }
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "output": f"Script timed out ({SCRIPT_TIMEOUT}s)"}
-    except Exception as e:
-        return {"status": "error", "output": str(e)}
-
 
 def execute(action, params):
+    """Execute an action. 'exec' runs a shell command directly."""
     try:
-        if action == "list_scripts":
-            return {"status": "ok", "scripts": _list_scripts()}
-        elif action == "exec":
-            name = params.get("script", "")
-            args = params.get("args", [])
-            if not name:
-                return {"status": "error", "output": "script name is required"}
-            return _exec_script(name, args)
+        if action == "exec":
+            cmd = params.get("command", "")
+            if not cmd:
+                return {"status": "error", "output": "command is required"}
+            timeout = min(params.get("timeout", COMMAND_TIMEOUT), 120)
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+            )
+            return {
+                "status": "ok" if r.returncode == 0 else "error",
+                "output": (r.stdout + r.stderr)[:16384],
+                "exit_code": r.returncode,
+            }
         elif action in ("ping", "set_interval", "restart_collector"):
             return {"status": "ok", "output": action}
         else:
             return {"status": "error", "output": f"Unknown action: {action}"}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": f"Command timed out"}
     except Exception as e:
         return {"status": "error", "output": str(e)}
 
@@ -111,28 +75,19 @@ def register():
                 "os": platform.system(), "hostname": socket.gethostname(),
                 "source_type": "service",
             },
-            "actions": [
-                {
-                    "name": "list_scripts",
-                    "display": "列出可用脚本",
-                    "description": "返回 scripts/ 目录中所有可执行脚本及其说明",
-                    "params": {},
+            "actions": [{
+                "name": "exec",
+                "display": "执行命令",
+                "description": "在当前机器上执行任意 shell 命令并返回输出。Agent 可直接下发 docker ps、systemctl status 等。",
+                "params": {
+                    "command": {"type": "string", "description": "要执行的 shell 命令"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认30，最大120"},
                 },
-                {
-                    "name": "exec",
-                    "display": "执行脚本",
-                    "description": "执行 scripts/ 目录中的指定脚本。先用 list_scripts 查看有哪些可用。",
-                    "params": {
-                        "script": {"type": "string", "description": "脚本文件名"},
-                        "args": {"type": "array", "description": "传递给脚本的参数列表"},
-                    },
-                },
-            ],
+            }],
         })
         if resp.get("status") == "approved":
             TOKEN = resp["token"]
-            available = _list_scripts()
-            print(f"[executor] Approved. {len(available)} scripts available: {[s['name'] for s in available]}")
+            print(f"[executor] Approved. Token: {TOKEN[:16]}...")
             return
         retry += 1
         wait = resp.get("retry_after", 30)
@@ -165,12 +120,12 @@ def command_loop():
                 for cmd in cmds:
                     action = cmd["action"]
                     params = cmd.get("params", {})
-                    print(f"[executor] {action} {params.get('script','')}")
+                    print(f"[executor] {action}: {params.get('command', params)}")
                     r = execute(action, params)
                     results.append({
                         "command_id": cmd["command_id"],
                         "status": r["status"],
-                        "output": r.get("output", json.dumps(r, ensure_ascii=False)),
+                        "output": r.get("output", ""),
                     })
                 api("POST", "/ingest", {
                     "protocol": "yqp/1.0", "message_type": "ingest",
@@ -205,6 +160,7 @@ def shutdown(*_):
     goodbye()
     sys.exit(0)
 
+
 def main():
     global running
     atexit.register(goodbye)
@@ -227,5 +183,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import json
     main()
