@@ -222,25 +222,120 @@ Hello 是设备接入的入口，有两种子类型。
 | `error` | status 为 error 时的错误描述（可选） |
 | `pending_commands` | Gateway 下发的待执行指令列表（可为空） |
 
-### 2.4 Command — 网关指令
+### 2.4 Action 声明
 
-Gateway 通过 Ack 中的 `pending_commands` 数组向设备下发指令。当前支持的指令：
-
-| action | 参数 | 说明 |
-|--------|------|------|
-| `set_interval` | `{"capability": "...", "interval": N}` | 修改指定 capability 的采集间隔（秒） |
-| `restart_collector` | `{}` | 重新启动采集服务 |
-| `ping` | `{}` | 请求设备立即发送一次心跳 |
+设备在注册时通过 `actions` 字段声明自己能执行的**操作**（区别于 `capabilities` 声明的**数据**）。
 
 ```json
 {
-  "command_id": "uuid",
-  "action": "set_interval",
-  "params": {"capability": "location", "interval": 30}
+  "hello_type": "registration",
+  "device_id": "my-device",
+  "capabilities": [...],
+  "actions": [
+    {
+      "name": "take_screenshot",
+      "display": "屏幕截图",
+      "description": "截取当前桌面并返回 PNG 图片",
+      "params": {}
+    },
+    {
+      "name": "run_diagnostics",
+      "display": "运行诊断",
+      "description": "运行系统诊断并返回报告",
+      "params": {"target": {"type": "string"}}
+    }
+  ]
 }
 ```
 
-设备必须在下次请求时处理待执行指令。已执行的指令不会重复下发。
+| 字段 | 必需 | 说明 |
+|------|------|------|
+| `name` | 是 | 唯一标识，`snake_case` |
+| `display` | 否 | 人类可读名称 |
+| `description` | 否 | 功能描述，Agent 据此判断何时调用 |
+| `params` | 否 | JSON Schema，定义参数格式 |
+
+Gateway 批准设备后，actions 自动可用。Agent 可调用 `list_device_actions` 查看，`send_command` 下发。
+
+### 2.5 Command — 网关下发指令
+
+Gateway 通过心跳/ingest 的 Ack 中 `pending_commands` 数组下发指令。
+
+```json
+// ← 心跳/ingest 响应
+{
+  "status": "ok",
+  "pending_commands": [
+    {
+      "command_id": "550e8400-e29b-41d4-a716-446655440000",
+      "action": "take_screenshot",
+      "params": {}
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `command_id` | Gateway 生成的唯一 ID，结果上报时回显 |
+| `action` | 操作名，匹配设备声明的 actions |
+| `params` | 操作参数 |
+
+设备收到后执行，已执行的指令不会重复下发（`delivered=1`）。
+
+内置指令（无需声明即可使用）：
+
+| action | 说明 |
+|--------|------|
+| `set_interval` | 修改采集间隔 |
+| `restart_collector` | 重启采集 |
+| `ping` | 立即发送一次心跳 |
+
+### 2.6 Command Result — 设备上报执行结果
+
+设备执行完指令后，在**下一次**心跳或 ingest 中携带 `command_results`。**两种请求均可，Gateway 两路都处理。**
+
+```json
+// POST /hello (heartbeat) 或 POST /ingest
+{
+  "hello_type": "heartbeat",
+  "device_id": "my-device",
+  "token": "...",
+  "command_results": [
+    {
+      "command_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "ok",
+      "output": "Screenshot captured successfully",
+      "image_base64": "iVBORw0KGgo...",
+      "image_mime": "image/png"
+    }
+  ]
+}
+```
+
+| 字段 | 必需 | 说明 |
+|------|------|------|
+| `command_id` | 是 | 对应指令 ID |
+| `status` | 是 | `"ok"` 或 `"error"` |
+| `output` | 否 | 文本输出，Agent 直接读取 |
+| `image_base64` | 否 | 图片类结果的 base64 编码 |
+| `image_mime` | 否 | 图片 MIME 类型，默认 `image/png` |
+
+**规范：**
+
+- 结果随下一次**任意**已认证请求（heartbeat 或 ingest）上报，不做限制
+- Gateway 解码 `image_base64` → 存为文件 → 替换为 `/api/media/{id}` URL
+- Agent 通过 `check_command_result(command_id)` 查询执行结果
+
+**完整生命周期：**
+
+```
+Gateway send_command → 指令入队 (pending_commands)
+设备下次心跳/ingest → Ack 中拿到 pending_commands
+设备执行指令
+设备再下次心跳/ingest → 携带 command_results
+Gateway 存储结果 → Agent 可查询
+```
 
 ---
 
