@@ -443,25 +443,6 @@ async function sendChat() {
   msgs.innerHTML += `<div class="chat-msg user"><span class="ts">now</span> ${esc(query)}</div>`;
 
   try {
-    // Use non-streaming API first (more reliable), fall back to SSE
-    const nr = await fetch('/api/ask', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query}),
-    });
-    const nrData = await nr.json();
-    if (nrData.answer) {
-      msgs.innerHTML += `<div class="chat-msg agent">${esc(nrData.answer)}</div>`;
-    } else if (nrData.error) {
-      msgs.innerHTML += `<div class="chat-msg tool" style="color:#f85149">${esc(nrData.error)}</div>`;
-    }
-    chatStreaming = false;
-    msgs.scrollTop = msgs.scrollHeight;
-    return;
-  } catch(_) {}
-
-  // Fallback to SSE streaming
-  try {
     const resp = await fetch('/api/ask/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
