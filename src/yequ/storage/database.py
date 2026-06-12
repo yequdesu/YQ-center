@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS conversation_log (
     model TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    messages_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Data DB schema (snapshots, metrics, events)

@@ -59,6 +59,7 @@ class Agent:
         self.tools = TOOLS
         self.handler = ToolHandler(db_path=db_path, config_data_dir=data_dir)
         self._history: list[dict] = []  # conversation context
+        self._load_session()
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -130,6 +131,7 @@ class Agent:
             # Remember this turn
             self._history.append({"role": "user", "content": question})
             self._history.append({"role": "assistant", "content": final_text})
+            self._save_session()
             return
 
         # Max rounds reached
@@ -139,6 +141,39 @@ class Agent:
         self._log_conversation(question, final_text, tool_calls_made)
         self._history.append({"role": "user", "content": question})
         self._history.append({"role": "assistant", "content": final_text})
+        self._save_session()
+
+    # ── Session Persistence ─────────────────────────────────────────
+
+    def _load_session(self):
+        """Load conversation history from SQLite."""
+        from yequ.storage.database import get_connection
+        try:
+            with get_connection(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT messages_json FROM agent_sessions WHERE id = 'default'"
+                ).fetchone()
+            if row:
+                import json as _json
+                self._history = _json.loads(row["messages_json"])[-20:]
+        except Exception:
+            pass
+
+    def _save_session(self):
+        """Persist conversation history to SQLite."""
+        import json as _json
+        from yequ.storage.database import get_connection
+        try:
+            msgs = _json.dumps(self._history[-20:], ensure_ascii=False)
+            with get_connection(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO agent_sessions (id, messages_json, updated_at) "
+                    "VALUES ('default', ?, datetime('now'))",
+                    (msgs,),
+                )
+                conn.commit()
+        except Exception:
+            pass
 
     # ── Conversation Logging ──────────────────────────────────────
 

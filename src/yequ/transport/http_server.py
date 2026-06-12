@@ -270,6 +270,9 @@ class GatewayApp:
         # Process command_results carried in ingest
         self._process_command_results(body_str)
 
+        # Clock skew detection
+        self._check_clock_skew(msg.device_id, msg.timestamp)
+
         cap = self.store.get_capability(msg.device_id, msg.capability)
         data_type = cap.data_type if cap else "snapshot"
 
@@ -698,6 +701,25 @@ class GatewayApp:
 
     async def _sse_error(self, msg):
         yield f"event: error\ndata: {json.dumps(msg)}\n\n"
+
+    def _check_clock_skew(self, device_id, client_ts_str):
+        """Detect and report clock deviation between client and server."""
+        from datetime import datetime, timezone
+        try:
+            client_ts = datetime.fromisoformat(client_ts_str.replace("Z", "+00:00"))
+            server_ts = datetime.now(timezone.utc)
+            skew = abs((server_ts - client_ts).total_seconds())
+            if skew >= 60:
+                mq.publish("yequ:events", {
+                    "event_type": "clock_skew", "severity": "warning",
+                    "title": f"时钟偏差: {device_id}",
+                    "body": f"偏差 {int(skew)}s (客户端: {client_ts_str})",
+                    "device_id": device_id,
+                    "data": {"skew_seconds": int(skew)},
+                })
+            return skew
+        except Exception:
+            return None
 
     # ── Helpers ──────────────────────────────────────────────────
 
