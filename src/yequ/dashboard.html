@@ -214,15 +214,22 @@ async function loadPending() {
   const data = await resp.json();
   const el = document.getElementById('pending-list');
   if (!data.pending.length) { el.innerHTML = '<div class="empty">None</div>'; return; }
-  el.innerHTML = data.pending.map(p => `
+  el.innerHTML = data.pending.map(p => {
+    const info = p.device_info || {};
+    const caps = info._capabilities || [];
+    const display = [info.os, info.hostname, info.model, info.version]
+      .filter(Boolean).join(' · ') || 'No info';
+    return `
     <div class="pending-item">
       <div class="name">${esc(p.device_id)}</div>
-      <div class="meta">${esc(JSON.stringify(p.device_info))} · ${ago(p.registered_at)}</div>
+      <div class="meta">${esc(display)} · ${caps.length} capabilities · ${ago(p.registered_at)}</div>
       <div class="actions">
         <button class="btn primary small" onclick="approveDevice('${p.device_id}')">Approve</button>
+        <button class="btn danger small" onclick="declineDevice('${p.device_id}')">Decline</button>
       </div>
     </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 function renderPending(devices) {
@@ -531,6 +538,11 @@ async function revokeDevice(id) {
   if (!confirm(`Revoke ${id}?`)) return;
   await fetch(`/api/devices/${id}`, {method:'DELETE'});
   loadDevices();
+}
+
+async function declineDevice(id) {
+  await fetch(`/api/pending/${id}`, {method:'DELETE'});
+  loadPending();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

@@ -154,6 +154,11 @@ class GatewayApp:
             "total": len(pending),
         })
 
+    async def api_pending_decline(self, request):
+        device_id = request.path_params["device_id"]
+        self.store.remove_pending_registration(device_id)
+        return JSONResponse({"status": "declined", "device_id": device_id})
+
     # ── REST: Devices ────────────────────────────────────────────
 
     async def api_devices(self, request):
@@ -503,6 +508,7 @@ def create_app(db_path, device_store, notify_router,
         Route("/ingest", gateway.handle_ingest, methods=["POST"]),
         # Devices
         Route("/api/pending", gateway.api_pending, methods=["GET"]),
+        Route("/api/pending/{device_id}", gateway.api_pending_decline, methods=["DELETE"]),
         Route("/api/devices", gateway.api_devices, methods=["GET"]),
         Route("/api/devices/{device_id}", gateway.api_device_detail, methods=["GET"]),
         Route("/api/devices/{device_id}/approve", gateway.api_device_approve, methods=["POST"]),
