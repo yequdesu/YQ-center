@@ -374,6 +374,10 @@ function connectEventStream() {
       `);
       // Keep max 50 items
       while (el.children.length > 50) el.lastChild.remove();
+      // Refresh device list on any device-related event
+      if (ev.event_type === 'device_offline' || ev.event_type === 'device_online') {
+        loadDevices();
+      }
     } catch(ex) {}
   });
   es.onerror = () => {

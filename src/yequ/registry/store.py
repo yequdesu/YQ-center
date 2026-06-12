@@ -108,6 +108,16 @@ class DeviceStore:
             )
             conn.commit()
 
+    def mark_offline(self, device_id: str) -> None:
+        """Clear last_hello_at to mark device as offline."""
+        now = now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE devices SET last_hello_at = NULL, updated_at = ? WHERE device_id = ?",
+                (now, device_id),
+            )
+            conn.commit()
+
     def revoke_device(self, device_id: str) -> None:
         now = now_iso()
         with self._conn() as conn:

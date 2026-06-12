@@ -120,6 +120,8 @@ class GatewayApp:
         if device is None or device.device_id != msg.device_id:
             return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
 
+        self.store.mark_offline(msg.device_id)
+
         from yequ.storage.ingest import ingest_event
         ingest_event(self.db_path, msg.device_id, "device_offline", "info",
                      f"设备主动下线: {msg.device_id}",
