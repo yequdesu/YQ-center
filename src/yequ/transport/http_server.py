@@ -217,14 +217,18 @@ class GatewayApp:
 
     async def handle_ingest(self, request):
         try:
-            body = await request.body()
-            msg = Ingest.from_json(body.decode("utf-8"))
+            raw = await request.body()
+            body_str = raw.decode("utf-8")
+            msg = Ingest.from_json(body_str)
         except Exception as e:
             return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
 
         device = self.store.get_device_by_token(msg.token)
         if device is None:
             return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
+
+        # Process command_results carried in ingest
+        self._process_command_results(body_str)
 
         cap = self.store.get_capability(msg.device_id, msg.capability)
         data_type = cap.data_type if cap else "snapshot"
