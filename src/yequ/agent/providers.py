@@ -171,68 +171,22 @@ class AnthropicProvider(LLMProvider):
         return AgentResponse(text=text, tool_calls=tool_calls)
 
     def stream(self, messages, tools=None) -> Iterator[StreamEvent]:
-        if not self.api_key:
-            yield StreamEvent(type="error", data="未配置 API Key")
-            return
+        """Stream via non-streaming API call. Yields tool calls first, then full text.
 
-        try:
-            client = self._build_client()
-        except Exception as e:
-            yield StreamEvent(type="error", data=f"无法初始化客户端: {e}")
-            return
-
-        system_prompt, api_messages = self._prepare_messages(messages)
-
-        kwargs = dict(model=self.model, max_tokens=1024, messages=api_messages)
-        if system_prompt:
-            kwargs["system"] = system_prompt
-        if tools:
-            kwargs["tools"] = tools
-
-        had_tokens = False
-        stream_events = []
-        try:
-            with client.messages.stream(**kwargs) as stream:
-                for event in stream:
-                    stream_events.append(event.type)
-                    if event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            had_tokens = True
-                            yield StreamEvent(type="token", data=event.delta.text)
-                    elif event.type == "content_block_start":
-                        if event.content_block.type == "tool_use":
-                            pass
-        except Exception as e:
-            yield StreamEvent(type="error", data=str(e))
-            return
-
-        try:
-            final = stream.get_final_message()
-        except Exception as e:
-            yield StreamEvent(type="error",
-                data=f"get_final_message failed: {e}. stream events: {stream_events}")
-            return
-
-        # Yield text from final message if not already streamed (DeepSeek compat)
-        if not had_tokens:
-            for block in final.content:
-                if block.type == "text":
-                    yield StreamEvent(type="token", data=block.text)
-        # Yield tool calls
-        for block in final.content:
-            if block.type == "tool_use":
+        Uses client.messages.create() instead of client.messages.stream()
+        because DeepSeek's streaming protocol is incompatible with the Anthropic SDK
+        event iterator, causing indefinite blocking.
+        """
+        resp = self.chat(messages, tools)
+        if resp.tool_calls:
+            for tc in resp.tool_calls:
                 yield StreamEvent(type="tool_call", data={
-                    "name": block.name,
-                    "arguments": block.input if isinstance(block.input, dict) else json.loads(block.input),
-                    "id": block.id,
+                    "name": tc.name, "arguments": tc.arguments, "id": tc.id,
                 })
-
-        # If nothing was yielded at all, send error with diagnostic info
-        if not had_tokens and not any(b.type == "tool_use" for b in final.content):
-            block_types = [b.type for b in final.content]
-            yield StreamEvent(type="error",
-                data=f"No text or tool_use in response. Blocks: {block_types}, stream events: {stream_events}")
-
+        if resp.text:
+            yield StreamEvent(type="token", data=resp.text)
+        if not resp.text and not resp.tool_calls:
+            yield StreamEvent(type="error", data="Empty response from LLM")
         yield StreamEvent(type="done")
 
 

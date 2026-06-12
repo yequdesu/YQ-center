@@ -387,7 +387,13 @@ class GatewayApp:
                 except Exception as e:
                     return [StreamEvent(type="error", data=str(e))]
 
-            events = await loop.run_in_executor(None, run)
+            try:
+                events = await asyncio.wait_for(
+                    loop.run_in_executor(None, run), timeout=45)
+            except asyncio.TimeoutError:
+                yield f"event: error\ndata: {json.dumps('Request timed out after 45s')}\n\n"
+                return
+
             for event in events:
                 data = json.dumps(event.data, ensure_ascii=False) if event.data else "{}"
                 yield f"event: {event.type}\ndata: {data}\n\n"
