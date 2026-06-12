@@ -379,22 +379,29 @@ class GatewayApp:
                              data_dir=os.path.dirname(self.db_path))
 
         async def generate():
+            import queue
+            import threading
+
+            q: queue.Queue = queue.Queue()
             loop = asyncio.get_event_loop()
 
             def run():
                 try:
-                    return list(agent.ask_stream(query))
+                    for event in agent.ask_stream(query):
+                        q.put(event)
                 except Exception as e:
-                    return [AgentEvent(type="error", data=str(e))]
+                    q.put(AgentEvent(type="error", data=str(e)))
+                q.put(None)  # sentinel
 
-            try:
-                events = await asyncio.wait_for(
-                    loop.run_in_executor(None, run), timeout=45)
-            except asyncio.TimeoutError:
-                yield f"event: error\ndata: {json.dumps('Request timed out after 45s')}\n\n"
-                return
+            threading.Thread(target=run, daemon=True).start()
 
-            for event in events:
+            while True:
+                try:
+                    event = await loop.run_in_executor(None, q.get, True, 1.0)
+                except queue.Empty:
+                    continue
+                if event is None:
+                    return
                 data = json.dumps(event.data, ensure_ascii=False) if event.data else "{}"
                 yield f"event: {event.type}\ndata: {data}\n\n"
 
