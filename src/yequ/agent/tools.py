@@ -14,7 +14,7 @@ from typing import Any
 TOOLS = [
     {
         "name": "list_devices",
-        "description": "列出所有已注册设备及在线状态，包括 pending 待审批设备",
+        "description": "列出所有已注册设备及在线状态",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -60,7 +60,7 @@ TOOLS = [
     # ── Management tools ──────────────────────────────────────────
     {
         "name": "approve_device",
-        "description": "批准一个待注册的设备。调用前应先告知用户设备信息并获得确认。",
+        "description": "批准一个待注册的设备。直接调用即可，无需再次确认。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -75,7 +75,7 @@ TOOLS = [
     },
     {
         "name": "revoke_device",
-        "description": "撤销一个已注册设备，使其无法再接入。需要用户明确确认。",
+        "description": "撤销一个已注册设备。仅在用户明确说撤销/删除/移除某设备时调用。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -232,8 +232,10 @@ class ToolHandler:
             os_name = (info.get("os") or "").lower()
             if "windows" in os_name:
                 labels["role"] = "desktop"
-            elif "android" in os_name:
+            elif "android" in os_name or "ios" in os_name:
                 labels["role"] = "phone"
+            elif "mac" in os_name or "darwin" in os_name:
+                labels["role"] = "desktop"
             elif "linux" in os_name:
                 labels["role"] = "server"
             else:

@@ -31,7 +31,7 @@ class CollectorRunner:
         if device is None:
             device = self.store.register_device(
                 device_id=hostname,
-                labels={"role": "host", "location": "local"},
+                labels={"role": "server", "location": "local"},
                 is_local=True,
             )
             # Register standard capabilities

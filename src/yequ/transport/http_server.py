@@ -201,8 +201,10 @@ class GatewayApp:
         os_name = (info.get("os") or "").lower()
         if "windows" in os_name:
             labels["role"] = "desktop"
-        elif "android" in os_name:
+        elif "android" in os_name or "ios" in os_name:
             labels["role"] = "phone"
+        elif "mac" in os_name or "darwin" in os_name:
+            labels["role"] = "desktop"
         elif "linux" in os_name:
             labels["role"] = "server"
         else:
