@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -29,6 +30,7 @@ class MonitorEngine:
         self.notify = notify_router
         self.rules = rules or []
         self._last_fired: dict[str, float] = {}  # rule_name:device_id -> timestamp
+        self._event_bus = None  # set after init for async bus access
 
     def scan(self) -> list[RuleResult]:
         """Run all rules against all active devices. Returns triggered results."""
@@ -90,3 +92,19 @@ class MonitorEngine:
                 body=result.body,
                 device_id=result.device_id,
             ))
+
+        # Publish to event bus for SSE streaming
+        if self._event_bus is not None:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._event_bus.publish({
+                        "event_type": rule.name,
+                        "severity": result.severity,
+                        "title": result.title,
+                        "body": result.body,
+                        "device_id": result.device_id,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }))
+            except RuntimeError:
+                pass  # no running event loop (tests, etc.)

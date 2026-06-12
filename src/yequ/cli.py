@@ -77,21 +77,25 @@ def main(ctx, config_path, debug):
 @main.command()
 @click.pass_context
 def serve(ctx):
-    """Start the Gateway server (HTTP + Monitor + Collector)."""
+    """Start the Gateway server (HTTP + Monitor + Collector + API)."""
     config = load_config(ctx.obj["config_path"])
     db_path, store, notify, runner, monitor = _setup_components(config)
 
+    # Wire event bus to monitor engine for SSE streaming
+    from yequ.events_bus import bus as event_bus
+    monitor._event_bus = event_bus
+
     # Ensure local device
     local_device = runner.ensure_local_device()
-    click.echo(f"Local device: {local_device.device_id}")
+    click.echo(f"✓ Local device: {local_device.device_id}")
 
     # Start Unix socket
     from yequ.transport.local_ipc import LocalIPCTransport
     ipc = LocalIPCTransport(config.gateway.unix_socket)
     ipc.start()
-    click.echo(f"IPC socket: {config.gateway.unix_socket}")
+    click.echo(f"✓ IPC socket: {config.gateway.unix_socket}")
 
-    # Start HTTP server
+    # Start HTTP server with agent config
     from yequ.transport.http_server import create_app
     import uvicorn
 
@@ -100,6 +104,7 @@ def serve(ctx):
         device_store=store,
         notify_router=notify,
         collector_runner=runner,
+        agent_config=config.agent,
     )
 
     # Start collector in background thread
