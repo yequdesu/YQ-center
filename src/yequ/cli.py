@@ -89,6 +89,7 @@ def serve(ctx):
     app = create_app(
         db_path=db_path, device_store=store, notify_router=notify,
         collector_runner=runner, agent_config=config.agent,
+        users=config.users,
     )
 
     import threading

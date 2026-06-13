@@ -21,3 +21,7 @@ redis:
   db: 0
   password: ""
   enabled: true
+
+users:
+  - username: yequdesu
+    password: "123"

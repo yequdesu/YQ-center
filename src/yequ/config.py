@@ -61,6 +61,7 @@ class Config:
     agent: AgentConfig
     notify: NotifyConfig
     redis: RedisConfig = field(default_factory=RedisConfig)
+    users: dict[str, str] = field(default_factory=dict)
 
 
 def _expand_path(path: str) -> str:
@@ -111,4 +112,5 @@ def load_config(path: str) -> Config:
             password=redis_raw.get("password", ""),
             enabled=redis_raw.get("enabled", True),
         ),
+        users={u["username"]: u["password"] for u in raw.get("users", [])},
     )

@@ -398,7 +398,7 @@ class ToolHandler:
                 caps = store.get_capabilities(args["device_id"])
                 intervals = [c.interval_seconds for c in caps] or [60]
                 expected = min(min(intervals), 300)
-            if age < expected * 2:
+            if age < expected * 1.5:
                 return {
                     "device_id": args["device_id"], "status": "online",
                     "method": "heartbeat",
@@ -426,17 +426,28 @@ class ToolHandler:
                 "note": "主动 ping 无响应，设备可能已离线",
             }
 
-        # Remote device: just report what we know
+        # Remote device: use heartbeat age to determine status
         if device.last_hello_at:
-            return {
-                "device_id": args["device_id"], "status": "stale",
-                "method": "heartbeat",
-                "note": f"心跳延迟，无法主动 ping（设备在 NAT 后）",
-            }
-        return {
-            "device_id": args["device_id"], "status": "unknown",
-            "note": "从未收到心跳",
-        }
+            ts = device.last_hello_at.replace("Z", "+00:00")
+            last = datetime.fromisoformat(ts)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            caps = store.get_capabilities(args["device_id"])
+            intervals = [c.interval_seconds for c in caps] or [60]
+            expected = min(min(intervals), 300)
+            if age < expected * 1.5:
+                return {"device_id": args["device_id"], "status": "online",
+                        "last_heartbeat_age_seconds": int(age),
+                        "note": f"心跳正常，{int(age)}秒前"}
+            elif age < expected * 3:
+                return {"device_id": args["device_id"], "status": "stale",
+                        "last_heartbeat_age_seconds": int(age),
+                        "note": f"心跳延迟{int(age)}秒，可能网络不稳定"}
+            else:
+                return {"device_id": args["device_id"], "status": "offline",
+                        "last_heartbeat_age_seconds": int(age),
+                        "note": f"心跳丢失{int(age)}秒，设备已离线"}
+        return {"device_id": args["device_id"], "status": "unknown",
+                "note": "从未收到心跳"}
 
     def _tool_check_command_result(self, args: dict) -> dict:
         from yequ.storage.database import get_connection
@@ -447,15 +458,24 @@ class ToolHandler:
                 (command_id,),
             ).fetchone()
         if row is None:
-            return {"error": f"Command not found: {command_id}"}
+            return {"error": f"Command not found: {command_id}. Do NOT send a new command — the ID may be wrong. Ask the user to verify."}
         r = dict(row)
         result = None
         if r.get("result_json"):
             result = json.loads(r["result_json"])
-        # If result has image_url, convert to markdown so Agent passes it through
+        else:
+            # Command not yet completed — tell Agent to wait, don't retry
+            return {
+                "command_id": command_id,
+                "status": "pending",
+                "note": "Command has not completed yet. DO NOT send a new command. Just tell the user to wait for the async notification. DO NOT call check_command_result again for this ID.",
+            }
+        # If result has image_url, convert to markdown and strip raw URL to avoid double-display
         image_md = ""
-        if result and result.get("image_url"):
-            image_md = f"![screenshot]({result['image_url']})"
+        if result:
+            url = result.pop("image_url", None) or result.pop("image_markdown", None)
+            if url:
+                image_md = f"![screenshot]({url})"
         return {
             "command_id": command_id,
             "device_id": r["device_id"],
@@ -463,7 +483,7 @@ class ToolHandler:
             "delivered": bool(r["delivered"]),
             "result": result,
             "image_markdown": image_md,
-            "_note": "If image_markdown is non-empty, include it verbatim in your reply so the user sees the image.",
+            "_note": "Include the image_markdown field verbatim in your reply to display the screenshot.",
         }
 
     def _tool_list_device_actions(self, args: dict) -> dict:
@@ -484,16 +504,16 @@ class ToolHandler:
         if device is None:
             return {"error": f"Device not found: {device_id}"}
 
-        # Pre-check: don't send commands to offline devices
+        # Pre-check: don't send commands to unstable/unreachable devices
         if not device.is_local:
             online = self._tool_check_device_online({"device_id": device_id})
             status = online.get("status", "unknown")
             if status == "offline":
-                return {"error": f"Device {device_id} is offline. Command rejected."}
+                return {"error": f"Device {device_id} is offline (last heartbeat {online.get('last_heartbeat_age_seconds', '?')}s ago). Command rejected."}
+            if status == "stale":
+                return {"error": f"Device {device_id} heartbeat is stale ({online.get('last_heartbeat_age_seconds', '?')}s ago). Device may be offline. Command rejected."}
             if status == "unknown":
                 return {"error": f"Device {device_id} has never been online. Command rejected."}
-            if status == "stale":
-                pass  # Warn but allow
 
         # Blocked commands list
         BLOCKED = {"shutdown", "reboot", "format", "rm", "delete_all",
@@ -547,6 +567,6 @@ class ToolHandler:
             "device_id": device_id,
             "command_id": command_id,
             "action": action,
-            "params": params,
-            "note": "Command queued. DO NOT call check_command_result repeatedly — the result will arrive asynchronously. Tell the user the command ID and that they will be notified when complete.",
+            "STOP_HERE": True,
+            "reply": f"{command_id[:8]}",
         }

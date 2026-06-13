@@ -25,17 +25,29 @@ SYSTEM_PROMPT = """你是 YeQu Gateway 的运维助手。宿主是 yequdesu。�
 
 工具速查：
 - 执行命令 → send_command(device_id="..-executor", action="exec", params={"command": "..."})
-- 查看设备 → list_devices 或 check_device_online
+- 查看设备 → list_devices 或 get_device_status（查数据指标，不是查actions）
+- 查设备能做什么操作 → list_device_actions（只返回actions，不返回数据capabilities）
 - 批准设备 → approve_device（先 list_pending 查看待审批列表）
 - 撤销设备 → revoke_device（需要确认一次）
-- 查数据 → get_device_status / get_events / get_metrics
+- 查事件/指标 → get_events / get_metrics
+
+注意区分：
+- capabilities = 设备能提供什么数据（如CPU、内存、服务列表）
+- actions = 设备能执行什么操作（如截图、exec命令）
+- list_device_actions 返回空 ≠ 设备没有能力——它可能有很多数据capabilities
 
 行为：
-- 用户说"做某事"→ 调用工具。不要说"我可以帮你做"——直接调用工具
-- send_command 对本地服务（source_type=service/gateway）会自动等待结果，不要追问"要不要查"
-- 如果返回 queued，告诉用户结果到了会通知。不要反复轮询 check_command_result
-- 记住你调用工具得到的结果（command_id、token 等），对话历史可查阅
-- 用中文，简洁直接"""
+- 用户给了一个任务，你要一口气完成它。不要每步都问"要继续吗？"——直接继续
+- 如果当前结果还不足以完整回答用户问题，立刻调下一个工具，不要停下来问
+- 只有当任务彻底完成、无需更多操作时，才输出最终答案
+- send_command 对本地服务会自动等待结果
+- 如果返回 queued，告诉用户结果到了会通知，不要再调 check_command_result
+- 用中文，简洁直接
+
+- 当 send_command 返回 status="queued" 时，工具结果里有一个很短的 reply 字段。只输出那个字段的内容，不要加任何额外描述
+- 不要对同一个设备重复调用 get_device_status 或 list_device_actions——第一次调用已经拿到全部数据
+- check_command_result 只在用户明确要求查结果时调用，不要自己循环去查
+- 如果一个命令连续失败或返回异常，停下来反思：是不是设备ID错了？参数格式对不对？然后修正后再试，不要重复同样的错误"""
 
 MAX_TOOL_ROUNDS = 30
 
@@ -53,7 +65,7 @@ _UUID_RE = _re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 
 def _is_hallucinated_text(text: str, called_send_cmd: bool) -> bool:
-    """Check if the LLM's text response claims actions it didn't take."""
+    """Check if the LLM's text should be rejected instead of shown to user."""
     if not text:
         return False
     if called_send_cmd:
@@ -66,15 +78,23 @@ def _is_hallucinated_text(text: str, called_send_cmd: bool) -> bool:
     # UUID pattern — LLM hallucinated a command ID
     if _UUID_RE.search(text):
         return True
+    # Stopping mid-task: LLM is asking the user instead of continuing
+    asking_triggers = ["要我继续", "需要我继续", "要不要我", "需要我帮你",
+                       "要不要继续", "要继续吗", "要我帮你", "要让我"]
+    if any(t in text for t in asking_triggers) and len(text) < 300:
+        # Short response that asks user — LLM should call a tool instead
+        return True
     return False
 
 
 class Agent:
     """LLM + tool-use loop. Provider-agnostic via StreamFn."""
 
-    def __init__(self, config: AgentConfig, db_path: str, data_dir: str):
+    def __init__(self, config: AgentConfig, db_path: str, data_dir: str, user_id: str = "default"):
         self.db_path = db_path
         self.config = config
+        self.user_id = user_id
+        self.session_id: int | None = None
         self.stream_fn = create_stream_fn(
             provider=config.provider,
             api_key=config.api_key,
@@ -83,6 +103,12 @@ class Agent:
         self.tools = TOOLS
         self.handler = ToolHandler(db_path=db_path, config_data_dir=data_dir)
         self._history: list[dict] = []  # conversation context
+        self._load_session()
+
+    def set_session(self, session_id: int) -> None:
+        """Switch to a different session (or auto-load if None)."""
+        self.session_id = session_id
+        self._history = []
         self._load_session()
 
     # ── Public API ────────────────────────────────────────────────
@@ -117,34 +143,50 @@ class Agent:
 
         for _round in range(MAX_TOOL_ROUNDS):
             response = self.stream_fn(messages, self.tools)
-            sent_cmd_this_round = any(
-                tc.name == "send_command" for tc in (response.tool_calls or [])
-            )
 
             if response.tool_calls:
-                steering_attempts = 0  # reset on real action
+                steering_attempts = 0
+                assistant_blocks = response.raw_blocks if response.raw_blocks else [
+                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
+                    for tc in response.tool_calls
+                ]
+                messages.append({"role": "assistant", "content": assistant_blocks})
+                tool_results_blocks = []
+                stop_immediately = False
+                prebuilt_reply = None
                 for tc in response.tool_calls:
                     yield AgentEvent(type="tool_call", data={
                         "name": tc.name, "arguments": tc.arguments, "id": tc.id,
                     })
-                    result = self.handler.execute(tc.name, tc.arguments)
+                    result_raw = self.handler.execute(tc.name, tc.arguments)
                     tool_calls_made.append({"name": tc.name, "arguments": tc.arguments})
-
-                    # Anthropic-native tool_use format
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{"type": "tool_use", "id": tc.id,
-                                     "name": tc.name, "input": tc.arguments}],
+                    # Fast-path: check for STOP_HERE in tool result (parse JSON temporarily)
+                    result_obj = None
+                    try: result_obj = json.loads(result_raw)
+                    except: pass
+                    if isinstance(result_obj, dict) and result_obj.get("STOP_HERE"):
+                        stop_immediately = True
+                        prebuilt_reply = result_obj.get("reply", "Done.")
+                    # Pass raw string content to Anthropic API
+                    tool_results_blocks.append({
+                        "type": "tool_result", "tool_use_id": tc.id, "content": result_raw,
                     })
-                    messages.append({
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": tc.id,
-                                     "content": result}],
-                    })
+                messages.append({"role": "user", "content": tool_results_blocks})
+                # Fast-path exit: tool told us to stop — use pre-built reply
+                if stop_immediately and prebuilt_reply:
+                    final_text = prebuilt_reply
+                    yield AgentEvent(type="text", data=final_text)
+                    yield AgentEvent(type="done")
+                    self._log_conversation(question, final_text, tool_calls_made)
+                    self._history.append({"role": "user", "content": question})
+                    self._history.append({"role": "assistant", "content": final_text})
+                    self._save_session()
+                    return
                 continue
 
             # No tool calls — run text gate
-            if _is_hallucinated_text(response.text or "", sent_cmd_this_round):
+            sent_cmd_any_round = any(t["name"] == "send_command" for t in tool_calls_made)
+            if _is_hallucinated_text(response.text or "", sent_cmd_any_round):
                 steering_attempts += 1
                 if steering_attempts > MAX_STEERING:
                     final_text = "Agent 未能正确调用工具，请重新描述你的需求。"
@@ -184,16 +226,26 @@ class Agent:
     # ── Session Persistence ─────────────────────────────────────────
 
     def _load_session(self):
-        """Load conversation history from SQLite."""
+        """Load conversation history from the current session (or most recent)."""
         from yequ.storage.database import get_connection
         try:
             with get_connection(self.db_path) as conn:
-                row = conn.execute(
-                    "SELECT messages_json FROM agent_sessions WHERE id = 'default'"
-                ).fetchone()
-            if row:
-                import json as _json
-                self._history = _json.loads(row["messages_json"])[-20:]
+                if self.session_id:
+                    row = conn.execute(
+                        "SELECT messages_json FROM agent_sessions WHERE id = ?",
+                        (self.session_id,),
+                    ).fetchone()
+                else:
+                    # Auto-load most recent session for this user
+                    row = conn.execute(
+                        "SELECT id, messages_json FROM agent_sessions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                        (self.user_id,),
+                    ).fetchone()
+                    if row:
+                        self.session_id = row["id"]
+                if row:
+                    import json as _json
+                    self._history = _json.loads(row["messages_json"])[-20:]
         except Exception:
             pass
 
@@ -201,13 +253,23 @@ class Agent:
         """Persist conversation history to SQLite."""
         import json as _json
         from yequ.storage.database import get_connection
+        from yequ.utils import now_iso
         try:
+            if not self.session_id:
+                # Auto-create session on first save
+                with get_connection(self.db_path) as conn:
+                    title = f"Session {now_iso()[:16].replace('T',' ')}"
+                    cur = conn.execute(
+                        "INSERT INTO agent_sessions (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                        (self.user_id, title, now_iso(), now_iso()),
+                    )
+                    conn.commit()
+                    self.session_id = cur.lastrowid
             msgs = _json.dumps(self._history[-20:], ensure_ascii=False)
             with get_connection(self.db_path) as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO agent_sessions (id, messages_json, updated_at) "
-                    "VALUES ('default', ?, datetime('now'))",
-                    (msgs,),
+                    "UPDATE agent_sessions SET messages_json = ?, updated_at = ? WHERE id = ?",
+                    (msgs, now_iso(), self.session_id),
                 )
                 conn.commit()
         except Exception:

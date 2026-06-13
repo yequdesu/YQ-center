@@ -55,24 +55,59 @@ class GatewayApp:
     """Handles YQP protocol + REST API + SSE streaming."""
 
     def __init__(self, db_path, device_store, notify_router,
-                 collector_runner=None, agent_config=None):
+                 collector_runner=None, agent_config=None, users=None):
         self.db_path = db_path
         self.store = device_store
         self.notify = notify_router
         self.collector = collector_runner
         self.agent_config = agent_config
-        self._agent = None
+        self.users = users or {}
+        self._agents: dict[str, object] = {}  # username → Agent
+        self._sessions: dict[str, str] = {}    # cookie_token → username
 
-    @property
-    def agent(self):
-        if self._agent is None and self.agent_config is not None:
+    def _get_agent(self, username: str):
+        if username not in self._agents and self.agent_config is not None:
             from yequ.agent.core import Agent
-            self._agent = Agent(
+            self._agents[username] = Agent(
                 config=self.agent_config,
                 db_path=self.db_path,
                 data_dir=os.path.dirname(self.db_path),
+                user_id=username,
             )
-        return self._agent
+        return self._agents.get(username)
+
+    def _get_user(self, request):
+        """Extract username from session cookie. Returns None if unauthenticated."""
+        token = request.cookies.get("yequ_session", "")
+        return self._sessions.get(token)
+
+    # ── Auth ───────────────────────────────────────────────────
+
+    async def handle_login(self, request):
+        try:
+            body = await request.json()
+            username = body.get("username", "").strip()
+            password = body.get("password", "")
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+
+        if username not in self.users or self.users[username] != password:
+            return JSONResponse({"error": "invalid credentials"}, status_code=401)
+
+        import secrets as _sec
+        token = _sec.token_urlsafe(32)
+        self._sessions[token] = username
+
+        resp = JSONResponse({"status": "ok", "username": username})
+        resp.set_cookie("yequ_session", token, httponly=True, max_age=86400*7)
+        return resp
+
+    async def handle_logout(self, request):
+        token = request.cookies.get("yequ_session", "")
+        self._sessions.pop(token, None)
+        resp = JSONResponse({"status": "ok"})
+        resp.delete_cookie("yequ_session")
+        return resp
 
     # ── YQP: Hello ───────────────────────────────────────────────
 
@@ -95,7 +130,7 @@ class GatewayApp:
         device = self.store.get_device(msg.device_id)
         if device:
             # Re-registration: update type, actions, capabilities from new declaration
-            self.store.touch_hello(msg.device_id)
+            # NOTE: do NOT touch_hello here — let the first heartbeat trigger device_online
             new_type = msg.device_info.get("source_type", "")
             if new_type and new_type != device.source_type:
                 self.store.update_source_type(msg.device_id, new_type)
@@ -545,12 +580,16 @@ class GatewayApp:
 
     async def serve_media(self, request):
         media_id = request.path_params["media_id"]
-        token = request.query_params.get("token", "")
-        # Validate token if present (sensitive media)
-        if token:
-            from yequ.storage.media import validate_media_token
-            if not validate_media_token(media_id, token):
-                return JSONResponse({"error": "invalid or expired token"}, status_code=403)
+        # Only validate token for unauthenticated requests
+        user = self._get_user(request)
+        if not user:
+            token = request.query_params.get("token", "")
+            if token:
+                from yequ.storage.media import validate_media_token
+                if not validate_media_token(media_id, token):
+                    return JSONResponse({"error": "invalid or expired token"}, status_code=403)
+            else:
+                return JSONResponse({"error": "auth required"}, status_code=401)
         from yequ.storage.media import get_media_path
         path = get_media_path(os.path.dirname(self.db_path), media_id)
         if path is None:
@@ -570,6 +609,57 @@ class GatewayApp:
         return JSONResponse({"entries": entries, "total": len(entries)})
 
     # ── REST: Agent Config ────────────────────────────────────────
+
+    # ── REST: Agent Sessions ───────────────────────────────────
+
+    async def api_sessions(self, request):
+        username = self._get_user(request) or "default"
+        from yequ.storage.database import get_connection
+        with get_connection(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, title, created_at, updated_at FROM agent_sessions "
+                "WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
+                (username,),
+            ).fetchall()
+        return JSONResponse({"sessions": [dict(r) for r in rows]})
+
+    async def api_session_create(self, request):
+        username = self._get_user(request) or "default"
+        from yequ.utils import now_iso
+        title = f"Session {now_iso()[:16].replace('T',' ')}"
+        from yequ.storage.database import get_connection
+        with get_connection(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO agent_sessions (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (username, title, now_iso(), now_iso()),
+            )
+            conn.commit()
+            sid = cur.lastrowid
+        return JSONResponse({"id": sid, "title": title})
+
+    async def api_session_get(self, request):
+        session_id = int(request.path_params["session_id"])
+        from yequ.storage.database import get_connection
+        import json as _json
+        with get_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+        if not row:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        msgs = _json.loads(row["messages_json"] or "[]")
+        return JSONResponse({"id": row["id"], "title": row["title"],
+                             "messages": msgs})
+
+    async def api_session_delete(self, request):
+        session_id = int(request.path_params["session_id"])
+        from yequ.storage.database import get_connection
+        with get_connection(self.db_path) as conn:
+            conn.execute("DELETE FROM agent_sessions WHERE id = ?", (session_id,))
+            conn.commit()
+        return JSONResponse({"status": "deleted"})
+
+    # ── REST: Agent Config ─────────────────────────────────────
 
     async def api_agent_config_get(self, request):
         if self.agent_config is None:
@@ -650,7 +740,14 @@ class GatewayApp:
             return JSONResponse({"error": "invalid JSON, expected {query: ...}"},
                                 status_code=400)
 
-        answer = self.agent.ask(query)
+        username = self._get_user(request) or "default"
+        agent = self._get_agent(username)
+        if agent is None:
+            return JSONResponse({"error": "agent not configured"}, status_code=503)
+        sid = body.get("session_id")
+        if sid:
+            agent.set_session(int(sid))
+        answer = agent.ask(query)
         return JSONResponse({"answer": answer})
 
     # ── SSE: Agent Streaming ─────────────────────────────────────
@@ -669,7 +766,11 @@ class GatewayApp:
                 self._sse_error("invalid JSON"),
                 media_type="text/event-stream")
 
-        agent = self.agent
+        username = self._get_user(request) or "default"
+        agent = self._get_agent(username)
+        sid = body.get("session_id")
+        if sid:
+            agent.set_session(int(sid))
 
         async def generate():
             import queue
@@ -783,20 +884,29 @@ class GatewayApp:
 # ── App Factory ──────────────────────────────────────────────────
 
 def create_app(db_path, device_store, notify_router,
-               collector_runner=None, agent_config=None):
+               collector_runner=None, agent_config=None, users=None):
     gateway = GatewayApp(
         db_path=db_path, device_store=device_store,
         notify_router=notify_router, collector_runner=collector_runner,
-        agent_config=agent_config,
+        agent_config=agent_config, users=users,
     )
+    login_path = _os_module.path.join(_os_module.path.dirname(__file__), "..", "login.html")
     dashboard_path = _os_module.path.join(_os_module.path.dirname(__file__), "..", "dashboard.html")
+
+    async def login_page(request):
+        return FileResponse(login_path)
 
     async def dashboard(request):
         return FileResponse(dashboard_path)
 
     app = Starlette(routes=[
+        # Auth
+        Route("/", login_page, methods=["GET"]),
+        Route("/login", login_page, methods=["GET"]),
+        Route("/api/login", gateway.handle_login, methods=["POST"]),
+        Route("/api/logout", gateway.handle_logout, methods=["POST"]),
         # Dashboard
-        Route("/", dashboard, methods=["GET"]),
+        Route("/dashboard", dashboard, methods=["GET"]),
         # YQP
         Route("/hello", gateway.handle_hello, methods=["POST"]),
         Route("/commands/pending", gateway.handle_command_poll, methods=["GET"]),
@@ -823,6 +933,10 @@ def create_app(db_path, device_store, notify_router,
         # Audit
         Route("/api/audit", gateway.api_audit, methods=["GET"]),
         # Agent
+        Route("/api/agent/sessions", gateway.api_sessions, methods=["GET"]),
+        Route("/api/agent/sessions", gateway.api_session_create, methods=["POST"]),
+        Route("/api/agent/sessions/{session_id}", gateway.api_session_get, methods=["GET"]),
+        Route("/api/agent/sessions/{session_id}", gateway.api_session_delete, methods=["DELETE"]),
         Route("/api/agent/config", gateway.api_agent_config_get, methods=["GET"]),
         Route("/api/agent/config", gateway.api_agent_config_set, methods=["POST"]),
         Route("/api/ask", gateway.api_ask, methods=["POST"]),

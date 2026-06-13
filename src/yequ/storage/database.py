@@ -90,10 +90,15 @@ CREATE TABLE IF NOT EXISTS conversation_log (
 );
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
-    id TEXT PRIMARY KEY DEFAULT 'default',
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default',
+    title TEXT NOT NULL DEFAULT '',
     messages_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id, updated_at DESC);
 """
 
 # Data DB schema (snapshots, metrics, events)

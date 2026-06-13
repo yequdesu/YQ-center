@@ -168,25 +168,38 @@ class ThresholdRule:
 class CapabilitySilentRule:
     """Checks if any capability has stopped reporting data."""
 
-    @staticmethod
-    def evaluate(rule, device, db_path, **kwargs):
+    _reported: dict[str, set[str]] = {}  # device_id -> set of capability names already reported
+
+    @classmethod
+    def evaluate(cls, rule, device, db_path, **kwargs):
         from yequ.storage.query import get_latest_snapshot
         caps = device.get("capabilities", [])
         results = []
+        did = device["device_id"]
+        if did not in cls._reported:
+            cls._reported[did] = set()
         for cap in caps:
-            snap = get_latest_snapshot(db_path, device["device_id"], cap["name"])
+            snap = get_latest_snapshot(db_path, did, cap["name"])
             if snap is None:
                 continue
             interval = cap.get("interval_seconds", 60)
             age = _age_seconds(snap["timestamp"])
             if age > interval * rule.condition_params.get("multiplier", 5):
+                # Don't re-report the same silent capability (until new data arrives)
+                key = f"{cap['name']}:{snap['timestamp']}"
+                if key in cls._reported[did]:
+                    continue
+                cls._reported[did].add(key)
                 results.append(RuleResult(
                     rule_name=rule.name, triggered=True,
                     severity=rule.severity,
-                    title=f"Capability静默: {cap['name']} on {device['device_id']}",
+                    title=f"Capability静默: {cap['name']} on {did}",
                     body=f"{int(age)}s 无数据 (interval={interval}s)",
-                    device_id=device["device_id"],
+                    device_id=did,
                 ))
+            else:
+                # Data arrived — clear the silent flag
+                cls._reported[did].discard(f"{cap['name']}:{snap['timestamp']}")
         return results
 
 

@@ -7,6 +7,10 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#484f58}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:#0d1117;color:#c9d1d9;height:100vh;display:flex;flex-direction:column}
 #titlebar{background:#161b22;display:flex;align-items:center;padding:0 12px;height:36px;justify-content:space-between;border-bottom:1px solid #30363d;flex-shrink:0}
 #titlebar h1{font-size:13px;font-weight:600;color:#58a6ff}
@@ -26,7 +30,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;backgroun
 .page-tab.agent-tab .close{display:none}
 #main-area{display:flex;flex:1;overflow:hidden}
 #sidebar{width:220px;background:#161b22;overflow-y:auto;padding:8px;flex-shrink:0;border-right:1px solid #30363d}
-#page-content{flex:1;overflow-y:auto;padding:12px}
+#page-content{flex:1;overflow:hidden;position:relative}
 #events-sidebar{width:280px;background:#161b22;overflow-y:auto;padding:8px;flex-shrink:0;border-left:1px solid #30363d;font-size:12px}
 
 /* Common */
@@ -139,7 +143,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;backgroun
     <div class="section-title">Devices</div>
     <div id="device-list-device"></div>
   </div>
-  <div id="page-content"><div class="empty">Nothing here :(</div></div>
+  <div id="page-content"></div>
   <div id="events-sidebar">
     <div class="section-title">Events</div>
     <div id="events-list"><div class="empty">-</div></div>
@@ -157,7 +161,8 @@ let llmConfigured = false;
 // ── Pages ─────────────────────────────────────────────────────────
 function createPage(id, title, closable=true) {
   if (pages[id]) return;
-  const div = document.createElement('div'); div.id = 'page-'+id; div.style.display='none';
+  const div = document.createElement('div'); div.id = 'page-'+id;
+  div.style.cssText = 'display:none;position:absolute;top:0;left:0;right:0;bottom:0;overflow-y:auto;padding:12px';
   document.getElementById('page-content').appendChild(div);
   pages[id] = {el: div, title, closable};
   renderPageBar();
@@ -304,11 +309,93 @@ function renderEvents(events) {
 function buildAgentPage() {
   const el = pages['agent'].el;
   el.innerHTML = `
-    <div id="chat-messages"></div>
-    <div id="chat-input-area">
-      <input type="text" id="chat-input" placeholder="Ask the Agent..." onkeydown="if(event.key==='Enter')sendChat()">
-      <button class="btn primary" onclick="sendChat()">Send</button>
+    <div style="display:flex;flex:1;min-height:0;gap:0;position:absolute;top:0;left:0;right:0;bottom:0">
+      <div style="width:160px;background:#161b22;overflow-y:auto;padding:8px;border-right:1px solid #30363d;flex-shrink:0;font-size:11px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span class="section-title" style="margin:0">Sessions</span>
+          <span id="new-session-btn" style="cursor:pointer;font-size:16px;color:#3fb950;line-height:1" onclick="newSession()">+</span>
+        </div>
+        <div id="session-items"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+        <div id="chat-messages" style="flex:1;overflow-y:auto;padding:8px"></div>
+        <div id="chat-input-area">
+          <input type="text" id="chat-input" placeholder="Ask the Agent..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="btn primary" onclick="sendChat()" id="send-btn">Send</button>
+        </div>
+      </div>
     </div>`;
+  loadSessions();
+}
+
+let currentSessionId = null;
+
+async function loadSessions() {
+  const resp = await fetch('/api/agent/sessions');
+  const data = await resp.json();
+  const el = document.getElementById('session-items');
+  if (!el) return;
+  if (!data.sessions.length) {
+    el.innerHTML = '<div class="empty" style="font-size:10px">No sessions</div>';
+    currentSessionId = null;
+    return;
+  }
+  const wasEmpty = !currentSessionId;
+  if (!currentSessionId) currentSessionId = data.sessions[0].id;
+  el.innerHTML = data.sessions.map(s => `
+    <div onclick="switchSession(${s.id})" style="padding:4px 6px;cursor:pointer;border-radius:4px;margin:1px 0;${s.id===currentSessionId?'background:#1c2128;color:#c9d1d9':'color:#8b949e'};position:relative">
+      <div style="padding-right:18px">${esc(s.title)}</div>
+      <div style="font-size:9px;color:#484f58">${(s.updated_at||'').substring(0,16)}</div>
+      <span onclick="event.stopPropagation();deleteSession(${s.id})" style="position:absolute;top:4px;right:4px;cursor:pointer;color:#484f58;font-size:14px;line-height:1">×</span>
+    </div>
+  `).join('');
+  if (wasEmpty && currentSessionId) switchSession(currentSessionId, true);
+}
+
+async function switchSession(id, force=false) {
+  if (id === currentSessionId && !force) return;
+  currentSessionId = id;
+  loadSessions();
+  // Load session messages and render
+  const resp = await fetch('/api/agent/sessions/'+id);
+  const data = await resp.json();
+  const msgsEl = document.getElementById('chat-messages');
+  msgsEl.innerHTML = '';
+  for (const m of (data.messages||[])) {
+    if (m.role === 'user') {
+      msgsEl.innerHTML += `<div class="chat-msg user"><span class="ts">...</span> ${esc(m.content)}</div>`;
+    } else if (m.role === 'assistant') {
+      const div = document.createElement('div'); div.className = 'chat-msg agent';
+      div.innerHTML = typeof marked !== 'undefined' ? marked.parse(m.content) : esc(m.content);
+      msgsEl.appendChild(div);
+    }
+  }
+  // Wire lightbox for all images
+  msgsEl.querySelectorAll('img').forEach(img => {
+    img.onclick = () => {
+      document.getElementById('lightbox-img').src = img.src;
+      document.getElementById('lightbox').style.display = 'flex';
+    };
+  });
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+
+async function newSession() {
+  const resp = await fetch('/api/agent/sessions', {method:'POST'});
+  const data = await resp.json();
+  currentSessionId = data.id;
+  document.getElementById('chat-messages').innerHTML = '';
+  loadSessions();
+}
+
+async function deleteSession(id) {
+  if (!confirm('Delete this session?')) return;
+  await fetch('/api/agent/sessions/'+id, {method:'DELETE'});
+  if (currentSessionId === id) {
+    currentSessionId = null;
+    document.getElementById('chat-messages').innerHTML = '';
+  }
+  loadSessions();
 }
 
 let chatStreaming = false;
@@ -319,8 +406,16 @@ async function sendChat() {
   input.value = '';
 
   if (!llmConfigured) {
-    document.getElementById('chat-messages').innerHTML += `<div class="chat-msg tool" style="color:#d29922">LLM not configured. Click the LLM badge to set up.</div>`;
+    document.getElementById('chat-messages').innerHTML += `<div class="chat-msg tool" style="color:#d29922">LLM not configured. Click the badge to set up.</div>`;
     return;
+  }
+
+  // Auto-create session if none selected
+  if (!currentSessionId) {
+    const resp = await fetch('/api/agent/sessions', {method:'POST'});
+    const data = await resp.json();
+    currentSessionId = data.id;
+    loadSessions();
   }
 
   chatStreaming = true;
@@ -328,7 +423,7 @@ async function sendChat() {
   msgs.innerHTML += `<div class="chat-msg user"><span class="ts">now</span> ${esc(query)}</div>`;
 
   try {
-    const resp = await fetch('/api/ask/stream', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});
+    const resp = await fetch('/api/ask/stream', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query, session_id: currentSessionId})});
     const reader = resp.body.getReader(); const dec = new TextDecoder();
     let buf = '', agentDiv = null;
     while (true) {
@@ -344,7 +439,17 @@ async function sendChat() {
         if (!type) continue;
         try {
           const payload = data ? JSON.parse(data) : null;
-          if (type==='tool_call') { msgs.innerHTML += `<div class="chat-msg tool">[calling ${esc(payload?.name||'')}...]</div>`; }
+          if (type==='tool_call') {
+            let detail = '';
+            const args = payload?.arguments || {};
+            if (payload?.name === 'send_command') detail = `${args.device_id||''} ${args.action||''} ${(args.params?.command||'').substring(0,40)}`;
+            else if (payload?.name === 'get_device_status') detail = args.device_id||'';
+            else if (payload?.name === 'list_device_actions') detail = args.device_id||'';
+            else if (payload?.name === 'check_command_result') detail = (args.command_id||'').substring(0,8);
+            else if (payload?.name === 'check_device_online') detail = args.device_id||'';
+            else if (payload?.name === 'get_metrics') detail = `${args.device_id||''} ${args.metric_name||''}`;
+            msgs.innerHTML += `<div class="chat-msg tool">[${esc(payload?.name||'?')}${detail?' · '+esc(detail):''}]</div>`;
+          }
           else if (type==='text'||type==='token') { if(!agentDiv){agentDiv=document.createElement('div');agentDiv.className='chat-msg agent';msgs.appendChild(agentDiv)} agentDiv.textContent += String(payload??''); }
           else if (type==='done' && agentDiv && typeof marked!=='undefined') { agentDiv.innerHTML = marked.parse(agentDiv.textContent); agentDiv.querySelectorAll('img').forEach(img=>{img.onclick=()=>{document.getElementById('lightbox-img').src=img.src;document.getElementById('lightbox').style.display='flex'}}); }
           else if (type==='error') { msgs.innerHTML += `<div class="chat-msg tool" style="color:#f85149">${esc(String(payload))}</div>`; }
@@ -416,8 +521,15 @@ function connectEventStream() {
       if (ev.event_type==='command_completed') {
         const cdata = ev.data||{}; const cid = cdata.command_id||ev.command_id||'';
         if (cid && pages['agent']) {
-          document.getElementById('chat-messages').innerHTML += `<div class="chat-msg tool" style="color:#3fb950">[command completed: ${esc(ev.title)}]</div>`;
-          fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'check command '+cid+' result'})}).then(r=>r.json()).then(d=>{if(d.answer){const div=document.createElement('div');div.className='chat-msg agent';div.innerHTML=typeof marked!=='undefined'?marked.parse(d.answer):esc(d.answer);document.getElementById('chat-messages').appendChild(div);div.querySelectorAll('img').forEach(img=>{img.onclick=()=>{document.getElementById('lightbox-img').src=img.src;document.getElementById('lightbox').style.display='flex'}});document.getElementById('chat-messages').scrollTop=document.getElementById('chat-messages').scrollHeight}});
+          const msgsEl = document.getElementById('chat-messages');
+          // Remove previous "queued" message that contains this command ID
+          const children = msgsEl.children;
+          for (let i = children.length-1; i >= 0; i--) {
+            if (children[i].textContent.includes(cid.substring(0,8))) {
+              children[i].remove(); break;
+            }
+          }
+          fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:'check command '+cid+' result', session_id: currentSessionId})}).then(r=>r.json()).then(d=>{if(d.answer){const div=document.createElement('div');div.className='chat-msg agent';div.innerHTML=typeof marked!=='undefined'?marked.parse(d.answer):esc(d.answer);msgsEl.appendChild(div);div.querySelectorAll('img').forEach(img=>{img.onclick=()=>{document.getElementById('lightbox-img').src=img.src;document.getElementById('lightbox').style.display='flex'}});msgsEl.scrollTop=msgsEl.scrollHeight}});
         }
       }
     } catch(ex) {}
