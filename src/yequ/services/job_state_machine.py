@@ -87,7 +87,14 @@ async def transition(
     Raises:
         ValueError: If the transition is not allowed or job is already terminal
     """
+    from sqlalchemy import func, select
+
     from yequ.models.timeline import TimelineEvent
+
+    # Compute next global_seq
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    next_seq = max_seq + 1
 
     current = JobStatus(job.status)
     target = JobStatus(target_status)
@@ -96,6 +103,7 @@ async def transition(
     if target not in VALID_TRANSITIONS.get(current, set()):
         # Write audit event for the illegal attempt before raising
         event = TimelineEvent(
+            global_seq=next_seq,
             event_type="job.invalid_transition",
             actor_type="system",
             actor_id=node_id or "unknown",
@@ -158,6 +166,7 @@ async def transition(
         event_data["error_code"] = error_code
 
     event = TimelineEvent(
+        global_seq=next_seq,
         event_type=f"job.{target.value}",
         actor_type="system",
         actor_id=node_id or "unknown",

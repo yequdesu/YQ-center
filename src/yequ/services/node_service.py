@@ -642,3 +642,120 @@ async def handle_reconcile_jobs(
         })
 
     return {"actions": actions}
+
+
+async def handle_job_event(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.event — Daemon reports a progress/log/cancelling event.
+
+    Standard event types: job.started, job.progress, job.log,
+    job.cancelling, job.cancelled, job.timeout.
+
+    These are recorded as TimelineEvents only — no state change
+    (state changes happen via job.accepted/job.finished).
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func, select
+
+    from yequ.models.timeline import TimelineEvent
+
+    job_id = payload["job_id"]
+    event_type = payload["event_type"]
+    sequence = payload.get("sequence", 1)
+    data = payload.get("data", {})
+
+    now = datetime.now(UTC)
+
+    # Compute next global_seq
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    next_seq = max_seq + 1
+
+    event = TimelineEvent(
+        global_seq=next_seq,
+        event_type=event_type,
+        actor_type="system",
+        actor_id=node.node_id,
+        node_id=node.node_id,
+        job_id=job_id,
+        data={
+            "event_type": event_type,
+            "sequence": sequence,
+            **data,
+        },
+        sequence=sequence,
+        timestamp=now,
+    )
+    db.add(event)
+    await db.commit()
+
+    return {"job_id": job_id, "event_type": event_type, "sequence": sequence}
+
+
+async def handle_job_cancel(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.cancel — Center requests the Node to cancel a running job.
+
+    Center initiates a cancel. The Node should:
+    1. Stop the job and report job.cancelling via job.event
+    2. Report job.cancelled via job.finished when stopped
+    """
+    from fastapi import HTTPException, status
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol.errors import ErrorCode, YqpError
+    from yequ.services.job_service import cancel_job
+
+    job_id = payload["job_id"]
+    result = await db.execute(
+        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
+    )
+    job = result.scalar_one_or_none()
+
+    if job is None:
+        # Center might cancel a job the node hasn't seen yet
+        # Look up by job_id only
+        result = await db.execute(
+            select(Job).where(Job.job_id == job_id)
+        )
+        job = result.scalar_one_or_none()
+
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=YqpError(
+                    code=ErrorCode.JOB_NOT_FOUND,
+                    message=f"Job {job_id!r} not found",
+                ).model_dump(),
+            )
+
+    reason = payload.get("reason", "user_requested")
+
+    try:
+        await cancel_job(db, job, reason=reason, node_id=node.node_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=YqpError(
+                code=ErrorCode.INVALID_STATE_TRANSITION,
+                message=str(e),
+            ).model_dump(),
+        ) from None
+
+    await db.commit()
+
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "reason": reason,
+    }

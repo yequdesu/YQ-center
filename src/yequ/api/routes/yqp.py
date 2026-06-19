@@ -17,6 +17,8 @@ from yequ.services.node_service import (
     handle_heartbeat,
     handle_hello,
     handle_job_accepted,
+    handle_job_cancel,
+    handle_job_event,
     handle_job_finished,
     handle_job_lease_renew,
     handle_job_poll,
@@ -39,6 +41,8 @@ def _response_type(request_type: MessageType) -> str:
         MessageType.JOB_ACCEPTED: MessageType.JOB_ACCEPTED,
         MessageType.JOB_FINISHED: MessageType.JOB_FINISHED,
         MessageType.JOB_LEASE_RENEW: MessageType.JOB_LEASE_ACCEPTED,
+        MessageType.JOB_EVENT: MessageType.JOB_EVENT,
+        MessageType.JOB_CANCEL: MessageType.JOB_CANCEL,
         MessageType.NODE_RECONCILE_JOBS: MessageType.JOB_RECONCILIATION,
     }
     return response_map.get(request_type, MessageType.ERROR)
@@ -142,6 +146,14 @@ async def yqp_endpoint(
         )
     elif msg_type == MessageType.JOB_LEASE_RENEW:
         response_payload = await handle_job_lease_renew(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_EVENT:
+        response_payload = await handle_job_event(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_CANCEL:
+        response_payload = await handle_job_cancel(
             db, node, envelope.payload, settings
         )
     elif msg_type == MessageType.NODE_RECONCILE_JOBS:
