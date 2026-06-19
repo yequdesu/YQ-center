@@ -462,6 +462,46 @@ async def handle_job_finished(
     db.add(event)
     await db.commit()
 
+    # Aggregate Invocation status — update Invocation when all Jobs terminal
+    from yequ.models.invocation import Invocation
+    from yequ.services.invocation_service import (
+        aggregate_invocation_status,
+        finish_invocation,
+    )
+
+    new_status = await aggregate_invocation_status(db, job.invocation_id)
+    if new_status in ("succeeded", "failed", "timeout", "cancelled", "partial"):
+        inv_result = await db.execute(
+            select(Invocation).where(
+                Invocation.invocation_id == job.invocation_id
+            )
+        )
+        inv = inv_result.scalar_one_or_none()
+        if inv and inv.status not in ("succeeded", "failed", "timeout", "cancelled", "partial"):
+            finish_invocation(inv, new_status)
+            if job.output:
+                inv.result = job.output
+            # Write invocation timeline event
+            iev_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+            iev_max = iev_result.scalar() or 0
+            inv_event = TimelineEvent(
+                global_seq=iev_max + 1,
+                event_type=f"invocation.{new_status}",
+                actor_type="system",
+                actor_id=node.node_id,
+                node_id=node.node_id,
+                job_id=job_id,
+                invocation_id=job.invocation_id,
+                data={
+                    "invocation_id": job.invocation_id,
+                    "status": new_status,
+                    "job_count": 1,
+                },
+                timestamp=now,
+            )
+            db.add(inv_event)
+            await db.commit()
+
     return {"job_id": job_id, "status": terminal_status}
 
 
@@ -669,6 +709,12 @@ async def handle_job_event(
     sequence = payload.get("sequence", 1)
     data = payload.get("data", {})
 
+    # Look up job to get invocation_id for timeline tracing
+    from yequ.models.job import Job
+    j_result = await db.execute(select(Job).where(Job.job_id == job_id))
+    job = j_result.scalar_one_or_none()
+    invocation_id = job.invocation_id if job else None
+
     now = datetime.now(UTC)
 
     # Compute next global_seq
@@ -683,6 +729,7 @@ async def handle_job_event(
         actor_id=node.node_id,
         node_id=node.node_id,
         job_id=job_id,
+        invocation_id=invocation_id,
         data={
             "event_type": event_type,
             "sequence": sequence,
