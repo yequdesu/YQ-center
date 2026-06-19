@@ -9,8 +9,9 @@ Agent NEVER calls Nodes directly — all execution goes through Center.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.provider import AgentFunction, AgentProvider, AgentResult
@@ -39,7 +40,7 @@ async def create_agent_session(
     from yequ.models.session import Session
 
     session_id = _make_session_id()
-    now = datetime.now(datetime.UTC)
+    now = datetime.now(UTC)
     sess = Session(
         session_id=session_id,
         actor_type="agent",
@@ -63,6 +64,15 @@ async def create_agent_session(
         "max_steps": max_steps,
         "max_total_duration_sec": max_total_duration_sec,
     }
+
+
+async def _next_global_seq(db: AsyncSession) -> int:
+    """Get the next global_seq value for a TimelineEvent."""
+    from yequ.models.timeline import TimelineEvent
+
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    return max_seq + 1
 
 
 async def agent_invoke(
@@ -99,7 +109,7 @@ async def agent_invoke(
     if call_path is None:
         call_path = []
 
-    now = datetime.now(datetime.UTC)
+    now = datetime.now(UTC)
     if started_at is None:
         started_at = now
 
@@ -137,7 +147,9 @@ async def agent_invoke(
         )
 
     # ── Write step start event ──
+    global_seq = await _next_global_seq(db)
     event = TimelineEvent(
+        global_seq=global_seq,
         event_type="agent.step.started",
         actor_type="agent",
         actor_id=provider.provider_name(),
@@ -170,7 +182,9 @@ async def agent_invoke(
 
         # Loop detection
         if func_name in call_path:
+            loop_global_seq = await _next_global_seq(db)
             event = TimelineEvent(
+                global_seq=loop_global_seq,
                 event_type="agent.loop_detected",
                 actor_type="agent",
                 actor_id=provider.provider_name(),
@@ -207,7 +221,9 @@ async def agent_invoke(
             function_name=func_name,
         )
         if not policy_result.allowed:
+            policy_global_seq = await _next_global_seq(db)
             event = TimelineEvent(
+                global_seq=policy_global_seq,
                 event_type="agent.policy_denied",
                 actor_type="agent",
                 actor_id=provider.provider_name(),
@@ -232,7 +248,9 @@ async def agent_invoke(
         validated_calls.append(fc)
 
     # ── Write step finished event ──
+    finish_global_seq = await _next_global_seq(db)
     event = TimelineEvent(
+        global_seq=finish_global_seq,
         event_type="agent.step.finished",
         actor_type="agent",
         actor_id=provider.provider_name(),
