@@ -133,7 +133,7 @@ async def invoke_agent_endpoint(
                 detail=f"Provider {body.provider_name!r} not found",
             )
 
-    result = await agent_invoke(
+    resp = await agent_invoke(
         db,
         provider,
         session_id=body.session_id,
@@ -146,13 +146,12 @@ async def invoke_agent_endpoint(
         step_count=body.step_count,
         execution_mode=body.execution_mode,
     )
-    await db.commit()
 
     return InvokeAgentResponse(
-        success=result.success,
-        message=result.message,
-        error_code=result.error_code,
-        error_message=result.error_message,
-        retryable=result.retryable,
-        tool_calls=[dict(fc) for fc in result.tool_calls],
+        success=resp.success,
+        message=resp.output.message if resp.output else "",
+        error_code=resp.error.code if resp.error else None,
+        error_message=resp.error.message if resp.error else None,
+        retryable=resp.error.retryable if resp.error else False,
+        tool_calls=[tc.model_dump() for tc in resp.tool_calls],
     )
