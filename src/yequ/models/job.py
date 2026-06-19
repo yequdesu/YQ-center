@@ -13,13 +13,11 @@ class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
-    job_id: Mapped[str] = mapped_column(
-        String(32), unique=True, nullable=False, index=True
-    )
+    job_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     invocation_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     function_name: Mapped[str] = mapped_column(String(256), nullable=False)
-    input_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")
     timeout_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     lease_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
@@ -29,7 +27,7 @@ class Job(Base, TimestampMixin):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)

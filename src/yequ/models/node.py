@@ -24,9 +24,7 @@ class Node(Base, TimestampMixin):
     token_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     role: Mapped[str] = mapped_column(String(64), nullable=False, default="compute")
     locality: Mapped[str] = mapped_column(String(16), nullable=False, default="local")
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default=NodeStatus.PROVISIONED
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default=NodeStatus.PROVISIONED)
     daemon_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     platform_os: Mapped[str | None] = mapped_column(String(32), nullable=True)
     platform_arch: Mapped[str | None] = mapped_column(String(32), nullable=True)

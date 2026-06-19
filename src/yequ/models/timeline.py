@@ -29,8 +29,8 @@ class TimelineEvent(Base):
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, index=True
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    data: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    metadata_: Mapped[dict[str, object] | None] = mapped_column("metadata", JSON, nullable=True)
 
     __mapper_args__ = {"eager_defaults": True}
 

@@ -8,17 +8,17 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from yequ.api.app import create_app
-from yequ.config import Settings
-from yequ.models.base import Base
-
-# Import all models so Base.metadata is populated
-import yequ.models.node  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
 import yequ.models.job  # noqa: F401
-import yequ.models.timeline  # noqa: F401
+
+# Import all models so Base.metadata is populated
+import yequ.models.node  # noqa: F401
 import yequ.models.session  # noqa: F401
+import yequ.models.timeline  # noqa: F401
+from yequ.api.app import create_app
+from yequ.config import Settings
+from yequ.models.base import Base
 
 TEST_DB_PATH = "test_yequ.db"
 
@@ -35,9 +35,11 @@ def override_settings(monkeypatch):
     monkeypatch.setattr("yequ.config._settings", test_settings)
     # Patch the module-level _settings in yequ.db (which is the result of get_settings())
     import yequ.db
+
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
     # Patch the deps module too — it imports the function reference
     import yequ.api.deps
+
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
     return test_settings
 

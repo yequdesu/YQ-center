@@ -4,8 +4,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.models import Node, Capability, Invocation, Job, TimelineEvent, Session
-from yequ.protocol import JobStatus, NodeStatus, RiskLevel, Effect, Idempotency
+from yequ.models import Capability, Invocation, Job, Node, Session, TimelineEvent
+from yequ.protocol import Effect, Idempotency, JobStatus, NodeStatus, RiskLevel
 
 
 @pytest.mark.asyncio
@@ -22,9 +22,7 @@ async def test_create_and_query_node(db_session: AsyncSession):
     db_session.add(node)
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(Node).where(Node.node_id == "test-node-1")
-    )
+    result = await db_session.execute(select(Node).where(Node.node_id == "test-node-1"))
     fetched = result.scalar_one()
     assert fetched.node_name == "Test Node"
     assert fetched.status == NodeStatus.PROVISIONED
@@ -46,9 +44,7 @@ async def test_create_job_with_status(db_session: AsyncSession):
     db_session.add(job)
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(Job).where(Job.job_id == "job_test_001")
-    )
+    result = await db_session.execute(select(Job).where(Job.job_id == "job_test_001"))
     fetched = result.scalar_one()
     assert fetched.status == JobStatus.CREATED
     assert fetched.timeout_sec == 30
@@ -190,9 +186,7 @@ async def test_create_session(db_session: AsyncSession):
     db_session.add(sess)
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(Session).where(Session.session_id == "sess_test_001")
-    )
+    result = await db_session.execute(select(Session).where(Session.session_id == "sess_test_001"))
     fetched = result.scalar_one()
     assert fetched.actor_type == "user"
     assert fetched.execution_mode == "auto"
@@ -226,9 +220,7 @@ async def test_node_capability_relationship(db_session: AsyncSession):
     db_session.add(node)
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(Node).where(Node.node_id == "test-node-rel")
-    )
+    result = await db_session.execute(select(Node).where(Node.node_id == "test-node-rel"))
     fetched = result.scalar_one()
     assert len(fetched.capabilities) == 2
     assert {c.name for c in fetched.capabilities} == {"sys.metrics.cpu", "sys.cpu.usage"}

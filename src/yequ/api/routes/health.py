@@ -12,7 +12,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/healthz")
-async def healthz(db: AsyncSession = Depends(get_db)) -> dict:  # noqa: B008
+async def healthz(db: AsyncSession = Depends(get_db)) -> dict[str, str]:  # noqa: B008
     """Health check — verifies app is running and DB is reachable."""
     try:
         result = await db.execute(text("SELECT 1"))
