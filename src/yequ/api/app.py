@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.health import router as health_router
 from yequ.logconfig import get_logger, setup_logging
 
@@ -28,4 +29,5 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(health_router)
+    app.include_router(admin_router)
     return app

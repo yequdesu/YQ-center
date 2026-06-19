@@ -36,6 +36,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+per-file-ignores = {"src/yequ/api/**" = ["B008"]}
 
 [tool.ruff.format]
 quote-style = "double"
