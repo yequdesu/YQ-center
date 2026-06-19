@@ -17,6 +17,7 @@ from yequ.services.node_service import (
     handle_heartbeat,
     handle_hello,
     handle_register_capabilities,
+    handle_signal_report,
 )
 
 router = APIRouter(prefix="/yqp", tags=["yqp"])
@@ -116,6 +117,10 @@ async def yqp_endpoint(
         response_payload = await handle_heartbeat(db, node, envelope.payload, settings)
     elif msg_type == MessageType.NODE_REGISTER_CAPABILITIES:
         response_payload = await handle_register_capabilities(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.SIGNAL_REPORT:
+        response_payload = await handle_signal_report(
             db, node, envelope.payload, settings
         )
     else:
