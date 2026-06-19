@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.agent.agent_service import agent_invoke, create_agent_session
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
+from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token, get_db
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -67,15 +68,6 @@ class InvokeAgentRequest(BaseModel):
     max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
 
 
-class InvokeAgentResponse(BaseModel):
-    success: bool
-    message: str = ""
-    tool_calls: list[dict[str, object]] = Field(default_factory=list)
-    error_code: str | None = None
-    error_message: str | None = None
-    retryable: bool = False
-
-
 # -- Endpoints --
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -99,12 +91,12 @@ async def create_session_endpoint(
     )
 
 
-@router.post("/invoke", response_model=InvokeAgentResponse)
+@router.post("/invoke", response_model=AgentInvokeResponse)
 async def invoke_agent_endpoint(
     body: InvokeAgentRequest,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
-) -> InvokeAgentResponse:
+) -> AgentInvokeResponse:
     """Invoke an Agent Provider with a prompt.
 
     The Agent reasons about the prompt and returns function_calls.
@@ -147,11 +139,4 @@ async def invoke_agent_endpoint(
         execution_mode=body.execution_mode,
     )
 
-    return InvokeAgentResponse(
-        success=resp.success,
-        message=resp.output.message if resp.output else "",
-        error_code=resp.error.code if resp.error else None,
-        error_message=resp.error.message if resp.error else None,
-        retryable=resp.error.retryable if resp.error else False,
-        tool_calls=[tc.model_dump() for tc in resp.tool_calls],
-    )
+    return resp

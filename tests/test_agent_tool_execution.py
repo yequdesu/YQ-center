@@ -364,7 +364,7 @@ class TestAgentToolExecution:
         data = r.json()
 
         assert data["success"] is False
-        assert data["error_code"] == "max_steps_exceeded"
+        assert data["error"]["code"] == "max_steps_exceeded"
 
     @pytest.mark.asyncio
     async def test_circular_dependency(

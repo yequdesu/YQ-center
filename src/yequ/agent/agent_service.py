@@ -172,8 +172,12 @@ async def agent_invoke(
             ),
         )
 
+    # SQLite strips timezone; if naive, assume UTC
+    started = session.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
     deadline = datetime.fromtimestamp(
-        session.started_at.timestamp() + max_total_duration_sec, tz=UTC
+        started.timestamp() + max_total_duration_sec, tz=UTC
     )
 
     # -- Step 1: Write agent.prompt.received --
