@@ -191,14 +191,39 @@ async def agent_invoke(
     )
     await db.commit()  # commit so event is visible even if provider hangs
 
-    # -- Step 2: Call Provider --
+    # -- Step 2: Call Provider with hard asyncio timeout --
     log.info("agent provider request started: provider=%s session_id=%s",
              provider.provider_name(), session_id)
-    provider_result = await provider.invoke(
-        prompt,
-        available_functions=available_functions,
-        context={"call_path": list(call_path), "session_id": session_id},
-    )
+    try:
+        provider_result = await asyncio.wait_for(
+            provider.invoke(
+                prompt,
+                available_functions=available_functions,
+                context={"call_path": list(call_path), "session_id": session_id},
+            ),
+            timeout=45.0,  # hard outer timeout — must fire regardless of SDK behavior
+        )
+    except asyncio.TimeoutError:
+        log.error("agent provider timed out: provider=%s session_id=%s",
+                  provider.provider_name(), session_id)
+        await _write_timeline(db, "agent.provider.failed", session_id=session_id,
+                              actor=provider.provider_name(), success=False,
+                              error="Provider timed out after 45s",
+                              error_code="provider_timeout")
+        await db.commit()
+        return AgentInvokeResponse(
+            success=False, status="failed", provider_name=provider.provider_name(),
+            session_id=session_id,
+            error=AgentInvokeError(code="provider_timeout",
+                                   message="Provider timed out after 45s",
+                                   retryable=True),
+            usage=AgentInvokeUsage(tool_calls=0),
+            trace=AgentInvokeTrace(
+                trace_id=trace_id, call_path=list(call_path),
+                step_count=step_count + 1, max_depth=max_depth,
+                max_steps=max_steps, max_total_duration_sec=max_total_duration_sec,
+            ),
+        )
 
     # Handle provider failure
     if not provider_result.success:
@@ -208,6 +233,7 @@ async def agent_invoke(
                               actor=provider.provider_name(), success=False,
                               error=provider_result.error_message,
                               error_code=provider_result.error_code or "provider_error")
+        await db.commit()
         return AgentInvokeResponse(
             success=False, status="failed", provider_name=provider.provider_name(),
             session_id=session_id,
