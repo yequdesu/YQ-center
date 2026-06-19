@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
@@ -18,7 +19,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan — setup and teardown."""
     setup_logging()
     log.info("yeau center starting", version="0.1.0")
+
+    # Recovery: mark stale claimed/running jobs with expired leases as timeout
+    try:
+        from yequ.db import async_session_factory
+        from yequ.services.job_service import find_incomplete_jobs, timeout_job
+
+        async with async_session_factory() as db:
+            incomplete = await find_incomplete_jobs(db)
+            recovered = 0
+            for job in incomplete:
+                if (
+                    job.status in ("claimed", "running")
+                    and job.lease_expires_at
+                    and job.lease_expires_at < datetime.now(UTC)
+                ):
+                    await timeout_job(db, job, node_id="recovery")
+                    recovered += 1
+            if recovered:
+                await db.commit()
+                log.info("recovery complete", recovered_jobs=recovered)
+
+    except Exception:
+        log.exception("recovery scan failed")
+
+    # Start background timeout scanner
+    from yequ.services.timeout_scanner import get_scanner
+
+    scanner = get_scanner()
+    await scanner.start()
+
     yield
+
+    # Shutdown
+    await scanner.stop()
     log.info("yeau center shutting down")
 
 
