@@ -447,7 +447,7 @@ async def _execute_tool_call(
                           job_id=job.job_id, target_node_id=resolved.node_id)
 
     # -- Wait for Invocation terminal --
-    final_status = await _wait_invocation_terminal(db, inv.invocation_id, deadline)
+    final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
 
     # -- Collect result --
     from yequ.models.invocation import Invocation
@@ -485,25 +485,26 @@ async def _execute_tool_call(
 
 
 async def _wait_invocation_terminal(
-    db: AsyncSession,
     invocation_id: str,
     deadline: datetime,
     poll_interval: float = 0.5,
 ) -> str:
-    """Poll for Invocation terminal status, return final status string.
+    """Poll for Invocation terminal status using short-lived sessions.
 
-    Waits until Invocation reaches succeeded/failed/timeout/cancelled/partial,
-    or until deadline passes. Returns the final status.
+    Creates a fresh DB session for each poll to avoid holding
+    a connection open during the wait. Returns the final status.
     """
+    from yequ.db import async_session_factory
     from yequ.models.invocation import Invocation
 
     while datetime.now(UTC) < deadline:
-        result = await db.execute(
-            select(Invocation).where(Invocation.invocation_id == invocation_id)
-        )
-        inv = result.scalar_one_or_none()
-        if inv and inv.status in ("succeeded", "failed", "timeout", "cancelled", "partial"):
-            return inv.status
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Invocation).where(Invocation.invocation_id == invocation_id)
+            )
+            inv = result.scalar_one_or_none()
+            if inv and inv.status in ("succeeded", "failed", "timeout", "cancelled", "partial"):
+                return inv.status
         await asyncio.sleep(poll_interval)
 
     return "timeout"
