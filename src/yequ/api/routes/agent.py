@@ -120,6 +120,11 @@ async def invoke_agent_endpoint(
             provider.add_function(_default_functions()[0])
             provider.add_function(_default_functions()[1])
             register_provider(provider)
+        elif body.provider_name == "deepseek":
+            from yequ.agent.deepseek_provider import DeepSeekProvider
+
+            provider = DeepSeekProvider()
+            register_provider(provider)
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
