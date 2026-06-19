@@ -33,6 +33,7 @@ def override_settings(monkeypatch):
         database_url=f"sqlite+aiosqlite:///{TEST_DB_PATH}",
         debug=True,
         log_level="WARNING",
+        require_admin_auth=False,  # tests bypass auth by default
     )
     # Patch the singleton cache so get_settings() returns test settings
     monkeypatch.setattr("yequ.config._settings", test_settings)

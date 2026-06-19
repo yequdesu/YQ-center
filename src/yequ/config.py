@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     log_format: str = "json"  # json or console
 
     # Auth
-    require_admin_auth: bool = False  # Set to True in production to enforce Admin/Agent tokens
+    require_admin_auth: bool = True  # Admin/Agent token scope enforced
 
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var

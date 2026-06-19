@@ -45,7 +45,7 @@ class CreateInvocationRequest(BaseModel):
     """Request to create an Invocation that spawns a Job on a target node."""
     function_name: str = Field(..., min_length=1, max_length=256)
     target_node_id: str = Field(..., min_length=1, max_length=128)
-    input_payload: dict[str, object] = Field(default_factory=dict)
+    input_payload: dict[str, object] = Field(default_factory=dict, validation_alias="input")
     actor_type: str = Field(default="user")
     actor_id: str = Field(default="admin")
     session_id: str | None = Field(default=None)
