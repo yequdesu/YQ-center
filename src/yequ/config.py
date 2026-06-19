@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Database
-    database_url: str = "sqlite+aiosqlite:///yequ.db"
+    database_url: str = "postgresql+asyncpg://yequ:yequ@127.0.0.1:5432/yequ"
 
     # Node protocol
     allowed_timestamp_skew_sec: int = 30

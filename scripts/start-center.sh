@@ -29,9 +29,16 @@ BASE_URL="http://127.0.0.1:${PORT}"
 case "${2:-start}" in
   start)
     banner
+
+    # Ensure PostgreSQL is running
+    if ! docker compose ps postgres 2>/dev/null | grep -q "healthy"; then
+      echo "Starting PostgreSQL..."
+      docker compose up -d postgres
+      sleep 3
+    fi
+
     echo ""
-    echo -e "${YELLOW}[1/4] Clean DB + alembic migrate ...${NC}"
-    rm -f yequ.db
+    echo -e "${YELLOW}[1/4] alembic migrate ...${NC}"
     alembic upgrade head 2>&1 | tail -1
 
     echo ""
