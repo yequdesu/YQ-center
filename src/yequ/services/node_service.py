@@ -506,7 +506,10 @@ async def handle_job_lease_renew(
         }
 
     now = datetime.now(UTC)
-    if job.lease_expires_at and job.lease_expires_at < now:
+    lease_expires = job.lease_expires_at
+    if lease_expires is not None and lease_expires.tzinfo is None:
+        lease_expires = lease_expires.replace(tzinfo=UTC)
+    if lease_expires is not None and lease_expires < now:
         return {
             "job_id": job_id,
             "status": "denied",

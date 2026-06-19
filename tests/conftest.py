@@ -1,7 +1,9 @@
 """pytest fixtures for YeQu Center tests."""
 
 import os
+import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -37,6 +39,17 @@ def override_settings(monkeypatch):
     import yequ.db
 
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
+    # Recreate the engine with test settings so the app's get_db() uses the test DB
+    engine = create_async_engine(
+        test_settings.database_url,
+        echo=test_settings.debug,
+        connect_args={"check_same_thread": False},
+    )
+    monkeypatch.setattr(yequ.db, "engine", engine)
+    # Also rebuild async_session_factory using the test engine
+    monkeypatch.setattr(yequ.db, "async_session_factory", async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False,
+    ))
     # Patch the deps module too — it imports the function reference
     import yequ.api.deps
 
@@ -80,3 +93,52 @@ async def client(db_engine) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+def make_yqp_envelope(
+    message_type: str,
+    node_id: str,
+    payload: dict | None = None,
+    message_id: str | None = None,
+) -> dict:
+    """Build a YQP envelope dict for testing."""
+    return {
+        "yqp_version": "0.1",
+        "message_id": message_id or f"msg_{uuid.uuid4().hex[:16]}",
+        "message_type": message_type,
+        "trace_id": f"tr_{uuid.uuid4().hex[:16]}",
+        "node_id": node_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "payload": payload or {},
+    }
+
+
+@pytest_asyncio.fixture
+async def provisioned_node(db_session):
+    """Provision a test node and return (node, token) for YQP tests."""
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
+
+    token = "test-token-" + uuid.uuid4().hex[:8]
+    node = Node(
+        node_id=f"test-node-{uuid.uuid4().hex[:8]}",
+        node_name="YQP Test Node",
+        token_hash=hash_token(token),
+        status="provisioned",
+    )
+    db_session.add(node)
+    await db_session.commit()
+    return node, token
+
+
+@pytest_asyncio.fixture
+async def node_with_hello(client, provisioned_node):
+    """Provision + hello, return (node, token)."""
+    from tests.conftest import make_yqp_envelope
+
+    node, token = provisioned_node
+    auth = {"Authorization": f"Bearer {token}"}
+    await client.post("/yqp/", json=make_yqp_envelope(
+        "node.hello", node.node_id, payload={"daemon_version": "0.1.0"},
+    ), headers=auth)
+    return node, token
