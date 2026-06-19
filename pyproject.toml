@@ -17,6 +17,8 @@ dependencies = [
     "aiosqlite>=0.20",
     "uvicorn[standard]>=0.30",
     "jsonschema>=4.20",
+    "click>=8.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +29,9 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.11",
 ]
+
+[project.scripts]
+yequ = "yequ.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yequ"]
