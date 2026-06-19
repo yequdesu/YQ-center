@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.api.deps import get_db
+from yequ.api.deps import get_admin_token, get_db
+from yequ.models.api_token import ApiToken
 from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
@@ -20,6 +21,7 @@ from yequ.services.invocation_service import (
 )
 from yequ.services.job_service import create_job
 from yequ.services.node_auth import hash_token
+from yequ.services.token_auth import hash_token as hash_api_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -152,6 +154,7 @@ class TimelineSummary(BaseModel):
 @router.get("/nodes", response_model=list[NodeSummary])
 async def list_nodes(
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[NodeSummary]:
     """List all provisioned nodes."""
     result = await db.execute(select(Node).order_by(Node.node_id))
@@ -163,6 +166,7 @@ async def list_nodes(
 async def get_node(
     node_id: str,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> NodeDetail:
     """Get a single node's details."""
     result = await db.execute(select(Node).where(Node.node_id == node_id))
@@ -176,6 +180,7 @@ async def get_node(
 async def list_capabilities(
     node_id: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[CapabilitySummary]:
     """List capabilities, optionally filtered by node_id."""
     stmt = select(Capability).where(Capability.is_active)
@@ -195,6 +200,7 @@ async def list_jobs(
     invocation_id: str | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[JobSummary]:
     """List jobs with optional filters."""
     stmt = select(Job)
@@ -214,6 +220,7 @@ async def list_jobs(
 async def get_job(
     job_id: str,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> JobSummary:
     """Get a single job's details."""
     result = await db.execute(select(Job).where(Job.job_id == job_id))
@@ -227,6 +234,7 @@ async def get_job(
 async def get_invocation(
     invocation_id: str,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> InvocationDetail:
     """Get invocation details including associated jobs."""
     result = await db.execute(
@@ -275,6 +283,7 @@ async def list_timeline(
     created_after: str | None = None,
     created_before: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[TimelineSummary]:
     """Query timeline events with filters and cursor support."""
     stmt = select(TimelineEvent)
@@ -296,6 +305,44 @@ async def list_timeline(
     result = await db.execute(stmt)
     events = result.scalars().all()
     return [_tl_summary(e) for e in events]
+
+
+class CreateTokenRequest(BaseModel):
+    token: str = Field(..., min_length=8)
+    scope: str = Field(..., min_length=1)  # "admin" or "agent"
+    label: str = Field(..., min_length=1)
+
+
+class CreateTokenResponse(BaseModel):
+    token_hash: str
+    scope: str
+    label: str
+    message: str
+
+
+@router.post("/tokens", status_code=status.HTTP_201_CREATED)
+async def create_token(
+    body: CreateTokenRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> CreateTokenResponse:
+    """Create a new API token (admin or agent scope)."""
+    if body.scope not in ("admin", "agent"):
+        raise HTTPException(status_code=400, detail="scope must be 'admin' or 'agent'")
+
+    t = ApiToken(
+        token_hash=hash_api_token(body.token),
+        scope=body.scope,
+        label=body.label,
+    )
+    db.add(t)
+    await db.commit()
+    return CreateTokenResponse(
+        token_hash=t.token_hash,
+        scope=t.scope,
+        label=t.label,
+        message=f"{body.scope} token created",
+    )
 
 
 # ── Helper converters ──
@@ -389,6 +436,7 @@ def _tl_summary(e: TimelineEvent) -> TimelineSummary:
 async def provision_node(
     body: ProvisionNodeRequest,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> ProvisionNodeResponse:
     """Pre-provision a Node in the system.
 
@@ -433,6 +481,7 @@ async def provision_node(
 async def create_invocation_endpoint(
     body: CreateInvocationRequest,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> CreateInvocationResponse:
     """Create an Invocation and fan out to a Job on the target Node.
 

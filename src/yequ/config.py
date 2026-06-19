@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "json"  # json or console
 
+    # Auth
+    require_admin_auth: bool = False  # Set to True in production to enforce Admin/Agent tokens
+
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"

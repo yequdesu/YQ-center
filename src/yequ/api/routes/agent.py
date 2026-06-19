@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.agent.agent_service import agent_invoke, create_agent_session
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
-from yequ.api.deps import get_db
+from yequ.api.deps import get_agent_token, get_db
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -82,6 +82,7 @@ class InvokeAgentResponse(BaseModel):
 async def create_session_endpoint(
     body: CreateSessionRequest,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_agent_token),
 ) -> dict[str, object]:
     """Create an Agent Session.
 
@@ -102,6 +103,7 @@ async def create_session_endpoint(
 async def invoke_agent_endpoint(
     body: InvokeAgentRequest,
     db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_agent_token),
 ) -> InvokeAgentResponse:
     """Invoke an Agent Provider with a prompt.
 
