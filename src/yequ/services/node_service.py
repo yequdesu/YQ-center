@@ -267,3 +267,260 @@ async def handle_signal_report(
         "accepted": accepted,
         "rejected": rejected,
     }
+
+
+async def handle_job_poll(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.poll — return available jobs for this node.
+
+    Returns up to `capacity` jobs that are queued for this node.
+    Jobs transition from queued to claimed upon poll.
+    If no jobs available, returns empty jobs list (job.empty semantics).
+    """
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol import JobStatus
+
+    capacity = payload.get("capacity", 1)
+
+    result = await db.execute(
+        select(Job)
+        .where(
+            Job.node_id == node.node_id,
+            Job.status == JobStatus.QUEUED,
+        )
+        .limit(capacity)
+    )
+    pending_jobs = result.scalars().all()
+
+    if not pending_jobs:
+        return {"jobs": []}
+
+    now = datetime.now(UTC)
+    jobs = []
+    for job in pending_jobs:
+        job.status = JobStatus.CLAIMED
+        job.claimed_at = now
+        job.lease_expires_at = datetime.fromtimestamp(
+            now.timestamp() + job.lease_sec, tz=UTC
+        )
+        jobs.append({
+            "job_id": job.job_id,
+            "invocation_id": job.invocation_id,
+            "function": job.function_name,
+            "input": job.input_payload or {},
+            "timeout_sec": job.timeout_sec,
+            "lease_sec": job.lease_sec,
+        })
+
+    await db.commit()
+    return {"jobs": jobs}
+
+
+async def handle_job_accepted(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.accepted — Node confirms it will execute the job.
+
+    Job transitions: claimed -> running.
+    """
+    from fastapi import HTTPException, status
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol import JobStatus
+    from yequ.protocol.errors import ErrorCode, YqpError
+
+    job_id = payload["job_id"]
+    result = await db.execute(
+        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
+    )
+    job = result.scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=YqpError(
+                code=ErrorCode.JOB_NOT_FOUND,
+                message=f"Job {job_id!r} not found or not assigned to this node",
+            ).model_dump(),
+        )
+
+    if job.status != JobStatus.CLAIMED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=YqpError(
+                code=ErrorCode.INVALID_STATE_TRANSITION,
+                message=f"Cannot accept job in status {job.status}",
+            ).model_dump(),
+        )
+
+    now = datetime.now(UTC)
+    job.status = JobStatus.RUNNING
+    job.started_at = now
+    await db.commit()
+
+    return {"job_id": job_id, "status": "accepted"}
+
+
+async def handle_job_finished(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.finished — Node reports job completion.
+
+    Accepts terminal states: succeeded, failed, cancelled, timeout.
+    A job can only enter a terminal state once.
+    Writes timeline event for the terminal state.
+    """
+    from fastapi import HTTPException, status
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.models.timeline import TimelineEvent
+    from yequ.protocol import JobStatus
+    from yequ.protocol.errors import ErrorCode, YqpError
+
+    job_id = payload["job_id"]
+    result = await db.execute(
+        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
+    )
+    job = result.scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=YqpError(
+                code=ErrorCode.JOB_NOT_FOUND,
+                message=f"Job {job_id!r} not found",
+            ).model_dump(),
+        )
+
+    terminal_status = payload["status"]
+    valid_terminals = {
+        JobStatus.SUCCEEDED, JobStatus.FAILED,
+        JobStatus.CANCELLED, JobStatus.TIMEOUT,
+    }
+    if terminal_status not in valid_terminals:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=YqpError(
+                code=ErrorCode.SCHEMA_INVALID,
+                message=f"Invalid terminal status: {terminal_status}",
+            ).model_dump(),
+        )
+
+    # Reject if already in terminal state -- terminal state is immutable
+    if job.status in valid_terminals:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=YqpError(
+                code=ErrorCode.INVALID_STATE_TRANSITION,
+                message=f"Job {job_id!r} already in terminal state {job.status}",
+            ).model_dump(),
+        )
+
+    now = datetime.now(UTC)
+    job.status = terminal_status
+    job.finished_at = now
+    job.output = payload.get("output")
+    job.error_code = payload.get("error_code")
+    job.error_message = payload.get("error_message")
+
+    # Compute global_seq for timeline event
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    next_seq = max_seq + 1
+
+    # Write timeline event
+    event = TimelineEvent(
+        global_seq=next_seq,
+        event_type=f"job.{terminal_status}",
+        actor_type="system",
+        actor_id=node.node_id,
+        node_id=node.node_id,
+        job_id=job_id,
+        invocation_id=job.invocation_id,
+        data={
+            "status": terminal_status,
+            "output": payload.get("output"),
+            "error_code": payload.get("error_code"),
+            "finished_at": now.isoformat(),
+        },
+        timestamp=now,
+    )
+    db.add(event)
+    await db.commit()
+
+    return {"job_id": job_id, "status": terminal_status}
+
+
+async def handle_job_lease_renew(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process job.lease_renew — extend a running job's lease.
+
+    Only running jobs can renew their lease. Expired leases are denied.
+    Returns either lease_accepted or lease_denied semantics.
+    """
+    from fastapi import HTTPException, status
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol import JobStatus
+    from yequ.protocol.errors import ErrorCode, YqpError
+
+    job_id = payload["job_id"]
+    result = await db.execute(
+        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
+    )
+    job = result.scalar_one_or_none()
+
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=YqpError(
+                code=ErrorCode.JOB_NOT_FOUND,
+                message=f"Job {job_id!r} not found",
+            ).model_dump(),
+        )
+
+    if job.status != JobStatus.RUNNING:
+        return {
+            "job_id": job_id,
+            "status": "denied",
+            "reason": "job_not_running",
+        }
+
+    now = datetime.now(UTC)
+    if job.lease_expires_at and job.lease_expires_at < now:
+        return {
+            "job_id": job_id,
+            "status": "denied",
+            "reason": "lease_expired",
+        }
+
+    extend_sec = payload.get("lease_extend_sec", settings.default_lease_sec)
+    job.lease_expires_at = datetime.fromtimestamp(
+        now.timestamp() + extend_sec, tz=UTC
+    )
+    await db.commit()
+
+    return {
+        "job_id": job_id,
+        "status": "accepted",
+        "lease_expires_at": job.lease_expires_at.isoformat(),
+    }

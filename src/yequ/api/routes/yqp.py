@@ -16,6 +16,10 @@ from yequ.services.node_auth import authenticate_node, verify_node_id_binding
 from yequ.services.node_service import (
     handle_heartbeat,
     handle_hello,
+    handle_job_accepted,
+    handle_job_finished,
+    handle_job_lease_renew,
+    handle_job_poll,
     handle_register_capabilities,
     handle_signal_report,
 )
@@ -121,6 +125,22 @@ async def yqp_endpoint(
         )
     elif msg_type == MessageType.SIGNAL_REPORT:
         response_payload = await handle_signal_report(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_POLL:
+        response_payload = await handle_job_poll(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_ACCEPTED:
+        response_payload = await handle_job_accepted(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_FINISHED:
+        response_payload = await handle_job_finished(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.JOB_LEASE_RENEW:
+        response_payload = await handle_job_lease_renew(
             db, node, envelope.payload, settings
         )
     else:
