@@ -25,6 +25,8 @@ source .venv/bin/activate
 
 PORT="${1:-9800}"
 BASE_URL="http://127.0.0.1:${PORT}"
+ADMIN_TOKEN="qq756522327"
+NODE_TOKEN="winc-token-4a7f3c9e1b2d8f6c"
 
 case "${2:-start}" in
   start)
@@ -47,10 +49,10 @@ case "${2:-start}" in
     PID=$!
     sleep 3
 
-    TOKEN="winc-token-4a7f3c9e1b2d8f6c"
     curl -s -X POST "${BASE_URL}/admin/nodes" \
       -H "Content-Type: application/json" \
-      -d '{"node_id":"winClient","node_name":"Windows Client","token":"'"${TOKEN}"'","role":"compute","locality":"lan"}' \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      -d '{"node_id":"winClient","node_name":"Windows Client","token":"'"${NODE_TOKEN}"'","role":"compute","locality":"lan"}' \
       | python3 -m json.tool
 
     echo ""
@@ -72,25 +74,23 @@ case "${2:-start}" in
     curl -s "${BASE_URL}/healthz" | python3 -m json.tool 2>/dev/null || echo -e "${RED}Center not running${NC}"
     echo ""
     echo -e "${YELLOW}-- provisioned nodes --${NC}"
-    curl -s "${BASE_URL}/admin/nodes" 2>/dev/null | python3 -m json.tool 2>/dev/null || echo -e "${RED}Cannot get nodes${NC}"
+    curl -s "${BASE_URL}/admin/nodes" -H "Authorization: Bearer ${ADMIN_TOKEN}" 2>/dev/null | python3 -m json.tool 2>/dev/null || echo -e "${RED}Cannot get nodes${NC}"
     ;;
 
   test-hello)
     banner
-    TOKEN="winc-token-4a7f3c9e1b2d8f6c"
     echo -e "${YELLOW}-- node.hello --${NC}"
     curl -s -X POST "${BASE_URL}/yqp/" \
       -H "Content-Type: application/json" \
-      -H "Authorization: Bearer ${TOKEN}" \
+      -H "Authorization: Bearer ${NODE_TOKEN}" \
       -d '{"yqp_version":"0.1","message_id":"msg_hello_'$(date +%s)'","message_type":"node.hello","trace_id":"tr_hello_'$(date +%s)'","node_id":"winClient","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","payload":{"daemon_version":"0.1.0","node_name":"Windows Client","role":["compute"],"locality":"lan","platform":{"os":"windows","arch":"amd64"}}}' \
       | python3 -m json.tool
     ;;
 
   test-full)
     banner
-    TOKEN="winc-token-4a7f3c9e1b2d8f6c"
     NODE="winClient"
-    AUTH="Authorization: Bearer ${TOKEN}"
+    AUTH="Authorization: Bearer ${NODE_TOKEN}"
     MSG_PREFIX="msg_$(date +%s)"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -125,9 +125,8 @@ case "${2:-start}" in
 
   test-stage3)
     banner
-    TOKEN="winc-token-4a7f3c9e1b2d8f6c"
     NODE="winClient"
-    AUTH="Authorization: Bearer ${TOKEN}"
+    AUTH="Authorization: Bearer ${NODE_TOKEN}"
     TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     echo -e "${YELLOW}[Stage 3] Invocation -> Job -> Poll -> Accept -> Finish${NC}"
@@ -135,6 +134,7 @@ case "${2:-start}" in
     echo -e "${YELLOW}[1] POST /admin/invocations${NC}"
     INV=$(curl -s -X POST "${BASE_URL}/admin/invocations" \
       -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -d '{"function_name":"system.metrics.snapshot","target_node_id":"'"${NODE}"'","input_payload":{},"timeout_sec":30}')
     echo "  -> $INV"
     JOB_ID=$(echo "$INV" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
@@ -166,6 +166,7 @@ case "${2:-start}" in
     echo -e "${YELLOW}[1] POST /agent/sessions${NC}"
     SESS=$(curl -s -X POST "${BASE_URL}/agent/sessions" \
       -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -d '{"actor_id":"test-agent","execution_mode":"auto"}')
     echo "  -> $SESS"
     SID=$(echo "$SESS" | python3 -c "import sys,json; print(json.load(sys.stdin)['session_id'])")
@@ -173,6 +174,7 @@ case "${2:-start}" in
     echo -e "${YELLOW}[2] POST /agent/invoke${NC}"
     curl -s -X POST "${BASE_URL}/agent/invoke" \
       -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -d '{"session_id":"'"${SID}"'","prompt":"get system metrics","execution_mode":"auto"}' \
       | python3 -m json.tool
 
