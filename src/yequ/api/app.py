@@ -46,10 +46,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Bootstrap: seed default admin token if none exist
     try:
+        from sqlalchemy import select
+
         from yequ.db import async_session_factory
         from yequ.models.api_token import ApiToken
         from yequ.services.token_auth import hash_token
-        from sqlalchemy import select
 
         async with async_session_factory() as db:
             result = await db.execute(
