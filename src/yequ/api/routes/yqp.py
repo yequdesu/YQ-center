@@ -13,7 +13,11 @@ from yequ.protocol.envelope import YqpEnvelope
 from yequ.protocol.errors import ErrorCode, YqpError
 from yequ.services.message_dedup import get_dedup
 from yequ.services.node_auth import authenticate_node, verify_node_id_binding
-from yequ.services.node_service import handle_heartbeat, handle_hello
+from yequ.services.node_service import (
+    handle_heartbeat,
+    handle_hello,
+    handle_register_capabilities,
+)
 
 router = APIRouter(prefix="/yqp", tags=["yqp"])
 
@@ -110,6 +114,10 @@ async def yqp_endpoint(
         response_payload = await handle_hello(db, node, envelope.payload, settings)
     elif msg_type == MessageType.NODE_HEARTBEAT:
         response_payload = await handle_heartbeat(db, node, envelope.payload, settings)
+    elif msg_type == MessageType.NODE_REGISTER_CAPABILITIES:
+        response_payload = await handle_register_capabilities(
+            db, node, envelope.payload, settings
+        )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
