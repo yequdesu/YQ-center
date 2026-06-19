@@ -27,11 +27,14 @@ class DeepSeekProvider(AgentProvider):
     """
 
     def __init__(self) -> None:
+        import httpx
+
         settings = get_settings()
         self._client = AsyncOpenAI(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            timeout=30.0,  # hard timeout for API calls
+            timeout=httpx.Timeout(30.0, connect=10.0, read=30.0, write=30.0, pool=5.0),
+            max_retries=0,  # no retry — fail fast, let caller decide
         )
         self._model = settings.deepseek_model
         self._functions: list[AgentFunction] = []

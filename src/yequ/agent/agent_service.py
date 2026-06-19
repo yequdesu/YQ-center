@@ -204,9 +204,10 @@ async def agent_invoke(
     if not provider_result.success:
         log.error("agent provider request failed: provider=%s error=%s",
                   provider.provider_name(), provider_result.error_message)
-        await _write_timeline(db, "agent.provider.completed", session_id=session_id,
+        await _write_timeline(db, "agent.provider.failed", session_id=session_id,
                               actor=provider.provider_name(), success=False,
-                              error=provider_result.error_message)
+                              error=provider_result.error_message,
+                              error_code=provider_result.error_code or "provider_error")
         return AgentInvokeResponse(
             success=False, status="failed", provider_name=provider.provider_name(),
             session_id=session_id,
