@@ -20,6 +20,7 @@ from yequ.services.node_service import (
     handle_job_finished,
     handle_job_lease_renew,
     handle_job_poll,
+    handle_reconcile_jobs,
     handle_register_capabilities,
     handle_signal_report,
 )
@@ -141,6 +142,10 @@ async def yqp_endpoint(
         )
     elif msg_type == MessageType.JOB_LEASE_RENEW:
         response_payload = await handle_job_lease_renew(
+            db, node, envelope.payload, settings
+        )
+    elif msg_type == MessageType.NODE_RECONCILE_JOBS:
+        response_payload = await handle_reconcile_jobs(
             db, node, envelope.payload, settings
         )
     else:

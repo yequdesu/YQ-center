@@ -524,3 +524,118 @@ async def handle_job_lease_renew(
         "status": "accepted",
         "lease_expires_at": job.lease_expires_at.isoformat(),
     }
+
+
+async def handle_reconcile_jobs(
+    db: AsyncSession,
+    node: Node,
+    payload: dict,
+    settings,
+) -> dict:
+    """Process node.reconcile_jobs — reconcile after reconnection.
+
+    Compares Daemon's local job states with Center's authoritative state
+    and returns reconciliation actions per the YQP arbitration rules:
+
+    - Center terminal, Daemon succeeded/cancelled/failed/timeout -> accept/discard result
+    - Center terminal, Daemon running -> cancel
+    - Both running -> continue with new lease
+    - Center unknown -> forget
+    - Daemon completed, Center not terminal -> accept_result
+    """
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol import JobStatus, ReconciliationAction
+
+    known_jobs = payload.get("known_jobs", [])
+    actions: list[dict] = []
+    now = datetime.now(UTC)
+
+    terminal_statuses = {
+        JobStatus.SUCCEEDED, JobStatus.FAILED,
+        JobStatus.CANCELLED, JobStatus.TIMEOUT,
+    }
+    non_terminal_statuses = {
+        JobStatus.CREATED, JobStatus.QUEUED,
+        JobStatus.CLAIMED, JobStatus.RUNNING,
+    }
+    daemon_terminal = {"succeeded", "failed", "cancelled", "timeout"}
+
+    for kj in known_jobs:
+        job_id = kj["job_id"]
+        local_status = kj.get("local_status", "running")
+
+        # Look up job in Center
+        result = await db.execute(
+            select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
+        )
+        job = result.scalar_one_or_none()
+
+        if job is None:
+            # Center doesn't know this job - Daemon should stop and clean up
+            actions.append({
+                "job_id": job_id,
+                "action": ReconciliationAction.FORGET,
+            })
+            continue
+
+        center_status = job.status
+
+        # Rule 1: Center has terminal state, Daemon completed
+        if center_status in terminal_statuses and local_status in daemon_terminal:
+            if "output" in kj:
+                actions.append({
+                    "job_id": job_id,
+                    "action": ReconciliationAction.ACCEPT_RESULT,
+                    "reconciled": True,
+                })
+            else:
+                actions.append({
+                    "job_id": job_id,
+                    "action": ReconciliationAction.DISCARD_RESULT,
+                })
+            continue
+
+        # Rule 2: Center has terminal state, Daemon is still running
+        if center_status in terminal_statuses:
+            actions.append({
+                "job_id": job_id,
+                "action": ReconciliationAction.CANCEL,
+                "reason": f"already_{center_status}",
+            })
+            continue
+
+        # Rule 3: Center is non-terminal (running/claimed/queued/created),
+        # Daemon completed — accept the result
+        if center_status in non_terminal_statuses and local_status in daemon_terminal:
+            if local_status == "succeeded" and "output" in kj:
+                job.status = JobStatus.SUCCEEDED
+                job.finished_at = now
+                job.output = kj.get("output")
+                await db.commit()
+
+            actions.append({
+                "job_id": job_id,
+                "action": ReconciliationAction.ACCEPT_RESULT,
+                "reconciled": True,
+            })
+            continue
+
+        # Rule 4: Both agree job is running — continue with new lease
+        if center_status in non_terminal_statuses and local_status == "running":
+            actions.append({
+                "job_id": job_id,
+                "action": ReconciliationAction.CONTINUE,
+                "lease_sec": settings.default_lease_sec,
+            })
+            continue
+
+        # Default: continue
+        actions.append({
+            "job_id": job_id,
+            "action": ReconciliationAction.CONTINUE,
+            "lease_sec": settings.default_lease_sec,
+        })
+
+    return {"actions": actions}
