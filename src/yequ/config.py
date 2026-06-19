@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     log_format: str = "json"  # json or console
 
     # DeepSeek LLM Provider
-    deepseek_api_key: str = "sk-2d379289748540e6877a45e3107a7785"
+    deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
 

@@ -98,7 +98,7 @@ class DeepSeekProvider(AgentProvider):
                     except (json.JSONDecodeError, TypeError):
                         arguments = {}
                     function_calls.append({
-                        "name": tc.function.name,
+                        "name": self._resolve_name(tc.function.name, functions),
                         "input": arguments,
                     })
 
@@ -135,19 +135,35 @@ class DeepSeekProvider(AgentProvider):
                 retryable=retryable,
             )
 
+    def _sanitize_name(self, name: str) -> str:
+        """Replace dots with underscores for DeepSeek API compatibility."""
+        return name.replace(".", "_")
+
     def _functions_to_tools(
         self, functions: list[AgentFunction]
     ) -> list[dict[str, object]]:
-        """Convert AgentFunction[] to OpenAI tool definitions."""
+        """Convert AgentFunction[] to OpenAI tool definitions.
+
+        DeepSeek requires function names matching '^[a-zA-Z0-9_-]+$',
+        so dots are replaced with underscores. The mapping is reversed
+        when parsing tool_calls back to function_calls.
+        """
         tools: list[dict[str, object]] = []
         for func in functions:
             tool = {
                 "type": "function",
                 "function": {
-                    "name": func.name,
+                    "name": self._sanitize_name(func.name),
                     "description": func.description or func.name,
                     "parameters": func.input_schema or {"type": "object", "properties": {}},
                 },
             }
             tools.append(tool)
         return tools
+
+    def _resolve_name(self, sanitized: str, functions: list[AgentFunction]) -> str:
+        """Map a sanitized function name back to the original dotted name."""
+        for f in functions:
+            if self._sanitize_name(f.name) == sanitized:
+                return f.name
+        return sanitized  # fallback
