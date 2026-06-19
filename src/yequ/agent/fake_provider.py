@@ -4,7 +4,12 @@ Does NOT connect to a real LLM. Used for integration testing
 the Agent->Center pipeline without external dependencies.
 """
 
-from yequ.agent.provider import AgentFunction, AgentProvider, AgentResult
+from yequ.agent.provider import (
+    AgentFunction,
+    AgentProvider,
+    AgentResult,
+    ProviderInvokeResult,
+)
 
 
 class FakeAgentProvider(AgentProvider):
@@ -64,7 +69,7 @@ class FakeAgentProvider(AgentProvider):
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
-    ) -> AgentResult:
+    ) -> ProviderInvokeResult:
         """Return a canned response based on prompt content.
 
         Matches prompt against registered response patterns
@@ -74,9 +79,24 @@ class FakeAgentProvider(AgentProvider):
 
         for pattern, result in self._responses.items():
             if pattern in prompt:
-                return result
+                return ProviderInvokeResult(
+                    message=str(result.output.get("message", "")) if result.output else "",
+                    tool_calls=result.function_calls,
+                    success=result.success,
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                    retryable=result.retryable,
+                )
 
-        return self._default_result
+        return ProviderInvokeResult(
+            message=(
+                self._default_result.output.get("message", "")
+                if self._default_result.output
+                else ""
+            ),
+            success=self._default_result.success,
+            tool_calls=list(self._default_result.function_calls),
+        )
 
     def list_functions(self) -> list[AgentFunction]:
         """Return registered functions."""

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.agent.provider import AgentFunction, AgentProvider, AgentResult
+from yequ.agent.provider import AgentFunction, AgentProvider, ProviderInvokeResult
 from yequ.protocol import ErrorCode, RiskLevel
 
 
@@ -89,7 +89,7 @@ async def agent_invoke(
     step_count: int = 0,
     started_at: datetime | None = None,
     execution_mode: str = "auto",
-) -> AgentResult:
+) -> ProviderInvokeResult:
     """Invoke an Agent Provider through the Center's standard path.
 
     Enforces:
@@ -100,7 +100,7 @@ async def agent_invoke(
     - Policy: every function call checked against execution mode + risk
 
     Each agent step writes a TimelineEvent (start + finish).
-    Returns AgentResult with success/error and function_calls.
+    Returns ProviderInvokeResult with success/error and tool_calls.
     If a constraint is violated, returns a standard error result.
     """
     from yequ.models.timeline import TimelineEvent
@@ -116,7 +116,7 @@ async def agent_invoke(
     # ── Duration check ──
     elapsed = (now - started_at).total_seconds()
     if elapsed > max_total_duration_sec:
-        return AgentResult(
+        return ProviderInvokeResult(
             success=False,
             error_code=ErrorCode.MAX_DURATION_EXCEEDED,
             error_message=(
@@ -128,7 +128,7 @@ async def agent_invoke(
 
     # ── Step count check ──
     if step_count >= max_steps:
-        return AgentResult(
+        return ProviderInvokeResult(
             success=False,
             error_code=ErrorCode.MAX_STEPS_EXCEEDED,
             error_message=f"Exceeded max steps {max_steps}",
@@ -137,7 +137,7 @@ async def agent_invoke(
 
     # ── Depth check ──
     if len(call_path) >= max_depth:
-        return AgentResult(
+        return ProviderInvokeResult(
             success=False,
             error_code=ErrorCode.CALL_DEPTH_EXCEEDED,
             error_message=(
@@ -175,9 +175,9 @@ async def agent_invoke(
         },
     )
 
-    # ── Validate function_calls ──
+    # ── Validate tool_calls ──
     validated_calls: list[dict[str, object]] = []
-    for fc in result.function_calls:
+    for fc in result.tool_calls:
         func_name = str(fc.get("name", ""))
 
         # Loop detection
@@ -198,7 +198,7 @@ async def agent_invoke(
             )
             db.add(event)
             await db.flush()
-            return AgentResult(
+            return ProviderInvokeResult(
                 success=False,
                 error_code=ErrorCode.CIRCULAR_DEPENDENCY,
                 error_message=(
@@ -238,7 +238,7 @@ async def agent_invoke(
             )
             db.add(event)
             await db.flush()
-            return AgentResult(
+            return ProviderInvokeResult(
                 success=False,
                 error_code=ErrorCode.POLICY_DENIED,
                 error_message=policy_result.reason or "Policy denied",
@@ -265,7 +265,7 @@ async def agent_invoke(
                 for fc in validated_calls
             ],
             "output_summary": (
-                str(result.output)[:500] if result.output else None
+                str(result.message)[:500] if result.message else None
             ),
             "success": result.success,
         },
@@ -274,5 +274,5 @@ async def agent_invoke(
     db.add(event)
     await db.flush()
 
-    result.function_calls = validated_calls
+    result.tool_calls = validated_calls
     return result

@@ -5,10 +5,15 @@ Converts AgentFunction[] to OpenAI tool definitions.
 """
 
 import json
+import uuid
 
 from openai import AsyncOpenAI
 
-from yequ.agent.provider import AgentFunction, AgentProvider, AgentResult
+from yequ.agent.provider import (
+    AgentFunction,
+    AgentProvider,
+    ProviderInvokeResult,
+)
 from yequ.config import get_settings
 
 
@@ -49,11 +54,12 @@ class DeepSeekProvider(AgentProvider):
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
-    ) -> AgentResult:
+    ) -> ProviderInvokeResult:
         """Invoke DeepSeek with a prompt and available functions.
 
         Converts available_functions to OpenAI tool format,
         sends to DeepSeek, parses the response.
+        Returns ProviderInvokeResult with raw tool_calls (no execution).
         """
         functions = available_functions if available_functions else self._functions
         tools = self._functions_to_tools(functions)
@@ -87,8 +93,8 @@ class DeepSeekProvider(AgentProvider):
             choice = response.choices[0]
             msg = choice.message
 
-            # Build function_calls from tool_calls in the response
-            function_calls: list[dict[str, object]] = []
+            # Build tool_calls from tool_calls in the response
+            tool_calls: list[dict[str, object]] = []
             text_output: list[str] = []
 
             if msg.tool_calls:
@@ -97,8 +103,14 @@ class DeepSeekProvider(AgentProvider):
                         arguments = json.loads(tc.function.arguments)
                     except (json.JSONDecodeError, TypeError):
                         arguments = {}
-                    function_calls.append({
-                        "name": self._resolve_name(tc.function.name, functions),
+                    original_name = self._resolve_name(
+                        tc.function.name, functions
+                    )
+                    sanitized_name = tc.function.name
+                    tool_calls.append({
+                        "call_id": tc.id or f"call_{uuid.uuid4().hex}",
+                        "name": original_name,
+                        "sanitized_name": sanitized_name,
                         "input": arguments,
                     })
 
@@ -108,27 +120,40 @@ class DeepSeekProvider(AgentProvider):
             # Check finish_reason
             finish = choice.finish_reason
             if finish == "length":
-                return AgentResult(
+                return ProviderInvokeResult(
                     success=False,
                     error_code="max_tokens",
                     error_message="Response exceeded max tokens",
                     retryable=False,
                 )
 
-            return AgentResult(
+            # Extract token usage
+            usage_raw = response.usage
+            usage: dict[str, object] = {
+                "prompt_tokens": (
+                    usage_raw.prompt_tokens if usage_raw else None
+                ),
+                "completion_tokens": (
+                    usage_raw.completion_tokens if usage_raw else None
+                ),
+                "total_tokens": (
+                    usage_raw.total_tokens if usage_raw else None
+                ),
+            }
+
+            return ProviderInvokeResult(
+                message="\n".join(text_output) if text_output else "Completed",
+                tool_calls=tool_calls,
+                usage=usage,
+                finish_reason=finish or "stop",
+                model=self._model,
                 success=True,
-                output={
-                    "message": "\n".join(text_output) if text_output else "Completed",
-                    "model": self._model,
-                    "finish_reason": finish or "stop",
-                },
-                function_calls=function_calls,
             )
 
         except Exception as e:
             error_msg = str(e)
             retryable = "rate" in error_msg.lower() or "timeout" in error_msg.lower()
-            return AgentResult(
+            return ProviderInvokeResult(
                 success=False,
                 error_code="llm_error",
                 error_message=error_msg,

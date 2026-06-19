@@ -69,11 +69,11 @@ class InvokeAgentRequest(BaseModel):
 
 class InvokeAgentResponse(BaseModel):
     success: bool
-    output: dict[str, object] | None = None
+    message: str = ""
+    tool_calls: list[dict[str, object]] = Field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None
     retryable: bool = False
-    function_calls: list[dict[str, object]] = Field(default_factory=list)
 
 
 # -- Endpoints --
@@ -150,9 +150,9 @@ async def invoke_agent_endpoint(
 
     return InvokeAgentResponse(
         success=result.success,
-        output=result.output,
+        message=result.message,
         error_code=result.error_code,
         error_message=result.error_message,
         retryable=result.retryable,
-        function_calls=[dict(fc) for fc in result.function_calls],
+        tool_calls=[dict(fc) for fc in result.tool_calls],
     )

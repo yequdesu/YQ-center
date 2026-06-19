@@ -438,8 +438,8 @@ async def test_agent_invoke_with_function_calls(center, fake_node):
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
-    assert len(data["function_calls"]) == 1
-    assert data["function_calls"][0]["name"] == "system.metrics.snapshot"
+    assert len(data["tool_calls"]) == 1
+    assert data["tool_calls"][0]["name"] == "system.metrics.snapshot"
 
     # Verify Timeline events for agent step
     from yequ.db import async_session_factory

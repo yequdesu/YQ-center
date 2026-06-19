@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.agent_service import agent_invoke, create_agent_session
 from yequ.agent.fake_provider import FakeAgentProvider
-from yequ.agent.provider import AgentFunction, AgentResult
+from yequ.agent.provider import AgentFunction, AgentResult, ProviderInvokeResult
 from yequ.protocol import ErrorCode
 
 # ── Policy Engine Tests ────────────────────────────────────────────
@@ -84,8 +84,8 @@ class TestFakeAgentProvider:
         p = FakeAgentProvider()
         r = await p.invoke("hello", available_functions=[])
         assert r.success is True
-        assert r.output == {"message": "default fake response"}
-        assert r.function_calls == []
+        assert r.message == "default fake response"
+        assert r.tool_calls == []
 
     @pytest.mark.asyncio
     async def test_canned_response(self):
@@ -99,8 +99,8 @@ class TestFakeAgentProvider:
             ),
         )
         r = await p.invoke("get me metrics", available_functions=[])
-        assert len(r.function_calls) == 1
-        assert r.function_calls[0]["name"] == "system.metrics.snapshot"
+        assert len(r.tool_calls) == 1
+        assert r.tool_calls[0]["name"] == "system.metrics.snapshot"
 
     @pytest.mark.asyncio
     async def test_invoke_count(self):

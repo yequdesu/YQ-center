@@ -35,6 +35,30 @@ class AgentResult:
     # Each function_call: {"name": str, "input": dict}
 
 
+@dataclass
+class ProviderInvokeResult:
+    """Result of a Provider invocation -- raw, no tool execution.
+
+    The Provider reasons about the prompt and returns:
+    - message: Text response from the LLM
+    - tool_calls: Raw tool calls the LLM wants to make (not yet executed)
+    - usage: Token usage statistics
+    - finish_reason: Why the LLM stopped (stop, tool_calls, length, etc.)
+    """
+
+    message: str = ""
+    tool_calls: list[dict[str, object]] = field(default_factory=list)
+    # Each tool_call dict: {"call_id": str, "name": str, "input": dict}
+    usage: dict[str, object] = field(default_factory=dict)
+    # usage dict: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+    finish_reason: str = "stop"
+    model: str = ""
+    success: bool = True
+    error_code: str | None = None
+    error_message: str | None = None
+    retryable: bool = False
+
+
 class AgentProvider(ABC):
     """Abstract base for all Agent Providers (LLM backends).
 
@@ -51,7 +75,7 @@ class AgentProvider(ABC):
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
-    ) -> AgentResult:
+    ) -> ProviderInvokeResult:
         """Invoke the agent with a prompt and available functions.
 
         The provider reasons about the prompt, decides which
