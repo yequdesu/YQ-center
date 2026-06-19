@@ -27,34 +27,24 @@ TEST_DB_PATH = "test_yequ.db"
 
 
 @pytest.fixture(autouse=True)
-def override_settings(monkeypatch):
-    """Override settings for test environment."""
+def override_settings(monkeypatch, db_engine):
+    """Override settings for test environment — uses db_engine's single engine."""
+    import yequ.api.deps
+    import yequ.db
+
     test_settings = Settings(
         database_url=f"sqlite+aiosqlite:///{TEST_DB_PATH}",
         debug=True,
+        test_mode=True,
         log_level="WARNING",
-        require_admin_auth=False,  # tests bypass auth by default
+        require_admin_auth=False,
     )
-    # Patch the singleton cache so get_settings() returns test settings
     monkeypatch.setattr("yequ.config._settings", test_settings)
-    # Patch the module-level _settings in yequ.db (which is the result of get_settings())
-    import yequ.db
-
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
-    # Recreate the engine with test settings so the app's get_db() uses the test DB
-    engine = create_async_engine(
-        test_settings.database_url,
-        echo=test_settings.debug,
-        connect_args={"check_same_thread": False},
-    )
-    monkeypatch.setattr(yequ.db, "engine", engine)
-    # Also rebuild async_session_factory using the test engine
+    monkeypatch.setattr(yequ.db, "engine", db_engine)
     monkeypatch.setattr(yequ.db, "async_session_factory", async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False,
+        db_engine, class_=AsyncSession, expire_on_commit=False,
     ))
-    # Patch the deps module too — it imports the function reference
-    import yequ.api.deps
-
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
     return test_settings
 

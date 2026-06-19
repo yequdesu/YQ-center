@@ -21,70 +21,72 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     log.info("yeau center starting", version="0.1.0")
 
-    # Recovery: mark stale claimed/running jobs with expired leases as timeout
-    try:
-        from yequ.db import async_session_factory
-        from yequ.services.job_service import find_incomplete_jobs, timeout_job
+    from yequ.config import get_settings
 
-        async with async_session_factory() as db:
-            incomplete = await find_incomplete_jobs(db)
-            recovered = 0
-            for job in incomplete:
-                if (
-                    job.status in ("claimed", "running")
-                    and job.lease_expires_at
-                    and job.lease_expires_at < datetime.now(UTC)
-                ):
-                    await timeout_job(db, job, node_id="recovery")
-                    recovered += 1
-            if recovered:
-                await db.commit()
-                log.info("recovery complete", recovered_jobs=recovered)
+    settings = get_settings()
 
-    except Exception:
-        log.exception("recovery scan failed")
+    # Recovery + bootstrap + background tasks: skip in test mode
+    if not settings.test_mode:
+        try:
+            from yequ.db import async_session_factory
+            from yequ.services.job_service import find_incomplete_jobs, timeout_job
 
-    # Bootstrap: seed default admin token if none exist
-    try:
-        from sqlalchemy import select
+            async with async_session_factory() as db:
+                incomplete = await find_incomplete_jobs(db)
+                recovered = 0
+                for job in incomplete:
+                    if (
+                        job.status in ("claimed", "running")
+                        and job.lease_expires_at
+                        and job.lease_expires_at < datetime.now(UTC)
+                    ):
+                        await timeout_job(db, job, node_id="recovery")
+                        recovered += 1
+                if recovered:
+                    await db.commit()
+                    log.info("recovery complete", recovered_jobs=recovered)
 
-        from yequ.db import async_session_factory
-        from yequ.models.api_token import ApiToken
-        from yequ.services.token_auth import hash_token
+        except Exception:
+            log.exception("recovery scan failed")
 
-        async with async_session_factory() as db:
-            result = await db.execute(
-                select(ApiToken).where(ApiToken.scope == "admin")
-            )
-            if result.scalar_one_or_none() is None:
-                default_token = ApiToken(
-                    token_hash=hash_token("qq756522327"),
-                    scope="admin",
-                    label="default admin",
+        # Bootstrap: seed default admin token if none exist
+        try:
+            from sqlalchemy import select
+            from yequ.db import async_session_factory
+            from yequ.models.api_token import ApiToken
+            from yequ.services.token_auth import hash_token
+
+            async with async_session_factory() as db:
+                result = await db.execute(
+                    select(ApiToken).where(ApiToken.scope == "admin")
                 )
-                db.add(default_token)
-                await db.commit()
-                log.info("bootstrap: default admin token created")
-    except Exception:
-        log.exception("admin token bootstrap failed")
+                if result.scalar_one_or_none() is None:
+                    default_token = ApiToken(
+                        token_hash=hash_token("qq756522327"),
+                        scope="admin",
+                        label="default admin",
+                    )
+                    db.add(default_token)
+                    await db.commit()
+                    log.info("bootstrap: default admin token created")
+        except Exception:
+            log.exception("admin token bootstrap failed")
 
-    # Start background timeout scanner
     from yequ.services.timeout_scanner import get_scanner
-
-    scanner = get_scanner()
-    await scanner.start()
-
-    # Start background Timeline writer
     from yequ.services.timeline_writer import get_timeline_writer
 
+    scanner = get_scanner()
     tl_writer = get_timeline_writer()
-    await tl_writer.start()
+
+    if not settings.test_mode:
+        await scanner.start()
+        await tl_writer.start()
 
     yield
 
-    # Shutdown
-    await scanner.stop()
-    await tl_writer.stop()
+    if not settings.test_mode:
+        await scanner.stop()
+        await tl_writer.stop()
     log.info("yeau center shutting down")
 
 

@@ -31,6 +31,7 @@ class DeepSeekProvider(AgentProvider):
         self._client = AsyncOpenAI(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
+            timeout=30.0,  # hard timeout for API calls
         )
         self._model = settings.deepseek_model
         self._functions: list[AgentFunction] = []

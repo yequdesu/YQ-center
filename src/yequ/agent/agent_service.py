@@ -7,6 +7,7 @@ Flow:
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -24,6 +25,8 @@ from yequ.agent.tool_execution import (
     AgentToolPolicySnapshot,
 )
 from yequ.protocol import ErrorCode, RiskLevel
+
+log = logging.getLogger(__name__)
 
 
 def _make_call_id() -> str:
@@ -188,6 +191,8 @@ async def agent_invoke(
     )
 
     # -- Step 2: Call Provider --
+    log.info("agent provider request started: provider=%s session_id=%s",
+             provider.provider_name(), session_id)
     provider_result = await provider.invoke(
         prompt,
         available_functions=available_functions,
@@ -196,6 +201,8 @@ async def agent_invoke(
 
     # Handle provider failure
     if not provider_result.success:
+        log.error("agent provider request failed: provider=%s error=%s",
+                  provider.provider_name(), provider_result.error_message)
         await _write_timeline(db, "agent.provider.completed", session_id=session_id,
                               actor=provider.provider_name(), success=False,
                               error=provider_result.error_message)
@@ -213,6 +220,9 @@ async def agent_invoke(
                 max_total_duration_sec=max_total_duration_sec,
             ),
         )
+
+    log.info("agent provider request completed: provider=%s tool_call_count=%d",
+             provider.provider_name(), len(provider_result.tool_calls))
 
     await _write_timeline(db, "agent.provider.completed", session_id=session_id,
                           actor=provider.provider_name(), success=True,

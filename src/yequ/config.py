@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "YeQu Center"
     debug: bool = False
+    test_mode: bool = False  # Skip background tasks in test
 
     # Database
     database_url: str = "postgresql+asyncpg://yequ:yequ@127.0.0.1:5432/yequ"
