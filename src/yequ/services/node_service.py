@@ -189,15 +189,12 @@ async def handle_signal_report(
     """
     import jsonschema
 
+    from yequ.services.timeline_writer import get_timeline_writer
+
     signals = payload.get("signals", [])
     accepted = 0
     rejected = 0
     now = datetime.now(UTC)
-
-    # Get next global_seq for timeline events
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    next_seq = max_seq + 1
 
     # Load registered signal schemas for this node
     result = await db.execute(
@@ -212,6 +209,9 @@ async def handle_signal_report(
         if cap.value_schema:
             registered[cap.name] = cap.value_schema
 
+    # Get the async timeline writer for accepted events
+    tl_writer = get_timeline_writer()
+
     for sig in signals:
         name = sig["name"]
         value = sig.get("value")
@@ -222,9 +222,9 @@ async def handle_signal_report(
             try:
                 jsonschema.validate(value, value_schema)
             except jsonschema.ValidationError as e:
-                # Write audit event for schema validation failure
+                # Write audit event for schema validation failure (synchronous)
                 event = TimelineEvent(
-                    global_seq=next_seq,
+                    global_seq=0,  # assigned by writer batch on flush
                     event_type="signal.schema_invalid",
                     actor_type="system",
                     actor_id=node.node_id,
@@ -236,14 +236,13 @@ async def handle_signal_report(
                     },
                     timestamp=now,
                 )
-                next_seq += 1
                 db.add(event)
                 rejected += 1
                 continue
 
-        # Write accepted signal as timeline event
+        # Enqueue accepted signal as timeline event (fire-and-forget)
         event = TimelineEvent(
-            global_seq=next_seq,
+            global_seq=0,  # assigned by writer batch on flush
             event_type="signal.reported",
             actor_type="system",
             actor_id=node.node_id,
@@ -257,11 +256,12 @@ async def handle_signal_report(
             },
             timestamp=now,
         )
-        next_seq += 1
-        db.add(event)
+        tl_writer.enqueue(event)
         accepted += 1
 
-    await db.commit()
+    # Commit any schema_invalid events that were written synchronously
+    if rejected:
+        await db.commit()
 
     return {
         "accepted": accepted,

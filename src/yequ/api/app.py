@@ -74,10 +74,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scanner = get_scanner()
     await scanner.start()
 
+    # Start background Timeline writer
+    from yequ.services.timeline_writer import get_timeline_writer
+
+    tl_writer = get_timeline_writer()
+    await tl_writer.start()
+
     yield
 
     # Shutdown
     await scanner.stop()
+    await tl_writer.stop()
     log.info("yeau center shutting down")
 
 
