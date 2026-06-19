@@ -22,7 +22,12 @@ async def _write_audit(
     detail: str = "",
 ) -> None:
     """Write an auth audit event."""
+    # Compute next global_seq
+    from sqlalchemy import func, select
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
     event = TimelineEvent(
+        global_seq=max_seq + 1,
         event_type=event_type,
         actor_type="system",
         actor_id="token_auth",

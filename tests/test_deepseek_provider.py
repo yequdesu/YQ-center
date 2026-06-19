@@ -1,0 +1,92 @@
+"""Tests for DeepSeek LLM Provider."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from yequ.agent.provider import AgentFunction
+
+
+@pytest.fixture
+def deepseek_provider():
+    """Create a DeepSeekProvider with mocked AsyncOpenAI client."""
+    with patch("yequ.agent.deepseek_provider.AsyncOpenAI") as mock_client:
+        mock_client.return_value = MagicMock()
+        from yequ.agent.deepseek_provider import DeepSeekProvider
+
+        p = DeepSeekProvider()
+        yield p
+
+
+class TestDeepSeekProvider:
+    """Unit tests for DeepSeekProvider (no API calls)."""
+
+    def test_provider_name(self, deepseek_provider):
+        p = deepseek_provider
+        assert p.provider_name() == "deepseek"
+
+    def test_sanitize_name(self, deepseek_provider):
+        p = deepseek_provider
+        assert p._sanitize_name("system.metrics.snapshot") == "system_metrics_snapshot"
+        assert p._sanitize_name("simple_func") == "simple_func"
+        assert p._sanitize_name("a.b.c.d") == "a_b_c_d"
+
+    def test_resolve_name(self, deepseek_provider):
+        p = deepseek_provider
+        funcs = [
+            AgentFunction(name="system.metrics.snapshot"),
+            AgentFunction(name="system.info"),
+        ]
+        assert (
+            p._resolve_name("system_metrics_snapshot", funcs)
+            == "system.metrics.snapshot"
+        )
+        assert p._resolve_name("system_info", funcs) == "system.info"
+        assert p._resolve_name("unknown_func", funcs) == "unknown_func"
+
+    def test_functions_to_tools(self, deepseek_provider):
+        p = deepseek_provider
+        funcs = [
+            AgentFunction(
+                name="system.metrics.snapshot",
+                description="Get metrics",
+                input_schema={"type": "object", "properties": {}},
+            ),
+        ]
+        tools = p._functions_to_tools(funcs)
+        assert len(tools) == 1
+        assert tools[0]["type"] == "function"
+        assert tools[0]["function"]["name"] == "system_metrics_snapshot"
+        assert tools[0]["function"]["description"] == "Get metrics"
+        assert tools[0]["function"]["parameters"] == {
+            "type": "object",
+            "properties": {},
+        }
+
+    def test_add_function(self, deepseek_provider):
+        p = deepseek_provider
+        p.add_function(AgentFunction(name="test.func"))
+        assert len(p.list_functions()) == 1
+        assert p.list_functions()[0].name == "test.func"
+
+    def test_add_functions(self, deepseek_provider):
+        p = deepseek_provider
+        p.add_functions([
+            AgentFunction(name="func.a"),
+            AgentFunction(name="func.b"),
+        ])
+        assert len(p.list_functions()) == 2
+
+    def test_default_functions_empty(self, deepseek_provider):
+        p = deepseek_provider
+        assert p.list_functions() == []
+
+    def test_functions_to_tools_empty(self, deepseek_provider):
+        p = deepseek_provider
+        tools = p._functions_to_tools([])
+        assert tools == []
+
+    def test_resolve_name_no_match(self, deepseek_provider):
+        p = deepseek_provider
+        funcs = [AgentFunction(name="existing.func")]
+        assert p._resolve_name("nonexistent_func", funcs) == "nonexistent_func"
