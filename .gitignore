@@ -21,3 +21,4 @@ Thumbs.db
 .venv/
 venv/
 .worktrees/
+.env

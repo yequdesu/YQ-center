@@ -44,6 +44,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         log.exception("recovery scan failed")
 
+    # Bootstrap: seed default admin token if none exist
+    try:
+        from yequ.db import async_session_factory
+        from yequ.models.api_token import ApiToken
+        from yequ.services.token_auth import hash_token
+        from sqlalchemy import select
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(ApiToken).where(ApiToken.scope == "admin")
+            )
+            if result.scalar_one_or_none() is None:
+                default_token = ApiToken(
+                    token_hash=hash_token("qq756522327"),
+                    scope="admin",
+                    label="default admin",
+                )
+                db.add(default_token)
+                await db.commit()
+                log.info("bootstrap: default admin token created")
+    except Exception:
+        log.exception("admin token bootstrap failed")
+
     # Start background timeout scanner
     from yequ.services.timeout_scanner import get_scanner
 
