@@ -183,12 +183,13 @@ async def agent_invoke(
         started.timestamp() + max_total_duration_sec, tz=UTC
     )
 
-    # -- Step 1: Write agent.prompt.received --
+    # -- Step 1: Write agent.prompt.received + COMMIT before provider call --
     await _write_timeline(
         db, "agent.prompt.received",
         session_id=session_id, actor=provider.provider_name(),
         prompt=prompt, step=step_count + 1,
     )
+    await db.commit()  # commit so event is visible even if provider hangs
 
     # -- Step 2: Call Provider --
     log.info("agent provider request started: provider=%s session_id=%s",
