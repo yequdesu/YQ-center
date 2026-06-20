@@ -85,7 +85,10 @@ async def authenticate_scoped_token(
 
     # Look up in ApiToken table
     result = await db.execute(
-        select(ApiToken).where(ApiToken.token_hash == computed_hash)
+        select(ApiToken).where(
+            ApiToken.token_hash == computed_hash,
+            ApiToken.scope == required_scope,
+        )
     )
     api_token = result.scalar_one_or_none()
 
