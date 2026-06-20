@@ -59,13 +59,29 @@ async def execute_plan_run(
     )
 
     for step in steps:
-        # Check depends_on
+        # Check depends_on — consider both succeeded AND skipped as "completed"
         if step.depends_on:
             unmet = [s for s in step.depends_on if s not in completed_steps]
-            if unmet:
+            # Also check if dep was skipped (which is acceptable for after_repair)
+            dep_steps_r = await db.execute(
+                select(MaintenanceStep)
+                .where(MaintenanceStep.plan_id == plan.plan_id)
+                .where(MaintenanceStep.seq.in_([int(d) for d in step.depends_on]))
+            )
+            dep_steps_list = list(dep_steps_r.scalars().all())
+            all_deps_done = all(
+                ds.status in ("succeeded", "skipped")
+                for ds in dep_steps_list
+            )
+            if not all_deps_done:
                 step.status = "skipped"
                 step.skip_reason = f"Unmet dependencies: {unmet}"
                 step.finished_at = datetime.now(UTC)
+                await _write_maintenance_timeline(
+                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
+                    step_id=step.step_id, function_name=step.function_name,
+                    error=step.skip_reason,
+                )
                 await db.flush()
                 continue
 
@@ -83,8 +99,14 @@ async def execute_plan_run(
                         unhealthy = True
             if not unhealthy:
                 step.status = "skipped"
-                step.skip_reason = "previous check showed healthy"
+                step.skip_reason = "previous_healthy"
                 step.finished_at = datetime.now(UTC)
+                await _write_maintenance_timeline(
+                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
+                    step_id=step.step_id, function_name=step.function_name,
+                    error=step.skip_reason,
+                )
+                completed_steps.add(step.step_id)
                 await db.flush()
                 continue
         elif step.condition == "after_repair":
@@ -103,12 +125,24 @@ async def execute_plan_run(
                 step.status = "skipped"
                 step.skip_reason = "previous step did not fail"
                 step.finished_at = datetime.now(UTC)
+                await _write_maintenance_timeline(
+                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
+                    step_id=step.step_id, function_name=step.function_name,
+                    error=step.skip_reason,
+                )
+                completed_steps.add(step.step_id)
                 await db.flush()
                 continue
         elif step.condition == "manual":
             step.status = "skipped"
             step.skip_reason = "manual step requires operator intervention"
             step.finished_at = datetime.now(UTC)
+            await _write_maintenance_timeline(
+                db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
+                step_id=step.step_id, function_name=step.function_name,
+                error=step.skip_reason,
+            )
+            completed_steps.add(step.step_id)
             await db.flush()
             continue
 
