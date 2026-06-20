@@ -32,6 +32,7 @@ class ApprovalRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_invocation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     def __repr__(self) -> str:
         return f"<Approval(id={self.approval_id!r}, status={self.status!r})>"

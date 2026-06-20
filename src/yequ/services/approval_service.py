@@ -75,6 +75,23 @@ async def create_approval(
     )
     db.add(approval)
     await db.commit()
+
+    # Write timeline event for approval.requested
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="approval.requested",
+        actor_type="admin", actor_id=actor_id,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        node_id=target_node_id,
+        data={"approval_id": approval.approval_id, "function_name": function_name,
+              "risk": risk, "effect": effect},
+        timestamp=now,
+    )
+    db.add(event)
+    await db.commit()
     return approval
 
 
@@ -152,12 +169,14 @@ async def deny_approval(
 async def consume_approval(
     db: AsyncSession,
     approval: ApprovalRequest,
+    invocation_id: str = "",
 ) -> ApprovalRequest:
     """Mark an approved approval as consumed (used to create a Job)."""
     if approval.status != ApprovalStatus.APPROVED:
         raise ValueError(f"Cannot consume approval in status {approval.status}")
     approval.status = ApprovalStatus.CONSUMED
     approval.consumed_at = datetime.now(UTC)
+    approval.consumed_invocation_id = invocation_id
     await db.commit()
     return approval
 

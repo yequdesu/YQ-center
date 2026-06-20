@@ -484,7 +484,7 @@ async def get_approval(
 
     data = _approval_dict(a)
 
-    # Include linked invocation and jobs
+    # Include linked invocation and jobs (the waiting_approval invocation)
     if a.invocation_id:
         inv_result = await db.execute(
             select(Invocation).where(Invocation.invocation_id == a.invocation_id)
@@ -502,6 +502,26 @@ async def get_approval(
             )
             jobs = jresult.scalars().all()
             data["invocation"]["jobs"] = [{"job_id": j.job_id, "status": j.status} for j in jobs]
+
+    # Include consumed execution invocation (Bug 2)
+    if a.consumed_invocation_id:
+        cinv_result = await db.execute(
+            select(Invocation).where(Invocation.invocation_id == a.consumed_invocation_id)
+        )
+        ci = cinv_result.scalar_one_or_none()
+        if ci:
+            data["consumed_invocation"] = {
+                "invocation_id": ci.invocation_id, "status": ci.status,
+                "function_name": ci.function_name,
+                "started_at": ci.started_at.isoformat() if ci.started_at else None,
+                "finished_at": ci.finished_at.isoformat() if ci.finished_at else None,
+            }
+            jresult = await db.execute(
+                select(Job).where(Job.invocation_id == ci.invocation_id)
+            )
+            data["consumed_invocation"]["jobs"] = [
+                {"job_id": j.job_id, "status": j.status} for j in jresult.scalars().all()
+            ]
 
     return data
 
@@ -563,6 +583,7 @@ def _approval_dict(a: ApprovalRequest) -> dict:
         "consumed_at": a.consumed_at.isoformat() if a.consumed_at else None,
         "approved_by": a.approved_by, "denied_by": a.denied_by,
         "decision_reason": a.decision_reason,
+        "consumed_invocation_id": a.consumed_invocation_id,
     }
 
 
@@ -758,39 +779,6 @@ async def create_invocation_endpoint(
     func_effect = capability.effect if capability else "read"
     resource_key_template = capability.resource_keys[0] if (capability and capability.resource_keys) else None
 
-    # ── dry_run=true: pre-check only, no job/approval/ locks created ──
-    if body.dry_run:
-        # Validate policy
-        from yequ.services.policy import check_policy_l2
-        policy_result = check_policy_l2(
-            execution_mode=body.execution_mode,
-            risk_level=func_risk,
-            effect=func_effect,
-        )
-        # Write timeline event (function_name and target_node_id go in data dict)
-        from sqlalchemy import func as _f
-        max_seq_r = await db.execute(select(_f.max(TimelineEvent.global_seq)))
-        _max_seq = max_seq_r.scalar() or 0
-        event = TimelineEvent(
-            global_seq=_max_seq + 1,
-            event_type="l2.dry_run.completed",
-            actor_type="admin", actor_id=body.actor_id,
-            data={"input": body.input_payload, "dry_run": True,
-                  "function_name": body.function_name,
-                  "target_node_id": body.target_node_id,
-                  "allowed": policy_result.allowed, "decision": policy_result.decision},
-            timestamp=datetime.now(timezone.utc),
-        )
-        db.add(event)
-        await db.commit()
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=200, content={
-            "invocation_id": "", "job_id": "",
-            "function_name": body.function_name, "target_node_id": body.target_node_id,
-            "invocation_status": "dry_run_completed" if policy_result.allowed else "policy_denied",
-            "job_status": "",
-        })
-
     # If approval_id was provided, verify and consume it (bypassing L2 policy)
     if body.approval_id:
         from yequ.services.approval_service import verify_approval, consume_approval  # noqa: I001
@@ -800,9 +788,30 @@ async def create_invocation_endpoint(
                 session_id=body.session_id, function_name=body.function_name,
                 target_node_id=body.target_node_id, input_data=body.input_payload,
             )
-            await consume_approval(db, approval)
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
+    elif body.dry_run:
+        # ── dry_run=true: pre-check only, no job/approval/locks created ──
+        from sqlalchemy import func as _f
+        max_seq_r = await db.execute(select(_f.max(TimelineEvent.global_seq)))
+        _max_seq = max_seq_r.scalar() or 0
+        event = TimelineEvent(
+            global_seq=_max_seq + 1,
+            event_type="l2.dry_run.completed",
+            actor_type="admin", actor_id=body.actor_id,
+            data={"input": body.input_payload,
+                  "function_name": body.function_name,
+                  "target_node_id": body.target_node_id},
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(event)
+        await db.commit()
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=200, content={
+            "invocation_id": "", "job_id": "",
+            "function_name": body.function_name, "target_node_id": body.target_node_id,
+            "invocation_status": "dry_run_completed", "job_status": "",
+        })
     else:
         # L2 policy check for write operations
         from yequ.services.policy import check_policy_l2
@@ -866,6 +875,14 @@ async def create_invocation_endpoint(
     )
     start_invocation(inv)
 
+    # Consume the approval with the execution invocation_id (Bug 2)
+    if body.approval_id:
+        from yequ.services.approval_service import consume_approval
+        try:
+            await consume_approval(db, approval, invocation_id=inv.invocation_id)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
     # Use approval's resource keys if available (reuse, don't recompute)
     try:
         res_keys = approval.resource_keys
@@ -879,8 +896,9 @@ async def create_invocation_endpoint(
             resource_key_template=resource_key_template,
         )
 
-    # Create Job (with lock acquisition)
+    # Create Job (with lock acquisition) — explicit dry_run=False for approved invocations
     try:
+        dry_run_val = False if body.approval_id else body.dry_run
         job = await create_job(
             db,
             invocation_id=inv.invocation_id,
@@ -890,6 +908,8 @@ async def create_invocation_endpoint(
             timeout_sec=body.timeout_sec,
             lease_sec=body.lease_sec,
             resource_keys=res_keys,
+            dry_run=dry_run_val,
+            approval_id=body.approval_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
