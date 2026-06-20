@@ -916,6 +916,28 @@ async def create_invocation_endpoint(
 
     await db.commit()
 
+    # L2 action started: write timeline event for approved execution
+    if body.approval_id and job.approval_id:
+        from yequ.models.timeline import TimelineEvent as TlEvent
+        from sqlalchemy import func as sql_func, select as sql_select
+        l2_seq = await db.execute(sql_select(sql_func.max(TlEvent.global_seq)))
+        l2_max = l2_seq.scalar() or 0
+        l2_event = TlEvent(
+            global_seq=l2_max + 1,
+            event_type="l2.action.started",
+            actor_type="admin", actor_id=body.actor_id,
+            node_id=body.target_node_id, job_id=job.job_id,
+            invocation_id=inv.invocation_id,
+            data={
+                "approval_id": body.approval_id,
+                "function_name": body.function_name,
+                "input": body.input_payload,
+            },
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(l2_event)
+        await db.commit()
+
     return CreateInvocationResponse(
         invocation_id=inv.invocation_id,
         job_id=job.job_id,

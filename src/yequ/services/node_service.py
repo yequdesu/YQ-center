@@ -469,6 +469,28 @@ async def handle_job_finished(
     from yequ.services.resource_lock_service import release_lock
     await release_lock(db, job_id)
 
+    # L2 action timeline: write l2.action.completed or l2.action.failed
+    if job.approval_id:
+        l2_status = "completed" if terminal_status == "succeeded" else "failed"
+        l2_seq = await db.execute(select(func.max(TimelineEvent.global_seq)))
+        l2_max = l2_seq.scalar() or 0
+        l2_event = TimelineEvent(
+            global_seq=l2_max + 1,
+            event_type=f"l2.action.{l2_status}",
+            actor_type="system", actor_id=node.node_id,
+            node_id=node.node_id, job_id=job_id,
+            invocation_id=job.invocation_id,
+            data={
+                "approval_id": job.approval_id,
+                "function_name": job.function_name,
+                "status": terminal_status,
+                "output": payload.get("output"),
+            },
+            timestamp=now,
+        )
+        db.add(l2_event)
+        await db.flush()
+
     # Aggregate Invocation status — update Invocation when all Jobs terminal
     from yequ.models.invocation import Invocation
     from yequ.services.invocation_service import (

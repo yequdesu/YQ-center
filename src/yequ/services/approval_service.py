@@ -177,6 +177,25 @@ async def consume_approval(
     approval.status = ApprovalStatus.CONSUMED
     approval.consumed_at = datetime.now(UTC)
     approval.consumed_invocation_id = invocation_id
+
+    # Write timeline event using the same db session to avoid SQLite lock conflict
+    from sqlalchemy import func, select as sqla_select
+    from yequ.models.timeline import TimelineEvent
+
+    result = await db.execute(sqla_select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="approval.consumed",
+        actor_type="system", actor_id="approval_service",
+        session_id=approval.session_id,
+        invocation_id=invocation_id or approval.invocation_id,
+        node_id=approval.target_node_id,
+        data={"approval_id": approval.approval_id, "function_name": approval.function_name},
+        timestamp=datetime.now(UTC),
+    )
+    db.add(event)
+
     await db.commit()
     return approval
 
