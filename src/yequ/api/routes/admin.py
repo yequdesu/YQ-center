@@ -14,6 +14,7 @@ from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.models.node import Node
+from yequ.models.resource_lock import ResourceLock
 from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import NodeStatus
@@ -343,6 +344,35 @@ async def list_timeline(
     result = await db.execute(stmt)
     events = result.scalars().all()
     return [_tl_summary(e) for e in events]
+
+
+@router.get("/locks")
+async def list_locks(
+    status: str | None = None,
+    node_id: str | None = None,
+    job_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> list[dict]:
+    """List resource locks with optional filters."""
+    stmt = select(ResourceLock)
+    if status:
+        stmt = stmt.where(ResourceLock.status == status)
+    if node_id:
+        stmt = stmt.where(ResourceLock.node_id == node_id)
+    if job_id:
+        stmt = stmt.where(ResourceLock.job_id == job_id)
+    stmt = stmt.order_by(ResourceLock.created_at.desc()).limit(200)
+    result = await db.execute(stmt)
+    locks = result.scalars().all()
+    return [{
+        "lock_id": l.lock_id, "resource_key": l.resource_key,
+        "job_id": l.job_id, "invocation_id": l.invocation_id,
+        "node_id": l.node_id, "status": l.status,
+        "expires_at": l.expires_at.isoformat() if l.expires_at else None,
+        "created_at": l.created_at.isoformat() if l.created_at else None,
+        "released_at": l.released_at.isoformat() if l.released_at else None,
+    } for l in locks]
 
 
 class CreateTokenRequest(BaseModel):
@@ -706,12 +736,24 @@ async def create_invocation_endpoint(
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
     else:
+        # Look up the function's actual risk/effect from capabilities
+        cap_result = await db.execute(
+            select(Capability).where(
+                Capability.capability_type == "function",
+                Capability.name == body.function_name,
+                Capability.is_active == True,  # noqa: E712
+            ).limit(1)
+        )
+        capability = cap_result.scalar_one_or_none()
+        func_risk = capability.risk if capability else "safe"
+        func_effect = capability.effect if capability else "read"
+
         # L2 policy check for write operations
         from yequ.services.policy import check_policy_l2
         policy_result = check_policy_l2(
             execution_mode=body.execution_mode,
-            risk_level="maintenance",
-            effect="write",
+            risk_level=func_risk,
+            effect=func_effect,
         )
 
         if not policy_result.allowed:
@@ -767,16 +809,28 @@ async def create_invocation_endpoint(
     )
     start_invocation(inv)
 
-    # Create Job
-    job = await create_job(
-        db,
-        invocation_id=inv.invocation_id,
-        node_id=body.target_node_id,
+    # Compute resource keys for locking
+    from yequ.services.resource_lock_service import compute_resource_keys
+    res_keys = compute_resource_keys(
         function_name=body.function_name,
-        input_payload=body.input_payload,
-        timeout_sec=body.timeout_sec,
-        lease_sec=body.lease_sec,
+        node_id=body.target_node_id,
+        input_data=body.input_payload,
     )
+
+    # Create Job (with lock acquisition)
+    try:
+        job = await create_job(
+            db,
+            invocation_id=inv.invocation_id,
+            node_id=body.target_node_id,
+            function_name=body.function_name,
+            input_payload=body.input_payload,
+            timeout_sec=body.timeout_sec,
+            lease_sec=body.lease_sec,
+            resource_keys=res_keys,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     await db.commit()
 

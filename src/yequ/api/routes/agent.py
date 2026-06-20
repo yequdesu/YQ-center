@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.agent_service import agent_invoke, create_agent_session
@@ -9,6 +10,7 @@ from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token, get_db
+from yequ.models.capability import Capability
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -164,12 +166,35 @@ async def invoke_agent_endpoint(
                 detail=f"Provider {body.provider_name!r} not found",
             )
 
+    # Load available functions: L1 defaults + registered node capabilities (L2+)
+    available = _default_functions()
+
+    # Add L2+ functions from registered node capabilities
+    cap_result = await db.execute(
+        select(Capability).where(
+            Capability.capability_type == "function",
+            Capability.is_active == True,  # noqa: E712
+        )
+    )
+    for cap in cap_result.scalars().all():
+        existing = {f.name for f in available}
+        if cap.name not in existing:
+            available.append(AgentFunction(
+                name=cap.name,
+                description=f"Node capability: {cap.name} ({cap.plugin_id})",
+                input_schema=cap.input_schema or {},
+                risk=cap.risk or "safe",
+                effect=cap.effect or "read",
+                timeout_sec=cap.timeout_sec or 30,
+                output_schema=cap.output_schema,
+            ))
+
     resp = await agent_invoke(
         db,
         provider,
         session_id=body.session_id,
         prompt=body.prompt,
-        available_functions=_default_functions(),
+        available_functions=available,
         call_path=body.call_path,
         max_depth=body.max_depth,
         max_steps=body.max_steps,
