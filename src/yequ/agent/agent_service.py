@@ -194,6 +194,14 @@ async def agent_invoke(
     # -- Step 2: Call Provider with hard asyncio timeout --
     log.info("agent provider request started: provider=%s session_id=%s",
              provider.provider_name(), session_id)
+
+    # Diagnostic: write + commit a pre-request event to confirm we reach this point
+    await _write_timeline(db, "agent.provider.request.started",
+                          session_id=session_id, actor=provider.provider_name())
+    await db.commit()
+
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         provider_result = await asyncio.wait_for(
             provider.invoke(
@@ -201,8 +209,17 @@ async def agent_invoke(
                 available_functions=available_functions,
                 context={"call_path": list(call_path), "session_id": session_id},
             ),
-            timeout=45.0,  # hard outer timeout — must fire regardless of SDK behavior
+            timeout=45.0,
         )
+        _elapsed = _time.monotonic() - _t0
+        log.info("agent provider request returned: provider=%s elapsed=%.1fs",
+                 provider.provider_name(), _elapsed)
+
+        # Write success marker
+        await _write_timeline(db, "agent.provider.request.returned",
+                              session_id=session_id, actor=provider.provider_name(),
+                              tool_call_count=len(provider_result.tool_calls))
+        await db.commit()
     except asyncio.TimeoutError:
         log.error("agent provider timed out: provider=%s session_id=%s",
                   provider.provider_name(), session_id)

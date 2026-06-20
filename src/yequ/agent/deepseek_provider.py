@@ -4,7 +4,9 @@ Uses the openai SDK pointed at DeepSeek's base URL.
 Converts AgentFunction[] to OpenAI tool definitions.
 """
 
+import asyncio
 import json
+import time as _time
 import uuid
 
 from openai import AsyncOpenAI
@@ -15,6 +17,9 @@ from yequ.agent.provider import (
     ProviderInvokeResult,
 )
 from yequ.config import get_settings
+from yequ.logconfig import get_logger
+
+_log = get_logger("deepseek")
 
 
 class DeepSeekProvider(AgentProvider):
@@ -66,7 +71,11 @@ class DeepSeekProvider(AgentProvider):
         Returns ProviderInvokeResult with raw tool_calls (no execution).
         """
         functions = available_functions if available_functions else self._functions
+        _t0 = _time.monotonic()
         tools = self._functions_to_tools(functions)
+        _t1 = _time.monotonic()
+        _log.info("deepseek provider build tools: elapsed=%.3fs tool_count=%d",
+                  _t1 - _t0, len(tools))
 
         messages: list[dict[str, object]] = [
             {
@@ -93,7 +102,16 @@ class DeepSeekProvider(AgentProvider):
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
-            response = await self._client.chat.completions.create(**kwargs)
+            _t_api0 = _time.monotonic()
+            _log.info("deepseek api call starting: model=%s tool_count=%d",
+                     self._model, len(tools))
+            response = await asyncio.wait_for(
+                self._client.chat.completions.create(**kwargs),
+                timeout=35.0,
+            )
+            _t_api1 = _time.monotonic()
+            _log.info("deepseek api call completed: elapsed=%.1fs",
+                     _t_api1 - _t_api0)
             choice = response.choices[0]
             msg = choice.message
 
@@ -155,7 +173,10 @@ class DeepSeekProvider(AgentProvider):
             )
 
         except Exception as e:
+            _t_exc = _time.monotonic() - _t0
             error_msg = str(e)
+            _log.error("deepseek provider exception: elapsed=%.1fs error=%s",
+                      _t_exc, error_msg[:500])
             retryable = "rate" in error_msg.lower() or "timeout" in error_msg.lower()
             return ProviderInvokeResult(
                 success=False,
