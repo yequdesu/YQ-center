@@ -54,7 +54,7 @@ def override_settings(monkeypatch, db_engine):
 @pytest_asyncio.fixture
 async def db_engine():
     """Create a test database engine with fresh tables."""
-    db_url = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
+    db_url = f"sqlite+aiosqlite:///{TEST_DB_PATH}?_journal_mode=WAL"
     engine = create_async_engine(db_url, echo=False)
 
     async with engine.begin() as conn:

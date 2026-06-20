@@ -555,6 +555,7 @@ async def agent_plan(
         })
         # Repair
         repair_func = "system.service.ensure_running"
+        rollback_hint = _build_rollback_hint(service_name, repair_func, available_functions)
         if any(f.name == repair_func for f in available_functions):
             steps_ir.append({
                 "seq": 2, "kind": "repair",
@@ -563,6 +564,7 @@ async def agent_plan(
                 "condition": "if_previous_unhealthy",
                 "depends_on": [1],
                 "risk": "maintenance_write", "requires_approval": True,
+                "rollback_hint": rollback_hint,
             })
         elif any(f.name == "system.service.restart" for f in available_functions):
             steps_ir.append({
@@ -572,6 +574,7 @@ async def agent_plan(
                 "condition": "if_previous_unhealthy",
                 "depends_on": [1],
                 "risk": "maintenance_write", "requires_approval": True,
+                "rollback_hint": rollback_hint,
             })
         # Verify
         steps_ir.append({
@@ -614,6 +617,7 @@ async def agent_plan(
             "requires_approval": s["requires_approval"],
             "risk": s["risk"],
             "continue_on_failure": False,
+            "rollback_hint": s.get("rollback_hint"),
         } for s in steps_ir],
         session_id=session_id, risk="maintenance" if has_write else "safe",
         max_total_duration_sec=max_total_duration_sec,
@@ -650,6 +654,34 @@ def _extract_service_name(prompt: str, available_functions: list) -> str:
         if key in prompt_lower:
             return svc
     return "Spooler"  # default
+
+
+def _build_rollback_hint(
+    service_name: str,
+    function_name: str,
+    available_functions: list,
+) -> dict:
+    """Build a rollback hint for a repair/write step.
+
+    Returns a structured rollback hint dict. If the service name
+    can be determined, uses the standard Windows service rollback.
+    Otherwise returns a conservative manual_review hint.
+    """
+    # Known service name → standard Windows service rollback
+    if service_name:
+        return {
+            "action": "restore_service_state",
+            "target_type": "windows_service",
+            "service_name": service_name,
+            "rollback_function": "system.service.ensure_state",
+            "requires_approval": True,
+        }
+    # Unknown target → conservative
+    return {
+        "action": "manual_review",
+        "reason": "rollback_target_unknown",
+        "requires_approval": True,
+    }
 
 
 def _extract_function_for_service(prompt: str, available_functions: list) -> str:

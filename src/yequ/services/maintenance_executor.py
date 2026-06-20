@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.agent_service import _wait_invocation_terminal
 from yequ.models.maintenance_plan import (
+    MaintenanceArtifact,
     MaintenancePlan,
     MaintenanceRun,
     MaintenanceStep,
@@ -24,6 +25,74 @@ def _make_artifact_id() -> str:
 
 def _make_hint_id() -> str:
     return f"hint_{uuid.uuid4().hex[:16]}"
+
+
+async def _write_artifact(
+    db: AsyncSession,
+    *,
+    run_id: str,
+    step_id: str | None,
+    invocation_id: str | None,
+    job_id: str | None,
+    kind: str,
+    name: str,
+    data: dict | None = None,
+    summary: dict | None = None,
+    content_type: str = "application/json",
+    plan_id: str = "",
+    target_node_id: str = "",
+) -> MaintenanceArtifact:
+    """Write a MaintenanceArtifact + timeline event."""
+    now = datetime.now(UTC)
+    artifact = MaintenanceArtifact(
+        artifact_id=_make_artifact_id(),
+        run_id=run_id,
+        step_id=step_id,
+        invocation_id=invocation_id,
+        job_id=job_id,
+        kind=kind,
+        name=name,
+        content_type=content_type,
+        data=data,
+        summary=summary,
+        created_at=now,
+    )
+    db.add(artifact)
+    await db.flush()
+
+    # Resolve approval_id from plan for timeline linkage
+    resolved_approval_id = ""
+    if plan_id:
+        plan_result = await db.execute(
+            select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id)
+        )
+        plan_obj = plan_result.scalar_one_or_none()
+        if plan_obj and plan_obj.approval_id:
+            resolved_approval_id = plan_obj.approval_id
+
+    # Timeline event
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="maintenance.artifact.created",
+        actor_type="system",
+        actor_id="maintenance_executor",
+        node_id=target_node_id,
+        data={
+            "artifact_id": artifact.artifact_id,
+            "run_id": run_id,
+            "step_id": step_id or "",
+            "kind": kind,
+            "name": name,
+            "plan_id": plan_id,
+            "approval_id": resolved_approval_id,
+        },
+        timestamp=now,
+    )
+    db.add(event)
+    await db.flush()
+    return artifact
 
 
 async def execute_plan_run(
@@ -43,6 +112,7 @@ async def execute_plan_run(
     - L2 write steps without approval_id go to waiting_approval
     - Each step creates an Invocation + Job
     - Per-step ResourceLock
+    - Artifacts written at each step boundary
     """
     result = await db.execute(
         select(MaintenanceStep)
@@ -147,6 +217,23 @@ async def execute_plan_run(
             await db.flush()
             continue
 
+        # --- Write "before" artifact for repair/write steps ---
+        if step.kind in ("repair", "write", "rollback"):
+            before_data = _build_before_data(steps, step)
+            await _write_artifact(
+                db,
+                run_id=run.run_id,
+                step_id=step.step_id,
+                invocation_id=None,
+                job_id=None,
+                kind="before",
+                name=f"before_{step.function_name}",
+                data=before_data,
+                summary={"step_kind": step.kind, "function_name": step.function_name},
+                plan_id=plan.plan_id,
+                target_node_id=plan.target_node_id,
+            )
+
         # Write step started timeline event
         await _write_maintenance_timeline(
             db, "maintenance.step.started", run.run_id, plan.plan_id, plan.target_node_id,
@@ -215,6 +302,76 @@ async def execute_plan_run(
                     step_id=step.step_id, function_name=step.function_name,
                     job_id=step.job_id, invocation_id=step.invocation_id,
                 )
+
+                # --- Write success artifacts ---
+                if step.kind == "check":
+                    # check_result artifact
+                    await _write_artifact(
+                        db,
+                        run_id=run.run_id,
+                        step_id=step.step_id,
+                        invocation_id=step.invocation_id,
+                        job_id=step.job_id,
+                        kind="check_result",
+                        name=f"check_{step.function_name}",
+                        data=step.result,
+                        summary=_build_check_summary(step),
+                        plan_id=plan.plan_id,
+                        target_node_id=plan.target_node_id,
+                    )
+                elif step.kind in ("repair", "write", "rollback"):
+                    # after artifact
+                    await _write_artifact(
+                        db,
+                        run_id=run.run_id,
+                        step_id=step.step_id,
+                        invocation_id=step.invocation_id,
+                        job_id=step.job_id,
+                        kind="after",
+                        name=f"after_{step.function_name}",
+                        data=step.result,
+                        summary={"step_kind": step.kind, "function_name": step.function_name,
+                                 "status": "succeeded"},
+                        plan_id=plan.plan_id,
+                        target_node_id=plan.target_node_id,
+                    )
+                    # rollback_hint artifact if step has one
+                    if step.rollback_hint:
+                        before_data = _build_before_data(steps, step)
+                        hint_data = dict(step.rollback_hint)
+                        if before_data:
+                            hint_data["before_summary"] = {
+                                "available": before_data.get("available", True),
+                                "source_step_id": before_data.get("source_step_id"),
+                            }
+                        await _write_artifact(
+                            db,
+                            run_id=run.run_id,
+                            step_id=step.step_id,
+                            invocation_id=step.invocation_id,
+                            job_id=step.job_id,
+                            kind="rollback_hint",
+                            name=f"rollback_{step.function_name}",
+                            data=hint_data,
+                            summary={"action": hint_data.get("action", "unknown")},
+                            plan_id=plan.plan_id,
+                            target_node_id=plan.target_node_id,
+                        )
+                elif step.kind == "verify":
+                    # verify_result artifact
+                    await _write_artifact(
+                        db,
+                        run_id=run.run_id,
+                        step_id=step.step_id,
+                        invocation_id=step.invocation_id,
+                        job_id=step.job_id,
+                        kind="verify_result",
+                        name=f"verify_{step.function_name}",
+                        data=step.result,
+                        summary=_build_check_summary(step),
+                        plan_id=plan.plan_id,
+                        target_node_id=plan.target_node_id,
+                    )
             else:
                 step.status = "failed"
                 # Backfill error from Job
@@ -234,15 +391,81 @@ async def execute_plan_run(
                     job_id=step.job_id, invocation_id=step.invocation_id,
                     error=step.error,
                 )
-                if not step.continue_on_failure:
-                    run.status = "failed"
-                    run.finished_at = datetime.now(UTC)
-                    await _write_maintenance_timeline(
-                        db, "maintenance.run.failed", run.run_id, plan.plan_id,
-                        plan.target_node_id,
+
+                # --- Write error artifact ---
+                error_data = {
+                    "error_code": failed_job.error_code if failed_job else "unknown",
+                    "error_message": step.error,
+                    "function_name": step.function_name,
+                    "job_id": step.job_id or "",
+                    "invocation_id": step.invocation_id or "",
+                }
+                await _write_artifact(
+                    db,
+                    run_id=run.run_id,
+                    step_id=step.step_id,
+                    invocation_id=step.invocation_id,
+                    job_id=step.job_id,
+                    kind="error",
+                    name=f"error_{step.function_name}",
+                    data=error_data,
+                    summary={"step_kind": step.kind, "status": "failed"},
+                    plan_id=plan.plan_id,
+                    target_node_id=plan.target_node_id,
+                )
+
+                # Write rollback_hint artifact from step.rollback_hint on failure
+                if step.rollback_hint and step.kind in ("repair", "write", "rollback"):
+                    before_data = _build_before_data(steps, step)
+                    hint_data = dict(step.rollback_hint)
+                    if before_data:
+                        hint_data["before_summary"] = {
+                            "available": before_data.get("available", True),
+                            "source_step_id": before_data.get("source_step_id"),
+                        }
+                    await _write_artifact(
+                        db,
+                        run_id=run.run_id,
+                        step_id=step.step_id,
+                        invocation_id=step.invocation_id,
+                        job_id=step.job_id,
+                        kind="rollback_hint",
+                        name=f"rollback_{step.function_name}",
+                        data=hint_data,
+                        summary={"action": hint_data.get("action", "unknown")},
+                        plan_id=plan.plan_id,
+                        target_node_id=plan.target_node_id,
                     )
-                    await db.commit()
-                    return run
+
+                # --- Determine run status based on which step failed ---
+                if step.kind == "check":
+                    # Check failed → run failed, no rollback needed
+                    run.status = "failed"
+                    run.rollback_recommended = False
+                elif step.kind in ("repair", "write", "rollback"):
+                    # Repair failed → rollback recommended
+                    run.status = "rollback_recommended"
+                    run.rollback_recommended = True
+                    await _write_rollback_recommended(
+                        db, run, step, plan,
+                        reason=f"Repair step {step.function_name} failed: {step.error}",
+                    )
+                elif step.kind == "verify":
+                    # Verify failed → rollback recommended (repair may have succeeded)
+                    run.status = "rollback_recommended"
+                    run.rollback_recommended = True
+                    await _write_rollback_recommended(
+                        db, run, step, plan,
+                        reason=f"Verify step {step.function_name} failed after repair: {step.error}",
+                    )
+
+                run.finished_at = datetime.now(UTC)
+                await _write_maintenance_timeline(
+                    db, "maintenance.run.failed", run.run_id, plan.plan_id,
+                    plan.target_node_id,
+                )
+                await db.commit()
+                return run
 
             await db.flush()
 
@@ -260,8 +483,47 @@ async def execute_plan_run(
                 error=str(e)[:500],
             )
 
-            if not step.continue_on_failure:
+            # --- Write error artifact for exception ---
+            await _write_artifact(
+                db,
+                run_id=run.run_id,
+                step_id=step.step_id,
+                invocation_id=step.invocation_id,
+                job_id=step.job_id,
+                kind="error",
+                name=f"error_{step.function_name}",
+                data={
+                    "error_code": "exception",
+                    "error_message": str(e)[:500],
+                    "function_name": step.function_name,
+                    "job_id": step.job_id or "",
+                    "invocation_id": step.invocation_id or "",
+                },
+                summary={"step_kind": step.kind, "status": "exception"},
+                plan_id=plan.plan_id,
+                target_node_id=plan.target_node_id,
+            )
+
+            # Same rollback logic as above
+            if step.kind == "check":
                 run.status = "failed"
+                run.rollback_recommended = False
+            elif step.kind in ("repair", "write", "rollback"):
+                run.status = "rollback_recommended"
+                run.rollback_recommended = True
+                await _write_rollback_recommended(
+                    db, run, step, plan,
+                    reason=f"Repair step {step.function_name} exception: {str(e)[:200]}",
+                )
+            elif step.kind == "verify":
+                run.status = "rollback_recommended"
+                run.rollback_recommended = True
+                await _write_rollback_recommended(
+                    db, run, step, plan,
+                    reason=f"Verify step {step.function_name} exception after repair: {str(e)[:200]}",
+                )
+
+            if not step.continue_on_failure:
                 run.finished_at = datetime.now(UTC)
                 await db.flush()
                 await _write_maintenance_timeline(
@@ -276,6 +538,7 @@ async def execute_plan_run(
 
     run.current_step_id = None
     run.status = "succeeded"
+    run.rollback_recommended = False
     await db.flush()
     return run
 
@@ -302,13 +565,28 @@ async def finalize_run(
         "failed": len([s for s in steps if s.status == "failed"]),
         "skipped": len([s for s in steps if s.status == "skipped"]),
     }
-    # Run status: failed > partially_succeeded > succeeded (skipped not counted as failed)
-    if any(s.status == "failed" for s in steps):
-        run.status = "failed"
-    elif all(s.status in ("succeeded", "skipped") for s in steps):
-        run.status = "succeeded"
-    else:
-        run.status = "partially_succeeded"
+    # Run status: failed > rollback_recommended > partially_succeeded > succeeded
+    # (keep status set by executor if already failed/rollback_recommended)
+    if run.status not in ("failed", "rollback_recommended"):
+        if any(s.status == "failed" for s in steps):
+            # Determine if any failed step was repair/write → rollback_recommended
+            failed_repair = any(
+                s.status == "failed" and s.kind in ("repair", "write", "rollback")
+                for s in steps
+            )
+            failed_verify = any(
+                s.status == "failed" and s.kind == "verify"
+                for s in steps
+            )
+            if failed_repair or failed_verify:
+                run.status = "rollback_recommended"
+                run.rollback_recommended = True
+            else:
+                run.status = "failed"
+        elif all(s.status in ("succeeded", "skipped") for s in steps):
+            run.status = "succeeded"
+        else:
+            run.status = "partially_succeeded"
     plan.status = run.status
 
     # Write run completed/failed timeline event
@@ -321,6 +599,10 @@ async def finalize_run(
         db, event_type, run.run_id, plan.plan_id, plan.target_node_id,
         approval_id=plan.approval_id,
     )
+
+    # Write rollback_recommended timeline if applicable
+    if run.rollback_recommended:
+        await _write_rollback_recommended_timeline(db, run, plan)
 
     await db.commit()
     return run
@@ -367,6 +649,107 @@ async def update_step_result(
     step.finished_at = datetime.now(UTC)
     await db.commit()
     return step
+
+
+def _build_before_data(steps: list[MaintenanceStep], current_step: MaintenanceStep) -> dict:
+    """Build 'before' data from the previous check step's result."""
+    # Find the check step that this step depends on
+    if current_step.depends_on:
+        for dep_seq in current_step.depends_on:
+            try:
+                seq_num = int(dep_seq)
+            except (ValueError, TypeError):
+                continue
+            dep_step = next((s for s in steps if s.seq == seq_num), None)
+            if dep_step and dep_step.kind == "check" and dep_step.result:
+                return {
+                    "available": True,
+                    "source_step_id": dep_step.step_id,
+                    "source_kind": dep_step.kind,
+                    "source_function_name": dep_step.function_name,
+                    "check_result": dep_step.result,
+                }
+    # Fallback: search for any preceding check step
+    for s in sorted(steps, key=lambda x: x.seq):
+        if s.seq < current_step.seq and s.kind == "check" and s.result:
+            return {
+                "available": True,
+                "source_step_id": s.step_id,
+                "source_kind": s.kind,
+                "source_function_name": s.function_name,
+                "check_result": s.result,
+            }
+    return {"available": False, "reason": "no_previous_check_result"}
+
+
+def _build_check_summary(step: MaintenanceStep) -> dict:
+    """Build a short summary from a check/verify step result."""
+    result = step.result or {}
+    return {
+        "function_name": step.function_name,
+        "service_name": step.input_data.get("name", "") if step.input_data else "",
+        "status": result.get("status", result.get("state", "unknown")),
+        "found": result.get("found", result.get("status") is not None),
+    }
+
+
+async def _write_rollback_recommended(
+    db: AsyncSession,
+    run: MaintenanceRun,
+    step: MaintenanceStep,
+    plan: MaintenancePlan,
+    reason: str,
+) -> None:
+    """Write rollback_recommended timeline event during execution."""
+    await _write_rollback_recommended_timeline(db, run, plan, step, reason)
+
+
+async def _write_rollback_recommended_timeline(
+    db: AsyncSession,
+    run: MaintenanceRun,
+    plan: MaintenancePlan,
+    step: MaintenanceStep | None = None,
+    reason: str = "",
+) -> None:
+    """Write the maintenance.rollback.recommended timeline event."""
+    # Collect rollback hints from artifacts
+    art_result = await db.execute(
+        select(MaintenanceArtifact)
+        .where(MaintenanceArtifact.run_id == run.run_id)
+        .where(MaintenanceArtifact.kind == "rollback_hint")
+        .order_by(MaintenanceArtifact.created_at)
+    )
+    artifacts = art_result.scalars().all()
+    rollback_hints_data = [
+        {
+            "artifact_id": a.artifact_id,
+            "step_id": a.step_id,
+            "name": a.name,
+            "data": a.data,
+        }
+        for a in artifacts
+    ]
+
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="maintenance.rollback.recommended",
+        actor_type="system",
+        actor_id="maintenance_executor",
+        node_id=plan.target_node_id,
+        data={
+            "run_id": run.run_id,
+            "plan_id": plan.plan_id,
+            "step_id": step.step_id if step else "",
+            "reason": reason or f"Run {run.run_id} requires rollback",
+            "rollback_hints": rollback_hints_data,
+            "approval_id": plan.approval_id or "",
+        },
+        timestamp=datetime.now(UTC),
+    )
+    db.add(event)
+    await db.flush()
 
 
 async def _write_maintenance_timeline(

@@ -73,6 +73,7 @@ async def create_plan(
             condition=step_data.get("condition", "always"),
             requires_approval=step_data.get("requires_approval", False),
             risk=step_data.get("risk", "safe"),
+            rollback_hint=step_data.get("rollback_hint"),
         )
         db.add(step)
 

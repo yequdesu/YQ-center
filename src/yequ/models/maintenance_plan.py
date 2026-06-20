@@ -60,6 +60,7 @@ class MaintenanceStep(Base):
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk: Mapped[str] = mapped_column(String(32), nullable=False, default="safe")
+    rollback_hint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return (
@@ -79,6 +80,7 @@ class MaintenanceRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_step_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rollback_recommended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     def __repr__(self) -> str:
         return f"<MaintenanceRun(run_id={self.run_id!r}, status={self.status!r})>"
@@ -90,17 +92,18 @@ class MaintenanceArtifact(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
     artifact_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     run_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    step_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    step_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    invocation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
-    content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    storage_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False, default="application/json")
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
     def __repr__(self) -> str:
-        return f"<MaintenanceArtifact(name={self.name!r}, type={self.artifact_type!r})>"
+        return f"<MaintenanceArtifact(artifact_id={self.artifact_id!r}, kind={self.kind!r})>"
 
 
 class RollbackHint(Base):

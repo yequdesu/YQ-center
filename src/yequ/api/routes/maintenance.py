@@ -184,19 +184,56 @@ async def get_run(
         raise HTTPException(404)
     data = _run_dict(run)
     data["steps"] = [_step_dict(s) for s in (await get_steps(db, run.plan_id))]
+
+    # Build artifact summary
+    art_result = await db.execute(
+        select(MaintenanceArtifact).where(MaintenanceArtifact.run_id == run_id)
+    )
+    all_artifacts = art_result.scalars().all()
+    by_kind: dict[str, int] = {}
+    for a in all_artifacts:
+        by_kind[a.kind] = by_kind.get(a.kind, 0) + 1
+    data["artifact_summary"] = {
+        "total": len(all_artifacts),
+        "by_kind": by_kind,
+    }
+
+    # Collect rollback hints from rollback_hint artifacts
+    rollback_artifacts = [a for a in all_artifacts if a.kind == "rollback_hint"]
+    data["rollback_recommended"] = run.rollback_recommended
+    data["rollback_hints"] = [
+        {
+            "artifact_id": a.artifact_id,
+            "step_id": a.step_id,
+            "name": a.name,
+            "data": a.data,
+        }
+        for a in rollback_artifacts
+    ]
+
     return data
 
 
 @router.get("/runs/{run_id}/artifacts")
 async def list_artifacts(
     run_id: str,
+    kind: str | None = None,
+    step_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
-) -> list[dict]:
-    result = await db.execute(
-        select(MaintenanceArtifact).where(MaintenanceArtifact.run_id == run_id)
-    )
-    return [_artifact_dict(a) for a in result.scalars().all()]
+) -> dict:
+    stmt = select(MaintenanceArtifact).where(MaintenanceArtifact.run_id == run_id)
+    if kind:
+        stmt = stmt.where(MaintenanceArtifact.kind == kind)
+    if step_id:
+        stmt = stmt.where(MaintenanceArtifact.step_id == step_id)
+    stmt = stmt.order_by(MaintenanceArtifact.created_at.asc())
+    result = await db.execute(stmt)
+    artifacts = [_artifact_dict(a) for a in result.scalars().all()]
+    return {
+        "run_id": run_id,
+        "artifacts": artifacts,
+    }
 
 
 def _plan_dict(p: MaintenancePlan) -> dict:
@@ -234,6 +271,7 @@ def _step_dict(s: MaintenanceStep) -> dict:
         "requires_approval": s.requires_approval,
         "skip_reason": s.skip_reason,
         "risk": s.risk,
+        "rollback_hint": s.rollback_hint,
         "status": s.status,
         "job_id": s.job_id,
         "invocation_id": s.invocation_id,
@@ -249,6 +287,7 @@ def _run_dict(r: MaintenanceRun) -> dict:
         "run_id": r.run_id,
         "plan_id": r.plan_id,
         "status": r.status,
+        "rollback_recommended": r.rollback_recommended,
         "started_at": r.started_at.isoformat(),
         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
         "current_step_id": r.current_step_id,
@@ -261,11 +300,12 @@ def _artifact_dict(a: MaintenanceArtifact) -> dict:
         "artifact_id": a.artifact_id,
         "run_id": a.run_id,
         "step_id": a.step_id,
-        "artifact_type": a.artifact_type,
+        "invocation_id": a.invocation_id,
+        "job_id": a.job_id,
+        "kind": a.kind,
         "name": a.name,
         "content_type": a.content_type,
-        "size_bytes": a.size_bytes,
-        "sha256": a.sha256,
-        "storage_ref": a.storage_ref,
+        "summary": a.summary,
+        "data": a.data,
         "created_at": a.created_at.isoformat(),
     }
