@@ -546,11 +546,14 @@ async def _execute_tool_call(
 
     # -- L2 write operations without approval: create approval, return waiting_approval --
     if resolved.effect in ("write", "destructive") and not tc.input.get("approval_id"):
+        # Extract resource_key_template from capability's resource_keys (first item if present)
+        resource_key_template = resolved.resource_keys[0] if (resolved.resource_keys and len(resolved.resource_keys) > 0) else None
         approval = await create_approval(
             db, actor_id=actor_id, session_id=session_id,
             function_name=tc.name, target_node_id=resolved.node_id,
             input_data=tc.input, risk=resolved.risk, effect=resolved.effect,
             resource_keys=resolved.resource_keys if hasattr(resolved, 'resource_keys') else None,
+            resource_key_template=resource_key_template,
         )
         await db.commit()
         tc.status = "waiting_approval"
@@ -617,6 +620,13 @@ async def _execute_tool_call(
     tc.invocation_id = inv.invocation_id
     tc.job_ids = [job.job_id]
 
+    # L2 action started timeline event
+    if resolved.effect in ("write", "destructive"):
+        await _write_timeline(db, "l2.action.started", session_id=session_id,
+                              actor=provider_name, call_id=tc.call_id,
+                              function_name=tc.name, invocation_id=inv.invocation_id,
+                              job_id=job.job_id, target_node_id=resolved.node_id)
+
     # Verify persistence with a fresh session
     from yequ.db import async_session_factory as _asf
     async with _asf() as _vdb:
@@ -658,6 +668,12 @@ async def _execute_tool_call(
                               actor=provider_name, call_id=tc.call_id,
                               function_name=tc.name, status="succeeded",
                               invocation_id=inv.invocation_id, job_id=job.job_id)
+        if resolved.effect in ("write", "destructive"):
+            await _write_timeline(db, "l2.action.completed", session_id=session_id,
+                                  actor=provider_name, call_id=tc.call_id,
+                                  function_name=tc.name, status="succeeded",
+                                  invocation_id=inv.invocation_id, job_id=job.job_id,
+                                  target_node_id=resolved.node_id)
     elif final_status == "timeout":
         tc.status = "timeout"
         tc.error = {"code": "tool_timeout", "message": f"Tool {tc.name} timed out"}
@@ -665,6 +681,12 @@ async def _execute_tool_call(
                               actor=provider_name, call_id=tc.call_id,
                               function_name=tc.name, status="timeout",
                               invocation_id=inv.invocation_id, error_code="tool_timeout")
+        if resolved.effect in ("write", "destructive"):
+            await _write_timeline(db, "l2.action.failed", session_id=session_id,
+                                  actor=provider_name, call_id=tc.call_id,
+                                  function_name=tc.name, status="timeout",
+                                  invocation_id=inv.invocation_id, job_id=job.job_id,
+                                  target_node_id=resolved.node_id, error="tool_timeout")
     else:
         tc.status = "failed"
         tc.error = {"code": "tool_failed",
@@ -673,6 +695,12 @@ async def _execute_tool_call(
                               actor=provider_name, call_id=tc.call_id,
                               function_name=tc.name, status=final_status,
                               invocation_id=inv.invocation_id, error_code="tool_failed")
+        if resolved.effect in ("write", "destructive"):
+            await _write_timeline(db, "l2.action.failed", session_id=session_id,
+                                  actor=provider_name, call_id=tc.call_id,
+                                  function_name=tc.name, status=final_status,
+                                  invocation_id=inv.invocation_id, job_id=job.job_id,
+                                  target_node_id=resolved.node_id, error=final_status)
 
     return tc
 

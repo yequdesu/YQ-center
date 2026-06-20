@@ -104,8 +104,13 @@ def compute_resource_keys(
     function_name: str,
     node_id: str,
     input_data: dict,
+    resource_key_template: str | None = None,
 ) -> list[str]:
     """Compute resource keys for a function call.
+
+    Uses template if provided, else falls back to rules.
+
+    Template substitutions: {node_id}, {name}, {pid}, {task_name}, any input key.
 
     Rules:
     - service.* -> node:{node_id}:service:{name}
@@ -114,6 +119,12 @@ def compute_resource_keys(
     - network.dns.* -> node:{node_id}:maintenance:dns
     - temp.cleanup -> node:{node_id}:maintenance:temp:{path_hash}
     """
+    if resource_key_template:
+        rendered = resource_key_template.replace("{node_id}", node_id)
+        for key, val in input_data.items():
+            rendered = rendered.replace(f"{{{key}}}", str(val))
+        return [rendered]
+
     keys: list[str] = []
     if "service" in function_name:
         name = input_data.get("name", "")

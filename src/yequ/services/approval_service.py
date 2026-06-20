@@ -18,7 +18,8 @@ def _make_approval_id() -> str:
 
 
 def _hash_input(input_data: dict) -> str:
-    raw = json.dumps(input_data, sort_keys=True, default=str)
+    filtered = {k: v for k, v in input_data.items() if k != "approval_id"}
+    raw = json.dumps(filtered, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -40,11 +41,22 @@ async def create_approval(
     risk: str,
     effect: str,
     resource_keys: list[str] | None = None,
+    resource_key_template: str | None = None,
     ttl_minutes: int = 5,
     invocation_id: str | None = None,
 ) -> ApprovalRequest:
     """Create a pending ApprovalRequest."""
+    from yequ.services.resource_lock_service import compute_resource_keys
+
     now = datetime.now(UTC)
+
+    # Compute resource keys if not explicitly provided
+    if not resource_keys:
+        resource_keys = compute_resource_keys(
+            function_name, target_node_id, input_data,
+            resource_key_template=resource_key_template,
+        )
+
     approval = ApprovalRequest(
         approval_id=_make_approval_id(),
         actor_id=actor_id,

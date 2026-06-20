@@ -167,10 +167,10 @@ async def test_l2_approval_cannot_reuse(client: AsyncClient, l2_setup):
 
 @pytest.mark.asyncio
 async def test_l2_resource_lock_conflict(client: AsyncClient, l2_setup):
-    """Concurrent jobs on same resource -> lock conflict."""
+    """Two approved invocations on same service -> second gets lock conflict."""
     node_id, token, auth = l2_setup
 
-    # Create + approve
+    # Create + approve first
     r = await client.post("/admin/invocations", json={
         "function_name": "system.service.restart",
         "target_node_id": node_id,
@@ -180,17 +180,19 @@ async def test_l2_resource_lock_conflict(client: AsyncClient, l2_setup):
     apv1 = r.json()["approval_id"]
     await client.post(f"/admin/approvals/{apv1}/approve")
 
-    # Create first job
+    # Execute first job
     r = await client.post("/admin/invocations", json={
         "function_name": "system.service.restart",
         "target_node_id": node_id,
         "input": {"name": "Spooler"},
-        "execution_mode": "auto",
         "approval_id": apv1,
+        "execution_mode": "auto",
     })
     assert r.status_code == 201
+    job1_id = r.json()["job_id"]
+    assert job1_id
 
-    # Create second approval
+    # Create + approve second (same service)
     r = await client.post("/admin/invocations", json={
         "function_name": "system.service.restart",
         "target_node_id": node_id,
@@ -200,16 +202,15 @@ async def test_l2_resource_lock_conflict(client: AsyncClient, l2_setup):
     apv2 = r.json()["approval_id"]
     await client.post(f"/admin/approvals/{apv2}/approve")
 
-    # Second job on same resource should fail with lock conflict
+    # Second execution must fail with lock conflict
     r = await client.post("/admin/invocations", json={
         "function_name": "system.service.restart",
         "target_node_id": node_id,
         "input": {"name": "Spooler"},
-        "execution_mode": "auto",
         "approval_id": apv2,
+        "execution_mode": "auto",
     })
-    # Should get lock conflict
-    assert r.status_code in (409,)
+    assert r.status_code in (409,), f"Expected lock conflict, got {r.status_code}: {r.text[:200]}"
 
 
 @pytest.mark.asyncio
@@ -296,3 +297,54 @@ async def test_l1_read_still_works(client: AsyncClient, l2_setup):
     })
     assert r.status_code == 201
     assert r.json()["job_status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_approval_resource_keys_rendered(client: AsyncClient, l2_setup):
+    """Approval resource_keys rendered from template + input."""
+    node_id, token, auth = l2_setup
+
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+    })
+    apv_id = r.json()["approval_id"]
+
+    r = await client.get(f"/admin/approvals/{apv_id}")
+    assert r.status_code == 200
+    data = r.json()
+    keys = data.get("resource_keys", [])
+    expected = f"node:{node_id}:service:Spooler"
+    assert expected in keys, f"Expected {expected} in resource_keys, got {keys}"
+
+
+@pytest.mark.asyncio
+async def test_approval_input_hash_excludes_approval_id(client: AsyncClient, l2_setup):
+    """Input hash must exclude approval_id field."""
+    node_id, token, auth = l2_setup
+
+    from yequ.services.approval_service import _hash_input
+    h1 = _hash_input({"name": "Spooler"})
+    h2 = _hash_input({"name": "Spooler", "approval_id": "apv_xxx"})
+    assert h1 == h2, "Input hash should exclude approval_id"
+
+
+@pytest.mark.asyncio
+async def test_l2_dry_run_returns_check_only(client: AsyncClient, l2_setup):
+    """dry_run=true -> pre-check only, no job created."""
+    node_id, token, auth = l2_setup
+
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+        "dry_run": True,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("job_id", "") == ""
+    # dry_run reports policy result: ask/deny means policy_denied, allow means dry_run_completed
+    assert data.get("invocation_status") in ("dry_run_completed", "policy_denied")

@@ -1,6 +1,6 @@
 """Admin endpoints for Node management and Invocation creation."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -481,7 +481,29 @@ async def get_approval(
     a = result.scalar_one_or_none()
     if a is None:
         raise HTTPException(404, f"Approval {approval_id!r} not found")
-    return _approval_dict(a)
+
+    data = _approval_dict(a)
+
+    # Include linked invocation and jobs
+    if a.invocation_id:
+        inv_result = await db.execute(
+            select(Invocation).where(Invocation.invocation_id == a.invocation_id)
+        )
+        inv = inv_result.scalar_one_or_none()
+        if inv:
+            data["invocation"] = {
+                "invocation_id": inv.invocation_id, "status": inv.status,
+                "function_name": inv.function_name,
+                "started_at": inv.started_at.isoformat() if inv.started_at else None,
+                "finished_at": inv.finished_at.isoformat() if inv.finished_at else None,
+            }
+            jresult = await db.execute(
+                select(Job).where(Job.invocation_id == a.invocation_id)
+            )
+            jobs = jresult.scalars().all()
+            data["invocation"]["jobs"] = [{"job_id": j.job_id, "status": j.status} for j in jobs]
+
+    return data
 
 
 @router.post("/approvals/{approval_id}/approve")
@@ -723,6 +745,52 @@ async def create_invocation_endpoint(
             detail=f"Node {body.target_node_id!r} not found",
         )
 
+    # Look up the capability to get risk/effect and resource_key_template
+    cap_result = await db.execute(
+        select(Capability).where(
+            Capability.capability_type == "function",
+            Capability.name == body.function_name,
+            Capability.is_active == True,  # noqa: E712
+        ).limit(1)
+    )
+    capability = cap_result.scalar_one_or_none()
+    func_risk = capability.risk if capability else "safe"
+    func_effect = capability.effect if capability else "read"
+    resource_key_template = capability.resource_keys[0] if (capability and capability.resource_keys) else None
+
+    # ── dry_run=true: pre-check only, no job/approval/ locks created ──
+    if body.dry_run:
+        # Validate policy
+        from yequ.services.policy import check_policy_l2
+        policy_result = check_policy_l2(
+            execution_mode=body.execution_mode,
+            risk_level=func_risk,
+            effect=func_effect,
+        )
+        # Write timeline event (function_name and target_node_id go in data dict)
+        from sqlalchemy import func as _f
+        max_seq_r = await db.execute(select(_f.max(TimelineEvent.global_seq)))
+        _max_seq = max_seq_r.scalar() or 0
+        event = TimelineEvent(
+            global_seq=_max_seq + 1,
+            event_type="l2.dry_run.completed",
+            actor_type="admin", actor_id=body.actor_id,
+            data={"input": body.input_payload, "dry_run": True,
+                  "function_name": body.function_name,
+                  "target_node_id": body.target_node_id,
+                  "allowed": policy_result.allowed, "decision": policy_result.decision},
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(event)
+        await db.commit()
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=200, content={
+            "invocation_id": "", "job_id": "",
+            "function_name": body.function_name, "target_node_id": body.target_node_id,
+            "invocation_status": "dry_run_completed" if policy_result.allowed else "policy_denied",
+            "job_status": "",
+        })
+
     # If approval_id was provided, verify and consume it (bypassing L2 policy)
     if body.approval_id:
         from yequ.services.approval_service import verify_approval, consume_approval  # noqa: I001
@@ -736,18 +804,6 @@ async def create_invocation_endpoint(
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
     else:
-        # Look up the function's actual risk/effect from capabilities
-        cap_result = await db.execute(
-            select(Capability).where(
-                Capability.capability_type == "function",
-                Capability.name == body.function_name,
-                Capability.is_active == True,  # noqa: E712
-            ).limit(1)
-        )
-        capability = cap_result.scalar_one_or_none()
-        func_risk = capability.risk if capability else "safe"
-        func_effect = capability.effect if capability else "read"
-
         # L2 policy check for write operations
         from yequ.services.policy import check_policy_l2
         policy_result = check_policy_l2(
@@ -781,6 +837,7 @@ async def create_invocation_endpoint(
                     db, actor_id=body.actor_id, session_id=body.session_id,
                     function_name=body.function_name, target_node_id=body.target_node_id,
                     input_data=body.input_payload, risk="maintenance", effect="write",
+                    resource_key_template=resource_key_template,
                     invocation_id=inv.invocation_id,
                 )
                 await db.commit()
@@ -809,13 +866,18 @@ async def create_invocation_endpoint(
     )
     start_invocation(inv)
 
-    # Compute resource keys for locking
-    from yequ.services.resource_lock_service import compute_resource_keys
-    res_keys = compute_resource_keys(
-        function_name=body.function_name,
-        node_id=body.target_node_id,
-        input_data=body.input_payload,
-    )
+    # Use approval's resource keys if available (reuse, don't recompute)
+    try:
+        res_keys = approval.resource_keys
+    except (NameError, AttributeError):
+        # Compute resource keys for locking
+        from yequ.services.resource_lock_service import compute_resource_keys
+        res_keys = compute_resource_keys(
+            function_name=body.function_name,
+            node_id=body.target_node_id,
+            input_data=body.input_payload,
+            resource_key_template=resource_key_template,
+        )
 
     # Create Job (with lock acquisition)
     try:
