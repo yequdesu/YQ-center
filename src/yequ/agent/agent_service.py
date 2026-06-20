@@ -498,123 +498,165 @@ async def agent_plan(
     execution_mode: str = "auto",
     max_total_duration_sec: int = 300,
 ) -> dict:
-    """Generate a MaintenancePlan from a maintenance prompt.
+    """Generate a structured MaintenancePlan IR from a maintenance prompt.
 
-    The Agent analyzes the prompt and produces a structured plan
-    with ordered steps. Returns the plan dict for the caller to
-    create via the MaintenancePlan API.
+    Strategy:
+    1. Call DeepSeek to classify intent: readonly_check | check_and_fix
+    2. Build deterministic check->repair->verify steps based on intent
+    3. Validate, store, return plan
     """
     from yequ.services.maintenance_service import create_plan
 
-    # Debug: log prompt encoding
+    # ── Step 1: Intent classification via provider ──
+    func_names = [f.name for f in available_functions]
+    classification_prompt = (
+        f"User request: {prompt}\n"
+        f"Available functions: {', '.join(func_names)}\n"
+        "Classify this request as EXACTLY ONE of:\n"
+        "- readonly_check: just check status, no repair needed\n"
+        "- check_and_fix: check status AND repair/fix if unhealthy\n"
+        "Respond with ONLY the classification word, nothing else."
+    )
+
     log.info("agent plan prompt: len=%d has_utf8=%s preview=%s",
              len(prompt), any(ord(c) > 127 for c in prompt), repr(prompt[:100]))
 
-    # Call provider to analyze the prompt — use concise tool-only output
-    plan_prompt = (
-        f"Task: {prompt}. "
-        "Design an ordered maintenance plan. If the task says 'check and fix if needed', "
-        "include BOTH a diagnostic/check step AND a repair step. "
-        "The check step goes first. The repair step should depend on the check step. "
-        "Repair steps that write/change state require approval. "
-        "Return ONLY tool calls. One tool call = one step. "
-        "Do NOT write explanations — just return the tool calls."
-    )
-    provider_result = await asyncio.wait_for(
-        provider.invoke(
-            plan_prompt,
-            available_functions=available_functions,
-            context={"session_id": session_id},
-        ),
-        timeout=45.0,
-    )
+    intent = "readonly_check"  # default
+    try:
+        provider_result = await asyncio.wait_for(
+            provider.invoke(
+                classification_prompt,
+                available_functions=[],
+                context={"session_id": session_id},
+            ),
+            timeout=30.0,
+        )
+        msg = (provider_result.message or "").strip().lower()
+        if "check_and_fix" in msg or "repair" in msg:
+            intent = "check_and_fix"
+    except Exception:
+        pass  # provider unavailable -> readonly_check
 
-    if not provider_result.success:
-        return {
-            "status": "failed",
-            "error": {
-                "code": provider_result.error_code or "provider_error",
-                "message": provider_result.error_message or "Provider failed",
-            },
-        }
+    # ── Step 2: Parse the function + service name from prompt ──
+    service_name = _extract_service_name(prompt, available_functions)
+    function_name = _extract_function_for_service(prompt, available_functions)
 
-    # Parse tool calls into plan steps
-    steps = []
-    for tc in provider_result.tool_calls:
-        func_name = tc.get("name", "")
-        func_input = tc.get("input", {})
-        func_meta = next((f for f in available_functions if f.name == func_name), None)
+    # ── Step 3: Build IR steps based on intent ──
+    steps_ir = []
 
-        step = {
-            "function_name": func_name,
-            "input": func_input,
-            "continue_on_failure": False,
-            "timeout_sec": func_meta.timeout_sec if func_meta else 30,
-            "resource_keys": [],
-        }
+    if intent == "check_and_fix":
+        # Check
+        steps_ir.append({
+            "seq": 1, "kind": "check",
+            "function_name": function_name,
+            "input": {"name": service_name},
+            "condition": "always", "depends_on": [],
+            "risk": "readonly", "requires_approval": False,
+        })
+        # Repair
+        repair_func = "system.service.ensure_running"
+        if any(f.name == repair_func for f in available_functions):
+            steps_ir.append({
+                "seq": 2, "kind": "repair",
+                "function_name": repair_func,
+                "input": {"name": service_name},
+                "condition": "if_previous_unhealthy",
+                "depends_on": [1],
+                "risk": "maintenance_write", "requires_approval": True,
+            })
+        elif any(f.name == "system.service.restart" for f in available_functions):
+            steps_ir.append({
+                "seq": 2, "kind": "repair",
+                "function_name": "system.service.restart",
+                "input": {"name": service_name},
+                "condition": "if_previous_unhealthy",
+                "depends_on": [1],
+                "risk": "maintenance_write", "requires_approval": True,
+            })
+        # Verify
+        steps_ir.append({
+            "seq": 3, "kind": "verify",
+            "function_name": function_name,
+            "input": {"name": service_name},
+            "condition": "after_repair", "depends_on": [2],
+            "risk": "readonly", "requires_approval": False,
+        })
+    else:
+        # Readonly check only
+        steps_ir.append({
+            "seq": 1, "kind": "check",
+            "function_name": function_name,
+            "input": {"name": service_name},
+            "condition": "always", "depends_on": [],
+            "risk": "readonly", "requires_approval": False,
+        })
 
-        # If write operation, compute resource keys
-        if func_meta and func_meta.effect in ("write", "destructive"):
-            from yequ.services.resource_lock_service import compute_resource_keys
-            step["resource_keys"] = compute_resource_keys(
-                func_name, target_node_id, func_input,
-            )
+    # ── Step 4: Validate ──
+    has_write = any(s["requires_approval"] for s in steps_ir)
+    for s in steps_ir:
+        if s["requires_approval"] and s["kind"] not in ("repair", "rollback"):
+            s["requires_approval"] = False  # fix incorrect metadata
+        func_exists = any(f.name == s["function_name"] for f in available_functions)
+        if not func_exists:
+            return {"status": "failed", "error": {"code": "function_not_available",
+                     "message": f"Function {s['function_name']!r} not registered on node"}}
 
-        steps.append(step)
-
-    # Hard-coded check+fix pattern: if prompt suggests "check X, fix if broken"
-    # and only 1 step was generated, add the corresponding L2 repair step
-    fix_patterns = [
-        ("service.status", "system.service.ensure_running"),
-        ("service.status", "system.service.restart"),
-    ]
-    if "修复" in prompt or "fix" in prompt.lower() or "不正常" in prompt:
-        for check_func, fix_func in fix_patterns:
-            has_check = any(s["function_name"] == check_func for s in steps)
-            has_fix = any(s["function_name"] == fix_func for s in steps)
-            if has_check and not has_fix:
-                # Find the matching function metadata
-                fix_meta = next((f for f in available_functions if f.name == fix_func), None)
-                if fix_meta:
-                    # Extract input from the check step and copy to fix step
-                    check_step = next(s for s in steps if s["function_name"] == check_func)
-                    fix_input = dict(check_step.get("input", {}))
-                    steps.append({
-                        "function_name": fix_func,
-                        "input": fix_input,
-                        "continue_on_failure": False,
-                        "timeout_sec": fix_meta.timeout_sec,
-                        "resource_keys": [],
-                    })
-
-    # Create the plan
+    # ── Step 5: Create plan ──
     plan = await create_plan(
-        db,
-        goal=prompt,
-        actor_id=provider.provider_name(),
+        db, goal=prompt, actor_id=provider.provider_name(),
         target_node_id=target_node_id,
-        steps=steps,
-        session_id=session_id,
-        risk="maintenance",
+        steps=[{
+            "function_name": s["function_name"],
+            "input": s["input"],
+            "kind": s["kind"],
+            "condition": s["condition"],
+            "depends_on": [str(d) for d in s.get("depends_on", [])],
+            "requires_approval": s["requires_approval"],
+            "risk": s["risk"],
+            "continue_on_failure": False,
+        } for s in steps_ir],
+        session_id=session_id, risk="maintenance" if has_write else "safe",
         max_total_duration_sec=max_total_duration_sec,
         execution_mode=execution_mode,
     )
 
-    has_write = any(
-        s["function_name"] in {f.name for f in available_functions if f.effect in ("write", "destructive")}
-        for s in steps
-    )
+    # Set status + approval
+    if has_write:
+        plan.status = "waiting_approval"
+        await db.commit()
+
     return {
-        "status": "waiting_approval" if has_write else plan.status,
+        "status": plan.status,
         "plan_id": plan.plan_id,
         "goal": plan.goal,
-        "step_count": len(steps),
         "approval_required": has_write,
-        "steps": [
-            {"seq": i + 1, "function_name": s["function_name"], "input": s.get("input", {})}
-            for i, s in enumerate(steps)
-        ],
+        "step_count": len(steps_ir),
+        "steps": steps_ir,
     }
+
+
+def _extract_service_name(prompt: str, available_functions: list) -> str:
+    """Extract service name from prompt. Maps common names to Windows service names."""
+    mapping = {
+        "print": "Spooler", "spooler": "Spooler", "打印": "Spooler",
+        "eventlog": "EventLog", "event log": "EventLog", "event": "EventLog",
+        "time": "W32Time", "w32time": "W32Time",
+        "firewall": "MpsSvc", "windows firewall": "MpsSvc",
+        "defender": "WinDefend", "windows defender": "WinDefend",
+        "update": "wuauserv", "windows update": "wuauserv",
+    }
+    prompt_lower = prompt.lower()
+    for key, svc in mapping.items():
+        if key in prompt_lower:
+            return svc
+    return "Spooler"  # default
+
+
+def _extract_function_for_service(prompt: str, available_functions: list) -> str:
+    """Determine the appropriate check function."""
+    if any("service" in f.name for f in available_functions):
+        return "system.service.status"
+    return "system.metrics.snapshot"  # fallback
 
 
 async def _execute_tool_call(

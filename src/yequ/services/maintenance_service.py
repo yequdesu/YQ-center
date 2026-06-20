@@ -69,6 +69,10 @@ async def create_plan(
             resource_keys=step_data.get("resource_keys"),
             expected_result_schema=step_data.get("expected_result_schema"),
             status="pending",
+            kind=step_data.get("kind", "check"),
+            condition=step_data.get("condition", "always"),
+            requires_approval=step_data.get("requires_approval", False),
+            risk=step_data.get("risk", "safe"),
         )
         db.add(step)
 

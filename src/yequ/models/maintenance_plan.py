@@ -55,6 +55,11 @@ class MaintenanceStep(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="check")
+    condition: Mapped[str] = mapped_column(String(32), nullable=False, default="always")
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk: Mapped[str] = mapped_column(String(16), nullable=False, default="safe")
 
     def __repr__(self) -> str:
         return (

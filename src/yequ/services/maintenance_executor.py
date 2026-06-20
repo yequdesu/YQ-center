@@ -64,9 +64,53 @@ async def execute_plan_run(
             unmet = [s for s in step.depends_on if s not in completed_steps]
             if unmet:
                 step.status = "skipped"
-                step.error = f"Unmet dependencies: {unmet}"
+                step.skip_reason = f"Unmet dependencies: {unmet}"
+                step.finished_at = datetime.now(UTC)
                 await db.flush()
                 continue
+
+        # --- Condition check ---
+        if step.condition == "if_previous_unhealthy":
+            deps = step.depends_on or []
+            unhealthy = False
+            for dep_seq in [int(d) for d in deps]:
+                dep_step = next((s for s in steps if s.seq == dep_seq), None)
+                if dep_step:
+                    result = dep_step.result or {}
+                    found = result.get("found", True)
+                    state = result.get("state", result.get("status", ""))
+                    if not found or str(state).lower() != "running":
+                        unhealthy = True
+            if not unhealthy:
+                step.status = "skipped"
+                step.skip_reason = "previous check showed healthy"
+                step.finished_at = datetime.now(UTC)
+                await db.flush()
+                continue
+        elif step.condition == "after_repair":
+            # Execute verify step regardless
+            pass
+        elif step.condition == "if_previous_failed":
+            deps = step.depends_on or []
+            dep_steps_r = await db.execute(
+                select(MaintenanceStep)
+                .where(MaintenanceStep.plan_id == plan.plan_id)
+                .where(MaintenanceStep.seq.in_([int(d) for d in deps]))
+            )
+            dep_steps = list(dep_steps_r.scalars().all())
+            any_failed = any(ds.status == "failed" for ds in dep_steps)
+            if not any_failed:
+                step.status = "skipped"
+                step.skip_reason = "previous step did not fail"
+                step.finished_at = datetime.now(UTC)
+                await db.flush()
+                continue
+        elif step.condition == "manual":
+            step.status = "skipped"
+            step.skip_reason = "manual step requires operator intervention"
+            step.finished_at = datetime.now(UTC)
+            await db.flush()
+            continue
 
         # Write step started timeline event
         await _write_maintenance_timeline(
@@ -198,20 +242,9 @@ async def finalize_run(
     )
     steps = list(result.scalars().all())
 
-    statuses = {s.status for s in steps}
-    if statuses == {"succeeded"}:
-        run.status = "succeeded"
-    elif "failed" in statuses:
-        run.status = "failed"
-    elif statuses == {"pending"}:
-        run.status = "pending"
-    else:
-        run.status = "partially_succeeded"
-
     now = datetime.now(UTC)
     run.finished_at = now
     plan.finished_at = now
-    plan.status = run.status
 
     # Build summary
     run.summary = {
@@ -220,6 +253,14 @@ async def finalize_run(
         "failed": len([s for s in steps if s.status == "failed"]),
         "skipped": len([s for s in steps if s.status == "skipped"]),
     }
+    # Run status: failed > partially_succeeded > succeeded (skipped not counted as failed)
+    if any(s.status == "failed" for s in steps):
+        run.status = "failed"
+    elif all(s.status in ("succeeded", "skipped") for s in steps):
+        run.status = "succeeded"
+    else:
+        run.status = "partially_succeeded"
+    plan.status = run.status
 
     # Write run completed/failed timeline event
     event_type = (
