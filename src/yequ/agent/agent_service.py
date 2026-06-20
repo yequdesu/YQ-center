@@ -644,7 +644,7 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
 
 
 async def _write_timeline(
-    db: AsyncSession,
+    db: AsyncSession | None,
     event_type: str,
     *,
     session_id: str,
@@ -665,58 +665,64 @@ async def _write_timeline(
     step: int | None = None,
     success: bool | None = None,
 ) -> None:
-    """Write an agent timeline event."""
+    """Write an agent timeline event using a fresh short-lived session.
+
+    Uses its own DB session to avoid any lock contention with the
+    request session or background writer. Commits immediately.
+    """
     from sqlalchemy import func
 
+    from yequ.db import async_session_factory
     from yequ.models.timeline import TimelineEvent
 
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    next_seq: int = max_seq + 1
+    async with async_session_factory() as _db:
+        result = await _db.execute(select(func.max(TimelineEvent.global_seq)))
+        max_seq = result.scalar() or 0
+        next_seq: int = max_seq + 1
 
-    data: dict[str, object] = {}
-    if call_id:
-        data["call_id"] = call_id
-    if function_name:
-        data["function_name"] = function_name
-    if invocation_id:
-        data["invocation_id"] = invocation_id
-    if job_id:
-        data["job_id"] = job_id
-    if target_node_id:
-        data["target_node_id"] = target_node_id
-    if status:
-        data["status"] = status
-    if error_code:
-        data["error_code"] = error_code
-    if error:
-        data["error"] = error
-    if reason:
-        data["reason"] = reason
-    if tool_call_count is not None:
-        data["tool_call_count"] = tool_call_count
-    if risk:
-        data["risk"] = risk
-    if effect:
-        data["effect"] = effect
-    if prompt:
-        data["prompt"] = prompt[:500]
-    if step is not None:
-        data["step"] = step
-    if success is not None:
-        data["success"] = success
+        data: dict[str, object] = {}
+        if call_id:
+            data["call_id"] = call_id
+        if function_name:
+            data["function_name"] = function_name
+        if invocation_id:
+            data["invocation_id"] = invocation_id
+        if job_id:
+            data["job_id"] = job_id
+        if target_node_id:
+            data["target_node_id"] = target_node_id
+        if status:
+            data["status"] = status
+        if error_code:
+            data["error_code"] = error_code
+        if error:
+            data["error"] = error
+        if reason:
+            data["reason"] = reason
+        if tool_call_count is not None:
+            data["tool_call_count"] = tool_call_count
+        if risk:
+            data["risk"] = risk
+        if effect:
+            data["effect"] = effect
+        if prompt:
+            data["prompt"] = prompt[:500]
+        if step is not None:
+            data["step"] = step
+        if success is not None:
+            data["success"] = success
 
-    event = TimelineEvent(
-        global_seq=next_seq,
-        event_type=event_type,
-        actor_type="agent",
-        actor_id=actor,
-        session_id=session_id,
-        invocation_id=invocation_id,
-        job_id=job_id,
-        node_id=target_node_id,
-        data=data,
-        timestamp=datetime.now(UTC),
-    )
-    db.add(event)
-    await db.flush()
+        event = TimelineEvent(
+            global_seq=next_seq,
+            event_type=event_type,
+            actor_type="agent",
+            actor_id=actor,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            job_id=job_id,
+            node_id=target_node_id,
+            data=data,
+            timestamp=datetime.now(UTC),
+        )
+        _db.add(event)
+        await _db.commit()
