@@ -25,6 +25,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # Reject SQLite in non-test mode
+    if "sqlite" in settings.database_url and not settings.test_mode:
+        log.error("SQLite is not supported for production. Set YEQU_DATABASE_URL to PostgreSQL.")
+        raise SystemExit("SQLite not allowed in production mode")
+
     # Recovery + bootstrap + background tasks: skip in test mode
     if not settings.test_mode:
         try:
