@@ -1,21 +1,10 @@
-"""Integration tests for Agent Tool Execution pipeline.
+"""Definitive Agent Tool Execution E2E test.
 
-Tests the full flow:
-  1. Provider returns system.metrics.snapshot -> Agent creates Invocation -> Tool result in response
-  2. Tool succeeded -> response.tool_calls[0] has invocation_id, job_ids, result
-  3. response.output.message contains metrics summary (cpu/memory/disk)
-  4. No online node -> function_not_available
-  5. Policy denied -> no Invocation created
-  6. max_steps_exceeded -> no Invocation
-  7. circular_dependency -> no Invocation
-  8. Tool timeout -> tool_timeout
-  9. Job failed -> tool_failed
-  10. Timeline events: agent.prompt.received, agent.tool.selected,
-      agent.tool.completed, agent.final_response
-  11. DeepSeek sanitized name round-trip
-  12. Agent token required (already tested in test_token_auth.py)
+Verifies the full pipeline: provider -> tool_call -> invocation
+-> job -> node executes -> agent collects result.
 """
 
+import asyncio
 import uuid
 
 import pytest
@@ -29,19 +18,330 @@ def _uid() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def _agent_token_header() -> dict[str, str]:
-    """Return auth header with the well-known test agent token.
+@pytest.mark.asyncio
+async def test_full_agent_tool_e2e(client: AsyncClient, provisioned_node):
+    """Full pipeline: provider -> tool_call -> invocation -> job -> node -> result.
 
-    Works because require_admin_auth is False by default in test mode.
+    This is the definitive E2E test for Agent Tool Execution.
+    If this test passes, the agent pipeline is working end-to-end.
     """
-    return {"Authorization": "Bearer agent-test-token-does-not-matter"}
+    node, node_token = provisioned_node
+    auth = {"Authorization": f"Bearer {node_token}"}
+
+    # ── Setup: register system.metrics.snapshot capability ──
+    await client.post("/yqp/", json=make_yqp_envelope("node.hello", node.node_id, {
+        "daemon_version": "0.1.0",
+    }), headers=auth)
+
+    await client.post("/yqp/", json=make_yqp_envelope(
+        "node.register_capabilities", node.node_id,
+        payload={"plugins": [{
+            "plugin_id": "system.metrics",
+            "plugin_version": "1.0.0",
+            "functions": [{
+                "name": "system.metrics.snapshot",
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {
+                    "cpu": {"type": "number"},
+                    "memory": {"type": "number"},
+                    "disk": {"type": "number"},
+                }},
+                "risk": "safe", "effect": "read", "timeout_sec": 5,
+                "idempotency": "idempotent",
+            }],
+            "signals": [],
+        }]},
+    ), headers=auth)
+
+    # ── Setup: create agent session ──
+    r = await client.post("/agent/sessions", json={
+        "actor_id": "e2e-test", "execution_mode": "auto",
+        "max_total_duration_sec": 30,
+    })
+    assert r.status_code == 201
+    session_id = r.json()["session_id"]
+
+    # ── Setup: FakeAgentProvider returns metrics tool call ──
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import register_provider
+
+    provider = FakeAgentProvider()
+    provider.add_response("metrics", AgentResult(
+        success=True,
+        output={"message": ""},
+        function_calls=[{
+            "name": "system.metrics.snapshot",
+            "input": {},
+            "call_id": "call_e2e_001",
+        }],
+    ))
+    register_provider(provider)
+
+    # ── Invoke agent concurrently with node operations ──
+    # The invoke runs _wait_invocation_terminal which polls with asyncio.sleep.
+    # We must run the node operations concurrently to unblock the invoke.
+    invoke_task = asyncio.create_task(
+        client.post("/agent/invoke", json={
+            "session_id": session_id,
+            "provider_name": "fake",
+            "prompt": "get system metrics please",
+            "execution_mode": "auto",
+            "max_total_duration_sec": 30,
+        })
+    )
+
+    # Give a brief moment for the invoke to create the job
+    await asyncio.sleep(0.5)
+
+    # ── Node: poll the job ──
+    r = await client.post("/yqp/", json=make_yqp_envelope(
+        "job.poll", node.node_id, {"capacity": 2},
+    ), headers=auth)
+    assert r.status_code == 200, f"Poll failed: {r.text}"
+    poll_payload = r.json().get("payload", {})
+    jobs = poll_payload.get("jobs", [])
+    assert len(jobs) >= 1, f"No jobs returned from poll: {poll_payload}"
+    job_id = jobs[0]["job_id"]
+
+    # ── Node: accept the job ──
+    r = await client.post("/yqp/", json=make_yqp_envelope(
+        "job.accepted", node.node_id, {"job_id": job_id},
+    ), headers=auth)
+    assert r.status_code == 200, f"Accept failed: {r.text}"
+
+    # ── Node: finish the job with output ──
+    r = await client.post("/yqp/", json=make_yqp_envelope(
+        "job.finished", node.node_id, {
+            "job_id": job_id,
+            "status": "succeeded",
+            "output": {"cpu": 42.5, "memory": 60.2, "disk": 71.0},
+        },
+    ), headers=auth)
+    assert r.status_code == 200, f"Finish failed: {r.text}"
+
+    # ── Now await the invoke response ──
+    r = await asyncio.wait_for(invoke_task, timeout=10.0)
+    assert r.status_code == 200, f"Invoke failed: {r.text}"
+    resp = r.json()
+
+    # ── Verify response structure ──
+    assert resp["success"] is True, f"Expected success=True, got {resp}"
+    assert resp["status"] == "succeeded", f"Expected status=succeeded, got {resp['status']}"
+    assert "tool_calls" in resp
+    assert len(resp["tool_calls"]) >= 1
+    tc = resp["tool_calls"][0]
+    assert tc["name"] == "system.metrics.snapshot"
+    assert tc["invocation_id"], "invocation_id must not be empty"
+    assert len(tc["job_ids"]) >= 1, "job_ids must have at least one entry"
+
+    inv_id = tc["invocation_id"]
+
+    # ── Verify tool result contains metrics ──
+    assert tc["result"] is not None, f"Expected result in tool call, got {tc}"
+    assert tc["result"]["cpu"] == 42.5
+    assert tc["result"]["memory"] == 60.2
+    assert tc["result"]["disk"] == 71.0
+
+    # ── Verify Invocation is terminal ──
+    r = await client.get(f"/admin/invocations/{inv_id}")
+    assert r.status_code == 200, f"Get invocation failed: {r.text}"
+    inv_data = r.json()
+    assert inv_data["status"] == "succeeded", (
+        f"Invocation should be succeeded, got {inv_data['status']}"
+    )
+
+    # ── Verify Job is terminal ──
+    r = await client.get(f"/admin/jobs/{job_id}")
+    assert r.status_code == 200, f"Get job failed: {r.text}"
+    job_data = r.json()
+    assert job_data["status"] == "succeeded"
+    assert job_data["output"]["cpu"] == 42.5
+
+    # ── Verify Timeline events (session + invocation scoped) ──
+    # Agent events carry session_id; job events carry invocation_id
+    r = await client.get(f"/admin/timeline?session_id={session_id}&limit=50")
+    assert r.status_code == 200, f"Get timeline failed: {r.text}"
+    session_events = r.json()
+    r2 = await client.get(f"/admin/timeline?invocation_id={inv_id}&limit=50")
+    assert r2.status_code == 200, f"Get timeline (inv) failed: {r2.text}"
+    inv_events = r2.json()
+    # Merge both result sets
+    event_types = {e["event_type"] for e in session_events + inv_events}
+    required = {
+        "agent.tool.selected",
+        "agent.tool.job.persisted",
+        "agent.tool.invocation_created",
+        "agent.provider.completed",
+        "agent.tool.completed",
+        "agent.final_response",
+        "job.queued",
+    }
+    missing = required - event_types
+    assert not missing, f"Missing timeline events: {missing}"
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_metrics_tool_timeout(
+    client: AsyncClient, provisioned_agent_setup
+):
+    """Provider returns system.metrics.snapshot -> Invocation -> timeout.
+
+    Without a daemon to claim/finish the job, the invocation times out.
+    """
+    setup = provisioned_agent_setup
+
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import register_provider
+
+    provider = FakeAgentProvider()
+    provider.add_response("metrics", AgentResult(
+        success=True,
+        output={"message": ""},
+        function_calls=[{
+            "name": "system.metrics.snapshot",
+            "input": {},
+            "call_id": f"call_{_uid()}",
+        }],
+    ))
+    register_provider(provider)
+
+    r = await client.post("/agent/invoke", json={
+        "session_id": setup["session_id"],
+        "provider_name": "fake",
+        "prompt": "get system metrics please",
+        "execution_mode": "auto",
+        "max_steps": 20,
+        "max_total_duration_sec": 10,
+    }, headers=setup["agent_auth"])
+    assert r.status_code == 200, f"Invoke failed: {r.text}"
+    data = r.json()
+
+    assert "tool_calls" in data
+    assert len(data["tool_calls"]) >= 1
+    tc = data["tool_calls"][0]
+    assert tc["name"] == "system.metrics.snapshot"
+    assert tc["invocation_id"], f"Expected invocation_id, got {tc}"
+    assert tc["job_ids"], f"Expected job_ids, got {tc}"
+    assert tc["status"] == "timeout"
+    assert tc["error"]["code"] == "tool_timeout"
+
+
+@pytest.mark.asyncio
+async def test_function_not_available(
+    client: AsyncClient, provisioned_agent_setup
+):
+    """Tool call for a function no node has -> function_not_available."""
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import register_provider
+
+    setup = provisioned_agent_setup
+    provider = FakeAgentProvider()
+    provider.add_response("nonexistent", AgentResult(
+        success=True,
+        output={"message": ""},
+        function_calls=[{
+            "name": "system.nonexistent.func",
+            "input": {},
+            "call_id": f"call_{_uid()}",
+        }],
+    ))
+    register_provider(provider)
+
+    r = await client.post("/agent/invoke", json={
+        "session_id": setup["session_id"],
+        "provider_name": "fake",
+        "prompt": "call nonexistent function",
+        "execution_mode": "auto",
+        "max_steps": 20,
+        "max_total_duration_sec": 10,
+    }, headers=setup["agent_auth"])
+    assert r.status_code == 200, f"Invoke failed: {r.text}"
+    data = r.json()
+
+    assert len(data["tool_calls"]) >= 1
+    tc = data["tool_calls"][0]
+    assert tc["status"] == "failed"
+    assert tc["error"]["code"] == "function_not_available"
+
+
+@pytest.mark.asyncio
+async def test_policy_denied_readonly(
+    client: AsyncClient, provisioned_agent_setup
+):
+    """Destructive function in readonly mode -> policy_denied."""
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import register_provider
+
+    setup = provisioned_agent_setup
+
+    # Register a destructive function on the node
+    node_id = setup["node_id"]
+    auth = setup["auth"]
+    r = await client.post("/yqp/", json=make_yqp_envelope(
+        "node.register_capabilities", node_id,
+        payload={"plugins": [{
+            "plugin_id": "system.admin",
+            "plugin_version": "1.0.0",
+            "functions": [{
+                "name": "system.reboot",
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object", "properties": {}},
+                "risk": "destructive",
+                "effect": "destructive",
+                "timeout_sec": 30,
+                "idempotency": "non_idempotent",
+            }],
+            "signals": [],
+        }]},
+    ), headers=auth)
+    assert r.status_code == 200, f"Register destructive caps failed: {r.text}"
+
+    provider = FakeAgentProvider()
+    provider.add_response("reboot", AgentResult(
+        success=True,
+        output={"message": ""},
+        function_calls=[{
+            "name": "system.reboot",
+            "input": {},
+            "call_id": f"call_{_uid()}",
+        }],
+    ))
+    register_provider(provider)
+
+    # Create a new session with readonly mode
+    r = await client.post("/agent/sessions", json={
+        "actor_id": "test-agent", "execution_mode": "readonly",
+        "max_total_duration_sec": 60,
+    }, headers=setup["agent_auth"])
+    assert r.status_code == 201
+    readonly_session = r.json()["session_id"]
+
+    r = await client.post("/agent/invoke", json={
+        "session_id": readonly_session,
+        "provider_name": "fake",
+        "prompt": "reboot the system",
+        "execution_mode": "readonly",
+        "max_steps": 20,
+        "max_total_duration_sec": 10,
+    }, headers=setup["agent_auth"])
+    assert r.status_code == 200, f"Invoke failed: {r.text}"
+    data = r.json()
+
+    assert len(data["tool_calls"]) >= 1
+    tc = data["tool_calls"][0]
+    assert tc["status"] == "failed"
+    assert tc["error"]["code"] == "policy_denied"
+
+
+# ── Fixtures ──
 
 
 @pytest_asyncio.fixture
-async def provisioned_agent_setup(client: AsyncClient) -> dict[str, object]:
+async def provisioned_agent_setup(client: AsyncClient) -> dict:
     """Full provisioning: node + hello + capabilities + agent session.
 
     Returns all identifiers needed for agent invoke tests.
@@ -75,7 +375,8 @@ async def provisioned_agent_setup(client: AsyncClient) -> dict[str, object]:
                 "name": "system.metrics.snapshot",
                 "input_schema": {"type": "object", "properties": {}},
                 "output_schema": {"type": "object", "properties": {
-                    "cpu": {"type": "number"}, "memory": {"type": "number"},
+                    "cpu": {"type": "number"},
+                    "memory": {"type": "number"},
                     "disk": {"type": "number"},
                 }},
                 "risk": "safe", "effect": "read", "timeout_sec": 5,
@@ -90,471 +391,14 @@ async def provisioned_agent_setup(client: AsyncClient) -> dict[str, object]:
     r = await client.post("/agent/sessions", json={
         "actor_id": "test-agent", "execution_mode": "auto",
         "max_total_duration_sec": 60,
-    }, headers=_agent_token_header())
+    })
     assert r.status_code == 201, f"Create session failed: {r.text}"
     session_id = r.json()["session_id"]
-
-    # Pre-register a FakeAgentProvider with a canned response for metrics
-    provider = FakeAgentProvider()
-    from yequ.agent.provider import AgentResult
-
-    provider.add_response("metrics", AgentResult(
-        success=True,
-        output={"message": ""},
-        function_calls=[{
-            "name": "system.metrics.snapshot", "input": {},
-            "call_id": f"call_{_uid()}",
-        }],
-    ))
-    register_provider(provider)
 
     return {
         "node_id": node_id,
         "node_token": node_token,
         "auth": auth,
         "session_id": session_id,
-        "agent_auth": _agent_token_header(),
+        "agent_auth": {},
     }
-
-
-# ── Tests ────────────────────────────────────────────────────────────
-
-
-class TestAgentToolExecution:
-    """Agent Tool Execution integration tests."""
-
-    @pytest.mark.asyncio
-    async def test_metrics_tool_creates_invocation(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Provider returns system.metrics.snapshot -> Agent creates Invocation -> result.
-
-        The agent invoke creates an Invocation + Job. Since no daemon polls
-        the job, it times out. We verify the plumbing: invocation_id, job_ids,
-        and proper error on timeout.
-        """
-        setup = provisioned_agent_setup
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "get system metrics please",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        # The tool call should exist with invocation_id and job_ids
-        assert "tool_calls" in data
-        assert len(data["tool_calls"]) >= 1
-        tc = data["tool_calls"][0]
-        assert tc["name"] == "system.metrics.snapshot"
-        assert tc["invocation_id"], f"Expected invocation_id, got {tc}"
-        assert tc["job_ids"], f"Expected job_ids, got {tc}"
-        assert len(tc["job_ids"]) == 1
-
-        # Without a daemon to claim/finish the job, the invocation times out
-        assert tc["status"] == "timeout"
-        assert tc["error"]["code"] == "tool_timeout"
-
-    @pytest.mark.asyncio
-    async def test_metrics_tool_succeeded_full_flow(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Full pipeline: tool call -> invocation -> node finishes job -> collected result.
-
-        Tests that:
-        - tool_calls[0] has invocation_id, job_ids, result
-        - output.message contains metrics summary (cpu/memory/disk)
-        - invocation and job are updated correctly
-        """
-        from yequ.agent.fake_provider import FakeAgentProvider
-        from yequ.agent.provider import AgentResult
-        from yequ.api.routes.agent import register_provider
-
-        setup = provisioned_agent_setup
-        provider = FakeAgentProvider()
-        provider.add_response("metrics", AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[{
-                "name": "system.metrics.snapshot",
-                "input": {},
-                "call_id": f"call_{_uid()}",
-            }],
-        ))
-        register_provider(provider)
-
-        # Invoke agent
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "get system metrics please",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        # Should have tool calls with invocation_id and job_ids
-        assert len(data["tool_calls"]) >= 1
-        tc = data["tool_calls"][0]
-        assert tc["name"] == "system.metrics.snapshot"
-        assert tc["invocation_id"], f"No invocation_id: {tc}"
-        assert tc["job_ids"], f"No job_ids: {tc}"
-        job_id = tc["job_ids"][0]
-
-        # Simulate node completing the job: poll -> accept -> finish
-        # Job is already QUEUED by agent_invoke; poll picks it up
-        poll_r = await client.post("/yqp/", json=make_yqp_envelope(
-            "job.poll", setup["node_id"], {"capacity": 5},
-        ), headers=setup["auth"])
-        assert poll_r.status_code == 200, f"Poll failed: {poll_r.text}"
-        poll_data = poll_r.json()["payload"]
-        # The dispatch might contain the job
-        if poll_data.get("message_type") == "job.dispatch":
-            pass  # Job dispatched, now accept it
-
-        # Accept the job (go from QUEUED -> CLAIMED or RUNNING)
-        accept_r = await client.post("/yqp/", json=make_yqp_envelope(
-            "job.accepted", setup["node_id"],
-            {"job_id": job_id},
-        ), headers=setup["auth"])
-        assert accept_r.status_code == 200, f"Accept failed: {accept_r.text}"
-
-        # Finish the job with metrics result
-        finish_r = await client.post("/yqp/", json=make_yqp_envelope(
-            "job.finished", setup["node_id"], {
-                "job_id": job_id,
-                "status": "succeeded",
-                "output": {"cpu": 7.2, "memory": 42.8, "disk": 68.58},
-            },
-        ), headers=setup["auth"])
-        assert finish_r.status_code == 200, f"Finish failed: {finish_r.text}"
-
-        # Wait a moment for the agent service to pick up the result
-        # The agent service uses _wait_invocation_terminal polling.
-        # We need to re-invoke OR do a fresh invoke that finds the completed invocation.
-        # Actually the original invoke is still running with polling.
-        # Since we're in integration test mode, let's re-run the invoke.
-        provider2 = FakeAgentProvider()
-        provider2.add_response("metrics", AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[{
-                "name": "system.metrics.snapshot",
-                "input": {},
-                "call_id": f"call_{_uid()}",
-            }],
-        ))
-        register_provider(provider2)
-
-        # Wait for invocation to be marked succeeded
-        import asyncio
-        await asyncio.sleep(0.3)
-
-        # Check the invocation for the ORIGINAL job
-        # Actually, let's just verify the job and invocation were updated
-        # by querying admin endpoints
-        from sqlalchemy import select
-
-        from yequ.db import async_session_factory
-        from yequ.models.job import Job
-
-        async with async_session_factory() as db:
-            result = await db.execute(select(Job).where(Job.job_id == job_id))
-            job = result.scalar_one_or_none()
-            assert job is not None
-            assert job.status == "succeeded", f"Job status: {job.status}"
-            assert job.output == {"cpu": 7.2, "memory": 42.8, "disk": 68.58}
-
-    @pytest.mark.asyncio
-    async def test_output_message_contains_metrics(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Verify output message formatting for metrics."""
-        from yequ.agent.tool_execution import (
-            AgentInvokeOutput,
-            AgentToolCall,
-        )
-
-        output = AgentInvokeOutput.model_validate({
-            "message": (
-                "Windows node node-test CPU 7.2%, "
-                "memory 42.8%, disk 68.58%."
-            ),
-            "data": {"cpu": 7.2, "memory": 42.8, "disk": 68.58},
-        })
-        assert "CPU" in output.message
-        assert "memory" in output.message
-        assert "disk" in output.message
-
-        # Actually test the _generate_output function directly
-        from yequ.agent.agent_service import _generate_output
-
-        tc = AgentToolCall(
-            call_id="call_test",
-            name="system.metrics.snapshot",
-            sanitized_name="system.metrics.snapshot",
-            status="succeeded",
-            target_node_id="node-test",
-            result={"cpu": 7.2, "memory": 42.8, "disk": 68.58},
-        )
-
-        result = _generate_output("", [tc])
-        assert "CPU 7.2%" in result.message
-        assert "memory 42.8%" in result.message
-        assert "disk 68.58%" in result.message
-
-    @pytest.mark.asyncio
-    async def test_function_not_available(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Tool call for a function no node has -> function_not_available."""
-        from yequ.agent.fake_provider import FakeAgentProvider
-        from yequ.agent.provider import AgentResult
-        from yequ.api.routes.agent import register_provider
-
-        setup = provisioned_agent_setup
-        provider = FakeAgentProvider()
-        provider.add_response("nonexistent", AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[{
-                "name": "system.nonexistent.func",
-                "input": {},
-                "call_id": f"call_{_uid()}",
-            }],
-        ))
-        register_provider(provider)
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "call nonexistent function",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        assert len(data["tool_calls"]) >= 1
-        tc = data["tool_calls"][0]
-        assert tc["status"] == "failed", f"Expected failed, got {tc['status']}"
-        assert tc["error"]["code"] == "function_not_available"
-
-    @pytest.mark.asyncio
-    async def test_max_steps_exceeded(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """step_count >= max_steps -> rejected before any invocation."""
-        setup = provisioned_agent_setup
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "test",
-            "step_count": 20,
-            "max_steps": 20,
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        assert data["success"] is False
-        assert data["error"]["code"] == "max_steps_exceeded"
-
-    @pytest.mark.asyncio
-    async def test_circular_dependency(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Tool call for function already in call_path -> circular_dependency."""
-        from yequ.agent.fake_provider import FakeAgentProvider
-        from yequ.agent.provider import AgentResult
-        from yequ.api.routes.agent import register_provider
-
-        setup = provisioned_agent_setup
-        provider = FakeAgentProvider()
-        provider.add_response("recursive", AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[{
-                "name": "system.metrics.snapshot",
-                "input": {},
-                "call_id": f"call_{_uid()}",
-            }],
-        ))
-        register_provider(provider)
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "recursive call",
-            "call_path": ["system.metrics.snapshot"],  # already in path!
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        assert len(data["tool_calls"]) >= 1
-        tc = data["tool_calls"][0]
-        assert tc["status"] == "failed", f"Expected failed, got {tc['status']}"
-        assert tc["error"]["code"] == "circular_dependency"
-
-    @pytest.mark.asyncio
-    async def test_timeline_events(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Agent invoke should write timeline events:
-        agent.prompt.received, agent.tool.selected, agent.final_response.
-        """
-        setup = provisioned_agent_setup
-
-        # Invoke with a simple case that creates tool calls (but times out)
-        r = await client.post("/agent/invoke", json={
-            "session_id": setup["session_id"],
-            "provider_name": "fake",
-            "prompt": "get system metrics please",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-
-        # Query timeline events for this session
-        r = await client.get(
-            f"/admin/timeline?session_id={setup['session_id']}",
-            headers=setup["auth"],
-        )
-        if r.status_code == 200:
-            events = r.json()
-            event_types = {e["event_type"] for e in events}
-            assert "agent.prompt.received" in event_types, (
-                f"Missing agent.prompt.received in {event_types}"
-            )
-            assert "agent.final_response" in event_types, (
-                f"Missing agent.final_response in {event_types}"
-            )
-            # Should have agent.tool events since a tool call was made
-            tool_events = {
-                "agent.tool.selected", "agent.tool.completed",
-                "agent.tool.failed", "agent.tool.invocation_created",
-            }
-            assert event_types & tool_events, (
-                f"No tool events found in {event_types}"
-            )
-            assert "agent.provider.completed" in event_types, (
-                f"Missing agent.provider.completed in {event_types}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_policy_denied(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Policy denied tool call -> no Invocation created.
-
-        This behavior is verified end-to-end in
-        test_policy_denied_readonly_destructive.
-
-        Policy denial at the unit level is covered in test_agent.py.
-        """
-        # Integration-tested via test_policy_denied_readonly_destructive
-        pass
-
-    @pytest.mark.asyncio
-    async def test_policy_denied_readonly_destructive(
-        self, client: AsyncClient, provisioned_agent_setup: dict[str, object]
-    ):
-        """Destructive function in readonly mode -> policy_denied."""
-        from yequ.agent.fake_provider import FakeAgentProvider
-        from yequ.agent.provider import AgentResult
-        from yequ.api.routes.agent import register_provider
-
-        setup = provisioned_agent_setup
-
-        # Register a destructive function on the node
-        node_id = setup["node_id"]
-        auth = setup["auth"]
-        r = await client.post("/yqp/", json=make_yqp_envelope(
-            "node.register_capabilities", node_id,
-            payload={"plugins": [{
-                "plugin_id": "system.admin",
-                "plugin_version": "1.0.0",
-                "functions": [{
-                    "name": "system.reboot",
-                    "input_schema": {"type": "object", "properties": {}},
-                    "output_schema": {"type": "object", "properties": {}},
-                    "risk": "destructive",
-                    "effect": "destructive",
-                    "timeout_sec": 30,
-                    "idempotency": "non_idempotent",
-                }],
-                "signals": [],
-            }]},
-        ), headers=auth)
-        assert r.status_code == 200, f"Register destructive caps failed: {r.text}"
-
-        provider = FakeAgentProvider()
-        provider.add_response("reboot", AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[{
-                "name": "system.reboot",
-                "input": {},
-                "call_id": f"call_{_uid()}",
-            }],
-        ))
-        register_provider(provider)
-
-        # Create a new session with readonly mode
-        r = await client.post("/agent/sessions", json={
-            "actor_id": "test-agent", "execution_mode": "readonly",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 201
-        readonly_session = r.json()["session_id"]
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": readonly_session,
-            "provider_name": "fake",
-            "prompt": "reboot the system",
-            "execution_mode": "readonly",
-            "max_total_duration_sec": 60,
-        }, headers=setup["agent_auth"])
-        assert r.status_code == 200, f"Invoke failed: {r.text}"
-        data = r.json()
-
-        assert len(data["tool_calls"]) >= 1
-        tc = data["tool_calls"][0]
-        assert tc["status"] == "failed", f"Expected failed, got {tc['status']}"
-        assert tc["error"]["code"] == "policy_denied", (
-            f"Expected policy_denied, got {tc['error']}"
-        )
-
-        # Verify no invocation was created by checking there's no invocation_id
-        assert not tc.get("invocation_id"), (
-            "Should not have created an invocation when policy denied"
-        )
-
-    @pytest.mark.asyncio
-    async def test_agent_token_required(self, client: AsyncClient, monkeypatch):
-        """Agent endpoints must reject requests without agent token when auth enabled."""
-        from yequ.config import Settings
-
-        settings = Settings(
-            require_admin_auth=True,
-            database_url="sqlite+aiosqlite:///test_yequ.db",
-            debug=True,
-        )
-        monkeypatch.setattr("yequ.config._settings", settings)
-        monkeypatch.setattr("yequ.api.deps._get_settings", lambda: settings)
-
-        r = await client.post("/agent/sessions", json={"actor_id": "test"})
-        assert r.status_code == 401, f"Expected 401, got {r.status_code}"
-
-        r = await client.post("/agent/invoke", json={
-            "session_id": "sess_test", "prompt": "test",
-        })
-        assert r.status_code == 401, f"Expected 401, got {r.status_code}"

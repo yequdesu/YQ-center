@@ -115,6 +115,7 @@ class JobSummary(BaseModel):
     error_message: str | None = None
     cancel_reason: str | None = None
     attempt: int
+    output: dict[str, object] | None = None
 
 class InvocationDetail(BaseModel):
     invocation_id: str
@@ -411,6 +412,7 @@ def _job_summary(j: Job) -> JobSummary:
         error_message=j.error_message,
         cancel_reason=j.cancel_reason,
         attempt=j.attempt,
+        output=j.output,
     )
 
 def _tl_summary(e: TimelineEvent) -> TimelineSummary:
