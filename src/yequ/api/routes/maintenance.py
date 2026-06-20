@@ -12,6 +12,7 @@ from yequ.models.maintenance_plan import (
     MaintenanceRun,
     MaintenanceStep,
 )
+from yequ.services.maintenance_executor import execute_plan_run, finalize_run
 from yequ.services.maintenance_service import (
     approve_plan,
     create_plan,
@@ -113,6 +114,8 @@ async def approve_plan_endpoint(
 @router.post("/plans/{plan_id}/run")
 async def run_plan_endpoint(
     plan_id: str,
+    approval_id: str = "",
+    dry_run: bool = False,
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
 ) -> dict:
@@ -124,12 +127,26 @@ async def run_plan_endpoint(
         raise HTTPException(404)
     if plan.status not in ("approved", "draft"):
         raise HTTPException(409, f"Cannot run plan in status {plan.status}")
+
     run = await run_plan(db, plan)
+    run = await execute_plan_run(db, plan, run, approval_id=approval_id, dry_run=dry_run)
+    run = await finalize_run(db, plan, run)
+
+    steps_result = await db.execute(
+        select(MaintenanceStep)
+        .where(MaintenanceStep.plan_id == plan_id)
+        .order_by(MaintenanceStep.seq)
+    )
+    steps = steps_result.scalars().all()
+
     return {
         "run_id": run.run_id,
         "plan_id": run.plan_id,
         "status": run.status,
+        "summary": run.summary,
         "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "steps": [_step_dict(s) for s in steps],
     }
 
 

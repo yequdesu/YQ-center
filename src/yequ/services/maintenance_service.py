@@ -1,9 +1,9 @@
 """Maintenance service — create, approve, run, cancel MaintenancePlans."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.maintenance_plan import (
@@ -11,6 +11,7 @@ from yequ.models.maintenance_plan import (
     MaintenanceRun,
     MaintenanceStep,
 )
+from yequ.models.timeline import TimelineEvent
 
 
 def _make_plan_id() -> str:
@@ -72,6 +73,28 @@ async def create_plan(
         db.add(step)
 
     await db.commit()
+
+    # Write plan.created timeline event
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    timeline_event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="maintenance.plan.created",
+        actor_type="system",
+        actor_id=actor_id,
+        node_id=target_node_id,
+        data={
+            "plan_id": plan.plan_id,
+            "goal": goal,
+            "risk": risk,
+            "execution_mode": execution_mode,
+            "step_count": len(steps),
+        },
+        timestamp=datetime.now(UTC),
+    )
+    db.add(timeline_event)
+    await db.flush()
+
     return plan
 
 
@@ -85,6 +108,25 @@ async def approve_plan(
     plan.approval_id = approval_id
     plan.approved_at = datetime.now(datetime.UTC)
     await db.commit()
+
+    # Write plan.approved timeline event
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    timeline_event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="maintenance.plan.approved",
+        actor_type="system",
+        actor_id=approval_id,
+        node_id=plan.target_node_id,
+        data={
+            "plan_id": plan.plan_id,
+            "goal": plan.goal,
+        },
+        timestamp=datetime.now(UTC),
+    )
+    db.add(timeline_event)
+    await db.flush()
+
     return plan
 
 
