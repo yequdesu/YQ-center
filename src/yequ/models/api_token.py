@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid
@@ -10,9 +10,12 @@ from yequ.models.base import Base, generate_uuid
 
 class ApiToken(Base):
     __tablename__ = "api_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", "scope", name="uq_api_tokens_hash_scope"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
-    token_hash: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     scope: Mapped[str] = mapped_column(String(16), nullable=False)  # "admin" or "agent"
     label: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
