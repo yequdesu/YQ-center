@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.agent import router as agent_router
 from yequ.api.routes.health import router as health_router
+from yequ.api.routes.maintenance import router as maintenance_router
 from yequ.api.routes.yqp import router as yqp_router
 from yequ.logconfig import get_logger, setup_logging
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Bootstrap: seed default admin token if none exist
         try:
             from sqlalchemy import select
+
             from yequ.db import async_session_factory
             from yequ.models.api_token import ApiToken
             from yequ.services.token_auth import hash_token
@@ -77,8 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             log.exception("admin token bootstrap failed")
 
-    from yequ.services.timeout_scanner import get_scanner
     from yequ.services.timeline_writer import get_timeline_writer
+    from yequ.services.timeout_scanner import get_scanner
 
     scanner = get_scanner()
     tl_writer = get_timeline_writer()
@@ -105,5 +107,6 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(agent_router)
     app.include_router(admin_router)
+    app.include_router(maintenance_router)
     app.include_router(yqp_router)
     return app

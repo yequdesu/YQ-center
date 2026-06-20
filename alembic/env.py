@@ -15,6 +15,7 @@ import yequ.models.node  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
 import yequ.models.job  # noqa: F401
+import yequ.models.maintenance_plan  # noqa: F401
 import yequ.models.timeline  # noqa: F401
 import yequ.models.session  # noqa: F401
 

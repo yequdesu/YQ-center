@@ -6,6 +6,13 @@ from yequ.models.base import Base, TimestampMixin, generate_uuid
 from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
+from yequ.models.maintenance_plan import (
+    MaintenanceArtifact,
+    MaintenancePlan,
+    MaintenanceRun,
+    MaintenanceStep,
+    RollbackHint,
+)
 from yequ.models.node import Node
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.session import Session
@@ -18,8 +25,13 @@ __all__ = [
     "Capability",
     "Invocation",
     "Job",
+    "MaintenanceArtifact",
+    "MaintenancePlan",
+    "MaintenanceRun",
+    "MaintenanceStep",
     "Node",
     "ResourceLock",
+    "RollbackHint",
     "Session",
     "TimelineEvent",
     "TimestampMixin",
