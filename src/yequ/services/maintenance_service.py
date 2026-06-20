@@ -125,6 +125,7 @@ async def approve_plan(
         data={
             "plan_id": plan.plan_id,
             "goal": plan.goal,
+            "approval_id": approval_id,
         },
         timestamp=datetime.now(UTC),
     )

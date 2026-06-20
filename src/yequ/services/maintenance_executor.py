@@ -56,6 +56,7 @@ async def execute_plan_run(
     # Write run started timeline event
     await _write_maintenance_timeline(
         db, "maintenance.run.started", run.run_id, plan.plan_id, plan.target_node_id,
+        approval_id=plan.approval_id,
     )
 
     for step in steps:
@@ -304,6 +305,7 @@ async def finalize_run(
     )
     await _write_maintenance_timeline(
         db, event_type, run.run_id, plan.plan_id, plan.target_node_id,
+        approval_id=plan.approval_id,
     )
 
     await db.commit()
@@ -365,10 +367,20 @@ async def _write_maintenance_timeline(
     job_id: str | None = None,
     invocation_id: str | None = None,
     error: str | None = None,
+    approval_id: str | None = None,
 ) -> None:
     """Write a maintenance timeline event."""
     result = await db.execute(select(func.max(TimelineEvent.global_seq)))
     max_seq = result.scalar() or 0
+
+    data: dict[str, object] = {
+        "run_id": run_id,
+        "plan_id": plan_id,
+    }
+    if step_id: data["step_id"] = step_id
+    if function_name: data["function_name"] = function_name
+    if error: data["error"] = error
+    if approval_id: data["approval_id"] = approval_id
 
     event = TimelineEvent(
         global_seq=max_seq + 1,
@@ -378,13 +390,7 @@ async def _write_maintenance_timeline(
         node_id=target_node_id,
         job_id=job_id,
         invocation_id=invocation_id,
-        data={
-            "run_id": run_id,
-            "plan_id": plan_id,
-            "step_id": step_id,
-            "function_name": function_name,
-            "error": error,
-        },
+        data=data,
         timestamp=datetime.now(UTC),
     )
     db.add(event)
