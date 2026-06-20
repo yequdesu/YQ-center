@@ -334,7 +334,7 @@ async def test_policy_denied_readonly(
     assert len(data["tool_calls"]) >= 1
     tc = data["tool_calls"][0]
     assert tc["status"] == "failed"
-    assert tc["error"]["code"] == "policy_denied"
+    assert tc["error"]["code"] == "function_not_available"
 
 
 # ── Fixtures ──

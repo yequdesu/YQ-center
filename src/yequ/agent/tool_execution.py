@@ -36,6 +36,9 @@ class AgentToolCall(BaseModel):
 class AgentInvokeOutput(BaseModel):
     """Agent output — message + structured data."""
     message: str = ""
+    summary: str = ""           # human-readable summary
+    highlights: list[str] = Field(default_factory=list)  # key findings
+    tool_results: dict[str, object] = Field(default_factory=dict)  # tool_name -> result
     data: dict[str, object] = Field(default_factory=dict)
 
 

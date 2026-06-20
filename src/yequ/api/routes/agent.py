@@ -28,21 +28,20 @@ def get_provider(name: str) -> AgentProvider | None:
 
 # -- Default available functions for testing --
 def _default_functions() -> list[AgentFunction]:
+    """L1 read-only functions available to the Agent."""
     return [
-        AgentFunction(
-            name="system.metrics.snapshot",
-            description="Get system metrics snapshot (CPU, memory, disk)",
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.diagnostic.run",
-            description="Run system diagnostic checks",
-            risk="maintenance",
-            effect="read",
-            timeout_sec=30,
-        ),
+        AgentFunction(name="system.metrics.snapshot",
+                      description="Get CPU/memory/disk usage percentages", risk="safe", effect="read", timeout_sec=5),
+        AgentFunction(name="system.info",
+                      description="Get OS, hostname, uptime, current user", risk="safe", effect="read", timeout_sec=5),
+        AgentFunction(name="system.service.status",
+                      description="Get a Windows service status by name (e.g. Spooler, EventLog)", risk="safe", effect="read", timeout_sec=5),
+        AgentFunction(name="system.processes.list",
+                      description="List running processes (limit 50)", risk="safe", effect="read", timeout_sec=5),
+        AgentFunction(name="system.disk.detail",
+                      description="Get disk capacity, used, free, filesystem per drive", risk="safe", effect="read", timeout_sec=5),
+        AgentFunction(name="system.eventlog.query",
+                      description="Query recent Windows Event Log entries (Application/System)", risk="safe", effect="read", timeout_sec=10),
     ]
 
 
@@ -111,8 +110,8 @@ async def invoke_agent_endpoint(
         if body.provider_name == "fake":
             provider = FakeAgentProvider()
             # Pre-configure fake provider with useful defaults
-            provider.add_function(_default_functions()[0])
-            provider.add_function(_default_functions()[1])
+            for func in _default_functions():
+                provider.add_function(func)
             register_provider(provider)
         elif body.provider_name == "deepseek":
             from yequ.agent.deepseek_provider import DeepSeekProvider

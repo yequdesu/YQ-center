@@ -77,16 +77,23 @@ class DeepSeekProvider(AgentProvider):
         _log.info("deepseek provider build tools: elapsed=%.3fs tool_count=%d",
                   _t1 - _t0, len(tools))
 
+        func_descriptions = "\n".join(
+            f"- {f.name}: {f.description}" for f in functions
+        )
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
                 "content": (
-                    "You are an infrastructure control agent. "
-                    "You have access to tools on a connected node. "
-                    "When asked, call the appropriate tools to gather information. "
-                    "If no tool is relevant, respond with a brief message. "
-                    "Never call destructive tools unless explicitly asked. "
-                    "Always read current state before making changes."
+                    "You are an infrastructure control agent for a Windows machine. "
+                    "You have these read-only tools:\n"
+                    f"{func_descriptions}\n\n"
+                    "Rules:\n"
+                    "1. Choose the right tool(s) for the user's request.\n"
+                    "2. For multi-step checks, call multiple tools in one response.\n"
+                    "3. Never invent tool names -- only use listed tools.\n"
+                    "4. Only read-only safe tools are available.\n"
+                    "5. If unsure which tool to use, call the most relevant one.\n"
+                    "6. Respond in the user's language."
                 ),
             },
             {"role": "user", "content": prompt},

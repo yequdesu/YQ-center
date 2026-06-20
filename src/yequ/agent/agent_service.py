@@ -183,6 +183,9 @@ async def agent_invoke(
         started.timestamp() + max_total_duration_sec, tz=UTC
     )
 
+    # L1 readonly policy: build a set of known function names from available_functions
+    known_functions = {f.name for f in available_functions}
+
     # -- Step 1: Write agent.prompt.received + COMMIT before provider call --
     await _write_timeline(
         db, "agent.prompt.received",
@@ -323,6 +326,25 @@ async def agent_invoke(
     execution_results: list[AgentToolCall] = []
     for raw_tc in provider_result.tool_calls:
         tc_name = str(raw_tc.get("name", ""))
+
+        # L1 readonly: reject unknown tool calls (not in available_functions at all)
+        if tc_name not in known_functions:
+            tc = AgentToolCall(
+                call_id=raw_tc.get("call_id", _make_call_id()),
+                name=tc_name,
+                sanitized_name=str(raw_tc.get("sanitized_name", tc_name)),
+                input=raw_tc.get("input", {}),
+                status="failed",
+                error={"code": "function_not_available",
+                       "message": f"Function {tc_name!r} is not available or not allowed"},
+                finished_at=_iso(datetime.now(UTC)),
+            )
+            execution_results.append(tc)
+            await _write_timeline(db, "agent.tool.denied", session_id=session_id,
+                                  actor=provider.provider_name(), call_id=tc.call_id,
+                                  function_name=tc_name,
+                                  error_code="function_not_available")
+            continue
 
         # Loop detection
         if tc_name in call_path:
@@ -629,39 +651,89 @@ async def _wait_invocation_terminal(
 
 
 def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> AgentInvokeOutput:
-    """Generate the final AgentInvokeOutput from provider message + tool results."""
-    if provider_message.strip():
+    """Generate structured AgentInvokeOutput from tool results.
+
+    Produces: summary text, highlights, tool_results map, and data dict.
+    Each tool type gets a specific summary format.
+    """
+    if provider_message.strip() and not tool_calls:
         return AgentInvokeOutput(message=provider_message, data={})
 
     succeeded = [tc for tc in tool_calls if tc.status == "succeeded"]
     failed = [tc for tc in tool_calls if tc.status != "succeeded"]
 
-    if failed:
-        first = failed[0]
-        return AgentInvokeOutput(
-            message=f"Failed to complete tool call: {first.name}",
-            data={},
-        )
+    highlights: list[str] = []
+    tool_results: dict[str, object] = {}
+    parts: list[str] = []
 
-    if succeeded:
-        # Check for system.metrics.snapshot
-        metrics_tc = next((tc for tc in succeeded if tc.name == "system.metrics.snapshot"), None)
-        if metrics_tc and metrics_tc.result:
-            r = metrics_tc.result
-            msg = (
-                f"Windows node {metrics_tc.target_node_id} "
+    for tc in succeeded:
+        if tc.result:
+            tool_results[tc.name] = tc.result
+
+        if tc.name == "system.metrics.snapshot" and tc.result:
+            r = tc.result
+            parts.append(
                 f"CPU {r.get('cpu', '?')}%, "
-                f"memory {r.get('memory', '?')}%, "
-                f"disk {r.get('disk', '?')}%."
+                f"Memory {r.get('memory', '?')}%, "
+                f"Disk {r.get('disk', '?')}%"
             )
-            return AgentInvokeOutput(message=msg, data=dict(r))
-        # Generic
-        return AgentInvokeOutput(
-            message=f"Completed {len(succeeded)} tool call(s).",
-            data={},
-        )
+            highlights.append(f"System metrics: CPU {r.get('cpu', '?')}%, Memory {r.get('memory', '?')}%")
 
-    return AgentInvokeOutput(message="No tool calls to execute.", data={})
+        elif tc.name == "system.service.status" and tc.result:
+            name = tc.result.get("name", tc.input.get("name", "?"))
+            status = tc.result.get("status", "?")
+            start_type = tc.result.get("start_type", "?")
+            parts.append(f"Service '{name}': {status} (startup: {start_type})")
+            highlights.append(f"Service {name}: {status}")
+
+        elif tc.name == "system.processes.list" and tc.result:
+            count = tc.result.get("count", 0)
+            top = tc.result.get("processes", [])[:5]
+            parts.append(f"{count} processes running")
+            if top:
+                names = [p.get("name", "?") for p in top]
+                parts.append(f"Top: {', '.join(names)}")
+                highlights.append(f"{count} processes, top: {', '.join(names[:3])}")
+
+        elif tc.name == "system.eventlog.query" and tc.result:
+            count = tc.result.get("total", 0)
+            highest = tc.result.get("highest_level", "?")
+            parts.append(f"{count} recent events (highest: {highest})")
+            highlights.append(f"EventLog: {count} events, highest level: {highest}")
+
+        elif tc.name == "system.disk.detail" and tc.result:
+            drives = tc.result if isinstance(tc.result, list) else [tc.result]
+            for d in drives:
+                total = d.get("total_gb", "?")
+                free = d.get("free_gb", "?")
+                pct = d.get("used_percent", "?")
+                parts.append(f"Drive {d.get('drive','?')}: {free}/{total}GB free ({pct}% used)")
+                highlights.append(f"Disk {d.get('drive','?')}: {free}GB free of {total}GB")
+
+        elif tc.name == "system.info" and tc.result:
+            hostname = tc.result.get("hostname", "?")
+            os_name = tc.result.get("os", "?")
+            uptime = tc.result.get("uptime_sec", 0)
+            parts.append(f"Host: {hostname}, OS: {os_name}, Uptime: {uptime}s")
+            highlights.append(f"System: {hostname} ({os_name})")
+
+        else:
+            parts.append(f"{tc.name}: completed")
+
+    for tc in failed:
+        err = tc.error.get("message", "unknown error") if tc.error else "unknown error"
+        highlights.append(f"FAILED: {tc.name} - {err}")
+
+    message = "; ".join(parts) if parts else provider_message or "No tool calls executed."
+    summary = "; ".join(parts) if parts else ""
+
+    return AgentInvokeOutput(
+        message=message,
+        summary=summary,
+        highlights=highlights,
+        tool_results=tool_results,
+        data={},
+    )
 
 
 async def _write_timeline(
