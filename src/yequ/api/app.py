@@ -118,6 +118,30 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # ── Debug: log raw request body for encoding diagnostics ──
+    @app.middleware("http")
+    async def log_raw_body(request, call_next):
+        from yequ.config import get_settings
+
+        settings = get_settings()
+        if settings.debug or settings.debug_timeline:
+            if request.method in ("POST", "PUT", "PATCH"):
+                body_bytes = await request.body()
+                body_str = body_bytes.decode("utf-8", errors="replace")
+                has_utf8 = any(ord(c) > 127 for c in body_str)
+                has_replacement = "�" in body_str
+                log.info(
+                    "raw body: method=%s path=%s size=%d has_utf8=%s has_replacement=%s preview=%s",
+                    request.method, request.url.path, len(body_bytes),
+                    has_utf8, has_replacement, repr(body_str[:200]),
+                )
+                # Re-attach body so route handlers can read it
+                from starlette.requests import Request as _Request
+                request._body = body_bytes
+        response = await call_next(request)
+        return response
+
     app.include_router(health_router)
     app.include_router(agent_router)
     app.include_router(admin_router)
