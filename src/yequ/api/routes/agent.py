@@ -248,7 +248,12 @@ async def agent_plan_endpoint(
 ) -> dict:
     provider = get_provider(body.provider_name)
     if provider is None:
-        if body.provider_name == "deepseek":
+        if body.provider_name == "fake":
+            provider = FakeAgentProvider()
+            for func in _default_functions():
+                provider.add_function(func)
+            register_provider(provider)
+        elif body.provider_name == "deepseek":
             from yequ.agent.deepseek_provider import DeepSeekProvider
             provider = DeepSeekProvider()
             register_provider(provider)
