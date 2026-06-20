@@ -30,7 +30,11 @@ def get_provider(name: str) -> AgentProvider | None:
 
 # -- Default available functions for testing --
 def _default_functions() -> list[AgentFunction]:
-    """L1 read-only functions available to the Agent."""
+    """L1 + L2 functions available to the Agent.
+
+    L2 write functions are included for planning/approval workflow.
+    They will require approval before execution.
+    """
     return [
         AgentFunction(
             name="system.metrics.snapshot",
@@ -83,6 +87,27 @@ def _default_functions() -> list[AgentFunction]:
                 },
             },
             risk="safe", effect="read", timeout_sec=10,
+        ),
+        # L2 maintenance write functions — require approval
+        AgentFunction(
+            name="system.service.ensure_running",
+            description="Ensure a Windows service is running. If stopped, start it. Requires 'name' parameter. REQUIRES APPROVAL for write operations.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Windows service name"}},
+                "required": ["name"],
+            },
+            risk="maintenance", effect="write", timeout_sec=30,
+        ),
+        AgentFunction(
+            name="system.service.restart",
+            description="Restart a Windows service. Requires 'name' parameter. REQUIRES APPROVAL.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Windows service name"}},
+                "required": ["name"],
+            },
+            risk="maintenance", effect="write", timeout_sec=30,
         ),
     ]
 

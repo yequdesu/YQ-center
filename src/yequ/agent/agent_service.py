@@ -506,6 +506,10 @@ async def agent_plan(
     """
     from yequ.services.maintenance_service import create_plan
 
+    # Debug: log prompt encoding
+    log.info("agent plan prompt: len=%d has_utf8=%s preview=%s",
+             len(prompt), any(ord(c) > 127 for c in prompt), repr(prompt[:100]))
+
     # Call provider to analyze the prompt — use concise tool-only output
     plan_prompt = (
         f"Task: {prompt}. "
