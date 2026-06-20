@@ -108,9 +108,9 @@ async def approve_plan_endpoint(
     if plan is None:
         raise HTTPException(404)
 
-    # Auto-create approval if none provided
+    # Auto-create and approve if none provided
     if not approval_id:
-        from yequ.services.approval_service import create_approval
+        from yequ.services.approval_service import approve_approval, create_approval
         steps_data = await get_steps(db, plan_id)
         repair_steps = [s for s in steps_data if s.requires_approval]
         approval = await create_approval(
@@ -124,6 +124,7 @@ async def approve_plan_endpoint(
             effect="write",
             resource_keys=plan.resource_keys or [],
         )
+        approval = await approve_approval(db, approval, approved_by="admin")
         approval_id = approval.approval_id
 
     await approve_plan(db, plan, approval_id)
