@@ -205,7 +205,7 @@ async def execute_plan_run(
                 step.result = inv_final.result if inv_final else {}
                 completed_steps.add(step.step_id)
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.completed", run.run_id, plan.plan_id,
+                    db, "maintenance.step.succeeded", run.run_id, plan.plan_id,
                     plan.target_node_id,
                     step_id=step.step_id, function_name=step.function_name,
                     job_id=step.job_id, invocation_id=step.invocation_id,
