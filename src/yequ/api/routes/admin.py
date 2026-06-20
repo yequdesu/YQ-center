@@ -57,15 +57,18 @@ class CreateInvocationRequest(BaseModel):
     max_depth: int | None = Field(default=None)
     max_steps: int | None = Field(default=None)
     max_total_duration_sec: int | None = Field(default=None)
+    approval_id: str | None = Field(default=None)
+    dry_run: bool = Field(default=False)
 
 
 class CreateInvocationResponse(BaseModel):
     invocation_id: str
-    job_id: str
+    job_id: str = ""
     function_name: str
     target_node_id: str
     invocation_status: str
-    job_status: str
+    job_status: str = ""
+    approval_id: str = ""  # set when approval required
 
 
 # ── Read models for GET endpoints ──
@@ -689,6 +692,64 @@ async def create_invocation_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Node {body.target_node_id!r} not found",
         )
+
+    # If approval_id was provided, verify and consume it (bypassing L2 policy)
+    if body.approval_id:
+        from yequ.services.approval_service import verify_approval, consume_approval  # noqa: I001
+        try:
+            approval = await verify_approval(
+                db, body.approval_id, actor_id=body.actor_id,
+                session_id=body.session_id, function_name=body.function_name,
+                target_node_id=body.target_node_id, input_data=body.input_payload,
+            )
+            await consume_approval(db, approval)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+    else:
+        # L2 policy check for write operations
+        from yequ.services.policy import check_policy_l2
+        policy_result = check_policy_l2(
+            execution_mode=body.execution_mode,
+            risk_level="maintenance",
+            effect="write",
+        )
+
+        if not policy_result.allowed:
+            # Approval required — create approval and return waiting_approval
+            if policy_result.decision == "ask":
+                # Create invocation first
+                inv = await create_invocation(
+                    db,
+                    actor_type=body.actor_type,
+                    actor_id=body.actor_id,
+                    session_id=body.session_id,
+                    function_name=body.function_name,
+                    input_payload=body.input_payload,
+                    target_node_id=body.target_node_id,
+                    execution_mode=body.execution_mode,
+                    max_depth=body.max_depth,
+                    max_steps=body.max_steps,
+                    max_total_duration_sec=body.max_total_duration_sec,
+                )
+                inv.status = "waiting_approval"
+                await db.flush()
+
+                from yequ.services.approval_service import create_approval as create_appr
+                approval = await create_appr(
+                    db, actor_id=body.actor_id, session_id=body.session_id,
+                    function_name=body.function_name, target_node_id=body.target_node_id,
+                    input_data=body.input_payload, risk="maintenance", effect="write",
+                    invocation_id=inv.invocation_id,
+                )
+                await db.commit()
+                return CreateInvocationResponse(
+                    invocation_id=inv.invocation_id, job_id="",
+                    function_name=body.function_name, target_node_id=body.target_node_id,
+                    invocation_status="waiting_approval", job_status="pending",
+                    approval_id=approval.approval_id,
+                )
+            else:
+                raise HTTPException(status_code=403, detail=policy_result.reason or "Policy denied")
 
     # Create Invocation
     inv = await create_invocation(

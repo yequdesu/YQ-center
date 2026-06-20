@@ -32,11 +32,19 @@ async def create_job(
     input_payload: dict[str, object] | None = None,
     timeout_sec: int = 30,
     lease_sec: int = 30,
+    resource_keys: list[str] | None = None,
+    dry_run: bool = False,
+    approval_id: str | None = None,
 ) -> Job:
     """Create a new Job and transition it to QUEUED.
 
     Creates the Job in CREATED status, then immediately transitions
     to QUEUED via the state machine (which writes audit events).
+
+    Parameters:
+        resource_keys: Locks to acquire on this resource before queuing.
+        dry_run: If True, job is created but not queued for execution.
+        approval_id: Optional approval reference for this job.
 
     Returns the Job object (already flushed but not committed --
     caller must commit).
@@ -50,9 +58,18 @@ async def create_job(
         status=JobStatus.CREATED,
         timeout_sec=timeout_sec,
         lease_sec=lease_sec,
+        resource_keys=resource_keys or [],
+        dry_run=dry_run,
+        approval_id=approval_id,
     )
     db.add(job)
     await db.flush()
+
+    # Acquire resource locks if needed
+    if resource_keys:
+        from yequ.services.resource_lock_service import acquire_lock
+        for rk in resource_keys:
+            await acquire_lock(db, rk, job.job_id, invocation_id, node_id)
 
     # Transition created -> queued
     await transition(

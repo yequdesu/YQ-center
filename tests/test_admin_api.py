@@ -6,6 +6,32 @@ from httpx import AsyncClient
 from tests.conftest import make_yqp_envelope
 
 
+async def _create_approval(client: AsyncClient, node_id: str) -> str:
+    """Helper: create an approved approval and return its id."""
+    # Create approval
+    r = await client.post("/admin/approvals", json={
+        "function_name": "test.func",
+        "target_node_id": node_id,
+        "input_data": {},
+        "risk": "maintenance",
+        "effect": "write",
+    })
+    approval_id = r.json()["approval_id"]
+    # Approve it
+    await client.post(f"/admin/approvals/{approval_id}/approve")
+    return approval_id
+
+
+async def _invoke(client: AsyncClient, node_id: str, **extra) -> dict:
+    """Helper: create an invocation with approval."""
+    approval_id = await _create_approval(client, node_id)
+    body = {"function_name": "test.func", "target_node_id": node_id,
+            "approval_id": approval_id, **extra}
+    r = await client.post("/admin/invocations", json=body)
+    assert r.status_code == 201
+    return r.json()
+
+
 @pytest.mark.asyncio
 async def test_list_nodes(client: AsyncClient):
     """GET /admin/nodes should return list of nodes."""
@@ -81,12 +107,7 @@ async def test_list_jobs(client: AsyncClient):
     })
 
     # Create an invocation (which creates a job)
-    r = await client.post("/admin/invocations", json={
-        "function_name": "test.func",
-        "target_node_id": node_id,
-        "timeout_sec": 30,
-    })
-    assert r.status_code == 201
+    await _invoke(client, node_id)
 
     # List all jobs
     r = await client.get("/admin/jobs")
@@ -112,10 +133,8 @@ async def test_get_job_detail(client: AsyncClient):
     await client.post("/admin/nodes", json={
         "node_id": node_id, "node_name": "JD", "token": token,
     })
-    r = await client.post("/admin/invocations", json={
-        "function_name": "test.func", "target_node_id": node_id,
-    })
-    job_id = r.json()["job_id"]
+    data = await _invoke(client, node_id)
+    job_id = data["job_id"]
 
     r = await client.get(f"/admin/jobs/{job_id}")
     assert r.status_code == 200
@@ -138,10 +157,8 @@ async def test_get_invocation_detail(client: AsyncClient):
     await client.post("/admin/nodes", json={
         "node_id": node_id, "node_name": "Inv", "token": token,
     })
-    r = await client.post("/admin/invocations", json={
-        "function_name": "test.func", "target_node_id": node_id,
-    })
-    inv_id = r.json()["invocation_id"]
+    data = await _invoke(client, node_id)
+    inv_id = data["invocation_id"]
 
     r = await client.get(f"/admin/invocations/{inv_id}")
     assert r.status_code == 200

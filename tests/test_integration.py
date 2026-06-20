@@ -100,12 +100,28 @@ def _ts() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def _ensure_approval(center, node_id) -> str:
+    """Create and approve an approval for the test function, return its id."""
+    r = await center.post("/admin/approvals", json={
+        "function_name": "system.metrics.snapshot",
+        "target_node_id": node_id,
+        "input_data": {},
+        "risk": "maintenance",
+        "effect": "write",
+    })
+    approval_id = r.json()["approval_id"]
+    await center.post(f"/admin/approvals/{approval_id}/approve")
+    return approval_id
+
+
 # ── Scenario 1: Success ────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_full_success_flow(center, fake_node):
     """Fake Node: hello -> register -> invocation -> poll -> accept -> succeed."""
     node_id, token, auth = fake_node
+
+    approval_id = await _ensure_approval(center, node_id)
 
     # Create Invocation (spawns a queued Job)
     r = await center.post("/admin/invocations", json={
@@ -114,6 +130,7 @@ async def test_full_success_flow(center, fake_node):
         "input_payload": {},
         "timeout_sec": 30,
         "lease_sec": 10,
+        "approval_id": approval_id,
     })
     assert r.status_code == 201
     inv_data = r.json()
@@ -201,10 +218,13 @@ async def test_job_failure_flow(center, fake_node):
     """Fake Node reports job failure -> Job terminal failed, Invocation failed."""
     node_id, token, auth = fake_node
 
+    approval_id = await _ensure_approval(center, node_id)
+
     r = await center.post("/admin/invocations", json={
         "function_name": "system.metrics.snapshot",
         "target_node_id": node_id,
         "timeout_sec": 30,
+        "approval_id": approval_id,
     })
     assert r.status_code == 201
     job_id = r.json()["job_id"]
@@ -257,11 +277,14 @@ async def test_job_timeout_flow(center, fake_node):
     """Job with short lease -> poll -> expire -> scanner marks timeout."""
     node_id, token, auth = fake_node
 
+    approval_id = await _ensure_approval(center, node_id)
+
     r = await center.post("/admin/invocations", json={
         "function_name": "system.metrics.snapshot",
         "target_node_id": node_id,
         "timeout_sec": 30,
         "lease_sec": 1,  # 1-second lease
+        "approval_id": approval_id,
     })
     assert r.status_code == 201
     job_id = r.json()["job_id"]
@@ -298,10 +321,13 @@ async def test_job_cancel_flow(center, fake_node):
     """Create job -> poll -> accept -> cancel -> finish cancelled."""
     node_id, token, auth = fake_node
 
+    approval_id = await _ensure_approval(center, node_id)
+
     r = await center.post("/admin/invocations", json={
         "function_name": "system.metrics.snapshot",
         "target_node_id": node_id,
         "timeout_sec": 30,
+        "approval_id": approval_id,
     })
     assert r.status_code == 201
     job_id = r.json()["job_id"]

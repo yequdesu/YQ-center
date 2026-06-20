@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,9 @@ class Job(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")
     timeout_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     lease_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    approval_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resource_keys: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

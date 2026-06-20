@@ -21,6 +21,13 @@ def _hash_input(input_data: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+def _ensure_aware(dt: datetime | None) -> datetime | None:
+    """Ensure a datetime is timezone-aware (UTC)."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
 async def create_approval(
     db: AsyncSession,
     *,
@@ -67,7 +74,8 @@ async def approve_approval(
     """Approve a pending approval."""
     if approval.status != ApprovalStatus.PENDING:
         raise ValueError(f"Cannot approve approval in status {approval.status}")
-    if approval.expires_at < datetime.now(UTC):
+    expires = _ensure_aware(approval.expires_at)
+    if expires < datetime.now(UTC):
         approval.status = ApprovalStatus.EXPIRED
         await db.commit()
         raise ValueError("Approval has expired")
@@ -133,7 +141,8 @@ async def verify_approval(
         raise ValueError(f"Approval {approval_id!r} not found")
     if approval.status != ApprovalStatus.APPROVED:
         raise ValueError(f"Approval {approval_id!r} is not approved (status: {approval.status})")
-    if approval.expires_at < datetime.now(UTC):
+    expires = _ensure_aware(approval.expires_at)
+    if expires < datetime.now(UTC):
         raise ValueError(f"Approval {approval_id!r} has expired")
     if approval.actor_id != actor_id:
         raise ValueError(f"Actor mismatch: {actor_id} != {approval.actor_id}")

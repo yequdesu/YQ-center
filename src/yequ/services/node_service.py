@@ -316,6 +316,9 @@ async def handle_job_poll(
             "input": job.input_payload or {},
             "timeout_sec": job.timeout_sec,
             "lease_sec": job.lease_sec,
+            "approval_id": getattr(job, "approval_id", None),
+            "resource_keys": getattr(job, "resource_keys", []),
+            "dry_run": getattr(job, "dry_run", False),
         })
 
     await db.commit()
@@ -461,6 +464,10 @@ async def handle_job_finished(
     )
     db.add(event)
     await db.commit()
+
+    # Release resource locks on job completion
+    from yequ.services.resource_lock_service import release_lock
+    await release_lock(db, job_id)
 
     # Aggregate Invocation status — update Invocation when all Jobs terminal
     from yequ.models.invocation import Invocation
