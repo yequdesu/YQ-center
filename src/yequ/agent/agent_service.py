@@ -533,10 +533,27 @@ async def _execute_tool_call(
         function_name=tc.name, input_payload=tc.input,
         timeout_sec=resolved.timeout_sec,
     )
-    await db.flush()
+    await db.commit()  # MUST commit before waiting — otherwise poll sessions see nothing
 
     tc.invocation_id = inv.invocation_id
     tc.job_ids = [job.job_id]
+
+    # Verify persistence with a fresh session
+    from yequ.db import async_session_factory as _asf
+    async with _asf() as _vdb:
+        from yequ.models.job import Job as _Job
+        _jr = await _vdb.execute(select(_Job).where(_Job.job_id == job.job_id))
+        _persisted = _jr.scalar_one_or_none() is not None
+    await _write_timeline(db, "agent.tool.job.persisted", session_id=session_id,
+                          actor=provider_name, call_id=tc.call_id,
+                          function_name=tc.name, invocation_id=inv.invocation_id,
+                          job_id=job.job_id, target_node_id=resolved.node_id,
+                          success=_persisted)
+    if not _persisted:
+        tc.status = "failed"
+        tc.error = {"code": "tool_failed", "message": "Job was not persisted"}
+        tc.finished_at = _iso(datetime.now(UTC))
+        return tc
 
     await _write_timeline(db, "agent.tool.invocation_created", session_id=session_id,
                           actor=provider_name, call_id=tc.call_id,
