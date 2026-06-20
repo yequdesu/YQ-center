@@ -3,10 +3,11 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.resource_lock import ResourceLock
+from yequ.models.timeline import TimelineEvent
 from yequ.protocol import LockStatus
 
 
@@ -53,6 +54,19 @@ async def acquire_lock(
     )
     db.add(lock)
     await db.flush()
+
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="resource.lock.acquired",
+        actor_type="system", actor_id="resource_lock",
+        node_id=node_id, job_id=job_id, invocation_id=invocation_id,
+        data={"resource_key": resource_key, "lock_id": lock.lock_id},
+        timestamp=datetime.now(UTC),
+    )
+    db.add(event)
+    await db.flush()
     return lock
 
 
@@ -72,6 +86,17 @@ async def release_lock(
     for lock in locks:
         lock.status = LockStatus.RELEASED
         lock.released_at = now
+        result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+        max_seq = result.scalar() or 0
+        event = TimelineEvent(
+            global_seq=max_seq + 1,
+            event_type="resource.lock.released",
+            actor_type="system", actor_id="resource_lock",
+            node_id=lock.node_id, job_id=lock.job_id, invocation_id=lock.invocation_id,
+            data={"resource_key": lock.resource_key, "lock_id": lock.lock_id},
+            timestamp=datetime.now(UTC),
+        )
+        db.add(event)
     return locks
 
 

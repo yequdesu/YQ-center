@@ -5,10 +5,11 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.approval import ApprovalRequest
+from yequ.models.timeline import TimelineEvent
 from yequ.protocol import ApprovalStatus
 
 
@@ -84,6 +85,22 @@ async def approve_approval(
     approval.decision_reason = reason
     approval.updated_at = datetime.now(UTC)
     await db.commit()
+
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="approval.approved",
+        actor_type="admin", actor_id=approved_by,
+        session_id=approval.session_id,
+        invocation_id=approval.invocation_id,
+        node_id=approval.target_node_id,
+        data={"approval_id": approval.approval_id, "function_name": approval.function_name,
+              "reason": reason},
+        timestamp=datetime.now(UTC),
+    )
+    db.add(event)
+    await db.commit()
     return approval
 
 
@@ -100,6 +117,22 @@ async def deny_approval(
     approval.denied_by = denied_by
     approval.decision_reason = reason
     approval.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    event = TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="approval.denied",
+        actor_type="admin", actor_id=denied_by,
+        session_id=approval.session_id,
+        invocation_id=approval.invocation_id,
+        node_id=approval.target_node_id,
+        data={"approval_id": approval.approval_id, "function_name": approval.function_name,
+              "reason": reason},
+        timestamp=datetime.now(UTC),
+    )
+    db.add(event)
     await db.commit()
     return approval
 

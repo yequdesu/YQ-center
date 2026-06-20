@@ -21,6 +21,7 @@ class ResolvedCapability:
     timeout_sec: int
     input_schema: dict | None = None
     output_schema: dict | None = None
+    resource_keys: list[str] | None = None
 
 
 async def resolve_target_node(
@@ -74,6 +75,7 @@ async def resolve_target_node(
                 timeout_sec=cap.timeout_sec or 30,
                 input_schema=cap.input_schema,
                 output_schema=cap.output_schema,
+                resource_keys=cap.resource_keys,
             )
 
     return None

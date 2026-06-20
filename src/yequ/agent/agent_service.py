@@ -25,6 +25,7 @@ from yequ.agent.tool_execution import (
     AgentToolPolicySnapshot,
 )
 from yequ.protocol import ErrorCode, RiskLevel
+from yequ.services.approval_service import consume_approval, create_approval, verify_approval
 
 log = logging.getLogger(__name__)
 
@@ -246,7 +247,7 @@ async def agent_invoke(
                                   session_id=session_id, actor=provider.provider_name(),
                                   tool_call_count=len(raw_tool_calls_parsed))
             await db.commit()
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.error("agent provider timed out: provider=%s session_id=%s",
                   provider.provider_name(), session_id)
         await _write_timeline(db, "agent.provider.failed", session_id=session_id,
@@ -421,9 +422,12 @@ async def agent_invoke(
     # -- Step 4: Aggregate status --
     all_succeeded = all(tc.status == "succeeded" for tc in execution_results)
     any_failed = any(tc.status in ("failed", "denied") for tc in execution_results)
+    all_waiting = all(tc.status == "waiting_approval" for tc in execution_results)
 
     if not execution_results or all_succeeded:
         final_status = "succeeded"
+    elif all_waiting:
+        final_status = "waiting_approval"
     elif any_failed:
         final_status = "failed"
     else:
@@ -539,6 +543,55 @@ async def _execute_tool_call(
                               function_name=tc.name, error_code=ErrorCode.POLICY_DENIED,
                               reason=policy_r.reason)
         return tc
+
+    # -- L2 write operations without approval: create approval, return waiting_approval --
+    if resolved.effect in ("write", "destructive") and not tc.input.get("approval_id"):
+        approval = await create_approval(
+            db, actor_id=actor_id, session_id=session_id,
+            function_name=tc.name, target_node_id=resolved.node_id,
+            input_data=tc.input, risk=resolved.risk, effect=resolved.effect,
+            resource_keys=resolved.resource_keys if hasattr(resolved, 'resource_keys') else None,
+        )
+        await db.commit()
+        tc.status = "waiting_approval"
+        tc.target_node_id = resolved.node_id
+        tc.policy = AgentToolPolicySnapshot(
+            decision="ask", risk=resolved.risk, effect=resolved.effect,
+            execution_mode=execution_mode,
+        )
+        tc.error = {"code": "approval_required", "message": "Write operation requires approval",
+                    "details": {"approval_id": approval.approval_id}}
+        tc.finished_at = _iso(datetime.now(UTC))
+        await _write_timeline(db, "approval.requested", session_id=session_id,
+                              actor=provider_name, call_id=tc.call_id,
+                              function_name=tc.name, target_node_id=resolved.node_id,
+                              invocation_id=approval.approval_id)
+        return tc
+
+    # -- If approval_id is provided in input, verify it --
+    if resolved.effect in ("write", "destructive") and tc.input.get("approval_id"):
+        try:
+            approval = await verify_approval(
+                db, tc.input["approval_id"],
+                actor_id=actor_id, session_id=session_id,
+                function_name=tc.name, target_node_id=resolved.node_id,
+                input_data=tc.input,
+            )
+            await consume_approval(db, approval)
+            await db.commit()
+            await _write_timeline(db, "approval.consumed", session_id=session_id,
+                                  actor=provider_name, call_id=tc.call_id,
+                                  function_name=tc.name,
+                                  invocation_id=approval.approval_id)
+        except ValueError as e:
+            tc.status = "failed"
+            tc.error = {"code": "policy_denied", "message": str(e)}
+            tc.finished_at = _iso(datetime.now(UTC))
+            await _write_timeline(db, "policy.denied", session_id=session_id,
+                                  actor=provider_name, call_id=tc.call_id,
+                                  function_name=tc.name, error=str(e)[:500],
+                                  error_code="policy_denied")
+            return tc
 
     # -- Create Invocation + Job --
     await _write_timeline(db, "agent.tool.selected", session_id=session_id,
