@@ -70,6 +70,11 @@ class CreateInvocationResponse(BaseModel):
     invocation_status: str
     job_status: str = ""
     approval_id: str = ""  # set when approval required
+    dry_run: bool = False
+    allowed: bool = True
+    decision: str = ""
+    reason: str = ""
+    resource_keys: list[str] = Field(default_factory=list)
 
 
 # ── Read models for GET endpoints ──
@@ -805,13 +810,23 @@ async def create_invocation_endpoint(
             timestamp=datetime.now(timezone.utc),
         )
         db.add(event)
+        # Compute resource keys for the potential operation
+        from yequ.services.resource_lock_service import compute_resource_keys
+        res_keys = compute_resource_keys(
+            function_name=body.function_name,
+            node_id=body.target_node_id,
+            input_data=body.input_payload,
+            resource_key_template=resource_key_template,
+        )
         await db.commit()
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=200, content={
-            "invocation_id": "", "job_id": "",
-            "function_name": body.function_name, "target_node_id": body.target_node_id,
-            "invocation_status": "dry_run_completed", "job_status": "",
-        })
+        return CreateInvocationResponse(
+            invocation_id="", job_id="",
+            function_name=body.function_name, target_node_id=body.target_node_id,
+            invocation_status="dry_run_completed", job_status="",
+            dry_run=True, allowed=False, decision="ask",
+            reason="approval_required",
+            resource_keys=res_keys if res_keys else [],
+        )
     else:
         # L2 policy check for write operations
         from yequ.services.policy import check_policy_l2
@@ -912,6 +927,21 @@ async def create_invocation_endpoint(
             approval_id=body.approval_id,
         )
     except ValueError as e:
+        # Write resource.lock.conflict event before the transaction rolls back
+        from sqlalchemy import func as sql_func
+        seq_r = await db.execute(select(sql_func.max(TimelineEvent.global_seq)))
+        seq_max = seq_r.scalar() or 0
+        conflict_event = TimelineEvent(
+            global_seq=seq_max + 1,
+            event_type="resource.lock.conflict",
+            actor_type="system", actor_id=body.actor_id,
+            node_id=body.target_node_id,
+            invocation_id=inv.invocation_id,
+            data={"error": str(e)},
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(conflict_event)
+        await db.commit()
         raise HTTPException(status_code=409, detail=str(e)) from e
 
     await db.commit()

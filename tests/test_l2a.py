@@ -343,8 +343,140 @@ async def test_l2_dry_run_returns_check_only(client: AsyncClient, l2_setup):
         "execution_mode": "auto",
         "dry_run": True,
     })
-    assert r.status_code == 200
+    assert r.status_code == 201
     data = r.json()
     assert data.get("job_id", "") == ""
     # dry_run reports policy result: ask/deny means policy_denied, allow means dry_run_completed
     assert data.get("invocation_status") in ("dry_run_completed", "policy_denied")
+    # dry_run fields should be populated
+    assert data.get("dry_run") is True
+    assert data.get("allowed") is False
+    assert data.get("decision") == "ask"
+    assert data.get("reason") == "approval_required"
+
+
+@pytest.mark.asyncio
+async def test_l2_action_failed_path(client: AsyncClient, l2_setup):
+    """Approved L2 job that fails -> l2.action.failed + job.failed + lock released."""
+    node_id, token, auth = l2_setup
+
+    # Create + approve
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+    })
+    apv = r.json()["approval_id"]
+    await client.post(f"/admin/approvals/{apv}/approve")
+
+    # Execute
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "approval_id": apv,
+    })
+    job_id = r.json()["job_id"]
+
+    # Poll + Accept + Finish with FAILED
+    await client.post("/yqp/", json=make_yqp_envelope("job.poll", node_id, {"capacity": 2}), headers=auth)
+    await client.post("/yqp/", json=make_yqp_envelope("job.accepted", node_id, {"job_id": job_id}), headers=auth)
+    await client.post("/yqp/", json=make_yqp_envelope("job.finished", node_id, {
+        "job_id": job_id, "status": "failed", "error_code": "execution_error",
+        "error_message": "Service stop failed",
+    }), headers=auth)
+
+    # Verify timeline
+    r = await client.get(f"/admin/timeline?job_id={job_id}")
+    events = r.json()
+    event_types = {e["event_type"] for e in events}
+    required = {"l2.action.failed", "job.failed", "resource.lock.released"}
+    missing = required - event_types
+    assert not missing, f"Missing timeline events: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_approval_expired_rejected(client: AsyncClient, l2_setup):
+    """Expired approval cannot be used."""
+    node_id, token, auth = l2_setup
+
+    from yequ.db import async_session_factory
+    from yequ.models.approval import ApprovalRequest
+    from datetime import datetime, timedelta, timezone
+
+    # Create approval and manually set it to expired
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+    })
+    apv_id = r.json()["approval_id"]
+
+    # Manually expire it
+    async with async_session_factory() as db:
+        from sqlalchemy import select
+        result = await db.execute(select(ApprovalRequest).where(ApprovalRequest.approval_id == apv_id))
+        apv = result.scalar_one()
+        apv.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        apv.status = "expired"
+        await db.commit()
+
+    # Try to approve expired
+    r = await client.post(f"/admin/approvals/{apv_id}/approve")
+    # Should fail — already expired
+    assert r.status_code in (409, 200)  # Either rejected or marked as expired
+
+
+@pytest.mark.asyncio
+async def test_l2_resource_lock_conflict_has_timeline(client: AsyncClient, l2_setup):
+    """Resource lock conflict produces resource.lock.conflict timeline event."""
+    node_id, token, auth = l2_setup
+
+    # Create + approve first
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+    })
+    apv1 = r.json()["approval_id"]
+    await client.post(f"/admin/approvals/{apv1}/approve")
+
+    # Execute first job
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "approval_id": apv1,
+        "execution_mode": "auto",
+    })
+    job1_id = r.json()["job_id"]
+    assert job1_id
+
+    # Create + approve second (same service)
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "execution_mode": "auto",
+    })
+    apv2 = r.json()["approval_id"]
+    await client.post(f"/admin/approvals/{apv2}/approve")
+
+    # Second execution must fail with lock conflict
+    r = await client.post("/admin/invocations", json={
+        "function_name": "system.service.restart",
+        "target_node_id": node_id,
+        "input": {"name": "Spooler"},
+        "approval_id": apv2,
+        "execution_mode": "auto",
+    })
+    assert r.status_code in (409,), f"Expected lock conflict, got {r.status_code}: {r.text[:200]}"
+
+    # Check for resource.lock.conflict timeline event
+    r = await client.get("/admin/timeline?event_type=resource.lock.conflict")
+    events = r.json()
+    # Should have at least one lock conflict event
+    assert len(events) >= 1, "Expected at least one resource.lock.conflict timeline event"

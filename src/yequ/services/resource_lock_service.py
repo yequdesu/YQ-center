@@ -37,6 +37,23 @@ async def acquire_lock(
     )
     existing = result.scalar_one_or_none()
     if existing is not None:
+        # Write lock conflict timeline event before raising
+        c_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+        c_max = c_result.scalar() or 0
+        conflict_event = TimelineEvent(
+            global_seq=c_max + 1,
+            event_type="resource.lock.conflict",
+            actor_type="system", actor_id="resource_lock",
+            node_id=node_id, job_id=job_id, invocation_id=invocation_id,
+            data={
+                "resource_key": resource_key,
+                "existing_job_id": existing.job_id,
+                "existing_lock_id": existing.lock_id,
+            },
+            timestamp=datetime.now(UTC),
+        )
+        db.add(conflict_event)
+        await db.flush()
         raise ValueError(
             f"Resource {resource_key!r} is locked by job {existing.job_id!r}"
         )
