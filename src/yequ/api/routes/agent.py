@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.agent.agent_service import agent_invoke, create_agent_session
+from yequ.agent.agent_service import agent_invoke, agent_plan, create_agent_session
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
@@ -109,6 +109,15 @@ class InvokeAgentRequest(BaseModel):
     max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
 
 
+class AgentPlanRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    provider_name: str = Field(default="deepseek")
+    prompt: str = Field(..., min_length=1)
+    target_node_id: str = Field(default="winClient")
+    execution_mode: str = Field(default="auto")
+    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+
+
 # -- Endpoints --
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -204,3 +213,29 @@ async def invoke_agent_endpoint(
     )
 
     return resp
+
+
+@router.post("/plan")
+async def agent_plan_endpoint(
+    body: AgentPlanRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict:
+    provider = get_provider(body.provider_name)
+    if provider is None:
+        if body.provider_name == "deepseek":
+            from yequ.agent.deepseek_provider import DeepSeekProvider
+            provider = DeepSeekProvider()
+            register_provider(provider)
+        else:
+            raise HTTPException(404, f"Provider {body.provider_name!r} not found")
+
+    return await agent_plan(
+        db, provider,
+        session_id=body.session_id,
+        prompt=body.prompt,
+        target_node_id=body.target_node_id,
+        available_functions=_default_functions(),
+        execution_mode=body.execution_mode,
+        max_total_duration_sec=body.max_total_duration_sec,
+    )

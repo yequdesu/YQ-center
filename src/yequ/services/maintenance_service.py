@@ -40,7 +40,7 @@ async def create_plan(
     execution_mode: str = "auto",
 ) -> MaintenancePlan:
     """Create a MaintenancePlan with steps."""
-    now = datetime.now(datetime.UTC)
+    now = datetime.now(UTC)
     plan = MaintenancePlan(
         plan_id=_make_plan_id(),
         goal=goal,
@@ -106,7 +106,7 @@ async def approve_plan(
     """Approve a plan (links an existing approval)."""
     plan.status = "approved"
     plan.approval_id = approval_id
-    plan.approved_at = datetime.now(datetime.UTC)
+    plan.approved_at = datetime.now(UTC)
     await db.commit()
 
     # Write plan.approved timeline event
@@ -135,7 +135,7 @@ async def run_plan(
     plan: MaintenancePlan,
 ) -> MaintenanceRun:
     """Start a MaintenanceRun for an approved plan."""
-    now = datetime.now(datetime.UTC)
+    now = datetime.now(UTC)
     run = MaintenanceRun(
         run_id=_make_run_id(),
         plan_id=plan.plan_id,

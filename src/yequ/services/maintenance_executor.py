@@ -89,7 +89,7 @@ async def execute_plan_run(
                 target_node_id=plan.target_node_id,
                 execution_mode="auto",
             )
-            inv = start_invocation(inv)
+            start_invocation(inv)
 
             job = await create_job(
                 db,

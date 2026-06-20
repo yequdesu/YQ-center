@@ -487,6 +487,100 @@ async def agent_invoke(
     )
 
 
+async def agent_plan(
+    db: AsyncSession,
+    provider: AgentProvider,
+    *,
+    session_id: str,
+    prompt: str,
+    target_node_id: str,
+    available_functions: list[AgentFunction],
+    execution_mode: str = "auto",
+    max_total_duration_sec: int = 300,
+) -> dict:
+    """Generate a MaintenancePlan from a maintenance prompt.
+
+    The Agent analyzes the prompt and produces a structured plan
+    with ordered steps. Returns the plan dict for the caller to
+    create via the MaintenancePlan API.
+    """
+    from yequ.services.maintenance_service import create_plan
+
+    # Call provider to analyze the prompt
+    provider_result = await asyncio.wait_for(
+        provider.invoke(
+            f"Create a maintenance plan for: {prompt}. "
+            "List the required steps in order. Each step needs a function_name from the available tools "
+            "and the necessary input parameters. "
+            "If a step depends on a previous step, note it. "
+            "For write operations, mark them as requiring approval.",
+            available_functions=available_functions,
+            context={"session_id": session_id},
+        ),
+        timeout=45.0,
+    )
+
+    if not provider_result.success:
+        return {
+            "status": "failed",
+            "error": {
+                "code": provider_result.error_code or "provider_error",
+                "message": provider_result.error_message or "Provider failed",
+            },
+        }
+
+    # Parse tool calls into plan steps
+    steps = []
+    for tc in provider_result.tool_calls:
+        func_name = tc.get("name", "")
+        func_input = tc.get("input", {})
+        func_meta = next((f for f in available_functions if f.name == func_name), None)
+
+        step = {
+            "function_name": func_name,
+            "input": func_input,
+            "continue_on_failure": False,
+            "timeout_sec": func_meta.timeout_sec if func_meta else 30,
+            "resource_keys": [],
+        }
+
+        # If write operation, compute resource keys
+        if func_meta and func_meta.effect in ("write", "destructive"):
+            from yequ.services.resource_lock_service import compute_resource_keys
+            step["resource_keys"] = compute_resource_keys(
+                func_name, target_node_id, func_input,
+            )
+
+        steps.append(step)
+
+    # Create the plan
+    plan = await create_plan(
+        db,
+        goal=prompt,
+        actor_id=provider.provider_name(),
+        target_node_id=target_node_id,
+        steps=steps,
+        session_id=session_id,
+        risk="maintenance",
+        max_total_duration_sec=max_total_duration_sec,
+        execution_mode=execution_mode,
+    )
+
+    return {
+        "status": "waiting_approval" if any(
+            (f for f in available_functions
+             if f.name in {s["function_name"] for s in steps} and f.effect == "write")
+        ) else "ready",
+        "plan_id": plan.plan_id,
+        "goal": plan.goal,
+        "step_count": len(steps),
+        "steps": [
+            {"seq": i + 1, "function_name": s["function_name"], "input": s.get("input", {})}
+            for i, s in enumerate(steps)
+        ],
+    }
+
+
 async def _execute_tool_call(
     db: AsyncSession,
     tc: AgentToolCall,
