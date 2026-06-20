@@ -13,6 +13,7 @@ from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.models.node import Node
+from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import NodeStatus
 from yequ.services.invocation_service import (
@@ -152,6 +153,30 @@ class TimelineSummary(BaseModel):
 
 # ── Read endpoints ──
 
+@router.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict:
+    """Get a session by ID."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    sess = result.scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    return {
+        "session_id": sess.session_id,
+        "actor_type": sess.actor_type,
+        "actor_id": sess.actor_id,
+        "status": sess.status,
+        "execution_mode": sess.execution_mode,
+        "started_at": sess.started_at.isoformat() if sess.started_at else None,
+        "closed_at": sess.closed_at.isoformat() if sess.closed_at else None,
+        "close_reason": sess.close_reason,
+        "metadata": sess.metadata_,
+    }
+
+
 @router.get("/nodes", response_model=list[NodeSummary])
 async def list_nodes(
     db: AsyncSession = Depends(get_db),
@@ -250,27 +275,35 @@ async def get_invocation(
         select(Job).where(Job.invocation_id == invocation_id).order_by(Job.created_at)
     )
     jobs = jresult.scalars().all()
+    return _inv_detail(inv, jobs)
 
-    return InvocationDetail(
-        invocation_id=inv.invocation_id,
-        actor_type=inv.actor_type,
-        actor_id=inv.actor_id,
-        session_id=inv.session_id,
-        function_name=inv.function_name,
-        status=inv.status,
-        execution_mode=inv.execution_mode,
-        target_node_id=inv.target_node_id,
-        call_path=inv.call_path or [],
-        max_depth=inv.max_depth,
-        max_steps=inv.max_steps,
-        max_total_duration_sec=inv.max_total_duration_sec,
-        started_at=inv.started_at.isoformat() if inv.started_at else None,
-        finished_at=inv.finished_at.isoformat() if inv.finished_at else None,
-        result=inv.result,
-        error_code=inv.error_code,
-        error_message=inv.error_message,
-        jobs=[_job_summary(j) for j in jobs],
-    )
+
+@router.get("/invocations", response_model=list[InvocationDetail])
+async def list_invocations(
+    status: str | None = None,
+    actor_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[InvocationDetail]:
+    """List invocations with optional filters."""
+    stmt = select(Invocation)
+    if status:
+        stmt = stmt.where(Invocation.status == status)
+    if actor_id:
+        stmt = stmt.where(Invocation.actor_id == actor_id)
+    if session_id:
+        stmt = stmt.where(Invocation.session_id == session_id)
+    stmt = stmt.order_by(Invocation.started_at.desc().nullslast()).limit(min(limit, 200))
+    result = await db.execute(stmt)
+    invs = result.scalars().all()
+    out = []
+    for inv in invs:
+        jresult = await db.execute(select(Job).where(Job.invocation_id == inv.invocation_id))
+        jobs = jresult.scalars().all()
+        out.append(_inv_detail(inv, jobs))
+    return out
 
 
 @router.get("/timeline", response_model=list[TimelineSummary])
@@ -413,6 +446,28 @@ def _job_summary(j: Job) -> JobSummary:
         cancel_reason=j.cancel_reason,
         attempt=j.attempt,
         output=j.output,
+    )
+
+def _inv_detail(inv: Invocation, jobs: list[Job]) -> InvocationDetail:
+    return InvocationDetail(
+        invocation_id=inv.invocation_id,
+        actor_type=inv.actor_type,
+        actor_id=inv.actor_id,
+        session_id=inv.session_id,
+        function_name=inv.function_name,
+        status=inv.status,
+        execution_mode=inv.execution_mode,
+        target_node_id=inv.target_node_id,
+        call_path=inv.call_path or [],
+        max_depth=inv.max_depth,
+        max_steps=inv.max_steps,
+        max_total_duration_sec=inv.max_total_duration_sec,
+        started_at=inv.started_at.isoformat() if inv.started_at else None,
+        finished_at=inv.finished_at.isoformat() if inv.finished_at else None,
+        result=inv.result,
+        error_code=inv.error_code,
+        error_message=inv.error_message,
+        jobs=[_job_summary(j) for j in jobs],
     )
 
 def _tl_summary(e: TimelineEvent) -> TimelineSummary:
