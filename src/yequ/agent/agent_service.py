@@ -657,7 +657,7 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
     Each tool type gets a specific summary format.
     """
     if provider_message.strip() and not tool_calls:
-        return AgentInvokeOutput(message=provider_message, data={})
+        return AgentInvokeOutput(message=provider_message, data={"raw_message": provider_message})
 
     succeeded = [tc for tc in tool_calls if tc.status == "succeeded"]
     failed = [tc for tc in tool_calls if tc.status != "succeeded"]
@@ -732,7 +732,7 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
         summary=summary,
         highlights=highlights,
         tool_results=tool_results,
-        data={},
+        data=tool_results,  # put structured results in data too
     )
 
 

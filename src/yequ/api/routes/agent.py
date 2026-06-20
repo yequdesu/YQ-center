@@ -30,18 +30,52 @@ def get_provider(name: str) -> AgentProvider | None:
 def _default_functions() -> list[AgentFunction]:
     """L1 read-only functions available to the Agent."""
     return [
-        AgentFunction(name="system.metrics.snapshot",
-                      description="Get CPU/memory/disk usage percentages", risk="safe", effect="read", timeout_sec=5),
-        AgentFunction(name="system.info",
-                      description="Get OS, hostname, uptime, current user", risk="safe", effect="read", timeout_sec=5),
-        AgentFunction(name="system.service.status",
-                      description="Get a Windows service status by name (e.g. Spooler, EventLog)", risk="safe", effect="read", timeout_sec=5),
-        AgentFunction(name="system.processes.list",
-                      description="List running processes (limit 50)", risk="safe", effect="read", timeout_sec=5),
-        AgentFunction(name="system.disk.detail",
-                      description="Get disk capacity, used, free, filesystem per drive", risk="safe", effect="read", timeout_sec=5),
-        AgentFunction(name="system.eventlog.query",
-                      description="Query recent Windows Event Log entries (Application/System)", risk="safe", effect="read", timeout_sec=10),
+        AgentFunction(
+            name="system.metrics.snapshot",
+            description="Get current CPU usage (%), memory usage (%), and disk usage (%) for the main drive. Use this when asked about system performance, load, or resource usage.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="system.info",
+            description="Get basic system information: OS name and version, hostname, uptime in seconds, and current user. Use this when asked about what machine this is, its OS, or how long it has been running.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="system.service.status",
+            description="Get the current status (running/stopped), startup type (auto/manual/disabled), and display name of a specific Windows service. Requires 'name' parameter -- the service name like 'Spooler', 'EventLog', 'W32Time', 'lanmanserver'. Use this when asked about a specific service.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Windows service name, e.g. Spooler, EventLog, W32Time"}},
+                "required": ["name"],
+            },
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="system.processes.list",
+            description="List running processes with name, PID, memory usage, and CPU time. Returns up to 50 processes sorted by memory. Use this when asked about running programs, what processes are active, or checking for specific processes.",
+            input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 50, "maximum": 100}}},
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="system.disk.detail",
+            description="Get detailed disk information for all drives: total capacity (GB), used space (GB), free space (GB), usage percentage, and filesystem type. Use this when asked about disk space, storage capacity, or drive details.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="system.eventlog.query",
+            description="Query recent Windows Event Log entries. Returns event count, severity levels (Error/Warning/Information), and recent event summaries. Accepts optional 'source' parameter ('Application' or 'System', default: both) and 'limit' (default: 50). Use this when asked about system errors, recent warnings, or what happened on the machine.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "enum": ["Application", "System"]},
+                    "limit": {"type": "integer", "default": 50, "maximum": 100},
+                },
+            },
+            risk="safe", effect="read", timeout_sec=10,
+        ),
     ]
 
 
