@@ -1,11 +1,12 @@
 """Maintenance Plan Executor — runs approved plans step by step."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.agent.agent_service import _wait_invocation_terminal
 from yequ.models.maintenance_plan import (
     MaintenancePlan,
     MaintenanceRun,
@@ -106,6 +107,50 @@ async def execute_plan_run(
             step.invocation_id = inv.invocation_id
             step.job_id = job.job_id
             step.status = "running"
+            await db.commit()  # MUST commit before waiting — otherwise poll sees nothing
+
+            # Wait for step to reach terminal state
+            deadline = datetime.now(UTC) + timedelta(seconds=step.timeout_sec + 30)
+            final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
+
+            # Collect result
+            from yequ.models.invocation import Invocation
+            inv_result = await db.execute(
+                select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+            )
+            inv_final = inv_result.scalar_one_or_none()
+
+            step.finished_at = datetime.now(UTC)
+            if final_status == "succeeded":
+                step.status = "succeeded"
+                step.result = inv_final.result if inv_final else {}
+                completed_steps.add(step.step_id)
+                await _write_maintenance_timeline(
+                    db, "maintenance.step.completed", run.run_id, plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id, function_name=step.function_name,
+                    job_id=step.job_id, invocation_id=step.invocation_id,
+                )
+            else:
+                step.status = "failed"
+                step.error = f"Step ended with {final_status}"
+                await _write_maintenance_timeline(
+                    db, "maintenance.step.failed", run.run_id, plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id, function_name=step.function_name,
+                    job_id=step.job_id, invocation_id=step.invocation_id,
+                    error=step.error,
+                )
+                if not step.continue_on_failure:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(UTC)
+                    await _write_maintenance_timeline(
+                        db, "maintenance.run.failed", run.run_id, plan.plan_id,
+                        plan.target_node_id,
+                    )
+                    await db.commit()
+                    return run
+
             await db.flush()
 
         except Exception as e:
@@ -135,16 +180,6 @@ async def execute_plan_run(
 
             await db.flush()
             continue
-
-        # Write step completed timeline event
-        await _write_maintenance_timeline(
-            db, "maintenance.step.completed", run.run_id, plan.plan_id,
-            plan.target_node_id,
-            step_id=step.step_id, function_name=step.function_name,
-            job_id=step.job_id, invocation_id=step.invocation_id,
-        )
-
-        completed_steps.add(step.step_id)
 
     run.current_step_id = None
     run.status = "succeeded"

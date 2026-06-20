@@ -323,6 +323,7 @@ async def list_timeline(
     invocation_id: str | None = None,
     session_id: str | None = None,
     event_type: str | None = None,
+    approval_id: str | None = None,
     limit: int = 50,
     created_after: str | None = None,
     created_before: str | None = None,
@@ -341,6 +342,8 @@ async def list_timeline(
         stmt = stmt.where(TimelineEvent.session_id == session_id)
     if event_type:
         stmt = stmt.where(TimelineEvent.event_type == event_type)
+    if approval_id:
+        stmt = stmt.where(TimelineEvent.data.op('->>')('approval_id') == approval_id)
     if created_after:
         stmt = stmt.where(TimelineEvent.timestamp > datetime.fromisoformat(created_after))
     if created_before:

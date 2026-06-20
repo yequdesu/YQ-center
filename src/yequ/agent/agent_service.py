@@ -509,10 +509,12 @@ async def agent_plan(
     # Call provider to analyze the prompt — use concise tool-only output
     plan_prompt = (
         f"Task: {prompt}. "
-        "Select the minimal set of tools needed, in execution order. "
-        "Return ONLY tool calls. Do NOT write explanations. "
-        "Each tool call = one plan step. "
-        "Write operations require approval."
+        "Design an ordered maintenance plan. If the task says 'check and fix if needed', "
+        "include BOTH a diagnostic/check step AND a repair step. "
+        "The check step goes first. The repair step should depend on the check step. "
+        "Repair steps that write/change state require approval. "
+        "Return ONLY tool calls. One tool call = one step. "
+        "Do NOT write explanations — just return the tool calls."
     )
     provider_result = await asyncio.wait_for(
         provider.invoke(
@@ -569,11 +571,12 @@ async def agent_plan(
         execution_mode=execution_mode,
     )
 
+    has_write = any(
+        f for f in available_functions
+        if f.name in {s["function_name"] for s in steps} and f.effect in ("write", "destructive")
+    )
     return {
-        "status": "waiting_approval" if any(
-            (f for f in available_functions
-             if f.name in {s["function_name"] for s in steps} and f.effect == "write")
-        ) else "ready",
+        "status": "waiting_approval" if has_write else "ready",
         "plan_id": plan.plan_id,
         "goal": plan.goal,
         "step_count": len(steps),
