@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Auth
     require_admin_auth: bool = True  # Admin/Agent token scope enforced
 
+    # Timeline
+    debug_timeline: bool = False  # Set YEQU_DEBUG_TIMELINE=true to write diagnostic events
+
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"

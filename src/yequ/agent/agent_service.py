@@ -195,10 +195,12 @@ async def agent_invoke(
     log.info("agent provider request started: provider=%s session_id=%s",
              provider.provider_name(), session_id)
 
-    # Diagnostic: write + commit a pre-request event to confirm we reach this point
-    await _write_timeline(db, "agent.provider.request.started",
-                          session_id=session_id, actor=provider.provider_name())
-    await db.commit()
+    # Diagnostic events: only write when debug_timeline is enabled
+    from yequ.config import get_settings as _gs
+    if _gs().debug_timeline:
+        await _write_timeline(db, "agent.provider.request.started",
+                              session_id=session_id, actor=provider.provider_name())
+        await db.commit()
 
     import time as _time
     _t0 = _time.monotonic()
@@ -215,17 +217,18 @@ async def agent_invoke(
         log.info("agent provider request returned: provider=%s elapsed=%.1fs",
                  provider.provider_name(), _elapsed)
 
-        # Write success marker
-        await _write_timeline(db, "agent.provider.request.returned",
-                              session_id=session_id, actor=provider.provider_name(),
-                              tool_call_count=len(provider_result.tool_calls))
-        await db.commit()
+        if _gs().debug_timeline:
+            await _write_timeline(db, "agent.provider.request.returned",
+                                  session_id=session_id, actor=provider.provider_name(),
+                                  tool_call_count=len(provider_result.tool_calls))
+            await db.commit()
 
         # Parse raw tool_calls into AgentToolCall list
-        await _write_timeline(db, "agent.provider.parse.started",
-                              session_id=session_id, actor=provider.provider_name(),
-                              tool_call_count=len(provider_result.tool_calls))
-        await db.commit()
+        if _gs().debug_timeline:
+            await _write_timeline(db, "agent.provider.parse.started",
+                                  session_id=session_id, actor=provider.provider_name(),
+                                  tool_call_count=len(provider_result.tool_calls))
+            await db.commit()
 
         raw_tool_calls_parsed: list[dict[str, object]] = []
         for raw_tc in provider_result.tool_calls:
@@ -235,10 +238,11 @@ async def agent_invoke(
                 "sanitized_name": str(raw_tc.get("sanitized_name", "")),
             })
 
-        await _write_timeline(db, "agent.provider.parse.completed",
-                              session_id=session_id, actor=provider.provider_name(),
-                              tool_call_count=len(raw_tool_calls_parsed))
-        await db.commit()
+        if _gs().debug_timeline:
+            await _write_timeline(db, "agent.provider.parse.completed",
+                                  session_id=session_id, actor=provider.provider_name(),
+                                  tool_call_count=len(raw_tool_calls_parsed))
+            await db.commit()
     except asyncio.TimeoutError:
         log.error("agent provider timed out: provider=%s session_id=%s",
                   provider.provider_name(), session_id)
