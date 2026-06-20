@@ -59,7 +59,7 @@ class MaintenanceStep(Base):
     condition: Mapped[str] = mapped_column(String(32), nullable=False, default="always")
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    risk: Mapped[str] = mapped_column(String(16), nullable=False, default="safe")
+    risk: Mapped[str] = mapped_column(String(32), nullable=False, default="safe")
 
     def __repr__(self) -> str:
         return (
