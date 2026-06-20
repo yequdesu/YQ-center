@@ -562,6 +562,31 @@ async def agent_plan(
 
         steps.append(step)
 
+    # Hard-coded check+fix pattern: if prompt suggests "check X, fix if broken"
+    # and only 1 step was generated, add the corresponding L2 repair step
+    fix_patterns = [
+        ("service.status", "system.service.ensure_running"),
+        ("service.status", "system.service.restart"),
+    ]
+    if "修复" in prompt or "fix" in prompt.lower() or "不正常" in prompt:
+        for check_func, fix_func in fix_patterns:
+            has_check = any(s["function_name"] == check_func for s in steps)
+            has_fix = any(s["function_name"] == fix_func for s in steps)
+            if has_check and not has_fix:
+                # Find the matching function metadata
+                fix_meta = next((f for f in available_functions if f.name == fix_func), None)
+                if fix_meta:
+                    # Extract input from the check step and copy to fix step
+                    check_step = next(s for s in steps if s["function_name"] == check_func)
+                    fix_input = dict(check_step.get("input", {}))
+                    steps.append({
+                        "function_name": fix_func,
+                        "input": fix_input,
+                        "continue_on_failure": False,
+                        "timeout_sec": fix_meta.timeout_sec,
+                        "resource_keys": [],
+                    })
+
     # Create the plan
     plan = await create_plan(
         db,
@@ -576,14 +601,15 @@ async def agent_plan(
     )
 
     has_write = any(
-        f for f in available_functions
-        if f.name in {s["function_name"] for s in steps} and f.effect in ("write", "destructive")
+        s["function_name"] in {f.name for f in available_functions if f.effect in ("write", "destructive")}
+        for s in steps
     )
     return {
-        "status": "waiting_approval" if has_write else "ready",
+        "status": "waiting_approval" if has_write else plan.status,
         "plan_id": plan.plan_id,
         "goal": plan.goal,
         "step_count": len(steps),
+        "approval_required": has_write,
         "steps": [
             {"seq": i + 1, "function_name": s["function_name"], "input": s.get("input", {})}
             for i, s in enumerate(steps)

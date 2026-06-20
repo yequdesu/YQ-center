@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
@@ -343,7 +343,29 @@ async def list_timeline(
     if event_type:
         stmt = stmt.where(TimelineEvent.event_type == event_type)
     if approval_id:
-        stmt = stmt.where(TimelineEvent.data.op('->>')('approval_id') == approval_id)
+        # Resolve approval to get execution invocation, then include all related events
+        apv_result = await db.execute(
+            select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+        )
+        approval = apv_result.scalar_one_or_none()
+        if approval:
+            # Find the execution invocation
+            exec_inv_id = approval.consumed_invocation_id or approval.invocation_id
+            # Get all job_ids for this invocation
+            j_result = await db.execute(
+                select(Job.job_id).where(Job.invocation_id == exec_inv_id)
+            )
+            job_ids = [row[0] for row in j_result.fetchall()]
+            # Build OR filter
+            conditions = [TimelineEvent.data.op('->>')('approval_id') == approval_id]
+            if exec_inv_id:
+                conditions.append(TimelineEvent.invocation_id == exec_inv_id)
+            if job_ids:
+                conditions.append(TimelineEvent.job_id.in_(job_ids))
+            stmt = stmt.where(or_(*conditions))
+        else:
+            # Fallback: just filter by approval_id in data
+            stmt = stmt.where(TimelineEvent.data.op('->>')('approval_id') == approval_id)
     if created_after:
         stmt = stmt.where(TimelineEvent.timestamp > datetime.fromisoformat(created_after))
     if created_before:
