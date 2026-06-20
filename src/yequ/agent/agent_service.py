@@ -220,6 +220,25 @@ async def agent_invoke(
                               session_id=session_id, actor=provider.provider_name(),
                               tool_call_count=len(provider_result.tool_calls))
         await db.commit()
+
+        # Parse raw tool_calls into AgentToolCall list
+        await _write_timeline(db, "agent.provider.parse.started",
+                              session_id=session_id, actor=provider.provider_name(),
+                              tool_call_count=len(provider_result.tool_calls))
+        await db.commit()
+
+        raw_tool_calls_parsed: list[dict[str, object]] = []
+        for raw_tc in provider_result.tool_calls:
+            raw_tool_calls_parsed.append({
+                "call_id": str(raw_tc.get("call_id", "")),
+                "name": str(raw_tc.get("name", "")),
+                "sanitized_name": str(raw_tc.get("sanitized_name", "")),
+            })
+
+        await _write_timeline(db, "agent.provider.parse.completed",
+                              session_id=session_id, actor=provider.provider_name(),
+                              tool_call_count=len(raw_tool_calls_parsed))
+        await db.commit()
     except asyncio.TimeoutError:
         log.error("agent provider timed out: provider=%s session_id=%s",
                   provider.provider_name(), session_id)
@@ -242,21 +261,51 @@ async def agent_invoke(
             ),
         )
 
-    # Handle provider failure
-    if not provider_result.success:
-        log.error("agent provider request failed: provider=%s error=%s",
-                  provider.provider_name(), provider_result.error_message)
+    # ── Post-provider: wrap everything in try/except for safety ──
+    try:
+        # Handle provider failure
+        if not provider_result.success:
+            log.error("agent provider request failed: provider=%s error=%s",
+                      provider.provider_name(), provider_result.error_message)
+            await _write_timeline(db, "agent.provider.failed", session_id=session_id,
+                                  actor=provider.provider_name(), success=False,
+                                  error=provider_result.error_message,
+                                  error_code=provider_result.error_code or "provider_error")
+            await db.commit()
+            return AgentInvokeResponse(
+                success=False, status="failed", provider_name=provider.provider_name(),
+                session_id=session_id,
+                error=AgentInvokeError(code=provider_result.error_code or "provider_error",
+                                       message=provider_result.error_message or "Provider failed",
+                                       retryable=provider_result.retryable),
+                usage=AgentInvokeUsage(tool_calls=0),
+                trace=AgentInvokeTrace(
+                    trace_id=trace_id, call_path=list(call_path),
+                    step_count=step_count + 1, max_depth=max_depth,
+                    max_steps=max_steps,
+                    max_total_duration_sec=max_total_duration_sec,
+                ),
+            )
+
+        log.info("agent provider request completed: provider=%s tool_call_count=%d",
+                 provider.provider_name(), len(provider_result.tool_calls))
+
+        await _write_timeline(db, "agent.provider.completed", session_id=session_id,
+                              actor=provider.provider_name(), success=True,
+                              tool_call_count=len(provider_result.tool_calls))
+    except Exception as _post_exc:
+        log.exception("agent post-provider exception: session_id=%s", session_id)
         await _write_timeline(db, "agent.provider.failed", session_id=session_id,
                               actor=provider.provider_name(), success=False,
-                              error=provider_result.error_message,
-                              error_code=provider_result.error_code or "provider_error")
+                              error=str(_post_exc)[:500],
+                              error_code="internal_error")
         await db.commit()
         return AgentInvokeResponse(
             success=False, status="failed", provider_name=provider.provider_name(),
             session_id=session_id,
-            error=AgentInvokeError(code=provider_result.error_code or "provider_error",
-                                   message=provider_result.error_message or "Provider failed",
-                                   retryable=provider_result.retryable),
+            error=AgentInvokeError(code="internal_error",
+                                   message=str(_post_exc)[:500],
+                                   retryable=False),
             usage=AgentInvokeUsage(tool_calls=0),
             trace=AgentInvokeTrace(
                 trace_id=trace_id, call_path=list(call_path),
@@ -265,13 +314,6 @@ async def agent_invoke(
                 max_total_duration_sec=max_total_duration_sec,
             ),
         )
-
-    log.info("agent provider request completed: provider=%s tool_call_count=%d",
-             provider.provider_name(), len(provider_result.tool_calls))
-
-    await _write_timeline(db, "agent.provider.completed", session_id=session_id,
-                          actor=provider.provider_name(), success=True,
-                          tool_call_count=len(provider_result.tool_calls))
 
     # -- Step 3: Validate tool calls + execute --
     execution_results: list[AgentToolCall] = []
