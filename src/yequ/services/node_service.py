@@ -470,7 +470,14 @@ async def handle_job_finished(
     await release_lock(db, job_id)
 
     # L2 action timeline: write l2.action.completed or l2.action.failed
-    if job.approval_id:
+    # Skip if this job belongs to a MaintenanceStep (maintenance.step.* covers it)
+    from yequ.models.maintenance_plan import MaintenanceStep
+    step_result = await db.execute(
+        select(MaintenanceStep).where(MaintenanceStep.job_id == job_id)
+    )
+    is_maintenance_step = step_result.scalar_one_or_none() is not None
+
+    if job.approval_id and not is_maintenance_step:
         l2_status = "completed" if terminal_status == "succeeded" else "failed"
         l2_seq = await db.execute(select(func.max(TimelineEvent.global_seq)))
         l2_max = l2_seq.scalar() or 0
