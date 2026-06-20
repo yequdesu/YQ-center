@@ -704,11 +704,40 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
         elif tc.name == "system.disk.detail" and tc.result:
             drives = tc.result if isinstance(tc.result, list) else [tc.result]
             for d in drives:
-                total = d.get("total_gb", "?")
-                free = d.get("free_gb", "?")
-                pct = d.get("used_percent", "?")
-                parts.append(f"Drive {d.get('drive','?')}: {free}/{total}GB free ({pct}% used)")
-                highlights.append(f"Disk {d.get('drive','?')}: {free}GB free of {total}GB")
+                # Support multiple field naming conventions from Windows Node
+                total = d.get("total_gb") or d.get("total_bytes") or d.get("size") or d.get("capacity") or "?"
+                free = d.get("free_gb") or d.get("free_bytes") or d.get("free") or d.get("available") or "?"
+                pct = d.get("used_percent") or d.get("usage_percent") or d.get("percent") or "?"
+                drive = d.get("drive") or d.get("drive_letter") or d.get("mount") or d.get("device") or "?"
+                if isinstance(total, (int, float)) and isinstance(free, (int, float)):
+                    if isinstance(total, int) and total > 1024**3:
+                        total = f"{total/1024**3:.1f}GB"
+                        free = f"{free/1024**3:.1f}GB"
+                    parts.append(f"Drive {drive}: {free}/{total} free ({pct}% used)")
+                else:
+                    parts.append(f"Drive {drive}: free={free} total={total}")
+                highlights.append(f"Disk {drive}: {free} free of {total}")
+
+        elif tc.name == "system.network.routes" and tc.result:
+            routes = tc.result if isinstance(tc.result, list) else tc.result.get("routes", [tc.result])
+            count = len(routes)
+            default_route = None
+            interfaces: set[str] = set()
+            for r in routes:
+                dest = str(r.get("destination") or r.get("network") or r.get("dest") or "")
+                gw = str(r.get("gateway") or r.get("nexthop") or r.get("next_hop") or "")
+                iface = str(r.get("interface") or r.get("iface") or r.get("interface_ip") or r.get("adapter") or "")
+                if dest in ("0.0.0.0", "::", "0.0.0.0/0", "::/0"):
+                    default_route = gw or iface or "present"
+                if iface:
+                    interfaces.add(iface)
+            summary_parts = [f"{count} routes"]
+            if default_route:
+                summary_parts.append(f"default via {default_route}")
+            if interfaces:
+                summary_parts.append(f"iface: {', '.join(sorted(interfaces)[:3])}")
+            parts.append(", ".join(summary_parts))
+            highlights.append(f"Network: {', '.join(summary_parts)}")
 
         elif tc.name == "system.info" and tc.result:
             hostname = tc.result.get("hostname", "?")
