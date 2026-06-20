@@ -31,6 +31,9 @@ pytestmark = pytest.mark.skipif(
     ("how much free disk", "system.disk.detail", {}),
     ("check system event log", "system.eventlog.query", {}),
     ("recent errors", "system.eventlog.query", {}),
+    ("network route table", "system.network.routes", {}),
+    ("show routing table", "system.network.routes", {}),
+    ("next hop routes", "system.network.routes", {}),
     ("full system check", "system.metrics.snapshot", {}),  # at minimum
 ])
 async def test_deepseek_tool_selection(prompt, expected_function, expected_input):

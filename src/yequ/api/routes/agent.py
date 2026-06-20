@@ -65,6 +65,12 @@ def _default_functions() -> list[AgentFunction]:
             risk="safe", effect="read", timeout_sec=5,
         ),
         AgentFunction(
+            name="system.network.routes",
+            description="Get the Windows network route table: destination network, netmask, gateway, interface IP, metric, and route type for each entry. Use this when asked about routing table, network routes, next hop, interface routes, or how network traffic is routed.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe", effect="read", timeout_sec=5,
+        ),
+        AgentFunction(
             name="system.eventlog.query",
             description="Query recent Windows Event Log entries. Returns event count, severity levels (Error/Warning/Information), and recent event summaries. Accepts optional 'source' parameter ('Application' or 'System', default: both) and 'limit' (default: 50). Use this when asked about system errors, recent warnings, or what happened on the machine.",
             input_schema={
