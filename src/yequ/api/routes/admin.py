@@ -2,13 +2,14 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
 from yequ.models.api_token import ApiToken
+from yequ.models.approval import ApprovalRequest
 from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
@@ -354,6 +355,28 @@ class CreateTokenResponse(BaseModel):
     message: str
 
 
+class CreateApprovalRequest(BaseModel):
+    function_name: str = Field(..., min_length=1)
+    target_node_id: str = Field(..., min_length=1)
+    input_data: dict[str, object] = Field(default_factory=dict)
+    risk: str = Field(default="maintenance")
+    effect: str = Field(default="write")
+    resource_keys: list[str] = Field(default_factory=list)
+    ttl_minutes: int = Field(default=5, ge=1, le=60)
+    actor_id: str = Field(default="admin")
+    session_id: str | None = None
+
+
+class ApprovalResponse(BaseModel):
+    approval_id: str
+    status: str
+    function_name: str
+    target_node_id: str
+    actor_id: str
+    expires_at: str
+    created_at: str
+
+
 @router.post("/tokens", status_code=status.HTTP_201_CREATED)
 async def create_token(
     body: CreateTokenRequest,
@@ -377,6 +400,115 @@ async def create_token(
         label=t.label,
         message=f"{body.scope} token created",
     )
+
+
+# ── Approval endpoints ──
+
+
+@router.post("/approvals", status_code=201)
+async def create_approval_endpoint(
+    body: CreateApprovalRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> ApprovalResponse:
+    from yequ.services.approval_service import create_approval
+    approval = await create_approval(db, **body.model_dump())
+    return ApprovalResponse(
+        approval_id=approval.approval_id, status=approval.status,
+        function_name=approval.function_name, target_node_id=approval.target_node_id,
+        actor_id=approval.actor_id,
+        expires_at=approval.expires_at.isoformat(), created_at=approval.created_at.isoformat(),
+    )
+
+
+@router.get("/approvals")
+async def list_approvals(
+    approval_status: str | None = Query(default=None, alias="status"),
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> list[dict]:
+    stmt = select(ApprovalRequest)
+    if approval_status:
+        stmt = stmt.where(ApprovalRequest.status == approval_status)
+    stmt = stmt.order_by(ApprovalRequest.created_at.desc()).limit(min(limit, 200))
+    result = await db.execute(stmt)
+    return [_approval_dict(a) for a in result.scalars().all()]
+
+
+@router.get("/approvals/{approval_id}")
+async def get_approval(
+    approval_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    result = await db.execute(
+        select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+    )
+    a = result.scalar_one_or_none()
+    if a is None:
+        raise HTTPException(404, f"Approval {approval_id!r} not found")
+    return _approval_dict(a)
+
+
+@router.post("/approvals/{approval_id}/approve")
+async def approve_endpoint(
+    approval_id: str,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    result = await db.execute(
+        select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+    )
+    a = result.scalar_one_or_none()
+    if a is None:
+        raise HTTPException(404, f"Approval {approval_id!r} not found")
+    reason = body.get("reason") if body else None
+    from yequ.services.approval_service import approve_approval
+
+    try:
+        await approve_approval(db, a, approved_by="admin", reason=reason)
+        return _approval_dict(a)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post("/approvals/{approval_id}/deny")
+async def deny_endpoint(
+    approval_id: str,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    result = await db.execute(
+        select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+    )
+    a = result.scalar_one_or_none()
+    if a is None:
+        raise HTTPException(404, f"Approval {approval_id!r} not found")
+    reason = body.get("reason") if body else None
+    from yequ.services.approval_service import deny_approval
+
+    try:
+        await deny_approval(db, a, denied_by="admin", reason=reason)
+        return _approval_dict(a)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+def _approval_dict(a: ApprovalRequest) -> dict:
+    return {
+        "approval_id": a.approval_id, "status": a.status,
+        "actor_id": a.actor_id, "session_id": a.session_id,
+        "function_name": a.function_name, "target_node_id": a.target_node_id,
+        "input_hash": a.input_hash, "risk": a.risk, "effect": a.effect,
+        "resource_keys": a.resource_keys,
+        "expires_at": a.expires_at.isoformat(), "created_at": a.created_at.isoformat(),
+        "consumed_at": a.consumed_at.isoformat() if a.consumed_at else None,
+        "approved_by": a.approved_by, "denied_by": a.denied_by,
+        "decision_reason": a.decision_reason,
+    }
 
 
 # ── Helper converters ──

@@ -2,6 +2,7 @@
 
 from yequ.protocol.enums import (
     ActorType,
+    ApprovalStatus,
     ConflictPolicy,
     Effect,
     ExecutionMode,
@@ -9,6 +10,7 @@ from yequ.protocol.enums import (
     InvocationStatus,
     JobDeliveryMode,
     JobStatus,
+    LockStatus,
     MessageType,
     NodeStatus,
     PluginStatus,
@@ -23,6 +25,7 @@ from yequ.protocol.errors import ErrorCode, YqpError
 
 __all__ = [
     "ActorType",
+    "ApprovalStatus",
     "ConflictPolicy",
     "Effect",
     "ErrorCode",
@@ -31,6 +34,7 @@ __all__ = [
     "InvocationStatus",
     "JobDeliveryMode",
     "JobStatus",
+    "LockStatus",
     "MessageType",
     "NodeStatus",
     "PluginStatus",

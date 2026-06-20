@@ -125,3 +125,28 @@ def check_policy(
     return PolicyResult(
         allowed=False, decision=decision, reason="unknown policy decision"
     )
+
+
+def check_policy_l2(
+    execution_mode: str,
+    risk_level: str = RiskLevel.SAFE,
+    effect: str = "write",
+) -> PolicyResult:
+    """Check policy for L2 write operations.
+
+    Rules:
+    - readonly: always deny write operations
+    - auto: requires approval (return approval_required)
+    - assist: requires approval
+    - manual: requires approval (caller should create ApprovalRequest)
+    """
+    if effect == "write" or effect == "destructive":
+        if execution_mode == "readonly":
+            return PolicyResult(allowed=False, decision="deny",
+                              reason="Write operations are not allowed in readonly mode")
+        # All other modes: approval required
+        return PolicyResult(allowed=False, decision="ask",
+                          reason="Write operations require approval")
+
+    # For read effects, use the standard matrix
+    return check_policy(execution_mode, risk_level)

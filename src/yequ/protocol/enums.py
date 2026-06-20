@@ -119,6 +119,8 @@ class InvocationStatus(StrEnum):
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
     PARTIAL = "partial"
+    WAITING_APPROVAL = "waiting_approval"
+    REJECTED = "rejected"
 
 
 class PluginStatus(StrEnum):
@@ -136,3 +138,17 @@ class SessionStatus(StrEnum):
     ACTIVE = "active"
     CLOSED = "closed"
     INTERRUPTED = "interrupted"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    EXPIRED = "expired"
+    CONSUMED = "consumed"
+
+
+class LockStatus(StrEnum):
+    HELD = "held"
+    RELEASED = "released"
+    EXPIRED = "expired"
