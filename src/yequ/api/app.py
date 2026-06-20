@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
                 if result2.scalar_one_or_none() is None:
                     agent_token = ApiToken(
-                        token_hash=hash_token("qq756522327"),
+                        token_hash=hash_token("qq756522327-agent"),
                         scope="agent",
                         label="default agent",
                     )

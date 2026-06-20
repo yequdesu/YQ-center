@@ -425,6 +425,13 @@ async def create_token(
     if body.scope not in ("admin", "agent"):
         raise HTTPException(status_code=400, detail="scope must be 'admin' or 'agent'")
 
+    # Check for duplicate token
+    existing = await db.execute(
+        select(ApiToken).where(ApiToken.token_hash == hash_api_token(body.token))
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Token with this value already exists")
+
     t = ApiToken(
         token_hash=hash_api_token(body.token),
         scope=body.scope,
