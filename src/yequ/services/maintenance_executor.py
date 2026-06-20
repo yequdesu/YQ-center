@@ -171,6 +171,11 @@ async def execute_plan_run(
             )
             start_invocation(inv)
 
+            # Use plan's approval_id if not explicitly passed
+            effective_approval_id = approval_id or plan.approval_id or None
+            # Repair steps must never be dry_run
+            effective_dry_run = False if step.kind == "repair" else dry_run
+
             job = await create_job(
                 db,
                 invocation_id=inv.invocation_id,
@@ -179,8 +184,8 @@ async def execute_plan_run(
                 input_payload=step.input_data or {},
                 timeout_sec=step.timeout_sec,
                 resource_keys=step.resource_keys or [],
-                dry_run=dry_run,
-                approval_id=approval_id if approval_id else None,
+                dry_run=effective_dry_run,
+                approval_id=effective_approval_id,
             )
 
             step.invocation_id = inv.invocation_id
@@ -212,7 +217,16 @@ async def execute_plan_run(
                 )
             else:
                 step.status = "failed"
-                step.error = f"Step ended with {final_status}"
+                # Backfill error from Job
+                from yequ.models.job import Job as JobModel
+                job_result = await db.execute(
+                    select(JobModel).where(JobModel.job_id == step.job_id)
+                )
+                failed_job = job_result.scalar_one_or_none()
+                if failed_job and failed_job.error_code:
+                    step.error = f"{failed_job.error_code}: {failed_job.error_message or 'no details'}"
+                else:
+                    step.error = f"Step ended with {final_status}"
                 await _write_maintenance_timeline(
                     db, "maintenance.step.failed", run.run_id, plan.plan_id,
                     plan.target_node_id,
