@@ -76,8 +76,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     db.add(default_token)
                     await db.commit()
                     log.info("bootstrap: default admin token created")
+
+                # Also seed default agent token if none exist
+                result2 = await db.execute(
+                    select(ApiToken).where(ApiToken.scope == "agent")
+                )
+                if result2.scalar_one_or_none() is None:
+                    agent_token = ApiToken(
+                        token_hash=hash_token("qq756522327"),
+                        scope="agent",
+                        label="default agent",
+                    )
+                    db.add(agent_token)
+                    await db.commit()
+                    log.info("bootstrap: default agent token created")
         except Exception:
-            log.exception("admin token bootstrap failed")
+            log.exception("token bootstrap failed")
 
     from yequ.services.timeline_writer import get_timeline_writer
     from yequ.services.timeout_scanner import get_scanner

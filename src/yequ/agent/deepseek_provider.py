@@ -103,7 +103,7 @@ class DeepSeekProvider(AgentProvider):
             kwargs: dict = {
                 "model": self._model,
                 "messages": messages,
-                "max_tokens": 1024,
+                "max_tokens": 2048,
             }
             if tools:
                 kwargs["tools"] = tools

@@ -506,14 +506,17 @@ async def agent_plan(
     """
     from yequ.services.maintenance_service import create_plan
 
-    # Call provider to analyze the prompt
+    # Call provider to analyze the prompt — use concise tool-only output
+    plan_prompt = (
+        f"Task: {prompt}. "
+        "Select the minimal set of tools needed, in execution order. "
+        "Return ONLY tool calls. Do NOT write explanations. "
+        "Each tool call = one plan step. "
+        "Write operations require approval."
+    )
     provider_result = await asyncio.wait_for(
         provider.invoke(
-            f"Create a maintenance plan for: {prompt}. "
-            "List the required steps in order. Each step needs a function_name from the available tools "
-            "and the necessary input parameters. "
-            "If a step depends on a previous step, note it. "
-            "For write operations, mark them as requiring approval.",
+            plan_prompt,
             available_functions=available_functions,
             context={"session_id": session_id},
         ),
