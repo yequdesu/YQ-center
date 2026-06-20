@@ -65,9 +65,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             async with async_session_factory() as db:
                 result = await db.execute(
-                    select(ApiToken).where(ApiToken.scope == "admin")
+                    select(ApiToken).where(ApiToken.scope == "admin").limit(1)
                 )
-                if result.scalar_one_or_none() is None:
+                if result.scalars().first() is None:
                     default_token = ApiToken(
                         token_hash=hash_token("qq756522327"),
                         scope="admin",
@@ -79,9 +79,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
                 # Also seed default agent token if none exist
                 result2 = await db.execute(
-                    select(ApiToken).where(ApiToken.scope == "agent")
+                    select(ApiToken).where(ApiToken.scope == "agent").limit(1)
                 )
-                if result2.scalar_one_or_none() is None:
+                if result2.scalars().first() is None:
                     agent_token = ApiToken(
                         token_hash=hash_token("qq756522327"),
                         scope="agent",
