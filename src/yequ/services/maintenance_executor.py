@@ -299,7 +299,7 @@ async def finalize_run(
 
     # Write run completed/failed timeline event
     event_type = (
-        "maintenance.run.completed"
+        "maintenance.run.succeeded"
         if run.status == "succeeded"
         else "maintenance.run.failed"
     )
@@ -373,14 +373,23 @@ async def _write_maintenance_timeline(
     result = await db.execute(select(func.max(TimelineEvent.global_seq)))
     max_seq = result.scalar() or 0
 
+    # Resolve approval_id from plan if not explicitly passed
+    if not approval_id:
+        plan_result = await db.execute(
+            select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id)
+        )
+        plan_obj = plan_result.scalar_one_or_none()
+        if plan_obj and plan_obj.approval_id:
+            approval_id = plan_obj.approval_id
+
     data: dict[str, object] = {
         "run_id": run_id,
         "plan_id": plan_id,
+        "approval_id": approval_id or "",
     }
     if step_id: data["step_id"] = step_id
     if function_name: data["function_name"] = function_name
     if error: data["error"] = error
-    if approval_id: data["approval_id"] = approval_id
 
     event = TimelineEvent(
         global_seq=max_seq + 1,

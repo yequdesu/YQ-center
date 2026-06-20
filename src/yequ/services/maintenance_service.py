@@ -132,6 +132,24 @@ async def approve_plan(
     db.add(timeline_event)
     await db.flush()
 
+    # Also write approval.approved for L2 audit chain
+    result2 = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq2 = result2.scalar() or 0
+    approved_event = TimelineEvent(
+        global_seq=max_seq2 + 1,
+        event_type="approval.approved",
+        actor_type="admin",
+        actor_id="admin",
+        node_id=plan.target_node_id,
+        data={
+            "approval_id": approval_id,
+            "plan_id": plan.plan_id,
+            "goal": plan.goal,
+        },
+        timestamp=datetime.now(UTC),
+    )
+    db.add(approved_event)
+
     return plan
 
 
@@ -150,6 +168,18 @@ async def run_plan(
     db.add(run)
     plan.status = "running"
     plan.started_at = now
+
+    # Consume approval if plan has one
+    if plan.approval_id:
+        from yequ.services.approval_service import consume_approval
+        from yequ.models.approval import ApprovalRequest
+        apv_result = await db.execute(
+            select(ApprovalRequest).where(ApprovalRequest.approval_id == plan.approval_id)
+        )
+        approval = apv_result.scalar_one_or_none()
+        if approval:
+            await consume_approval(db, approval, invocation_id=run.run_id)
+
     await db.commit()
     return run
 
