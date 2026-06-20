@@ -32,11 +32,21 @@ case "${2:-start}" in
   start)
     banner
 
+    # Load .env if present
+    if [ -f .env ]; then
+      export $(grep -v '^#' .env | xargs)
+    fi
+
     # Ensure PostgreSQL is running
     if ! docker compose ps postgres 2>/dev/null | grep -q "healthy"; then
       echo "Starting PostgreSQL..."
       docker compose up -d postgres
       sleep 3
+    fi
+
+    # Check DeepSeek API key
+    if [ -z "${YEQU_DEEPSEEK_API_KEY:-}" ]; then
+      echo -e "${RED}[WARN] YEQU_DEEPSEEK_API_KEY not set — DeepSeek provider will fail${NC}"
     fi
 
     echo ""
