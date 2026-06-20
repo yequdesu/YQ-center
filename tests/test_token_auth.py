@@ -90,7 +90,7 @@ async def test_admin_token_allows_access(client: AsyncClient, monkeypatch):
 async def test_admin_token_rejected_on_agent_endpoint(
     client: AsyncClient, monkeypatch
 ):
-    """Admin token should be rejected on agent endpoints (scope mismatch = 403)."""
+    """Admin token should be rejected on agent endpoints — returns 401 (token not found for agent scope)."""
     from yequ.config import Settings
 
     settings = Settings(require_admin_auth=True)
@@ -112,7 +112,7 @@ async def test_admin_token_rejected_on_agent_endpoint(
 
     auth = {"Authorization": "Bearer admin-token-2"}
     r = await client.post("/agent/sessions", json={"actor_id": "test"}, headers=auth)
-    assert r.status_code == 403  # wrong scope
+    assert r.status_code == 401  # token not found for this scope
 
     # Clean up
     async with async_session_factory() as db:
