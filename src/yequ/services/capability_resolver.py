@@ -1,4 +1,4 @@
-"""Capability resolver — selects the best online Node for a Function."""
+"""Capability resolver — selects the best schedulable Node for a Function."""
 
 from dataclasses import dataclass
 
@@ -22,6 +22,8 @@ class ResolvedCapability:
     input_schema: dict | None = None
     output_schema: dict | None = None
     resource_keys: list[str] | None = None
+    available: bool = True
+    unavailable_reason: str | None = None
 
 
 async def resolve_target_node(
@@ -29,18 +31,21 @@ async def resolve_target_node(
     function_name: str,
     *,
     requested_node_id: str | None = None,
+    settings=None,
 ) -> ResolvedCapability | None:
     """Resolve which Node should execute a Function.
 
     Rules (in order):
     1. If requested_node_id is given, only check that Node.
     2. Node must be online (or provisioned for dev).
-    3. Node must have the Function registered and active.
-    4. Without requested_node_id, query all online Nodes
-       and pick the one with the most recent heartbeat.
+    3. Node must be liveness-schedulable (effective_status == online).
+    4. Node must have the Function registered and active.
+    5. Without requested_node_id, scan all candidate Nodes.
 
     Returns ResolvedCapability or None if no candidate found.
     """
+    from yequ.services.node_liveness_service import is_node_schedulable
+
     # Build base node query
     node_query = select(Node).where(
         Node.status.in_([NodeStatus.ONLINE, NodeStatus.PROVISIONED])
@@ -55,6 +60,12 @@ async def resolve_target_node(
         return None
 
     for node in nodes:
+        # Liveness gate: skip nodes that are not schedulable
+        if settings:
+            schedulable, reason = is_node_schedulable(node, settings)
+            if not schedulable:
+                continue
+
         # Check if this node has the function registered and active
         cap_result = await db.execute(
             select(Capability).where(
@@ -76,6 +87,25 @@ async def resolve_target_node(
                 input_schema=cap.input_schema,
                 output_schema=cap.output_schema,
                 resource_keys=cap.resource_keys,
+                available=True,
+                unavailable_reason=None,
             )
+
+    # Node exists but is offline/degraded — return unavailable
+    if requested_node_id and nodes:
+        node = nodes[0]
+        if settings:
+            schedulable, reason = is_node_schedulable(node, settings)
+            if not schedulable:
+                return ResolvedCapability(
+                    node_id=node.node_id,
+                    function_name=function_name,
+                    plugin_id="",
+                    risk="safe",
+                    effect="read",
+                    timeout_sec=30,
+                    available=False,
+                    unavailable_reason=reason,
+                )
 
     return None

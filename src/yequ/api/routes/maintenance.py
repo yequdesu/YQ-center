@@ -1,6 +1,11 @@
 """Maintenance Plan API endpoints."""
 
+import asyncio
+import json
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +17,7 @@ from yequ.models.maintenance_plan import (
     MaintenanceRun,
     MaintenanceStep,
 )
+from yequ.models.node import Node
 from yequ.services.maintenance_executor import execute_plan_run, finalize_run
 from yequ.services.maintenance_service import (
     approve_plan,
@@ -148,6 +154,26 @@ async def run_plan_endpoint(
     if plan.status not in ("approved", "draft"):
         raise HTTPException(409, f"Cannot run plan in status {plan.status}")
 
+    # Liveness gate: reject run if target node is offline/degraded
+    from yequ.config import get_settings
+    from yequ.services.node_liveness_service import is_node_schedulable
+
+    node_result = await db.execute(
+        select(Node).where(Node.node_id == plan.target_node_id)
+    )
+    target_node = node_result.scalar_one_or_none()
+    if target_node is None:
+        raise HTTPException(404, f"Target node {plan.target_node_id!r} not found")
+
+    schedulable, reason = is_node_schedulable(target_node, get_settings())
+    if not schedulable:
+        raise HTTPException(409, detail={
+            "error_code": "NODE_UNAVAILABLE",
+            "error_message": f"Node {plan.target_node_id} is not schedulable: {reason}",
+            "node_id": plan.target_node_id,
+            "effective_status": reason or "unavailable",
+        })
+
     run = await run_plan(db, plan)
     run = await execute_plan_run(db, plan, run, approval_id=approval_id, dry_run=dry_run)
     run = await finalize_run(db, plan, run)
@@ -233,6 +259,106 @@ async def list_artifacts(
     return {
         "run_id": run_id,
         "artifacts": artifacts,
+    }
+
+
+# ── Run events stream ──
+
+
+@router.get("/runs/{run_id}/events/stream")
+async def run_events_stream(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+):
+    """Stream maintenance run timeline events as SSE.
+
+    Sends all existing events for the run, then polls for new events
+    every 2 seconds. Closes when the run reaches terminal status.
+    """
+    # Verify run exists
+    run_result = await db.execute(
+        select(MaintenanceRun).where(MaintenanceRun.run_id == run_id)
+    )
+    r = run_result.scalar_one_or_none()
+    if r is None:
+        raise HTTPException(404, f"Run {run_id!r} not found")
+
+    async def event_generator():
+        from yequ.db import async_session_factory
+        from yequ.models.timeline import TimelineEvent
+
+        last_seq = 0
+        terminal_statuses = {"succeeded", "failed", "rollback_recommended", "cancelled"}
+
+        # Send initial events
+        async with async_session_factory() as s:
+            result = await s.execute(
+                select(TimelineEvent)
+                .where(TimelineEvent.data.op("->>")("run_id") == run_id)
+                .order_by(TimelineEvent.global_seq.asc())
+            )
+            for ev in result.scalars().all():
+                last_seq = max(last_seq, ev.global_seq)
+                yield f"data: {json.dumps(_tl_event(ev), ensure_ascii=False)}\n\n"
+
+        # Check if run already terminal
+        if r.status in terminal_statuses:
+            yield f"data: {json.dumps({'event_type': 'stream.close', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+            return
+
+        # Poll for new events
+        while True:
+            await asyncio.sleep(2)
+
+            async with async_session_factory() as s:
+                # Check for new timeline events
+                result = await s.execute(
+                    select(TimelineEvent)
+                    .where(
+                        TimelineEvent.data.op("->>")("run_id") == run_id,
+                        TimelineEvent.global_seq > last_seq,
+                    )
+                    .order_by(TimelineEvent.global_seq.asc())
+                )
+                new_events = list(result.scalars().all())
+                for ev in new_events:
+                    last_seq = max(last_seq, ev.global_seq)
+                    yield f"data: {json.dumps(_tl_event(ev), ensure_ascii=False)}\n\n"
+
+                # Check run status
+                run_check = await s.execute(
+                    select(MaintenanceRun).where(MaintenanceRun.run_id == run_id)
+                )
+                run = run_check.scalar_one_or_none()
+                if run and run.status in terminal_statuses:
+                    yield f"data: {json.dumps({'event_type': 'stream.close', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+                    return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _tl_event(e) -> dict:
+    """Convert TimelineEvent to a dict suitable for SSE."""
+    return {
+        "event_type": e.event_type,
+        "global_seq": e.global_seq,
+        "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+        "actor_type": e.actor_type,
+        "actor_id": e.actor_id,
+        "session_id": e.session_id,
+        "invocation_id": e.invocation_id,
+        "job_id": e.job_id,
+        "node_id": e.node_id,
+        "data": e.data,
     }
 
 

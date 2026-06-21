@@ -717,7 +717,8 @@ async def _execute_tool_call(
     tc.started_at = _iso(now)
 
     # -- Resolve target node --
-    resolved = await resolve_target_node(db, tc.name)
+    from yequ.config import get_settings
+    resolved = await resolve_target_node(db, tc.name, settings=get_settings())
     if resolved is None:
         tc.status = "failed"
         tc.error = {"code": ErrorCode.FUNCTION_NOT_AVAILABLE,
@@ -726,6 +727,21 @@ async def _execute_tool_call(
         await _write_timeline(db, "agent.tool.denied", session_id=session_id,
                               actor=provider_name, call_id=tc.call_id,
                               function_name=tc.name, error_code=ErrorCode.FUNCTION_NOT_AVAILABLE)
+        return tc
+
+    # Check if the resolved capability is actually available (node liveness)
+    if not resolved.available:
+        tc.status = "failed"
+        tc.error = {
+            "code": "NODE_UNAVAILABLE",
+            "message": f"Node {resolved.node_id} is not schedulable: {resolved.unavailable_reason or 'unknown'}",
+        }
+        tc.finished_at = _iso(datetime.now(UTC))
+        await _write_timeline(db, "agent.tool.denied", session_id=session_id,
+                              actor=provider_name, call_id=tc.call_id,
+                              function_name=tc.name,
+                              error_code="NODE_UNAVAILABLE",
+                              target_node_id=resolved.node_id)
         return tc
 
     tc.target_node_id = resolved.node_id

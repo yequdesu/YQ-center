@@ -35,6 +35,19 @@ async def handle_hello(
     node.heartbeat_interval_sec = settings.default_heartbeat_interval_sec
     node.job_delivery_mode = JobDeliveryMode.POLL
 
+    # Write node.online timeline event
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    max_seq = result.scalar() or 0
+    db.add(TimelineEvent(
+        global_seq=max_seq + 1,
+        event_type="node.online",
+        actor_type="system",
+        actor_id="node_service",
+        node_id=node.node_id,
+        data={"node_id": node.node_id, "daemon_version": node.daemon_version},
+        timestamp=datetime.now(UTC),
+    ))
+
     await db.commit()
 
     return {
@@ -65,6 +78,23 @@ async def handle_heartbeat(
     # If node was offline or rejoining, bring back to online
     if node.status in (NodeStatus.OFFLINE, NodeStatus.REJOINING):
         node.status = NodeStatus.ONLINE
+
+        # Write node.online timeline event on recovery
+        result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+        max_seq = result.scalar() or 0
+        db.add(TimelineEvent(
+            global_seq=max_seq + 1,
+            event_type="node.online",
+            actor_type="system",
+            actor_id="node_service",
+            node_id=node.node_id,
+            data={
+                "node_id": node.node_id,
+                "previous_status": str(node.status),  # will be "online" since we already set it
+                "recovery": True,
+            },
+            timestamp=now,
+        ))
 
     await db.commit()
 

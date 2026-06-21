@@ -85,6 +85,11 @@ class NodeSummary(BaseModel):
     role: str
     locality: str
     status: str
+    stored_status: str = ""
+    effective_status: str = ""
+    heartbeat_age_sec: float | None = None
+    heartbeat_stale: bool = False
+    schedulable: bool = False
     daemon_version: str | None = None
     platform_os: str | None = None
     platform_arch: str | None = None
@@ -110,6 +115,9 @@ class CapabilitySummary(BaseModel):
     scope: str | None = None
     ttl_sec: int | None = None
     is_active: bool
+    node_status: str = ""
+    available: bool = True
+    unavailable_reason: str | None = None
 
 class JobSummary(BaseModel):
     job_id: str
@@ -218,8 +226,10 @@ async def list_capabilities(
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[CapabilitySummary]:
+    from sqlalchemy.orm import joinedload
+
     """List capabilities, optionally filtered by node_id."""
-    stmt = select(Capability).where(Capability.is_active)
+    stmt = select(Capability).where(Capability.is_active).options(joinedload(Capability.node))
     if node_id:
         sub = select(Node.id).where(Node.node_id == node_id).scalar_subquery()
         stmt = stmt.where(Capability.node_record_id == sub)
@@ -629,13 +639,35 @@ def _approval_dict(a: ApprovalRequest) -> dict:
 
 # ── Helper converters ──
 
+def _node_liveness_fields(n: Node) -> dict:
+    """Add liveness snapshot fields for node API responses."""
+    from yequ.config import get_settings
+    from yequ.services.node_liveness_service import get_node_liveness_snapshot
+
+    snap = get_node_liveness_snapshot(n, get_settings())
+    return {
+        "stored_status": n.status,
+        "effective_status": snap["effective_status"],
+        "heartbeat_age_sec": snap["heartbeat_age_sec"],
+        "heartbeat_stale": snap["heartbeat_stale"],
+        "schedulable": snap["schedulable"],
+        "status": snap["effective_status"],  # override: API shows effective status as primary
+    }
+
+
 def _node_summary(n: Node) -> NodeSummary:
+    liveness = _node_liveness_fields(n)
     return NodeSummary(
         node_id=n.node_id,
         node_name=n.node_name,
         role=n.role,
         locality=n.locality,
-        status=n.status,
+        status=liveness["status"],
+        stored_status=liveness["stored_status"],
+        effective_status=liveness["effective_status"],
+        heartbeat_age_sec=liveness["heartbeat_age_sec"],
+        heartbeat_stale=liveness["heartbeat_stale"],
+        schedulable=liveness["schedulable"],
         daemon_version=n.daemon_version,
         platform_os=n.platform_os,
         platform_arch=n.platform_arch,
@@ -643,13 +675,20 @@ def _node_summary(n: Node) -> NodeSummary:
         last_heartbeat_at=n.last_heartbeat_at.isoformat() if n.last_heartbeat_at else None,
     )
 
+
 def _node_detail(n: Node) -> NodeDetail:
+    liveness = _node_liveness_fields(n)
     return NodeDetail(
         node_id=n.node_id,
         node_name=n.node_name,
         role=n.role,
         locality=n.locality,
-        status=n.status,
+        status=liveness["status"],
+        stored_status=liveness["stored_status"],
+        effective_status=liveness["effective_status"],
+        heartbeat_age_sec=liveness["heartbeat_age_sec"],
+        heartbeat_stale=liveness["heartbeat_stale"],
+        schedulable=liveness["schedulable"],
         daemon_version=n.daemon_version,
         platform_os=n.platform_os,
         platform_arch=n.platform_arch,
@@ -661,7 +700,12 @@ def _node_detail(n: Node) -> NodeDetail:
         created_at=n.created_at.isoformat() if n.created_at else None,
     )
 
+
 def _cap_summary(c: Capability) -> CapabilitySummary:
+    from yequ.config import get_settings
+    from yequ.services.node_liveness_service import get_node_liveness_snapshot
+
+    snap = get_node_liveness_snapshot(c.node, get_settings()) if c.node else {}
     return CapabilitySummary(
         plugin_id=c.plugin_id,
         plugin_version=c.plugin_version,
@@ -675,6 +719,9 @@ def _cap_summary(c: Capability) -> CapabilitySummary:
         scope=c.scope,
         ttl_sec=c.ttl_sec,
         is_active=c.is_active,
+        node_status=snap.get("effective_status", ""),
+        available=snap.get("schedulable", True),
+        unavailable_reason=snap.get("unavailable_reason") if not snap.get("schedulable", True) else None,
     )
 
 def _job_summary(j: Job) -> JobSummary:
@@ -804,6 +851,22 @@ async def create_invocation_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Node {body.target_node_id!r} not found",
+        )
+
+    # Liveness gate: reject invocations for offline/degraded nodes
+    from yequ.config import get_settings
+    from yequ.services.node_liveness_service import is_node_schedulable
+
+    schedulable, reason = is_node_schedulable(node, get_settings())
+    if not schedulable:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_code": "NODE_UNAVAILABLE",
+                "error_message": f"Node {body.target_node_id} is not schedulable: {reason}",
+                "node_id": body.target_node_id,
+                "effective_status": reason or "unavailable",
+            },
         )
 
     # Look up the capability to get risk/effect and resource_key_template

@@ -5,12 +5,15 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.agent import router as agent_router
 from yequ.api.routes.health import router as health_router
 from yequ.api.routes.maintenance import router as maintenance_router
 from yequ.api.routes.yqp import router as yqp_router
+from yequ.config import PROJECT_ROOT
 from yequ.logconfig import get_logger, setup_logging
 
 log = get_logger(__name__)
@@ -95,17 +98,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from yequ.services.timeline_writer import get_timeline_writer
     from yequ.services.timeout_scanner import get_scanner
+    from yequ.services.node_liveness_scanner import get_liveness_scanner
 
     scanner = get_scanner()
     tl_writer = get_timeline_writer()
+    liveness_scanner = get_liveness_scanner()
 
     if not settings.test_mode:
         await scanner.start()
         await tl_writer.start()
+        await liveness_scanner.start()
 
     yield
 
     if not settings.test_mode:
+        await liveness_scanner.stop()
         await scanner.stop()
         await tl_writer.stop()
     log.info("yeau center shutting down")
@@ -147,4 +154,30 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(maintenance_router)
     app.include_router(yqp_router)
+
+    # ── Console SPA static files ──
+    _console_dir = PROJECT_ROOT / "console-dist"
+    if _console_dir.exists() and (_console_dir / "index.html").exists():
+        # Mount static assets (JS, CSS, favicon, etc.)
+        _assets_dir = _console_dir / "assets"
+        if _assets_dir.exists():
+            app.mount("/console/assets", StaticFiles(directory=str(_assets_dir)), name="console_assets")
+
+        # Favicon
+        _favicon = _console_dir / "favicon.svg"
+        if _favicon.exists():
+            @app.get("/console/favicon.svg", include_in_schema=False)
+            async def _console_favicon():
+                return FileResponse(_favicon)
+
+        # SPA fallback: all /console/* routes serve index.html for client-side routing
+        @app.get("/console/{full_path:path}", include_in_schema=False)
+        async def _console_spa(full_path: str):
+            # Actual files at root level (favicon, etc.) are handled by explicit routes above
+            return FileResponse(_console_dir / "index.html")
+
+        @app.get("/console", include_in_schema=False)
+        async def _console_index():
+            return FileResponse(_console_dir / "index.html")
+
     return app
