@@ -109,6 +109,25 @@ def _default_functions() -> list[AgentFunction]:
             },
             risk="maintenance", effect="write", timeout_sec=30,
         ),
+        # Test failure injection functions — for stable L2-C remote verification
+        AgentFunction(
+            name="test.maintenance.repair_fail",
+            description="TEST ONLY: Simulates a failed repair step. Always fails with error_code=TEST_REPAIR_FAILED. Use to verify rollback_recommended flow.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Target service name for context"}},
+            },
+            risk="maintenance", effect="write", timeout_sec=5,
+        ),
+        AgentFunction(
+            name="test.maintenance.verify_fail",
+            description="TEST ONLY: Simulates a failed verify step after a repair. Always fails with error_code=TEST_VERIFY_FAILED. Use to verify rollback_recommended flow.",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Target service name for context"}},
+            },
+            risk="safe", effect="read", timeout_sec=5,
+        ),
     ]
 
 

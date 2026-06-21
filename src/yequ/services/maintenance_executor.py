@@ -14,6 +14,8 @@ from yequ.models.maintenance_plan import (
     MaintenanceStep,
     RollbackHint,
 )
+from yequ.models.invocation import Invocation
+from yequ.models.job import Job as JobModel
 from yequ.models.timeline import TimelineEvent
 from yequ.services.invocation_service import create_invocation, start_invocation
 from yequ.services.job_service import create_job
@@ -280,16 +282,69 @@ async def execute_plan_run(
             step.status = "running"
             await db.commit()  # MUST commit before waiting — otherwise poll sees nothing
 
-            # Wait for step to reach terminal state
-            deadline = datetime.now(UTC) + timedelta(seconds=step.timeout_sec + 30)
-            final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
+            # --- Test failure injection ---
+            # Allows stable remote testing of rollback_recommended / error artifact paths.
+            # Two modes:
+            #   1. test.maintenance.repair_fail / test.maintenance.verify_fail functions
+            #   2. __test_fail_stage in input_data (only honoured in test mode)
+            should_test_fail = False
+            test_fail_code = ""
+            test_fail_message = ""
 
-            # Collect result
-            from yequ.models.invocation import Invocation
-            inv_result = await db.execute(
-                select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
-            )
-            inv_final = inv_result.scalar_one_or_none()
+            if step.function_name == "test.maintenance.repair_fail":
+                should_test_fail = True
+                test_fail_code = "TEST_REPAIR_FAILED"
+                test_fail_message = "Simulated repair failure for testing"
+            elif step.function_name == "test.maintenance.verify_fail":
+                should_test_fail = True
+                test_fail_code = "TEST_VERIFY_FAILED"
+                test_fail_message = "Simulated verify failure for testing"
+            else:
+                # Check __test_fail_stage (only in test mode)
+                from yequ.config import get_settings
+                if get_settings().test_mode:
+                    fail_stage = (step.input_data or {}).get("__test_fail_stage", "")
+                    if fail_stage == "repair" and step.kind == "repair":
+                        should_test_fail = True
+                        test_fail_code = "TEST_REPAIR_FAILED"
+                        test_fail_message = f"Test-injected repair failure at {step.function_name}"
+                    elif fail_stage == "verify" and step.kind == "verify":
+                        should_test_fail = True
+                        test_fail_code = "TEST_VERIFY_FAILED"
+                        test_fail_message = f"Test-injected verify failure at {step.function_name}"
+
+            if should_test_fail:
+                # Directly mark invocation + job as failed
+                inv_final_result = await db.execute(
+                    select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+                )
+                inv_to_fail = inv_final_result.scalar_one_or_none()
+                if inv_to_fail:
+                    inv_to_fail.status = "failed"
+                    inv_to_fail.finished_at = datetime.now(UTC)
+                job_result = await db.execute(
+                    select(JobModel).where(JobModel.job_id == step.job_id)
+                )
+                job_to_fail = job_result.scalar_one_or_none()
+                if job_to_fail:
+                    job_to_fail.status = "failed"
+                    job_to_fail.error_code = test_fail_code
+                    job_to_fail.error_message = test_fail_message
+                    job_to_fail.finished_at = datetime.now(UTC)
+                await db.commit()
+
+                final_status = "failed"
+                inv_final = inv_to_fail
+            else:
+                # Wait for step to reach terminal state
+                deadline = datetime.now(UTC) + timedelta(seconds=step.timeout_sec + 30)
+                final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
+
+                # Collect result
+                inv_result = await db.execute(
+                    select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+                )
+                inv_final = inv_result.scalar_one_or_none()
 
             step.finished_at = datetime.now(UTC)
             if final_status == "succeeded":
@@ -375,7 +430,6 @@ async def execute_plan_run(
             else:
                 step.status = "failed"
                 # Backfill error from Job
-                from yequ.models.job import Job as JobModel
                 job_result = await db.execute(
                     select(JobModel).where(JobModel.job_id == step.job_id)
                 )
