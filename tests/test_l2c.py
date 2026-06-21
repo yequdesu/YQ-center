@@ -998,3 +998,181 @@ async def test_rollback_hint_default_service_name(client: AsyncClient, l2c_setup
         hint = repair[0].get("rollback_hint") or {}
         assert hint.get("service_name") == "Spooler", \
             f"Default service should be Spooler, got: {hint.get('service_name')}"
+
+
+# ── Deduplication tests: each terminal event appears exactly once ──
+
+
+async def _count_timeline_events(run_id: str, event_type: str, client: AsyncClient) -> int:
+    """Count how many timeline events of a given type reference a run_id."""
+    # Query global timeline and filter by event_type + data.run_id
+    r = await client.get("/admin/timeline?limit=500")
+    if r.status_code != 200:
+        return 0
+    count = 0
+    for e in r.json():
+        if e["event_type"] != event_type:
+            continue
+        data = e.get("data") or {}
+        if data.get("run_id") == run_id:
+            count += 1
+    return count
+
+
+@pytest.mark.asyncio
+async def test_repair_failed_rollback_recommended_once(client: AsyncClient, l2c_setup):
+    """Repair failure writes maintenance.rollback.recommended exactly once."""
+    node_id, token, auth = l2c_setup
+
+    r = await client.post("/admin/maintenance/plans", json={
+        "goal": "Test dedup repair fail", "target_node_id": node_id,
+        "steps": [
+            {"function_name": "system.service.status", "input": {"name": "Spooler"},
+             "kind": "check", "condition": "always", "seq": 1},
+            {"function_name": "test.maintenance.repair_fail", "input": {"name": "Spooler"},
+             "kind": "repair", "condition": "if_previous_unhealthy", "depends_on": [1],
+             "requires_approval": True,
+             "rollback_hint": {"action": "restore_service_state",
+                               "target_type": "windows_service", "service_name": "Spooler",
+                               "rollback_function": "system.service.ensure_state",
+                               "requires_approval": True}},
+        ],
+    })
+    plan_id = r.json()["plan_id"]
+
+    r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
+    approval_id = r.json()["approval_id"]
+
+    # Use unhealthy check + test repair fail (auto-fails in executor)
+    stop = asyncio.Event()
+
+    async def _completer(stop_event, nid):
+        from yequ.db import async_session_factory as _asf
+        check_done = False
+        while not stop_event.is_set():
+            try:
+                async with _asf() as db:
+                    result = await db.execute(
+                        select(Invocation).where(
+                            Invocation.target_node_id == nid,
+                            Invocation.status == "running",
+                        )
+                    )
+                    for inv in result.scalars().all():
+                        if not check_done:
+                            inv.status = "succeeded"
+                            inv.result = {"status": "stopped", "found": False,
+                                          "service_name": "Spooler"}
+                            inv.finished_at = datetime.now(UTC)
+                            job_result = await db.execute(
+                                select(Job).where(Job.invocation_id == inv.invocation_id)
+                            )
+                            for job in job_result.scalars().all():
+                                job.status = "succeeded"
+                                job.finished_at = datetime.now(UTC)
+                                job.result = inv.result
+                            check_done = True
+                    await db.commit()
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+    completer = asyncio.create_task(_completer(stop, node_id))
+    try:
+        r = await client.post(
+            f"/admin/maintenance/plans/{plan_id}/run",
+            params={"approval_id": approval_id},
+        )
+        run_id = r.json()["run_id"]
+    finally:
+        stop.set()
+        await completer
+
+    assert r.json()["status"] == "rollback_recommended"
+
+    # Count maintenance.rollback.recommended events for this run_id
+    rb_count = await _count_timeline_events(run_id, "maintenance.rollback.recommended", client)
+    assert rb_count == 1, f"Expected 1 maintenance.rollback.recommended, got {rb_count}"
+
+    # Count maintenance.run.failed events for this run_id
+    failed_count = await _count_timeline_events(run_id, "maintenance.run.failed", client)
+    assert failed_count == 1, f"Expected 1 maintenance.run.failed, got {failed_count}"
+
+
+@pytest.mark.asyncio
+async def test_verify_failed_rollback_recommended_once(client: AsyncClient, l2c_setup):
+    """Verify failure writes maintenance.rollback.recommended exactly once."""
+    node_id, token, auth = l2c_setup
+
+    r = await client.post("/admin/maintenance/plans", json={
+        "goal": "Test dedup verify fail", "target_node_id": node_id,
+        "steps": [
+            {"function_name": "system.service.status", "input": {"name": "Spooler"},
+             "kind": "check", "condition": "always", "seq": 1},
+            {"function_name": "system.service.ensure_running", "input": {"name": "Spooler"},
+             "kind": "repair", "condition": "if_previous_unhealthy", "depends_on": [1],
+             "requires_approval": True,
+             "rollback_hint": {"action": "restore_service_state",
+                               "target_type": "windows_service", "service_name": "Spooler",
+                               "rollback_function": "system.service.ensure_state",
+                               "requires_approval": True}},
+            {"function_name": "test.maintenance.verify_fail", "input": {"name": "Spooler"},
+             "kind": "verify", "condition": "after_repair", "depends_on": [2]},
+        ],
+    })
+    plan_id = r.json()["plan_id"]
+
+    r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
+    approval_id = r.json()["approval_id"]
+
+    stop = asyncio.Event()
+
+    async def _completer(stop_event, nid):
+        from yequ.db import async_session_factory as _asf
+        check_done = False
+        while not stop_event.is_set():
+            try:
+                async with _asf() as db:
+                    result = await db.execute(
+                        select(Invocation).where(
+                            Invocation.target_node_id == nid,
+                            Invocation.status == "running",
+                        )
+                    )
+                    for inv in result.scalars().all():
+                        if not check_done:
+                            inv.status = "succeeded"
+                            inv.result = {"status": "stopped", "found": False,
+                                          "service_name": "Spooler"}
+                            inv.finished_at = datetime.now(UTC)
+                            job_result = await db.execute(
+                                select(Job).where(Job.invocation_id == inv.invocation_id)
+                            )
+                            for job in job_result.scalars().all():
+                                job.status = "succeeded"
+                                job.finished_at = datetime.now(UTC)
+                                job.result = inv.result
+                            check_done = True
+                    await db.commit()
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+    completer = asyncio.create_task(_completer(stop, node_id))
+    try:
+        r = await client.post(
+            f"/admin/maintenance/plans/{plan_id}/run",
+            params={"approval_id": approval_id},
+        )
+        run_id = r.json()["run_id"]
+    finally:
+        stop.set()
+        await completer
+
+    assert r.json()["status"] == "rollback_recommended"
+
+    rb_count = await _count_timeline_events(run_id, "maintenance.rollback.recommended", client)
+    assert rb_count == 1, f"Expected 1 maintenance.rollback.recommended, got {rb_count}"
+
+    failed_count = await _count_timeline_events(run_id, "maintenance.run.failed", client)
+    assert failed_count <= 1, f"Expected at most 1 maintenance.run.failed, got {failed_count}"

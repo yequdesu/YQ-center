@@ -514,10 +514,8 @@ async def execute_plan_run(
                     )
 
                 run.finished_at = datetime.now(UTC)
-                await _write_maintenance_timeline(
-                    db, "maintenance.run.failed", run.run_id, plan.plan_id,
-                    plan.target_node_id,
-                )
+                # NOTE: do NOT write maintenance.run.failed here —
+                # finalize_run() writes the single run terminal event.
                 await db.commit()
                 return run
 
@@ -580,10 +578,8 @@ async def execute_plan_run(
             if not step.continue_on_failure:
                 run.finished_at = datetime.now(UTC)
                 await db.flush()
-                await _write_maintenance_timeline(
-                    db, "maintenance.run.failed", run.run_id, plan.plan_id,
-                    plan.target_node_id,
-                )
+                # NOTE: do NOT write maintenance.run.failed here —
+                # finalize_run() writes the single run terminal event.
                 await db.commit()
                 return run
 
@@ -654,9 +650,17 @@ async def finalize_run(
         approval_id=plan.approval_id,
     )
 
-    # Write rollback_recommended timeline if applicable
+    # Write rollback_recommended timeline if applicable and not already written
+    # (execute_plan_run may have already written it for early-return failures)
     if run.rollback_recommended:
-        await _write_rollback_recommended_timeline(db, run, plan)
+        existing = await db.execute(
+            select(TimelineEvent).where(
+                TimelineEvent.event_type == "maintenance.rollback.recommended",
+                TimelineEvent.data.op("->>")("run_id") == run.run_id,
+            ).limit(1)
+        )
+        if not existing.scalar_one_or_none():
+            await _write_rollback_recommended_timeline(db, run, plan)
 
     await db.commit()
     return run
