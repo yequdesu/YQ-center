@@ -144,6 +144,12 @@ async def mark_timed_out_nodes(
     for node in candidates:
         if node.last_heartbeat_at is None:
             continue
+
+        # Idempotent guard: don't write another offline transition
+        # if the node is already offline (handles race with heartbeat handler).
+        if node.status == NodeStatus.OFFLINE:
+            continue
+
         last_hb = node.last_heartbeat_at
         if last_hb.tzinfo is None:
             last_hb = last_hb.replace(tzinfo=UTC)
