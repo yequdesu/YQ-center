@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSession } from "@/api/agent";
-import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession } from "@/api/admin";
+import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes } from "@/api/admin";
 import { useAgentChat, type ToolCallState, type PlanStepState } from "@/hooks/useAgentChat";
 import type { MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -43,22 +43,26 @@ export function AgentChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
-  // Session list query
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
     queryFn: listSessions,
     refetchInterval: 30_000,
   });
 
-  // Ensure session exists
-  useQuery({
+  const nodesQuery = useQuery({
+    queryKey: ["nodes"],
+    queryFn: listNodes,
+    refetchInterval: 30_000,
+  });
+
+  const sessionQuery = useQuery({
     queryKey: ["agent-session", sessionId],
     queryFn: async () => {
       if (!sessionId) {
         const s = await createSession({});
         sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
         setSessionId(s.session_id);
-        return s;
+        return getSession(s.session_id);
       }
       try {
         const existing = await getSession(sessionId);
@@ -67,13 +71,34 @@ export function AgentChatPage() {
         const s = await createSession({});
         sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
         setSessionId(s.session_id);
-        return s;
+        return getSession(s.session_id);
       }
     },
     staleTime: 60_000,
   });
 
-  const { messages, isStreaming, sendInvoke, sendPlan, cancel } = useAgentChat({ sessionId });
+  const {
+    messages,
+    isStreaming,
+    sendInvoke,
+    sendPlan,
+    cancel,
+    clearMessages,
+    loadPersistedMessages,
+  } = useAgentChat({ sessionId });
+
+  useEffect(() => {
+    if (sessionQuery.data?.messages) {
+      loadPersistedMessages(sessionQuery.data.messages);
+    }
+  }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
+
+  useEffect(() => {
+    const nodes = nodesQuery.data ?? [];
+    if (nodes.length > 0 && !nodes.some((node) => node.node_id === targetNodeId)) {
+      setTargetNodeId(nodes[0].node_id);
+    }
+  }, [nodesQuery.data, targetNodeId]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -81,13 +106,15 @@ export function AgentChatPage() {
   }, [messages]);
 
   const switchSession = (newId: string) => {
+    cancel();
+    clearMessages();
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
-    // Clear messages for the new session
-    cancel();
   };
 
   const createNewSession = async () => {
+    cancel();
+    clearMessages();
     const s = await createSession({});
     sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
     setSessionId(s.session_id);
@@ -255,8 +282,11 @@ export function AgentChatPage() {
                 onChange={(e) => setTargetNodeId(e.target.value)}
                 className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
               >
-                <option value="winClient">winClient</option>
-                <option value="debian-home">debian-home</option>
+                {(nodesQuery.data ?? []).map((node) => (
+                  <option key={node.node_id} value={node.node_id}>
+                    {node.node_id}
+                  </option>
+                ))}
               </select>
               <select
                 value={executionMode}
@@ -406,6 +436,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
     running: <Loader2 size={14} className="animate-spin text-[var(--info)]" />,
     succeeded: <CheckCircle size={14} className="text-[var(--success)]" />,
     failed: <XCircle size={14} className="text-[var(--danger)]" />,
+    waiting_approval: <AlertTriangle size={14} className="text-[var(--warning)]" />,
   }[toolCall.status];
 
   return (

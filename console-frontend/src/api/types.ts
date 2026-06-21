@@ -287,6 +287,40 @@ export interface MaintenanceArtifactDetail {
   created_at: string;
 }
 
+export interface AgentSessionMessage {
+  message_id: string;
+  session_id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  content: string | null;
+  tool_call_id: string | null;
+  tool_calls: Record<string, unknown>[];
+  created_at: string | null;
+}
+
+export interface AgentSessionDetail {
+  session_id: string;
+  actor_type: string;
+  actor_id: string;
+  status: string;
+  execution_mode: string;
+  started_at: string | null;
+  closed_at: string | null;
+  close_reason: string | null;
+  metadata: Record<string, unknown>;
+  label: string;
+  messages: AgentSessionMessage[];
+}
+
+export interface AgentSessionSummary {
+  session_id: string;
+  actor_id: string;
+  status: string;
+  execution_mode: string;
+  started_at: string | null;
+  closed_at: string | null;
+  label: string;
+}
+
 // ── SSE Event types ──
 
 export type SseEventType =
@@ -306,6 +340,7 @@ export type SseEventType =
   | "agent.job.finished"
   | "agent.tool_call.completed"
   | "agent.tool_call.failed"
+  | "agent.tool_call.waiting_approval"
   | "agent.output.delta"
   | "agent.plan.step.created"
   | "agent.plan.created"

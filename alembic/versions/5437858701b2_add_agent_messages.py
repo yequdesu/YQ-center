@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
 revision: str = '5437858701b2'
@@ -28,7 +27,7 @@ def upgrade() -> None:
     sa.Column('role', sa.String(length=16), nullable=False),
     sa.Column('content', sa.Text(), nullable=True),
     sa.Column('tool_call_id', sa.String(length=64), nullable=True),
-    sa.Column('tool_calls', sqlite.JSON(), nullable=True),
+    sa.Column('tool_calls', sa.JSON(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )

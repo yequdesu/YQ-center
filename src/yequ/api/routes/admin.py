@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.api.deps import get_admin_token, get_db
 from yequ.models.api_token import ApiToken
 from yequ.models.approval import ApprovalRequest
+from yequ.models.agent_message import AgentMessage as AgentMessageModel
 from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
@@ -213,6 +214,12 @@ async def get_session(
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    message_result = await db.execute(
+        select(AgentMessageModel)
+        .where(AgentMessageModel.session_id == session_id)
+        .order_by(AgentMessageModel.created_at.asc())
+    )
+    messages = [_agent_message_dict(m) for m in message_result.scalars().all()]
     return {
         "session_id": sess.session_id,
         "actor_type": sess.actor_type,
@@ -224,7 +231,27 @@ async def get_session(
         "close_reason": sess.close_reason,
         "metadata": sess.metadata_,
         "label": (sess.metadata_ or {}).get("label", sess.session_id[:8]),
+        "messages": messages,
     }
+
+
+@router.get("/sessions/{session_id}/messages")
+async def list_session_messages(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[dict]:
+    """Return persisted messages for one Agent session."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+
+    message_result = await db.execute(
+        select(AgentMessageModel)
+        .where(AgentMessageModel.session_id == session_id)
+        .order_by(AgentMessageModel.created_at.asc())
+    )
+    return [_agent_message_dict(m) for m in message_result.scalars().all()]
 
 
 @router.patch("/sessions/{session_id}")
@@ -258,13 +285,23 @@ async def delete_session(
     if sess is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
 
-    # Delete messages first
-    from yequ.models.agent_message import AgentMessage as AgentMessageModel
     await db.execute(
         sql_delete(AgentMessageModel).where(AgentMessageModel.session_id == session_id)
     )
     await db.delete(sess)
     await db.commit()
+
+
+def _agent_message_dict(message: AgentMessageModel) -> dict:
+    return {
+        "message_id": message.message_id,
+        "session_id": message.session_id,
+        "role": message.role,
+        "content": message.content,
+        "tool_call_id": message.tool_call_id,
+        "tool_calls": message.tool_calls or [],
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+    }
 
 
 @router.get("/nodes", response_model=list[NodeSummary])

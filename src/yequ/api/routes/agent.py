@@ -1,11 +1,15 @@
 """Agent API endpoints — session management and provider invocation."""
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.agent_service import agent_invoke, agent_plan, create_agent_session
+from yequ.agent.agent_stream import agent_invoke_stream, agent_plan_stream
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
@@ -145,6 +149,7 @@ class InvokeAgentRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     provider_name: str = Field(default="fake")
     prompt: str = Field(..., min_length=1)
+    target_node_id: str | None = Field(default=None)
     call_path: list[str] = Field(default_factory=list)
     step_count: int = Field(default=0, ge=0)
     execution_mode: str = Field(default="auto")
@@ -163,6 +168,69 @@ class AgentPlanRequest(BaseModel):
 
 
 # -- Endpoints --
+
+async def _resolve_provider(provider_name: str) -> AgentProvider:
+    provider = get_provider(provider_name)
+    if provider is not None:
+        return provider
+    if provider_name == "fake":
+        provider = FakeAgentProvider()
+        for func in _default_functions():
+            provider.add_function(func)
+        register_provider(provider)
+        return provider
+    if provider_name == "deepseek":
+        from yequ.agent.deepseek_provider import DeepSeekProvider
+
+        provider = DeepSeekProvider()
+        register_provider(provider)
+        return provider
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Provider {provider_name!r} not found",
+    )
+
+
+async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
+    available = _default_functions()
+    existing = {f.name for f in available}
+    cap_result = await db.execute(
+        select(Capability).where(
+            Capability.capability_type == "function",
+            Capability.is_active == True,  # noqa: E712
+        )
+    )
+    for cap in cap_result.scalars().all():
+        if cap.name in existing:
+            continue
+        available.append(AgentFunction(
+            name=cap.name,
+            description=f"Node capability: {cap.name} ({cap.plugin_id})",
+            input_schema=cap.input_schema or {},
+            risk=cap.risk or "safe",
+            effect=cap.effect or "read",
+            timeout_sec=cap.timeout_sec or 30,
+            output_schema=cap.output_schema,
+        ))
+        existing.add(cap.name)
+    return available
+
+
+def _sse_response(event_source):
+    async def event_generator():
+        async for event in event_source:
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session_endpoint(
@@ -200,47 +268,8 @@ async def invoke_agent_endpoint(
 
     Provider "fake" is auto-created if not registered.
     """
-    provider = get_provider(body.provider_name)
-    if provider is None:
-        if body.provider_name == "fake":
-            provider = FakeAgentProvider()
-            # Pre-configure fake provider with useful defaults
-            for func in _default_functions():
-                provider.add_function(func)
-            register_provider(provider)
-        elif body.provider_name == "deepseek":
-            from yequ.agent.deepseek_provider import DeepSeekProvider
-
-            provider = DeepSeekProvider()
-            register_provider(provider)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider {body.provider_name!r} not found",
-            )
-
-    # Load available functions: L1 defaults + registered node capabilities (L2+)
-    available = _default_functions()
-
-    # Add L2+ functions from registered node capabilities
-    cap_result = await db.execute(
-        select(Capability).where(
-            Capability.capability_type == "function",
-            Capability.is_active == True,  # noqa: E712
-        )
-    )
-    for cap in cap_result.scalars().all():
-        existing = {f.name for f in available}
-        if cap.name not in existing:
-            available.append(AgentFunction(
-                name=cap.name,
-                description=f"Node capability: {cap.name} ({cap.plugin_id})",
-                input_schema=cap.input_schema or {},
-                risk=cap.risk or "safe",
-                effect=cap.effect or "read",
-                timeout_sec=cap.timeout_sec or 30,
-                output_schema=cap.output_schema,
-            ))
+    provider = await _resolve_provider(body.provider_name)
+    available = await _available_functions(db)
 
     resp = await agent_invoke(
         db,
@@ -254,9 +283,34 @@ async def invoke_agent_endpoint(
         max_total_duration_sec=body.max_total_duration_sec,
         step_count=body.step_count,
         execution_mode=body.execution_mode,
+        target_node_id=body.target_node_id,
     )
 
     return resp
+
+
+@router.post("/invoke/stream")
+async def invoke_agent_stream_endpoint(
+    body: InvokeAgentRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_agent_token),
+):
+    provider = await _resolve_provider(body.provider_name)
+    available = await _available_functions(db)
+    return _sse_response(agent_invoke_stream(
+        db,
+        provider,
+        session_id=body.session_id,
+        prompt=body.prompt,
+        target_node_id=body.target_node_id,
+        available_functions=available,
+        call_path=body.call_path,
+        max_depth=body.max_depth,
+        max_steps=body.max_steps,
+        max_total_duration_sec=body.max_total_duration_sec,
+        step_count=body.step_count,
+        execution_mode=body.execution_mode,
+    ))
 
 
 @router.post("/plan")
@@ -265,19 +319,7 @@ async def agent_plan_endpoint(
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> dict:
-    provider = get_provider(body.provider_name)
-    if provider is None:
-        if body.provider_name == "fake":
-            provider = FakeAgentProvider()
-            for func in _default_functions():
-                provider.add_function(func)
-            register_provider(provider)
-        elif body.provider_name == "deepseek":
-            from yequ.agent.deepseek_provider import DeepSeekProvider
-            provider = DeepSeekProvider()
-            register_provider(provider)
-        else:
-            raise HTTPException(404, f"Provider {body.provider_name!r} not found")
+    provider = await _resolve_provider(body.provider_name)
 
     return await agent_plan(
         db, provider,
@@ -288,3 +330,22 @@ async def agent_plan_endpoint(
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
     )
+
+
+@router.post("/plan/stream")
+async def agent_plan_stream_endpoint(
+    body: AgentPlanRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_agent_token),
+):
+    provider = await _resolve_provider(body.provider_name)
+    return _sse_response(agent_plan_stream(
+        db,
+        provider,
+        session_id=body.session_id,
+        prompt=body.prompt,
+        target_node_id=body.target_node_id,
+        available_functions=_default_functions(),
+        execution_mode=body.execution_mode,
+        max_total_duration_sec=body.max_total_duration_sec,
+    ))

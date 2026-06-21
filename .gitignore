@@ -22,3 +22,9 @@ Thumbs.db
 venv/
 .worktrees/
 .env
+
+# Frontend local dependencies/build metadata
+console-frontend/node_modules/
+console-frontend/*.tsbuildinfo
+console-frontend/vite.config.js
+console-frontend/vite.config.d.ts

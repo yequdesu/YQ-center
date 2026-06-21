@@ -2,8 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid

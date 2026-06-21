@@ -97,6 +97,7 @@ async def agent_invoke(
     step_count: int = 0,
     started_at: datetime | None = None,
     execution_mode: str = "auto",
+    target_node_id: str | None = None,
 ) -> AgentInvokeResponse:
     """Invoke an Agent through the complete execution pipeline.
 
@@ -213,6 +214,7 @@ async def agent_invoke(
     loop_state = "running"
     total_usage: dict[str, object] = {}
     current_step = step_count
+    provider_error: AgentInvokeError | None = None
 
     import time as _time
 
@@ -230,9 +232,8 @@ async def agent_invoke(
         log.info("agent loop iteration: step=%d/%d session_id=%s",
                  current_step, max_steps, session_id)
 
-        await _write_timeline(db, "agent.provider.completed", session_id=session_id,
-                              actor=provider.provider_name(), success=True,
-                              tool_call_count=len(all_tool_calls))
+        await _write_timeline(db, "agent.provider.started", session_id=session_id,
+                              actor=provider.provider_name(), step=current_step)
 
         _t0 = _time.monotonic()
         try:
@@ -253,13 +254,28 @@ async def agent_invoke(
         except TimeoutError:
             log.error("agent provider timed out: provider=%s", provider.provider_name())
             loop_state = "provider_timeout"
+            provider_error = AgentInvokeError(
+                code="provider_timeout",
+                message="Agent provider timed out",
+                retryable=True,
+            )
             break
 
         # Handle provider failure
         if not provider_result.success:
             log.error("agent provider failed: %s", provider_result.error_message)
             loop_state = "provider_failed"
+            provider_error = AgentInvokeError(
+                code=provider_result.error_code or "provider_error",
+                message=provider_result.error_message or "Agent provider failed",
+                retryable=provider_result.retryable,
+            )
             break
+
+        await _write_timeline(db, "agent.provider.completed", session_id=session_id,
+                              actor=provider.provider_name(), success=True,
+                              tool_call_count=len(provider_result.tool_calls),
+                              step=current_step)
 
         # Accumulate usage
         if provider_result.usage:
@@ -356,6 +372,7 @@ async def agent_invoke(
                 execution_mode=execution_mode, call_path=list(call_path),
                 max_depth=max_depth, deadline=deadline,
                 provider_name=provider.provider_name(),
+                requested_node_id=target_node_id,
             )
             iteration_results.append(executed)
 
@@ -364,6 +381,7 @@ async def agent_invoke(
                 loop_state = "waiting_approval"
                 all_tool_calls.extend(iteration_results)
                 await _save_session_history(db, session_id, history)
+                await db.commit()
                 return _build_loop_response(
                     provider=provider, session_id=session_id,
                     tool_calls=all_tool_calls, trace_id=trace_id,
@@ -407,8 +425,9 @@ async def agent_invoke(
         final_status = "failed"
     else:
         all_succeeded = all(tc.status == "succeeded" for tc in all_tool_calls) if all_tool_calls else True
+        any_succeeded = any(tc.status == "succeeded" for tc in all_tool_calls)
         any_failed = any(tc.status in ("failed", "denied") for tc in all_tool_calls)
-        if any_failed and all_succeeded:
+        if any_failed and any_succeeded:
             final_status = "partial"
         elif any_failed:
             final_status = "failed"
@@ -440,6 +459,7 @@ async def agent_invoke(
         max_depth=max_depth, max_steps=max_steps,
         max_total_duration_sec=max_total_duration_sec,
         status=final_status, usage=total_usage,
+        error=provider_error,
     )
 
 
@@ -658,6 +678,7 @@ async def _execute_tool_call(
     max_depth: int,
     deadline: datetime,
     provider_name: str,
+    requested_node_id: str | None = None,
 ) -> AgentToolCall:
     """Execute a single tool call through the Center pipeline.
 
@@ -674,7 +695,12 @@ async def _execute_tool_call(
 
     # -- Resolve target node --
     from yequ.config import get_settings
-    resolved = await resolve_target_node(db, tc.name, settings=get_settings())
+    resolved = await resolve_target_node(
+        db,
+        tc.name,
+        requested_node_id=requested_node_id,
+        settings=get_settings(),
+    )
     if resolved is None:
         tc.status = "failed"
         tc.error = {"code": ErrorCode.FUNCTION_NOT_AVAILABLE,
@@ -824,6 +850,7 @@ async def _execute_tool_call(
                           actor=provider_name, call_id=tc.call_id,
                           function_name=tc.name, invocation_id=inv.invocation_id,
                           job_id=job.job_id, target_node_id=resolved.node_id)
+    await db.commit()
 
     # -- Wait for Invocation terminal --
     final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
@@ -917,15 +944,17 @@ async def _load_session_history(db: AsyncSession, session_id: str) -> list[Agent
     result = await db.execute(
         select(AgentMessageModel)
         .where(AgentMessageModel.session_id == session_id)
-        .order_by(AgentMessageModel.created_at.asc())
+        .order_by(AgentMessageModel.created_at.desc())
         .limit(50)
     )
+    rows = list(reversed(result.scalars().all()))
     return [
         AgentMessage(
             role=m.role, content=m.content,
             tool_call_id=m.tool_call_id, tool_calls=m.tool_calls,
+            message_id=m.message_id,
         )
-        for m in result.scalars().all()
+        for m in rows
     ]
 
 
@@ -949,9 +978,10 @@ async def _save_session_history(
     for m in messages:
         if m.role == "system":
             continue  # never persist system prompt
-        mid = f"msg_{uuid.uuid4().hex[:16]}"
-        if mid in existing_ids:
+        if m.message_id and m.message_id in existing_ids:
             continue
+        mid = m.message_id or f"msg_{uuid.uuid4().hex[:16]}"
+        m.message_id = mid
         db.add(AgentMessageModel(
             message_id=mid, session_id=session_id,
             role=m.role, content=m.content,
@@ -978,9 +1008,10 @@ async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) 
         .order_by(AgentMessageModel.created_at.desc())
         .offset(keep_last)
     )
-    for old in result.scalars().all():
+    old_messages = result.scalars().all()
+    for old in old_messages:
         await db.delete(old)
-    if result.scalars().all():
+    if old_messages:
         await db.flush()
 
 
@@ -1231,18 +1262,21 @@ async def _write_timeline(
     prompt: str | None = None,
     step: int | None = None,
     success: bool | None = None,
+    final: bool | None = None,
 ) -> None:
-    """Write an agent timeline event using a fresh short-lived session.
+    """Write an agent timeline event in the current transaction.
 
-    Uses its own DB session to avoid any lock contention with the
-    request session or background writer. Commits immediately.
+    Agent request handlers already control commit boundaries. Using the same
+    session prevents SQLite write-lock conflicts during tests and keeps the
+    event atomic with the state transition it describes. When db is None, a
+    short independent session is used for background-only callers.
     """
     from sqlalchemy import func
 
     from yequ.db import async_session_factory
     from yequ.models.timeline import TimelineEvent
 
-    async with async_session_factory() as _db:
+    async def _add_event(_db: AsyncSession) -> None:
         result = await _db.execute(select(func.max(TimelineEvent.global_seq)))
         max_seq = result.scalar() or 0
         next_seq: int = max_seq + 1
@@ -1278,6 +1312,8 @@ async def _write_timeline(
             data["step"] = step
         if success is not None:
             data["success"] = success
+        if final is not None:
+            data["final"] = final
 
         event = TimelineEvent(
             global_seq=next_seq,
@@ -1292,4 +1328,11 @@ async def _write_timeline(
             timestamp=datetime.now(UTC),
         )
         _db.add(event)
-        await _db.commit()
+        await _db.flush()
+
+    if db is not None:
+        await _add_event(db)
+    else:
+        async with async_session_factory() as _db:
+            await _add_event(_db)
+            await _db.commit()

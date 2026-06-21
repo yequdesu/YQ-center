@@ -102,6 +102,19 @@ class FakeAgentProvider(AgentProvider):
             return result
 
         # 2. Pattern match — look in messages or prompt
+        if messages:
+            last_non_system = next((m for m in reversed(messages) if m.role != "system"), None)
+            if last_non_system and last_non_system.role == "tool":
+                return ProviderInvokeResult(
+                    message=(
+                        self._default_result.output.get("message", "")
+                        if self._default_result.output
+                        else ""
+                    ),
+                    success=self._default_result.success,
+                    tool_calls=list(self._default_result.function_calls),
+                )
+
         search_text = prompt
         if messages:
             for m in reversed(messages):

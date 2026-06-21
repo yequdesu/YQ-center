@@ -1,6 +1,7 @@
 """pytest fixtures for YeQu Center tests."""
 
 import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import yequ.models.api_token  # noqa: F401
+import yequ.models.agent_message  # noqa: F401
 import yequ.models.approval  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
@@ -66,9 +68,20 @@ async def db_engine():
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
-    # Clean up test DB file
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
+    # Clean up SQLite files. Windows may hold the handle for a short moment
+    # after async engine disposal, especially when WAL files were created.
+    for suffix in ("", "-wal", "-shm"):
+        path = f"{TEST_DB_PATH}{suffix}"
+        if not os.path.exists(path):
+            continue
+        for attempt in range(10):
+            try:
+                os.remove(path)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.1)
 
 
 @pytest_asyncio.fixture

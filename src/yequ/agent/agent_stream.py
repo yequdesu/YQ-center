@@ -53,6 +53,7 @@ async def agent_invoke_stream(
     *,
     session_id: str,
     prompt: str,
+    target_node_id: str | None = None,
     available_functions: list[AgentFunction],
     call_path: list[str] | None = None,
     max_depth: int = 5,
@@ -173,20 +174,31 @@ async def agent_invoke_stream(
                     known_functions, available_functions,
                     call_path, execution_mode, max_depth,
                     max_total_duration_sec, started_at,
+                    target_node_id,
                 ):
                     yield ev
                     if ev["event_type"] == "agent.tool_call.completed":
                         tc_result = {"status": "succeeded", "result": ev["data"].get("result")}
                     elif ev["event_type"] == "agent.tool_call.failed":
                         tc_result = {"status": "failed", "error": ev["data"].get("message")}
+                    elif ev["event_type"] == "agent.tool_call.waiting_approval":
+                        tc_result = {
+                            "status": "waiting_approval",
+                            "approval_id": ev["data"].get("approval_id"),
+                        }
+                        loop_state = "waiting_approval"
 
                 all_tool_results.append({"name": tc_name, "call_id": tc_call_id, **tc_result})
 
                 # Append tool observation
                 import json as _json
                 history.append(AgentMessage(role="tool", tool_call_id=tc_call_id, content=_json.dumps(tc_result)))
+                if loop_state == "waiting_approval":
+                    break
 
             yield _event("agent.observing", session_id, trace_id, {"tool_count": len(provider_result.tool_calls)})
+            if loop_state == "waiting_approval":
+                break
 
         # -- Fallback synthesis --
         if not final_message:
@@ -213,7 +225,7 @@ async def _stream_tool_calls(
     db, provider, session, session_id, trace_id,
     tool_calls, known_functions, available_functions,
     call_path, execution_mode, max_depth,
-    max_total_duration_sec, started_at,
+    max_total_duration_sec, started_at, target_node_id=None,
 ) -> AsyncGenerator[dict, None]:
     """Process tool calls and emit events. Sub-generator consumed by the main stream."""
     for raw_tc in tool_calls:
@@ -270,7 +282,7 @@ async def _stream_tool_calls(
             call_id, tc_name, raw_tc.get("input", {}),
             known_functions, available_functions,
             call_path, execution_mode, max_depth,
-            max_total_duration_sec, started_at,
+            max_total_duration_sec, started_at, None,
         ):
             yield ev
 
@@ -289,7 +301,13 @@ async def _execute_and_stream(
     from yequ.services.policy import check_policy
 
     # Resolve target node
-    resolved = await resolve_target_node(db, tc_name)
+    from yequ.config import get_settings
+    resolved = await resolve_target_node(
+        db,
+        tc_name,
+        requested_node_id=target_node_id,
+        settings=get_settings(),
+    )
     if resolved is None:
         yield _event("agent.tool_call.failed", session_id, trace_id, {
             "call_id": call_id,
@@ -331,10 +349,17 @@ async def _execute_and_stream(
             effect=resolved.effect,
         )
         await db.commit()
-        yield _event("agent.tool_call.failed", session_id, trace_id, {
+        yield _event("agent.approval.required", session_id, trace_id, {
             "call_id": call_id,
             "name": tc_name,
-            "error_code": "approval_required",
+            "approval_id": approval.approval_id,
+            "target_node_id": resolved.node_id,
+        })
+        yield _event("agent.tool_call.waiting_approval", session_id, trace_id, {
+            "call_id": call_id,
+            "name": tc_name,
+            "approval_id": approval.approval_id,
+            "status": "waiting_approval",
             "message": "Write operation requires approval",
         })
         return

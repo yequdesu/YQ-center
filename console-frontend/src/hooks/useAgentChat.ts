@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { createEventStream } from "@/api/stream";
-import type { SseEvent } from "@/api/types";
+import type { AgentSessionMessage, SseEvent } from "@/api/types";
 
 export interface ChatMessage {
   id: string;
@@ -19,9 +19,10 @@ export interface ToolCallState {
   callId: string;
   name: string;
   input: Record<string, unknown>;
-  status: "pending" | "running" | "succeeded" | "failed";
+  status: "pending" | "running" | "succeeded" | "failed" | "waiting_approval";
   invocationId?: string;
   jobId?: string;
+  approvalId?: string;
   result?: Record<string, unknown>;
   errorCode?: string;
   errorMessage?: string;
@@ -44,106 +45,104 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
 
+  const clearMessages = useCallback(() => {
+    setMessages([]);
+  }, []);
+
+  const loadPersistedMessages = useCallback((persisted: AgentSessionMessage[]) => {
+    setMessages(persisted.map(messageFromPersisted));
+  }, []);
+
   const addMessage = useCallback((msg: ChatMessage) => {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
-  const updateLastAssistant = useCallback(
-    (updater: (msg: ChatMessage) => ChatMessage) => {
-      setMessages((prev) => {
-        const idx = [...prev].reverse().findIndex((m) => m.role === "assistant" || m.role === "tool");
-        if (idx === -1) return prev;
-        const realIdx = prev.length - 1 - idx;
-        const updated = [...prev];
-        updated[realIdx] = updater(updated[realIdx]);
-        return updated;
-      });
-    },
-    [],
-  );
+  const updateCurrentAssistant = useCallback((updater: (msg: ChatMessage) => ChatMessage) => {
+    setMessages((prev) => {
+      const idx = [...prev].reverse().findIndex((m) => m.role === "assistant");
+      if (idx === -1) return prev;
+      const realIdx = prev.length - 1 - idx;
+      const updated = [...prev];
+      updated[realIdx] = updater(updated[realIdx]);
+      return updated;
+    });
+  }, []);
 
   const sendInvoke = useCallback(
     (prompt: string, targetNodeId: string, providerName: string, executionMode: string) => {
-      // Abort any existing stream
       abortRef.current?.();
 
-      const userMsg: ChatMessage = {
+      addMessage({
         id: crypto.randomUUID(),
         role: "user",
         content: prompt,
         toolCalls: [],
         timestamp: new Date().toISOString(),
-      };
-      addMessage(userMsg);
+      });
 
-      const assistantMsg: ChatMessage = {
+      addMessage({
         id: crypto.randomUUID(),
         role: "assistant",
         content: "",
         toolCalls: [],
         timestamp: new Date().toISOString(),
         isStreaming: true,
-      };
-      addMessage(assistantMsg);
-      setIsStreaming(true);
+      });
 
+      setIsStreaming(true);
       const stream = createEventStream(
         "/agent/invoke/stream",
         {
           session_id: sessionId,
           provider_name: providerName,
           prompt,
-          target_node_id: targetNodeId,
+          target_node_id: targetNodeId || undefined,
           execution_mode: executionMode,
         },
         {
-          onEvent: (event: SseEvent) => {
-            handleInvokeEvent(event, updateLastAssistant);
-          },
-          onError: (err) => {
+          onEvent: (event) => handleInvokeEvent(event, updateCurrentAssistant),
+          onError: (error) => {
             setIsStreaming(false);
-            updateLastAssistant((m) => ({
+            updateCurrentAssistant((m) => ({
               ...m,
-              content: m.content || `Error: ${err.message}`,
+              content: m.content || `Error: ${error.message}`,
               isStreaming: false,
             }));
           },
           onClose: () => {
             setIsStreaming(false);
-            updateLastAssistant((m) => ({ ...m, isStreaming: false }));
+            updateCurrentAssistant((m) => ({ ...m, isStreaming: false }));
           },
         },
       );
 
       abortRef.current = () => stream.abort();
     },
-    [sessionId, addMessage, updateLastAssistant],
+    [addMessage, sessionId, updateCurrentAssistant],
   );
 
   const sendPlan = useCallback(
     (prompt: string, targetNodeId: string, providerName: string) => {
       abortRef.current?.();
 
-      const userMsg: ChatMessage = {
+      addMessage({
         id: crypto.randomUUID(),
         role: "user",
         content: prompt,
         toolCalls: [],
         timestamp: new Date().toISOString(),
-      };
-      addMessage(userMsg);
+      });
 
-      const assistantMsg: ChatMessage = {
+      addMessage({
         id: crypto.randomUUID(),
         role: "assistant",
         content: "",
         toolCalls: [],
         timestamp: new Date().toISOString(),
         isStreaming: true,
-      };
-      addMessage(assistantMsg);
-      setIsStreaming(true);
+      });
 
+      setIsStreaming(true);
       const stream = createEventStream(
         "/agent/plan/stream",
         {
@@ -153,31 +152,30 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
           target_node_id: targetNodeId,
         },
         {
-          onEvent: (event: SseEvent) => {
-            handlePlanEvent(event, updateLastAssistant, onPlanCreated);
-          },
-          onError: (err) => {
+          onEvent: (event) => handlePlanEvent(event, updateCurrentAssistant, onPlanCreated),
+          onError: (error) => {
             setIsStreaming(false);
-            updateLastAssistant((m) => ({
+            updateCurrentAssistant((m) => ({
               ...m,
-              content: `Error: ${err.message}`,
+              content: m.content || `Error: ${error.message}`,
               isStreaming: false,
             }));
           },
           onClose: () => {
             setIsStreaming(false);
-            updateLastAssistant((m) => ({ ...m, isStreaming: false }));
+            updateCurrentAssistant((m) => ({ ...m, isStreaming: false }));
           },
         },
       );
 
       abortRef.current = () => stream.abort();
     },
-    [sessionId, addMessage, updateLastAssistant, onPlanCreated],
+    [addMessage, onPlanCreated, sessionId, updateCurrentAssistant],
   );
 
   const cancel = useCallback(() => {
     abortRef.current?.();
+    abortRef.current = null;
     setIsStreaming(false);
   }, []);
 
@@ -187,6 +185,8 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
     sendInvoke,
     sendPlan,
     cancel,
+    clearMessages,
+    loadPersistedMessages,
   };
 }
 
@@ -194,157 +194,108 @@ function handleInvokeEvent(
   event: SseEvent,
   update: (updater: (msg: ChatMessage) => ChatMessage) => void,
 ) {
-  const d = event.data as Record<string, unknown>;
+  const data = event.data as Record<string, unknown>;
 
   switch (event.event_type) {
-    case "agent.provider.delta":
-      update((m) => ({
-        ...m,
-        content: m.content + (d.content as string ?? ""),
+    case "agent.provider.started":
+      update((message) => ({
+        ...message,
+        content: message.content || "Thinking...",
       }));
       break;
 
     case "agent.tool_call.created": {
-      const tc: ToolCallState = {
-        callId: d.call_id as string ?? "",
-        name: d.name as string ?? "",
-        input: (d.input as Record<string, unknown>) ?? {},
+      const callId = String(data.call_id ?? "");
+      const toolCall: ToolCallState = {
+        callId,
+        name: String(data.name ?? ""),
+        input: asRecord(data.input),
         status: "pending",
       };
-      update((m) => ({
-        ...m,
-        role: "tool",
-        toolCalls: [...m.toolCalls.filter((t) => t.callId !== tc.callId), tc],
+      update((message) => ({
+        ...message,
+        content: message.content === "Thinking..." ? "" : message.content,
+        toolCalls: [...message.toolCalls.filter((t) => t.callId !== callId), toolCall],
       }));
       break;
     }
 
     case "agent.tool_call.arguments":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId
-              ? { ...t, input: (d.input as Record<string, unknown>) ?? t.input }
-              : t,
-          ),
-        };
-      });
+      patchTool(data, update, (tool) => ({ ...tool, input: asRecord(data.input) }));
       break;
 
     case "agent.invocation.created":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId
-              ? { ...t, invocationId: d.invocation_id as string }
-              : t,
-          ),
-        };
-      });
-      break;
-
-    case "agent.job.queued":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId
-              ? { ...t, jobId: d.job_id as string, status: "running" }
-              : t,
-          ),
-        };
-      });
-      break;
-
-    case "agent.job.running":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId ? { ...t, status: "running" } : t,
-          ),
-        };
-      });
-      break;
-
-    case "agent.tool_call.completed":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId
-              ? { ...t, status: "succeeded", result: d.result as Record<string, unknown> }
-              : t,
-          ),
-        };
-      });
-      break;
-
-    case "agent.tool_call.failed":
-      update((m) => {
-        const callId = d.call_id as string ?? "";
-        return {
-          ...m,
-          toolCalls: m.toolCalls.map((t) =>
-            t.callId === callId
-              ? {
-                  ...t,
-                  status: "failed",
-                  errorCode: d.error_code as string,
-                  errorMessage: d.message as string,
-                }
-              : t,
-          ),
-        };
-      });
-      break;
-
-    case "agent.output.delta":
-      update((m) => ({
-        ...m,
-        content: m.content + (d.content as string ?? ""),
+      patchTool(data, update, (tool) => ({
+        ...tool,
+        invocationId: String(data.invocation_id ?? ""),
       }));
       break;
 
-    case "agent.loop.started":
-      // Loop begins — note iteration tracking
+    case "agent.job.queued":
+      patchTool(data, update, (tool) => ({
+        ...tool,
+        jobId: String(data.job_id ?? ""),
+        status: "running",
+      }));
       break;
 
-    case "agent.loop.iteration":
-      // New iteration of the ReAct loop
+    case "agent.job.running":
+      patchTool(data, update, (tool) => ({ ...tool, status: "running" }));
       break;
 
-    case "agent.observing":
-      // Tool results collected, about to re-call LLM
+    case "agent.tool_call.completed":
+      patchTool(data, update, (tool) => ({
+        ...tool,
+        status: "succeeded",
+        result: asRecord(data.result),
+      }));
       break;
 
-    case "agent.synthesizing":
-      // LLM producing final answer (no more tools)
+    case "agent.tool_call.waiting_approval":
+      patchTool(data, update, (tool) => ({
+        ...tool,
+        status: "waiting_approval",
+        approvalId: String(data.approval_id ?? ""),
+        errorMessage: String(data.message ?? "Approval required"),
+      }));
+      break;
+
+    case "agent.tool_call.failed":
+      patchTool(data, update, (tool) => ({
+        ...tool,
+        status: "failed",
+        errorCode: String(data.error_code ?? ""),
+        errorMessage: String(data.message ?? "Tool failed"),
+      }));
+      break;
+
+    case "agent.output.delta":
+      update((message) => ({
+        ...message,
+        content: appendContent(message.content, String(data.content ?? "")),
+      }));
       break;
 
     case "agent.fallback_synthesis":
-      // LLM failed, using fallback summary
-      update((m) => ({
-        ...m,
-        content: m.content + "\n\n" + (d.message as string ?? "Fallback summary"),
+      update((message) => ({
+        ...message,
+        content: appendContent(message.content, String(data.message ?? "")),
       }));
       break;
 
     case "agent.completed":
-      update((m) => ({ ...m, isStreaming: false }));
+      update((message) => ({
+        ...message,
+        content: message.content || String(data.message ?? ""),
+        isStreaming: false,
+      }));
       break;
 
     case "agent.failed":
-      update((m) => ({
-        ...m,
-        content: m.content || `Failed: ${d.message as string ?? "Unknown error"}`,
+    case "agent.provider.failed":
+      update((message) => ({
+        ...message,
+        content: message.content || `Failed: ${String(data.message ?? "Unknown error")}`,
         isStreaming: false,
       }));
       break;
@@ -356,59 +307,104 @@ function handlePlanEvent(
   update: (updater: (msg: ChatMessage) => ChatMessage) => void,
   onPlanCreated?: (planId: string) => void,
 ) {
-  const d = event.data as Record<string, unknown>;
+  const data = event.data as Record<string, unknown>;
 
   switch (event.event_type) {
     case "agent.planning.summary":
-      update((m) => ({
-        ...m,
-        content: `Planning: ${d.message as string ?? ""}`,
+      update((message) => ({
+        ...message,
+        content: String(data.message ?? "Planning..."),
       }));
       break;
 
     case "agent.plan.step.created": {
       const step: PlanStepState = {
-        seq: d.seq as number,
-        kind: d.kind as string,
-        functionName: d.function_name as string,
-        requiresApproval: d.requires_approval as boolean,
+        seq: Number(data.seq ?? 0),
+        kind: String(data.kind ?? ""),
+        functionName: String(data.function_name ?? ""),
+        requiresApproval: Boolean(data.requires_approval),
       };
-      update((m) => ({
-        ...m,
-        planSteps: [...(m.planSteps ?? []), step],
+      update((message) => ({
+        ...message,
+        planSteps: [...(message.planSteps ?? []), step],
       }));
       break;
     }
 
-    case "agent.plan.created":
-      update((m) => ({
-        ...m,
-        planId: d.plan_id as string,
-        content: `Plan created: ${d.goal as string ?? ""}`,
+    case "agent.plan.created": {
+      const planId = String(data.plan_id ?? "");
+      update((message) => ({
+        ...message,
+        planId,
+        content: `Plan created: ${String(data.goal ?? "")}`,
       }));
-      if (d.plan_id && onPlanCreated) {
-        onPlanCreated(d.plan_id as string);
-      }
+      if (planId && onPlanCreated) onPlanCreated(planId);
       break;
+    }
 
     case "agent.approval.required":
-      update((m) => ({
-        ...m,
+      update((message) => ({
+        ...message,
         approvalRequired: true,
-        content: m.content + "\n\n⚠️ This plan requires approval.",
+        content: appendContent(message.content, "This plan requires approval."),
       }));
       break;
 
     case "agent.completed":
-      update((m) => ({ ...m, isStreaming: false }));
+      update((message) => ({ ...message, isStreaming: false }));
       break;
 
     case "agent.failed":
-      update((m) => ({
-        ...m,
-        content: m.content || `Failed: ${d.message as string ?? "Unknown error"}`,
+      update((message) => ({
+        ...message,
+        content: message.content || `Failed: ${String(data.message ?? "Unknown error")}`,
         isStreaming: false,
       }));
       break;
   }
+}
+
+function patchTool(
+  data: Record<string, unknown>,
+  update: (updater: (msg: ChatMessage) => ChatMessage) => void,
+  patch: (tool: ToolCallState) => ToolCallState,
+) {
+  const callId = String(data.call_id ?? "");
+  update((message) => ({
+    ...message,
+    toolCalls: message.toolCalls.map((tool) =>
+      tool.callId === callId ? patch(tool) : tool,
+    ),
+  }));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function appendContent(current: string, next: string): string {
+  if (!next) return current;
+  if (!current || current === "Thinking...") return next;
+  return `${current}\n\n${next}`;
+}
+
+function messageFromPersisted(message: AgentSessionMessage): ChatMessage {
+  return {
+    id: message.message_id,
+    role: message.role,
+    content: message.content ?? "",
+    toolCalls: toolCallsFromPersisted(message.tool_calls),
+    timestamp: message.created_at ?? new Date().toISOString(),
+  };
+}
+
+function toolCallsFromPersisted(raw: Record<string, unknown>[]): ToolCallState[] {
+  return raw.map((item) => ({
+    callId: String(item.call_id ?? ""),
+    name: String(item.name ?? ""),
+    input: asRecord(item.input),
+    status: "pending",
+  }));
 }

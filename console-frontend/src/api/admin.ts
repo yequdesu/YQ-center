@@ -1,6 +1,8 @@
 import { api } from "./client";
 import type {
   ApprovalDetail,
+  AgentSessionDetail,
+  AgentSessionSummary,
   CapabilitySummary,
   InvocationDetail,
   JobSummary,
@@ -105,24 +107,17 @@ export function createInvocation(body: CreateInvocationBody) {
 // ── Sessions ──
 
 export function getSession(sessionId: string) {
-  return api.get<{
-    session_id: string;
-    actor_type: string;
-    actor_id: string;
-    status: string;
-    execution_mode: string;
-    started_at: string | null;
-    closed_at: string | null;
-    close_reason: string | null;
-    metadata: Record<string, unknown>;
-    label: string;
-  }>(`/admin/sessions/${encodeURIComponent(sessionId)}`);
+  return api.get<AgentSessionDetail>(`/admin/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 export function listSessions() {
-  return api.get<
-    { session_id: string; actor_id: string; status: string; execution_mode: string; started_at: string | null; closed_at: string | null; label: string }[]
-  >("/admin/sessions");
+  return api.get<AgentSessionSummary[]>("/admin/sessions");
+}
+
+export function listSessionMessages(sessionId: string) {
+  return api.get<AgentSessionDetail["messages"]>(
+    `/admin/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
 }
 
 export function renameSession(sessionId: string, label: string) {

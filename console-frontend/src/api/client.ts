@@ -1,27 +1,12 @@
 import type { ApiClientConfig } from "./types";
 
-let _config: ApiClientConfig | null = null;
+let config: ApiClientConfig | null = null;
 
-export function configureClient(config: ApiClientConfig): void {
-  _config = config;
-}
-
-export function getConfig(): ApiClientConfig {
-  if (!_config) {
-    throw new Error("API client not configured. Call configureClient() first.");
-  }
-  return _config;
-}
-
-export function clearConfig(): void {
-  _config = null;
-}
-
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
-  detail: Record<string, unknown> | null;
+  detail: unknown;
 
-  constructor(status: number, message: string, detail?: Record<string, unknown>) {
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -29,30 +14,43 @@ class ApiError extends Error {
   }
 }
 
+export function configureClient(nextConfig: ApiClientConfig): void {
+  config = nextConfig;
+}
+
+export function clearConfig(): void {
+  config = null;
+}
+
+export function getConfig(): ApiClientConfig {
+  if (!config) {
+    throw new Error("API client is not configured");
+  }
+  return config;
+}
+
 async function request<T>(
   method: string,
   path: string,
   options?: {
     body?: unknown;
-    params?: Record<string, string | number | undefined>;
+    params?: Record<string, string | number | boolean | undefined>;
   },
 ): Promise<T> {
-  const config = getConfig();
-  const url = new URL(`${config.baseUrl}${path}`);
+  const cfg = getConfig();
+  const url = new URL(`${cfg.baseUrl}${path}`);
 
-  if (options?.params) {
-    for (const [key, value] of Object.entries(options.params)) {
-      if (value !== undefined) {
-        url.searchParams.set(key, String(value));
-      }
+  for (const [key, value] of Object.entries(options?.params ?? {})) {
+    if (value !== undefined) {
+      url.searchParams.set(key, String(value));
     }
   }
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${config.token}`,
+    Authorization: `Bearer ${cfg.token}`,
   };
   if (options?.body !== undefined) {
-    headers["Content-Type"] = "application/json";
+    headers["Content-Type"] = "application/json; charset=utf-8";
   }
 
   const response = await fetch(url.toString(), {
@@ -62,40 +60,37 @@ async function request<T>(
   });
 
   if (response.status === 401) {
-    config.onUnauthorized();
-    throw new ApiError(401, "未授权 — Token 无效或已过期");
+    cfg.onUnauthorized();
+    throw new ApiError(401, "Unauthorized. Token is missing or invalid.");
   }
-
   if (response.status === 403) {
-    throw new ApiError(403, "权限不足 — Token scope 不匹配");
+    throw new ApiError(403, "Forbidden. Token scope does not allow this API.");
   }
-
   if (!response.ok) {
-    let detail: Record<string, unknown> | undefined;
+    let detail: unknown;
     try {
       detail = await response.json();
     } catch {
-      // response may not be JSON
+      detail = await response.text().catch(() => undefined);
     }
     const message =
-      typeof detail?.detail === "string"
-        ? detail.detail
-        : detail?.detail
-          ? JSON.stringify(detail.detail)
-          : `请求失败: ${response.status}`;
+      typeof detail === "object" &&
+      detail !== null &&
+      "detail" in detail &&
+      typeof (detail as { detail?: unknown }).detail === "string"
+        ? String((detail as { detail: string }).detail)
+        : `Request failed: ${response.status}`;
     throw new ApiError(response.status, message, detail);
   }
 
-  // Handle 204 No Content
   if (response.status === 204) {
     return undefined as T;
   }
-
   return response.json() as Promise<T>;
 }
 
 export const api = {
-  get<T>(path: string, params?: Record<string, string | number | undefined>) {
+  get<T>(path: string, params?: Record<string, string | number | boolean | undefined>) {
     return request<T>("GET", path, { params });
   },
   post<T>(path: string, body?: unknown) {
@@ -111,5 +106,3 @@ export const api = {
     return request<T>("DELETE", path);
   },
 };
-
-export { ApiError };
