@@ -313,6 +313,30 @@ function handleInvokeEvent(
       }));
       break;
 
+    case "agent.loop.started":
+      // Loop begins — note iteration tracking
+      break;
+
+    case "agent.loop.iteration":
+      // New iteration of the ReAct loop
+      break;
+
+    case "agent.observing":
+      // Tool results collected, about to re-call LLM
+      break;
+
+    case "agent.synthesizing":
+      // LLM producing final answer (no more tools)
+      break;
+
+    case "agent.fallback_synthesis":
+      // LLM failed, using fallback summary
+      update((m) => ({
+        ...m,
+        content: m.content + "\n\n" + (d.message as string ?? "Fallback summary"),
+      }));
+      break;
+
     case "agent.completed":
       update((m) => ({ ...m, isStreaming: false }));
       break;
