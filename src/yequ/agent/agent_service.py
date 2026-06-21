@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.agent.provider import AgentFunction, AgentProvider
+import json as _json
+
+from yequ.agent.provider import AgentFunction, AgentMessage, AgentProvider
 from yequ.agent.tool_execution import (
     AgentInvokeError,
     AgentInvokeOutput,
@@ -195,295 +197,249 @@ async def agent_invoke(
     )
     await db.commit()  # commit so event is visible even if provider hangs
 
-    # -- Step 2: Call Provider with hard asyncio timeout --
-    log.info("agent provider request started: provider=%s session_id=%s",
+    # -- Step 2: Load conversation history --
+    history = await _load_session_history(db, session_id)
+
+    # Build the messages array: system prompt is injected by the provider
+    # Append the current user message
+    history.append(AgentMessage(role="user", content=prompt))
+
+    # -- Step 3: ReAct loop --
+    log.info("agent loop started: provider=%s session_id=%s",
              provider.provider_name(), session_id)
 
-    # Diagnostic events: only write when debug_timeline is enabled
-    from yequ.config import get_settings as _gs
-    if _gs().debug_timeline:
-        await _write_timeline(db, "agent.provider.request.started",
-                              session_id=session_id, actor=provider.provider_name())
-        await db.commit()
+    all_tool_calls: list[AgentToolCall] = []
+    final_provider_message = ""
+    loop_state = "running"
+    total_usage: dict[str, object] = {}
+    current_step = step_count
 
     import time as _time
-    _t0 = _time.monotonic()
-    try:
-        provider_result = await asyncio.wait_for(
-            provider.invoke(
-                prompt,
-                available_functions=available_functions,
-                context={"call_path": list(call_path), "session_id": session_id},
-            ),
-            timeout=45.0,
-        )
-        _elapsed = _time.monotonic() - _t0
-        log.info("agent provider request returned: provider=%s elapsed=%.1fs",
-                 provider.provider_name(), _elapsed)
 
-        if _gs().debug_timeline:
-            await _write_timeline(db, "agent.provider.request.returned",
-                                  session_id=session_id, actor=provider.provider_name(),
-                                  tool_call_count=len(provider_result.tool_calls))
-            await db.commit()
+    while current_step < max_steps:
+        # Duration guard
+        now = datetime.now(UTC)
+        elapsed = (now - started_at).total_seconds()
+        if elapsed > max_total_duration_sec:
+            loop_state = "timeout"
+            break
 
-        # Parse raw tool_calls into AgentToolCall list
-        if _gs().debug_timeline:
-            await _write_timeline(db, "agent.provider.parse.started",
-                                  session_id=session_id, actor=provider.provider_name(),
-                                  tool_call_count=len(provider_result.tool_calls))
-            await db.commit()
+        current_step += 1
 
-        raw_tool_calls_parsed: list[dict[str, object]] = []
-        for raw_tc in provider_result.tool_calls:
-            raw_tool_calls_parsed.append({
-                "call_id": str(raw_tc.get("call_id", "")),
-                "name": str(raw_tc.get("name", "")),
-                "sanitized_name": str(raw_tc.get("sanitized_name", "")),
-            })
-
-        if _gs().debug_timeline:
-            await _write_timeline(db, "agent.provider.parse.completed",
-                                  session_id=session_id, actor=provider.provider_name(),
-                                  tool_call_count=len(raw_tool_calls_parsed))
-            await db.commit()
-    except TimeoutError:
-        log.error("agent provider timed out: provider=%s session_id=%s",
-                  provider.provider_name(), session_id)
-        await _write_timeline(db, "agent.provider.failed", session_id=session_id,
-                              actor=provider.provider_name(), success=False,
-                              error="Provider timed out after 45s",
-                              error_code="provider_timeout")
-        await db.commit()
-        return AgentInvokeResponse(
-            success=False, status="failed", provider_name=provider.provider_name(),
-            session_id=session_id,
-            error=AgentInvokeError(code="provider_timeout",
-                                   message="Provider timed out after 45s",
-                                   retryable=True),
-            usage=AgentInvokeUsage(tool_calls=0),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id, call_path=list(call_path),
-                step_count=step_count + 1, max_depth=max_depth,
-                max_steps=max_steps, max_total_duration_sec=max_total_duration_sec,
-            ),
-        )
-
-    # ── Post-provider: wrap everything in try/except for safety ──
-    try:
-        # Handle provider failure
-        if not provider_result.success:
-            log.error("agent provider request failed: provider=%s error=%s",
-                      provider.provider_name(), provider_result.error_message)
-            await _write_timeline(db, "agent.provider.failed", session_id=session_id,
-                                  actor=provider.provider_name(), success=False,
-                                  error=provider_result.error_message,
-                                  error_code=provider_result.error_code or "provider_error")
-            await db.commit()
-            return AgentInvokeResponse(
-                success=False, status="failed", provider_name=provider.provider_name(),
-                session_id=session_id,
-                error=AgentInvokeError(code=provider_result.error_code or "provider_error",
-                                       message=provider_result.error_message or "Provider failed",
-                                       retryable=provider_result.retryable),
-                usage=AgentInvokeUsage(tool_calls=0),
-                trace=AgentInvokeTrace(
-                    trace_id=trace_id, call_path=list(call_path),
-                    step_count=step_count + 1, max_depth=max_depth,
-                    max_steps=max_steps,
-                    max_total_duration_sec=max_total_duration_sec,
-                ),
-            )
-
-        log.info("agent provider request completed: provider=%s tool_call_count=%d",
-                 provider.provider_name(), len(provider_result.tool_calls))
+        # -- Call Provider --
+        log.info("agent loop iteration: step=%d/%d session_id=%s",
+                 current_step, max_steps, session_id)
 
         await _write_timeline(db, "agent.provider.completed", session_id=session_id,
                               actor=provider.provider_name(), success=True,
-                              tool_call_count=len(provider_result.tool_calls))
-    except Exception as _post_exc:
-        log.exception("agent post-provider exception: session_id=%s", session_id)
-        await _write_timeline(db, "agent.provider.failed", session_id=session_id,
-                              actor=provider.provider_name(), success=False,
-                              error=str(_post_exc)[:500],
-                              error_code="internal_error")
-        await db.commit()
-        return AgentInvokeResponse(
-            success=False, status="failed", provider_name=provider.provider_name(),
-            session_id=session_id,
-            error=AgentInvokeError(code="internal_error",
-                                   message=str(_post_exc)[:500],
-                                   retryable=False),
-            usage=AgentInvokeUsage(tool_calls=0),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id, call_path=list(call_path),
-                step_count=step_count + 1, max_depth=max_depth,
-                max_steps=max_steps,
-                max_total_duration_sec=max_total_duration_sec,
-            ),
-        )
+                              tool_call_count=len(all_tool_calls))
 
-    # -- Step 3: Validate tool calls + execute --
-    execution_results: list[AgentToolCall] = []
-    for raw_tc in provider_result.tool_calls:
-        tc_name = str(raw_tc.get("name", ""))
-
-        # L1 readonly: reject unknown tool calls (not in available_functions at all)
-        if tc_name not in known_functions:
-            tc = AgentToolCall(
-                call_id=raw_tc.get("call_id", _make_call_id()),
-                name=tc_name,
-                sanitized_name=str(raw_tc.get("sanitized_name", tc_name)),
-                input=raw_tc.get("input", {}),
-                status="failed",
-                error={"code": "function_not_available",
-                       "message": f"Function {tc_name!r} is not available or not allowed"},
-                finished_at=_iso(datetime.now(UTC)),
-            )
-            execution_results.append(tc)
-            await _write_timeline(db, "agent.tool.denied", session_id=session_id,
-                                  actor=provider.provider_name(), call_id=tc.call_id,
-                                  function_name=tc_name,
-                                  error_code="function_not_available")
-            continue
-
-        # Loop detection
-        if tc_name in call_path:
-            denied_tc = AgentToolCall(
-                call_id=raw_tc.get("call_id", _make_call_id()),
-                name=tc_name,
-                sanitized_name=tc_name,
-                input=raw_tc.get("input", {}),
-                status="failed",
-                error={"code": ErrorCode.CIRCULAR_DEPENDENCY,
-                       "message": f"Circular: {tc_name!r} in call_path {call_path}"},
-                started_at=_iso(now),
-                finished_at=_iso(datetime.now(UTC)),
-            )
-            execution_results.append(denied_tc)
-            await _write_timeline(db, "agent.tool.denied", session_id=session_id,
-                                  actor=provider.provider_name(), call_id=denied_tc.call_id,
-                                  function_name=tc_name, error_code=ErrorCode.CIRCULAR_DEPENDENCY)
-            continue
-
-        # Policy check via available_functions metadata
-        func_meta = next(
-            (f for f in available_functions if f.name == tc_name),
-            None,
-        )
-        risk = func_meta.risk if func_meta else RiskLevel.SAFE
-
-        from yequ.services.policy import check_policy
-
-        policy_r = check_policy(
-            execution_mode=execution_mode,
-            risk_level=risk,
-            function_name=tc_name,
-        )
-        if not policy_r.allowed:
-            denied_tc = AgentToolCall(
-                call_id=raw_tc.get("call_id", _make_call_id()),
-                name=tc_name,
-                sanitized_name=tc_name,
-                input=raw_tc.get("input", {}),
-                policy=AgentToolPolicySnapshot(
-                    decision=policy_r.decision, risk=risk,
-                    effect=func_meta.effect if func_meta else "read",
-                    execution_mode=execution_mode,
+        _t0 = _time.monotonic()
+        try:
+            provider_result = await asyncio.wait_for(
+                provider.invoke(
+                    "",
+                    available_functions=available_functions,
+                    messages=history,
+                    context={"call_path": list(call_path),
+                             "session_id": session_id,
+                             "step": current_step},
                 ),
-                status="failed",
-                error={"code": ErrorCode.POLICY_DENIED,
-                       "message": policy_r.reason or "Policy denied"},
-                started_at=_iso(now),
-                finished_at=_iso(datetime.now(UTC)),
+                timeout=45.0,
             )
-            execution_results.append(denied_tc)
-            await _write_timeline(db, "agent.tool.denied", session_id=session_id,
-                                  actor=provider.provider_name(), call_id=denied_tc.call_id,
-                                  function_name=tc_name, error_code=ErrorCode.POLICY_DENIED,
-                                  reason=policy_r.reason)
-            continue
+            _elapsed = _time.monotonic() - _t0
+            log.info("agent provider request returned: step=%d elapsed=%.1fs",
+                     current_step, _elapsed)
+        except TimeoutError:
+            log.error("agent provider timed out: provider=%s", provider.provider_name())
+            loop_state = "provider_timeout"
+            break
 
-        # Execute through pipeline
-        tc = AgentToolCall(
-            call_id=raw_tc.get("call_id", _make_call_id()),
-            name=tc_name,
-            sanitized_name=str(raw_tc.get("sanitized_name", tc_name)),
-            input=raw_tc.get("input", {}),
-        )
-        executed = await _execute_tool_call(
-            db, tc, session_id=session_id, actor_id=session.actor_id,
-            execution_mode=execution_mode, call_path=list(call_path),
-            max_depth=max_depth, deadline=deadline,
-            provider_name=provider.provider_name(),
-        )
-        execution_results.append(executed)
+        # Handle provider failure
+        if not provider_result.success:
+            log.error("agent provider failed: %s", provider_result.error_message)
+            loop_state = "provider_failed"
+            break
 
-    # -- Step 4: Aggregate status --
-    all_succeeded = all(tc.status == "succeeded" for tc in execution_results)
-    any_failed = any(tc.status in ("failed", "denied") for tc in execution_results)
-    all_waiting = all(tc.status == "waiting_approval" for tc in execution_results)
+        # Accumulate usage
+        if provider_result.usage:
+            total_usage = provider_result.usage
+            total_usage["tool_calls"] = total_usage.get("tool_calls", 0) + len(provider_result.tool_calls)
 
-    if not execution_results or all_succeeded:
-        final_status = "succeeded"
-    elif all_waiting:
+        # -- No tool calls? This is the final answer --
+        if not provider_result.tool_calls:
+            final_provider_message = provider_result.message or ""
+            loop_state = "completed"
+            await _write_timeline(db, "agent.provider.completed", session_id=session_id,
+                                  actor=provider.provider_name(), success=True, final=True)
+            break
+
+        # -- Append assistant message with tool_calls --
+        history.append(AgentMessage(
+            role="assistant",
+            content=provider_result.message or "",
+            tool_calls=provider_result.tool_calls,
+        ))
+
+        # -- Validate + execute each tool call --
+        iteration_results: list[AgentToolCall] = []
+        for raw_tc in provider_result.tool_calls:
+            tc_name = str(raw_tc.get("name", ""))
+            tc_call_id = str(raw_tc.get("call_id", _make_call_id()))
+            tc_input = raw_tc.get("input", {})
+
+            # L1 check + loop detection + policy check (same as before)
+            if tc_name not in known_functions:
+                tc = AgentToolCall(
+                    call_id=tc_call_id, name=tc_name,
+                    sanitized_name=str(raw_tc.get("sanitized_name", tc_name)),
+                    input=tc_input, status="failed",
+                    error={"code": "function_not_available",
+                           "message": f"Function {tc_name!r} is not available"},
+                    finished_at=_iso(datetime.now(UTC)),
+                )
+                iteration_results.append(tc)
+                history.append(AgentMessage(
+                    role="tool", tool_call_id=tc_call_id,
+                    content=_json.dumps({"status": "failed", "error": tc.error}),
+                ))
+                continue
+
+            if tc_name in call_path:
+                tc = AgentToolCall(
+                    call_id=tc_call_id, name=tc_name, sanitized_name=tc_name,
+                    input=tc_input, status="failed",
+                    error={"code": ErrorCode.CIRCULAR_DEPENDENCY,
+                           "message": f"Circular: {tc_name!r}"},
+                    started_at=_iso(now), finished_at=_iso(datetime.now(UTC)),
+                )
+                iteration_results.append(tc)
+                history.append(AgentMessage(
+                    role="tool", tool_call_id=tc_call_id,
+                    content=_json.dumps({"status": "failed", "error": tc.error}),
+                ))
+                continue
+
+            func_meta = next((f for f in available_functions if f.name == tc_name), None)
+            risk = func_meta.risk if func_meta else RiskLevel.SAFE
+
+            from yequ.services.policy import check_policy
+            policy_r = check_policy(execution_mode=execution_mode, risk_level=risk, function_name=tc_name)
+            if not policy_r.allowed:
+                tc = AgentToolCall(
+                    call_id=tc_call_id, name=tc_name, sanitized_name=tc_name,
+                    input=tc_input,
+                    policy=AgentToolPolicySnapshot(
+                        decision=policy_r.decision, risk=risk,
+                        effect=func_meta.effect if func_meta else "read",
+                        execution_mode=execution_mode,
+                    ),
+                    status="failed",
+                    error={"code": ErrorCode.POLICY_DENIED, "message": policy_r.reason or "Policy denied"},
+                    started_at=_iso(now), finished_at=_iso(datetime.now(UTC)),
+                )
+                iteration_results.append(tc)
+                history.append(AgentMessage(
+                    role="tool", tool_call_id=tc_call_id,
+                    content=_json.dumps({"status": "denied", "error": tc.error}),
+                ))
+                continue
+
+            # Execute through pipeline
+            tc = AgentToolCall(
+                call_id=tc_call_id, name=tc_name,
+                sanitized_name=str(raw_tc.get("sanitized_name", tc_name)),
+                input=tc_input,
+            )
+            executed = await _execute_tool_call(
+                db, tc, session_id=session_id, actor_id=session.actor_id,
+                execution_mode=execution_mode, call_path=list(call_path),
+                max_depth=max_depth, deadline=deadline,
+                provider_name=provider.provider_name(),
+            )
+            iteration_results.append(executed)
+
+            # Suspend loop if approval is required
+            if executed.status == "waiting_approval":
+                loop_state = "waiting_approval"
+                all_tool_calls.extend(iteration_results)
+                await _save_session_history(db, session_id, history)
+                return _build_loop_response(
+                    provider=provider, session_id=session_id,
+                    tool_calls=all_tool_calls, trace_id=trace_id,
+                    call_path=call_path, step_count=current_step,
+                    max_depth=max_depth, max_steps=max_steps,
+                    max_total_duration_sec=max_total_duration_sec,
+                    status="waiting_approval", usage=total_usage,
+                )
+
+            # Append tool observation
+            obs_content = _json.dumps({
+                "status": executed.status,
+                "result": executed.result,
+                "error": executed.error,
+            })
+            history.append(AgentMessage(
+                role="tool", tool_call_id=tc_call_id, content=obs_content,
+            ))
+
+        all_tool_calls.extend(iteration_results)
+
+        # After observing, guard checks
+        now_check = datetime.now(UTC)
+        if (now_check - started_at).total_seconds() > max_total_duration_sec:
+            loop_state = "timeout"
+            break
+
+    # -- Step 4: Fallback synthesis if no final answer --
+    if not final_provider_message:
+        final_provider_message = _fallback_synthesis(all_tool_calls, loop_state)
+
+    # -- Step 5: Final status --
+    any_waiting = any(tc.status == "waiting_approval" for tc in all_tool_calls)
+    if any_waiting:
         final_status = "waiting_approval"
-    elif any_failed:
+    elif loop_state == "timeout":
+        final_status = "timeout"
+    elif loop_state == "max_steps_reached":
+        final_status = "max_steps_reached"
+    elif loop_state in ("provider_failed", "provider_timeout"):
         final_status = "failed"
     else:
-        final_status = "partial"
+        all_succeeded = all(tc.status == "succeeded" for tc in all_tool_calls) if all_tool_calls else True
+        any_failed = any(tc.status in ("failed", "denied") for tc in all_tool_calls)
+        if any_failed and all_succeeded:
+            final_status = "partial"
+        elif any_failed:
+            final_status = "failed"
+        else:
+            final_status = "succeeded"
 
-    # -- Step 5: Generate output message --
-    output = _generate_output(provider_result.message, execution_results)
+    # -- Step 6: Build output --
+    output = AgentInvokeOutput(
+        message=final_provider_message,
+        summary=final_provider_message,
+        highlights=_extract_highlights(all_tool_calls),
+        tool_results=_collect_tool_results(all_tool_calls),
+        data=_collect_tool_results(all_tool_calls),
+    )
 
-    # -- Step 6: Write agent.final_response --
+    # -- Step 7: Save history --
+    history.append(AgentMessage(role="assistant", content=final_provider_message))
+    await _save_session_history(db, session_id, history)
+
     await _write_timeline(db, "agent.final_response", session_id=session_id,
                           actor=provider.provider_name(), status=final_status,
-                          tool_call_count=len(execution_results))
-
+                          tool_call_count=len(all_tool_calls))
     await db.commit()
 
-    # -- Step 7: Build response --
-    error = None
-    if final_status != "succeeded":
-        first_failed = next((tc for tc in execution_results if tc.status != "succeeded"), None)
-        if first_failed and first_failed.error:
-            error = AgentInvokeError(**first_failed.error)
-        elif not provider_result.success:
-            error = AgentInvokeError(code=provider_result.error_code or "provider_error",
-                                     message=provider_result.error_message or "")
-
-    return AgentInvokeResponse(
-        success=(final_status == "succeeded"),
-        status=final_status,
-        provider_name=provider.provider_name(),
-        session_id=session_id,
-        output=output,
-        error=error,
-        tool_calls=execution_results,
-        usage=AgentInvokeUsage(
-            prompt_tokens=(
-                provider_result.usage.get("prompt_tokens")
-                if provider_result.usage else None
-            ),
-            completion_tokens=(
-                provider_result.usage.get("completion_tokens")
-                if provider_result.usage else None
-            ),
-            total_tokens=(
-                provider_result.usage.get("total_tokens")
-                if provider_result.usage else None
-            ),
-            tool_calls=len(execution_results),
-        ),
-        trace=AgentInvokeTrace(
-            trace_id=trace_id,
-            call_path=list(call_path),
-            step_count=step_count + 1,
-            max_depth=max_depth,
-            max_steps=max_steps,
-            max_total_duration_sec=max_total_duration_sec,
-        ),
+    return _build_loop_response(
+        provider=provider, session_id=session_id, output=output,
+        tool_calls=all_tool_calls, trace_id=trace_id,
+        call_path=call_path, step_count=current_step,
+        max_depth=max_depth, max_steps=max_steps,
+        max_total_duration_sec=max_total_duration_sec,
+        status=final_status, usage=total_usage,
     )
 
 
@@ -949,6 +905,194 @@ async def _wait_invocation_terminal(
         await asyncio.sleep(poll_interval)
 
     return "timeout"
+
+
+# ── Session history management ──
+
+
+async def _load_session_history(db: AsyncSession, session_id: str) -> list[AgentMessage]:
+    """Load persisted conversation history for a session."""
+    from yequ.models.agent_message import AgentMessage as AgentMessageModel
+
+    result = await db.execute(
+        select(AgentMessageModel)
+        .where(AgentMessageModel.session_id == session_id)
+        .order_by(AgentMessageModel.created_at.asc())
+        .limit(50)
+    )
+    return [
+        AgentMessage(
+            role=m.role, content=m.content,
+            tool_call_id=m.tool_call_id, tool_calls=m.tool_calls,
+        )
+        for m in result.scalars().all()
+    ]
+
+
+async def _save_session_history(
+    db: AsyncSession, session_id: str, messages: list[AgentMessage],
+) -> None:
+    """Persist new messages to session history.
+
+    Reads existing message_ids, only inserts messages not yet saved.
+    """
+    from yequ.models.agent_message import AgentMessage as AgentMessageModel
+
+    existing_ids_result = await db.execute(
+        select(AgentMessageModel.message_id)
+        .where(AgentMessageModel.session_id == session_id)
+    )
+    existing_ids = {row[0] for row in existing_ids_result.all()}
+
+    now = datetime.now(UTC)
+    new_count = 0
+    for m in messages:
+        if m.role == "system":
+            continue  # never persist system prompt
+        mid = f"msg_{uuid.uuid4().hex[:16]}"
+        if mid in existing_ids:
+            continue
+        db.add(AgentMessageModel(
+            message_id=mid, session_id=session_id,
+            role=m.role, content=m.content,
+            tool_call_id=m.tool_call_id, tool_calls=m.tool_calls,
+            created_at=now,
+        ))
+        new_count += 1
+        now = datetime.now(UTC)  # slight offset per message for ordering
+
+    if new_count > 0:
+        await db.flush()
+
+    # Trim old messages to keep history bounded
+    await _trim_history(db, session_id)
+
+
+async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) -> None:
+    """Keep only the most recent N messages for a session."""
+    from yequ.models.agent_message import AgentMessage as AgentMessageModel
+
+    result = await db.execute(
+        select(AgentMessageModel)
+        .where(AgentMessageModel.session_id == session_id)
+        .order_by(AgentMessageModel.created_at.desc())
+        .offset(keep_last)
+    )
+    for old in result.scalars().all():
+        await db.delete(old)
+    if result.scalars().all():
+        await db.flush()
+
+
+# ── Fallback synthesis ──
+
+
+def _fallback_synthesis(
+    tool_calls: list[AgentToolCall], loop_state: str,
+) -> str:
+    """Produce a human-readable summary from tool results.
+
+    Used when the LLM fails to produce a final answer or max steps reached.
+    Always returns a non-empty string.
+    """
+    if not tool_calls:
+        return "No tools were executed."
+
+    parts: list[str] = []
+    for tc in tool_calls:
+        name = tc.name
+        if tc.status == "succeeded":
+            parts.append(f"- {name}: succeeded")
+            if tc.result:
+                # Extract a brief summary
+                keys = list(tc.result.keys())[:3]
+                summary_parts = []
+                for k in keys:
+                    v = tc.result.get(k)
+                    if isinstance(v, (str, int, float, bool)):
+                        summary_parts.append(f"{k}={v}")
+                if summary_parts:
+                    parts.append(f"  ({', '.join(summary_parts)})")
+        elif tc.status in ("failed", "denied"):
+            err = tc.error or {}
+            parts.append(f"- {name}: failed — {err.get('message', tc.status)}")
+        elif tc.status == "waiting_approval":
+            parts.append(f"- {name}: requires approval")
+        else:
+            parts.append(f"- {name}: {tc.status}")
+
+    header = f"Results ({len(tool_calls)} tools, {loop_state}):"
+    return header + "\n" + "\n".join(parts)
+
+
+# ── Loop response builder ──
+
+
+def _build_loop_response(
+    *,
+    provider: AgentProvider,
+    session_id: str,
+    output: AgentInvokeOutput | None = None,
+    tool_calls: list[AgentToolCall],
+    trace_id: str,
+    call_path: list[str],
+    step_count: int,
+    max_depth: int,
+    max_steps: int,
+    max_total_duration_sec: int,
+    status: str,
+    usage: dict[str, object],
+    error: AgentInvokeError | None = None,
+) -> AgentInvokeResponse:
+    """Build the final AgentInvokeResponse."""
+    if output is None:
+        output = AgentInvokeOutput(message="No output generated.")
+
+    if error is None and status not in ("succeeded", "waiting_approval"):
+        first_failed = next((tc for tc in tool_calls if tc.status != "succeeded"), None)
+        if first_failed and first_failed.error:
+            error = AgentInvokeError(**first_failed.error)
+
+    return AgentInvokeResponse(
+        success=(status in ("succeeded", "waiting_approval")),
+        status=status,
+        provider_name=provider.provider_name(),
+        session_id=session_id,
+        output=output,
+        error=error,
+        tool_calls=tool_calls,
+        usage=AgentInvokeUsage(
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            tool_calls=len(tool_calls),
+        ),
+        trace=AgentInvokeTrace(
+            trace_id=trace_id, call_path=list(call_path),
+            step_count=step_count, max_depth=max_depth,
+            max_steps=max_steps, max_total_duration_sec=max_total_duration_sec,
+        ),
+    )
+
+
+def _extract_highlights(tool_calls: list[AgentToolCall]) -> list[str]:
+    """Extract key findings from succeeded tool calls."""
+    highlights: list[str] = []
+    for tc in tool_calls:
+        if tc.status == "succeeded" and tc.result:
+            highlights.append(f"{tc.name}: completed")
+        elif tc.status == "failed" and tc.error:
+            highlights.append(f"FAILED: {tc.name} - {tc.error.get('message', '')}")
+    return highlights
+
+
+def _collect_tool_results(tool_calls: list[AgentToolCall]) -> dict[str, object]:
+    """Collect succeeded tool results into a name→result map."""
+    results: dict[str, object] = {}
+    for tc in tool_calls:
+        if tc.status == "succeeded" and tc.result:
+            results[tc.name] = tc.result
+    return results
 
 
 def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> AgentInvokeOutput:

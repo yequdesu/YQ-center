@@ -1,5 +1,6 @@
 """YeQu Center database models."""
 
+from yequ.models.agent_message import AgentMessage
 from yequ.models.api_token import ApiToken
 from yequ.models.approval import ApprovalRequest
 from yequ.models.base import Base, TimestampMixin, generate_uuid
@@ -19,6 +20,7 @@ from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 
 __all__ = [
+    "AgentMessage",
     "ApiToken",
     "ApprovalRequest",
     "Base",

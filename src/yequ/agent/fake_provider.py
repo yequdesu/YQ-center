@@ -4,8 +4,11 @@ Does NOT connect to a real LLM. Used for integration testing
 the Agent->Center pipeline without external dependencies.
 """
 
+from typing import Sequence
+
 from yequ.agent.provider import (
     AgentFunction,
+    AgentMessage,
     AgentProvider,
     AgentResult,
     ProviderInvokeResult,
@@ -15,14 +18,17 @@ from yequ.agent.provider import (
 class FakeAgentProvider(AgentProvider):
     """Test provider that returns pre-configured responses.
 
-    Configure with add_response() to set up expected behavior
-    for specific prompt patterns. Unmatched prompts return
-    a default success with no function calls.
+    Supports:
+    - add_response(pattern, result): match on user message content
+    - set_sequence(results): return results in order for multi-turn testing
+    - set_default_result(result): fallback when no pattern matches
     """
 
     def __init__(self, provider_name: str = "fake") -> None:
         self._name = provider_name
         self._responses: dict[str, AgentResult] = {}
+        self._sequence: list[ProviderInvokeResult] = []
+        self._seq_index = 0
         self._functions: list[AgentFunction] = []
         self._invoke_count = 0
         self._default_result = AgentResult(
@@ -30,6 +36,8 @@ class FakeAgentProvider(AgentProvider):
             output={"message": "default fake response"},
             function_calls=[],
         )
+        # Captures the messages list from the last invoke call (for test assertions)
+        self.last_messages: list[AgentMessage] | None = None
 
     @property
     def invoke_count(self) -> int:
@@ -37,48 +45,72 @@ class FakeAgentProvider(AgentProvider):
         return self._invoke_count
 
     def add_response(self, prompt_contains: str, result: AgentResult) -> None:
-        """Register a response for prompts containing the given string.
-
-        First match wins. Patterns are checked in insertion order.
-        """
+        """Register a response for prompts containing the given string."""
         self._responses[prompt_contains] = result
 
     def set_default_result(self, result: AgentResult) -> None:
         """Set the default result for unmatched prompts."""
         self._default_result = result
 
+    def set_sequence(self, results: list[ProviderInvokeResult]) -> None:
+        """Set a sequence of responses for multi-turn loop testing.
+
+        Each call to invoke() returns the next result in sequence.
+        When the sequence is exhausted, falls back to default_result.
+        """
+        self._sequence = list(results)
+        self._seq_index = 0
+
     def add_function(self, func: AgentFunction) -> None:
-        """Register a function this provider can reason about."""
         self._functions.append(func)
 
     def add_functions(self, funcs: list[AgentFunction]) -> None:
-        """Register multiple functions at once."""
         self._functions.extend(funcs)
 
     def reset(self) -> None:
-        """Reset invoke count and clear responses (for test isolation)."""
         self._invoke_count = 0
+        self._seq_index = 0
+        self._sequence.clear()
         self._responses.clear()
         self._functions.clear()
+        self.last_messages = None
 
     # --- AgentProvider interface ---
 
     async def invoke(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
+        messages: list[AgentMessage] | None = None,
     ) -> ProviderInvokeResult:
-        """Return a canned response based on prompt content.
+        """Return a canned response.
 
-        Matches prompt against registered response patterns
-        using substring match. Falls back to default_result.
+        Priority:
+        1. Sequence (multi-turn) — next in sequence
+        2. Pattern match on last user message
+        3. Default result
         """
         self._invoke_count += 1
+        self.last_messages = list(messages) if messages else None
+
+        # 1. Sequence mode
+        if self._seq_index < len(self._sequence):
+            result = self._sequence[self._seq_index]
+            self._seq_index += 1
+            return result
+
+        # 2. Pattern match — look in messages or prompt
+        search_text = prompt
+        if messages:
+            for m in reversed(messages):
+                if m.role == "user" and m.content:
+                    search_text = m.content
+                    break
 
         for pattern, result in self._responses.items():
-            if pattern in prompt:
+            if pattern in search_text:
                 return ProviderInvokeResult(
                     message=str(result.output.get("message", "")) if result.output else "",
                     tool_calls=result.function_calls,
@@ -88,6 +120,7 @@ class FakeAgentProvider(AgentProvider):
                     retryable=result.retryable,
                 )
 
+        # 3. Default
         return ProviderInvokeResult(
             message=(
                 self._default_result.output.get("message", "")
@@ -99,9 +132,7 @@ class FakeAgentProvider(AgentProvider):
         )
 
     def list_functions(self) -> list[AgentFunction]:
-        """Return registered functions."""
         return list(self._functions)
 
     def provider_name(self) -> str:
-        """Return the provider's name."""
         return self._name

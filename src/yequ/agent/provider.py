@@ -10,6 +10,22 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class AgentMessage:
+    """A single message in a multi-turn conversation.
+
+    role: "system" | "user" | "assistant" | "tool"
+    content: text content (may be None for assistant messages with only tool_calls)
+    tool_call_id: for "tool" role, the id of the assistant's tool_call this responds to
+    tool_calls: for "assistant" role, the tool calls the LLM requested
+    """
+
+    role: str
+    content: str | None = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict[str, object]] | None = None
+
+
+@dataclass
 class AgentFunction:
     """Metadata about a function the Agent can reason about."""
 
@@ -71,15 +87,18 @@ class AgentProvider(ABC):
     @abstractmethod
     async def invoke(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
+        messages: list[AgentMessage] | None = None,
     ) -> ProviderInvokeResult:
         """Invoke the agent with a prompt and available functions.
 
-        The provider reasons about the prompt, decides which
-        functions to call (if any), and returns structured output.
+        When messages is provided, it contains the full conversation
+        history (system + user + assistant + tool messages). The provider
+        should use this as the context. When messages is None, the provider
+        should build messages from the prompt and available functions.
         """
         ...
 

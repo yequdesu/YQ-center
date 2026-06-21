@@ -8,11 +8,14 @@ import asyncio
 import json
 import time as _time
 import uuid
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from openai import AsyncOpenAI
 
 from yequ.agent.provider import (
     AgentFunction,
+    AgentMessage,
     AgentProvider,
     ProviderInvokeResult,
 )
@@ -59,15 +62,16 @@ class DeepSeekProvider(AgentProvider):
 
     async def invoke(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         available_functions: list[AgentFunction],
         context: dict[str, object] | None = None,
+        messages: list[AgentMessage] | None = None,
     ) -> ProviderInvokeResult:
         """Invoke DeepSeek with a prompt and available functions.
 
-        Converts available_functions to OpenAI tool format,
-        sends to DeepSeek, parses the response.
+        When messages is provided, uses it as the full conversation history.
+        Otherwise builds a fresh system + user message pair.
         Returns ProviderInvokeResult with raw tool_calls (no execution).
         """
         functions = available_functions if available_functions else self._functions
@@ -77,32 +81,17 @@ class DeepSeekProvider(AgentProvider):
         _log.info("deepseek provider build tools: elapsed=%.3fs tool_count=%d",
                   _t1 - _t0, len(tools))
 
-        func_descriptions = "\n".join(
-            f"- {f.name}: {f.description}" for f in functions
-        )
-        messages: list[dict[str, object]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an infrastructure control agent for a Windows machine. "
-                    "You have these read-only tools:\n"
-                    f"{func_descriptions}\n\n"
-                    "Rules:\n"
-                    "1. Choose the right tool(s) for the user's request.\n"
-                    "2. For multi-step checks, call multiple tools in one response.\n"
-                    "3. Never invent tool names -- only use listed tools.\n"
-                    "4. Only read-only safe tools are available.\n"
-                    "5. If unsure which tool to use, call the most relevant one.\n"
-                    "6. Respond in the user's language."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ]
+        if messages is not None:
+            # Use provided conversation history — inject system prompt at front
+            api_messages = self._to_openai_messages(messages, functions)
+        else:
+            # Build fresh system + user message pair
+            api_messages = self._build_fresh_messages(prompt, functions)
 
         try:
             kwargs: dict = {
                 "model": self._model,
-                "messages": messages,
+                "messages": api_messages,
                 "max_tokens": 2048,
             }
             if tools:
@@ -191,6 +180,203 @@ class DeepSeekProvider(AgentProvider):
                 error_message=error_msg,
                 retryable=retryable,
             )
+
+    async def invoke_stream(
+        self,
+        prompt: str,
+        *,
+        available_functions: list[AgentFunction],
+        context: dict[str, object] | None = None,
+    ) -> AsyncGenerator[dict[str, object], None]:
+        """Invoke DeepSeek with streaming response.
+
+        Yields dicts with keys:
+          - type: "delta" (text chunk), "tool_call" (accumulated tool call),
+            "done" (streaming complete), "error" (streaming error)
+          - content: str (for delta type)
+          - tool_calls: list[dict] (for done type)
+          - usage: dict (for done type)
+          - finish_reason: str (for done type)
+        """
+        functions = available_functions if available_functions else self._functions
+        tools = self._functions_to_tools(functions)
+
+        func_descriptions = "\n".join(
+            f"- {f.name}: {f.description}" for f in functions
+        )
+        messages: list[dict[str, object]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an infrastructure control agent for a Windows machine. "
+                    "You have these tools:\n"
+                    f"{func_descriptions}\n\n"
+                    "Rules:\n"
+                    "1. Choose the right tool(s) for the user's request.\n"
+                    "2. For multi-step checks, call multiple tools in one response.\n"
+                    "3. Never invent tool names -- only use listed tools.\n"
+                    "4. Respond in the user's language."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            kwargs: dict = {
+                "model": self._model,
+                "messages": messages,
+                "max_tokens": 2048,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            stream = await self._client.chat.completions.create(**kwargs)
+
+            # Accumulate streaming content and tool calls
+            text_buffer: list[str] = []
+            tool_call_buffers: dict[int, dict[str, Any]] = {}
+            usage_info: dict[str, object] = {}
+            finish_reason = "stop"
+
+            async for chunk in stream:
+                if chunk.usage:
+                    usage_info = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    }
+
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is None:
+                    continue
+
+                # Text content delta
+                if delta.content:
+                    text_buffer.append(delta.content)
+                    yield {"type": "delta", "content": delta.content}
+
+                # Tool call deltas
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_call_buffers:
+                            tool_call_buffers[idx] = {
+                                "call_id": tc_delta.id or f"call_{uuid.uuid4().hex}",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        buf = tool_call_buffers[idx]
+                        if tc_delta.id:
+                            buf["call_id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                buf["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                buf["arguments"] += tc_delta.function.arguments
+
+                # Finish reason
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+            # Parse accumulated tool calls
+            raw_tool_calls: list[dict[str, object]] = []
+            for buf in sorted(tool_call_buffers.values(), key=lambda b: int(b.get("call_id", "0")[-4:], 16) if b.get("call_id", "") else 0):  # type: ignore[arg-type]
+                buf_name = str(buf.get("name", ""))
+                try:
+                    arguments = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
+                except (json.JSONDecodeError, TypeError):
+                    arguments = {}
+
+                original_name = self._resolve_name(buf_name, functions)
+                raw_tool_calls.append({
+                    "call_id": str(buf.get("call_id", "")),
+                    "name": original_name,
+                    "sanitized_name": buf_name,
+                    "input": arguments,
+                })
+
+            yield {
+                "type": "done",
+                "message": "".join(text_buffer) if text_buffer else "Completed",
+                "tool_calls": raw_tool_calls,
+                "usage": usage_info,
+                "finish_reason": finish_reason,
+                "success": finish_reason != "length",
+            }
+
+        except Exception as e:
+            _log.error("deepseek stream error: %s", str(e)[:500])
+            yield {
+                "type": "error",
+                "error_code": "llm_error",
+                "error_message": str(e),
+                "retryable": "rate" in str(e).lower() or "timeout" in str(e).lower(),
+            }
+
+    def _system_prompt(self, functions: list[AgentFunction]) -> str:
+        """Build the system prompt for multi-turn agent conversations."""
+        func_descriptions = "\n".join(
+            f"- {f.name}: {f.description}" for f in functions
+        )
+        return (
+            "You are an infrastructure control agent. You have these tools:\n"
+            f"{func_descriptions}\n\n"
+            "Rules:\n"
+            "1. Analyze the user's request and choose appropriate tools.\n"
+            "2. You may call multiple tools in one response.\n"
+            "3. After receiving tool results, assess whether you need more "
+            "information or can give the final answer.\n"
+            "4. When all needed information is collected, respond with a "
+            "clear natural-language summary in the user's language.\n"
+            "5. Never invent tool names.\n"
+            "6. If a tool fails or is denied, explain the situation to the user.\n"
+        )
+
+    def _build_fresh_messages(
+        self, prompt: str, functions: list[AgentFunction]
+    ) -> list[dict[str, object]]:
+        """Build a fresh system + user message pair."""
+        return [
+            {"role": "system", "content": self._system_prompt(functions)},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _to_openai_messages(
+        self, messages: list[AgentMessage], functions: list[AgentFunction]
+    ) -> list[dict[str, object]]:
+        """Convert AgentMessage list to OpenAI-compatible message dicts.
+
+        System prompt is always prepended as the first message.
+        AgentMessage content/tool_calls are mapped to the OpenAI format.
+        """
+        result: list[dict[str, object]] = [
+            {"role": "system", "content": self._system_prompt(functions)},
+        ]
+
+        for m in messages:
+            d: dict[str, object] = {"role": m.role}
+            if m.content is not None:
+                d["content"] = m.content
+            if m.tool_call_id is not None:
+                d["tool_call_id"] = m.tool_call_id
+            if m.tool_calls is not None:
+                d["tool_calls"] = [
+                    {
+                        "id": tc.get("call_id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": self._sanitize_name(str(tc.get("name", ""))),
+                            "arguments": json.dumps(tc.get("input", {})),
+                        },
+                    }
+                    for tc in m.tool_calls
+                ]
+            result.append(d)
+
+        return result
 
     def _sanitize_name(self, name: str) -> str:
         """Replace dots with underscores for DeepSeek API compatibility."""
