@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import delete as sql_delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
@@ -171,6 +171,37 @@ class TimelineSummary(BaseModel):
 
 # ── Read endpoints ──
 
+class RenameSessionRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=128)
+
+
+@router.get("/sessions")
+async def list_sessions(
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[dict]:
+    """List all active sessions, newest first."""
+    result = await db.execute(
+        select(Session)
+        .where(Session.status == "active")
+        .order_by(Session.started_at.desc())
+        .limit(100)
+    )
+    sessions = result.scalars().all()
+    return [
+        {
+            "session_id": s.session_id,
+            "actor_id": s.actor_id,
+            "status": s.status,
+            "execution_mode": s.execution_mode,
+            "started_at": s.started_at.isoformat() if s.started_at else None,
+            "closed_at": s.closed_at.isoformat() if s.closed_at else None,
+            "label": (s.metadata_ or {}).get("label", s.session_id[:8]),
+        }
+        for s in sessions
+    ]
+
+
 @router.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,
@@ -192,7 +223,48 @@ async def get_session(
         "closed_at": sess.closed_at.isoformat() if sess.closed_at else None,
         "close_reason": sess.close_reason,
         "metadata": sess.metadata_,
+        "label": (sess.metadata_ or {}).get("label", sess.session_id[:8]),
     }
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    body: RenameSessionRequest,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict:
+    """Rename a session (updates metadata.label)."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    sess = result.scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    meta = dict(sess.metadata_ or {})
+    meta["label"] = body.label
+    sess.metadata_ = meta
+    await db.commit()
+    return {"session_id": session_id, "label": body.label}
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> None:
+    """Delete a session and its message history."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    sess = result.scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+
+    # Delete messages first
+    from yequ.models.agent_message import AgentMessage as AgentMessageModel
+    await db.execute(
+        sql_delete(AgentMessageModel).where(AgentMessageModel.session_id == session_id)
+    )
+    await db.delete(sess)
+    await db.commit()
 
 
 @router.get("/nodes", response_model=list[NodeSummary])

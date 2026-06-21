@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSession } from "@/api/agent";
-import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan } from "@/api/admin";
+import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession } from "@/api/admin";
 import { useAgentChat, type ToolCallState, type PlanStepState } from "@/hooks/useAgentChat";
 import type { MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -20,6 +20,10 @@ import {
   FileText,
   ChevronDown,
   ChevronRight,
+  Plus,
+  Trash2,
+  Edit3,
+  Check,
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
@@ -34,7 +38,17 @@ export function AgentChatPage() {
   const [providerName, setProviderName] = useState("deepseek");
   const [autoPlan, setAutoPlan] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [editingSessId, setEditingSessId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+
+  // Session list query
+  const sessionsQuery = useQuery({
+    queryKey: ["agent-sessions"],
+    queryFn: listSessions,
+    refetchInterval: 30_000,
+  });
 
   // Ensure session exists
   useQuery({
@@ -65,6 +79,45 @@ export function AgentChatPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const switchSession = (newId: string) => {
+    sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
+    setSessionId(newId);
+    // Clear messages for the new session
+    cancel();
+  };
+
+  const createNewSession = async () => {
+    const s = await createSession({});
+    sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
+    setSessionId(s.session_id);
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+  };
+
+  const handleRenameStart = (id: string, currentLabel: string) => {
+    setEditingSessId(id);
+    setEditLabel(currentLabel);
+  };
+
+  const handleRenameSubmit = async (id: string) => {
+    if (editLabel.trim()) {
+      await renameSession(id, editLabel.trim());
+      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    }
+    setEditingSessId(null);
+    setEditLabel("");
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this session and all its messages?")) return;
+    await deleteSession(id);
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    if (id === sessionId) {
+      const s = await createSession({});
+      sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
+      setSessionId(s.session_id);
+    }
+  };
 
   const handleSend = () => {
     if (!prompt.trim() || isStreaming) return;
@@ -97,6 +150,73 @@ export function AgentChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-var(--topbar-height))]">
+      {/* Session Sidebar */}
+      <aside className="flex w-[200px] flex-shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-muted)]">
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
+          <span className="text-[12px] font-semibold text-[var(--text)]">Sessions</span>
+          <button
+            onClick={createNewSession}
+            className="rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+            title="New session"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {(sessionsQuery.data ?? []).map((s) => (
+            <div
+              key={s.session_id}
+              onClick={() => switchSession(s.session_id)}
+              className={`group flex items-center cursor-pointer border-b border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-subtle)] ${
+                s.session_id === sessionId ? "bg-[var(--accent-muted)]" : ""
+              }`}
+            >
+              {editingSessId === s.session_id ? (
+                <form
+                  onSubmit={(e) => { e.preventDefault(); handleRenameSubmit(s.session_id); }}
+                  className="flex flex-1 items-center gap-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    value={editLabel}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 text-[12px] text-[var(--text)] outline-none"
+                    autoFocus
+                    onBlur={() => handleRenameSubmit(s.session_id)}
+                  />
+                  <button type="submit" className="p-0.5 text-[var(--success)]">
+                    <Check size={12} />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <span className="flex-1 truncate text-[12px] text-[var(--text)]">
+                    {s.label}
+                  </span>
+                  <div className="flex opacity-0 group-hover:opacity-100">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRenameStart(s.session_id, s.label); }}
+                      className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
+                      title="Rename"
+                    >
+                      <Edit3 size={10} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(s.session_id); }}
+                      className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]"
+                      title="Delete"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </aside>
+
       {/* Conversation area */}
       <div className="flex flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-6">
