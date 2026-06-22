@@ -5,6 +5,7 @@ The caller (FastAPI route) formats these as SSE text/event-stream.
 """
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -152,6 +153,19 @@ async def agent_invoke_stream(
     if not suppress_user_message:
         await _save_session_history(db, session_id, [user_message])
         await db.commit()
+
+    denied_message = _deterministic_denied_approval_message(prompt) if suppress_user_message else None
+    if denied_message:
+        history.append(AgentMessage(role="assistant", content=denied_message))
+        history_to_persist = [message for message in history if message is not user_message]
+        await _save_session_history(db, session_id, history_to_persist)
+        await _write_timeline(db, "agent.final_response", session_id=session_id, actor=provider.provider_name(), status="denied")
+        await db.commit()
+        yield _event("agent.output.delta", session_id, trace_id, {"content": denied_message})
+        yield _event("agent.completed", session_id, trace_id, {"status": "denied", "message": denied_message})
+        _mark_stream_inactive(session_id)
+        yield _event("stream.close", session_id, trace_id)
+        return
 
     yield _event("agent.loop.started", session_id, trace_id, {"max_steps": max_steps, "max_duration_sec": max_total_duration_sec})
 
@@ -1110,3 +1124,30 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
         else:
             parts.append(f"- {name}: {status}")
     return "\n".join(parts)
+
+
+def _deterministic_denied_approval_message(prompt: str) -> str | None:
+    marker = "approval_results:"
+    if marker not in prompt:
+        return None
+    raw = prompt.split(marker, 1)[1].strip()
+    try:
+        results = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(results, list) or not results:
+        return None
+    if not all(isinstance(item, dict) and item.get("status") == "denied" for item in results):
+        return None
+
+    names = [str(item.get("toolName") or item.get("name") or "write action") for item in results]
+    unique_names = []
+    for name in names:
+        if name not in unique_names:
+            unique_names.append(name)
+    actions = "\n".join(f"- {name}" for name in unique_names)
+    return (
+        "已收到你的审批结果：你拒绝了本次写操作，因此没有执行任何会改变系统状态的动作。\n\n"
+        f"被拒绝的操作：\n{actions}\n\n"
+        "我不会改用 dry_run 或重新发起同一个写操作。dry_run 只能用于预检，不能绕过审批。"
+    )

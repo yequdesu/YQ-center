@@ -305,7 +305,7 @@ export function AgentChatPage() {
           }
         }
       }
-      sendInvoke(buildApprovalContinuationPrompt(outcomes), targetNodeId, providerName, executionMode, {
+      sendInvoke(buildApprovalContinuationPromptV2(outcomes), targetNodeId, providerName, executionMode, {
         visible: false,
         suppressUserMessage: true,
       });
@@ -479,6 +479,16 @@ export function AgentChatPage() {
             status: "denied",
             errorMessage: "Denied by user.",
           });
+          approvalRunPromisesRef.current.set(
+            approvalId,
+            Promise.resolve({
+              approvalId,
+              toolName: toolCall.name,
+              status: "denied",
+              errorCode: "approval_denied",
+              errorMessage: "User denied this approval. No action was executed.",
+            }),
+          );
         } else {
           const result = await approveAndRunApproval(approvalId, "Approved from Agent chat");
           patchToolCall({
@@ -1391,6 +1401,23 @@ function buildApprovalContinuationPrompt(outcomes: ApprovalRunOutcome[]): string
     "1. 不要重复调用这些 approval_id 对应的写操作，除非用户明确要求重试。",
     "2. 如果 status 是 succeeded，直接基于 result 给出结论；必要时只能调用只读工具复核状态。",
     "3. 如果 status 是 failed/cancelled/timeout/denied，解释失败原因并给出下一步。",
+    "",
+    "approval_results:",
+    payload,
+  ].join("\n");
+}
+
+function buildApprovalContinuationPromptV2(outcomes: ApprovalRunOutcome[]): string {
+  const payload = JSON.stringify(outcomes, null, 2);
+  return [
+    "The user has just handled approval requests in YeQu Agent Console.",
+    "These results are authoritative. Do not repeat the same write action unless the user explicitly asks to retry.",
+    "",
+    "Rules:",
+    "1. If a result status is succeeded, summarize the result. You may use read-only tools only if verification is necessary.",
+    "2. If a result status is denied, cancelled, failed, or timeout, explain that no approved write action was completed.",
+    "3. Denied means the user rejected the action. Do not call the same write tool again.",
+    "4. Do not use dry_run as a workaround after denial. dry_run is only a preflight check, not execution permission.",
     "",
     "approval_results:",
     payload,
