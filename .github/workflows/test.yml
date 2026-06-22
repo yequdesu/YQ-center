@@ -1,0 +1,70 @@
+name: Test
+
+on:
+  push:
+    branches: [main, feat/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        suite:
+          - "protocol"
+          - "job-runtime"
+          - "agent"
+          - "l2"
+          - "core"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run protocol tests
+        if: matrix.suite == 'protocol'
+        run: pytest tests/test_yqp_protocol.py tests/test_integration.py -q
+
+      - name: Run job runtime tests
+        if: matrix.suite == 'job-runtime'
+        run: pytest tests/test_job_runtime.py tests/test_job_state_machine.py -q
+
+      - name: Run agent tests
+        if: matrix.suite == 'agent'
+        run: pytest tests/test_agent.py tests/test_agent_console_ux.py tests/test_agent_session_history.py -q
+
+      - name: Run L2 tests
+        if: matrix.suite == 'l2'
+        run: pytest tests/test_l2*.py -q
+
+      - name: Run core tests
+        if: matrix.suite == 'core'
+        run: pytest tests/test_concurrency.py tests/test_node_liveness.py tests/test_approval_api.py tests/test_session_timeline.py -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: console-frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: console-frontend
+        run: npm run build
