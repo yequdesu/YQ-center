@@ -88,7 +88,7 @@ const routeTree = rootRoute.addChildren([
   timelineRoute,
 ]);
 
-export const router = createRouter({ routeTree });
+export const router = createRouter({ routeTree, basepath: "/console" });
 
 declare module "@tanstack/react-router" {
   interface Register {
