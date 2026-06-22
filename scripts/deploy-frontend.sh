@@ -43,15 +43,9 @@ npm run build
 
 # ── 4. Sync to console-dist/ ──
 echo ""
-echo -e "${YELLOW}[3/3] Deploying to console-dist/ ...${NC}"
-
-# Clear previous deployment
-rm -rf "$CONSOLE_DIST"
-
-# Copy fresh build output
-cp -r "$CONSOLE_SRC/dist" "$CONSOLE_DIST"
-
+echo -e "${YELLOW}[3/3] Build outputs directly to console-dist/ (via vite --outDir)${NC}"
 echo ""
+
 echo -e "${GREEN}Done. Frontend deployed to console-dist/.${NC}"
 echo "  index.html : $CONSOLE_DIST/index.html"
 echo "  assets/    : $(ls "$CONSOLE_DIST/assets" 2>/dev/null | wc -l) files"
