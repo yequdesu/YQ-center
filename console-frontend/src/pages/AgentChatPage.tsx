@@ -13,6 +13,7 @@ import {
   renameSession,
   deleteSession,
   listNodes,
+  getApproval,
   getJob,
   denyApproval,
   approveAndRunApproval,
@@ -64,6 +65,7 @@ export function AgentChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
+  const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
   const refreshSessionHistory = useCallback(() => {
@@ -314,11 +316,103 @@ export function AgentChatPage() {
       blocks.flatMap((block) =>
         block.type === "tool_group"
           ? block.tool_calls.filter(
-              (tool) => tool.status === "waiting_approval" && Boolean(tool.approvalId),
+              (tool) =>
+                tool.status === "waiting_approval" &&
+                Boolean(tool.approvalId) &&
+                !dismissedApprovalIds.has(String(tool.approvalId)),
             )
           : [],
       ),
-    [blocks],
+    [blocks, dismissedApprovalIds],
+  );
+
+  const dismissApproval = useCallback((approvalId: string) => {
+    setDismissedApprovalIds((prev) => {
+      if (prev.has(approvalId)) return prev;
+      const next = new Set(prev);
+      next.add(approvalId);
+      return next;
+    });
+  }, []);
+
+  const syncProcessedApproval = useCallback(
+    async (approvalId: string, toolName: string): Promise<ApprovalRunOutcome | null> => {
+      const approval = await getApproval(approvalId);
+      if (approval.status === "pending") return null;
+
+      if (approval.status === "denied") {
+        dismissApproval(approvalId);
+        patchToolCall({
+          approvalId,
+          status: "denied",
+          errorCode: null,
+          errorMessage: "Denied by user.",
+        });
+        return {
+          approvalId,
+          toolName,
+          status: "denied",
+          errorMessage: "Denied by user.",
+        };
+      }
+
+      if (approval.status === "expired") {
+        dismissApproval(approvalId);
+        patchToolCall({
+          approvalId,
+          status: "failed",
+          errorCode: "approval_expired",
+          errorMessage: "Approval expired.",
+        });
+        return {
+          approvalId,
+          toolName,
+          status: "failed",
+          errorCode: "approval_expired",
+          errorMessage: "Approval expired.",
+        };
+      }
+
+      if (approval.status === "consumed") {
+        dismissApproval(approvalId);
+        const jobId = approval.consumed_invocation?.jobs?.[0]?.job_id ?? approval.invocation?.jobs?.[0]?.job_id;
+        if (!jobId) {
+          patchToolCall({
+            approvalId,
+            status: "running",
+            errorCode: null,
+            errorMessage: null,
+          });
+          return {
+            approvalId,
+            toolName,
+            status: "consumed",
+            errorMessage: "Approval was already consumed; waiting for linked job data.",
+          };
+        }
+        const job = await getJob(jobId);
+        patchToolCall(jobToToolPatch(job, approvalId));
+        if (["succeeded", "failed", "timeout", "cancelled"].includes(job.status)) {
+          return jobToApprovalOutcome(job, approvalId, toolName);
+        }
+        const runPromise = waitForJobTerminal(job.job_id, approvalId, toolName);
+        approvalRunPromisesRef.current.set(approvalId, runPromise);
+        return runPromise;
+      }
+
+      if (approval.status === "approved") {
+        patchToolCall({
+          approvalId,
+          status: "waiting_approval",
+          errorCode: "approval_already_approved",
+          errorMessage: "Approval is already approved but not consumed yet.",
+        });
+        return null;
+      }
+
+      return null;
+    },
+    [dismissApproval, patchToolCall, waitForJobTerminal],
   );
 
   const handleToolApprovalDecision = useCallback(
@@ -330,8 +424,18 @@ export function AgentChatPage() {
       setApprovalBusyId(approvalId);
       setApprovalActionError(null);
       try {
+        const processed = await syncProcessedApproval(approvalId, toolCall.name);
+        if (processed) {
+          approvalRunPromisesRef.current.set(approvalId, Promise.resolve(processed));
+          if (isLastApproval) {
+            void scheduleAutoContinue();
+          }
+          return;
+        }
+
         if (decision === "deny") {
           await denyApproval(approvalId, "Denied from Agent chat");
+          dismissApproval(approvalId);
           patchToolCall({
             approvalId,
             status: "denied",
@@ -358,6 +462,20 @@ export function AgentChatPage() {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Approval action failed.";
+        if (message.includes("consumed") || message.includes("expected pending")) {
+          try {
+            const processed = await syncProcessedApproval(approvalId, toolCall.name);
+            if (processed) {
+              approvalRunPromisesRef.current.set(approvalId, Promise.resolve(processed));
+              if (isLastApproval) {
+                void scheduleAutoContinue();
+              }
+              return;
+            }
+          } catch {
+            // Fall through to the visible error below.
+          }
+        }
         setApprovalActionError(message);
         patchToolCall({
           approvalId,
@@ -371,10 +489,12 @@ export function AgentChatPage() {
     },
     [
       approvalBusyId,
+      dismissApproval,
       patchToolCall,
       pendingApprovals.length,
       queryClient,
       scheduleAutoContinue,
+      syncProcessedApproval,
       waitForJobTerminal,
     ],
   );

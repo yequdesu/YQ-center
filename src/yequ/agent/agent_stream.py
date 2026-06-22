@@ -1016,7 +1016,20 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
     - General → structured summary
     """
     if not tool_results:
-        return "No tools were executed."
+        if loop_state == "provider_failed":
+            return (
+                "Agent provider did not return a usable tool plan. "
+                "No system action was executed. Please retry with a more specific request."
+            )
+        if loop_state == "timeout":
+            return (
+                "Agent execution timed out before any tool could run. "
+                "No system action was executed."
+            )
+        return (
+            "I did not receive any tool calls or final answer from the model. "
+            "No system action was executed. Please retry the request."
+        )
 
     succeeded = [r for r in tool_results if r.get("status") == "succeeded"]
     failed = [r for r in tool_results if r.get("status") == "failed"]
