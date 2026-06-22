@@ -1,11 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createSession } from "@/api/agent";
-import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes, approveApproval, denyApproval, approveAndRunApproval } from "@/api/admin";
+import {
+  getSession,
+  getMaintenanceRun,
+  listMaintenanceRunArtifacts,
+  approvePlan,
+  runPlan,
+  listSessions,
+  renameSession,
+  deleteSession,
+  listNodes,
+  getJob,
+  denyApproval,
+  approveAndRunApproval,
+} from "@/api/admin";
 import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock } from "@/hooks/useAgentChat";
-import type { AgentSessionSummary, MaintenanceArtifactDetail } from "@/api/types";
+import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
 import { Button } from "@/components/Button";
@@ -48,7 +61,10 @@ export function AgentChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const creatingSessionRef = useRef(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const [autoContinuing, setAutoContinuing] = useState(false);
   const queryClient = useQueryClient();
+  const approvalRunPromisesRef = useRef(new Map<string, Promise<void>>());
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
@@ -86,6 +102,7 @@ export function AgentChatPage() {
     cancel,
     clearBlocks,
     loadPersistedMessages,
+    patchToolCall,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
   // Session selection is idempotent: never create sessions implicitly.
@@ -231,6 +248,114 @@ export function AgentChatPage() {
     }
     setPrompt("");
   };
+
+  const waitForJobTerminal = useCallback(
+    async (jobId: string, approvalId: string) => {
+      const terminalStatuses = new Set(["succeeded", "failed", "timeout", "cancelled"]);
+      for (let attempt = 0; attempt < 70; attempt += 1) {
+        const job = await getJob(jobId);
+        patchToolCall(jobToToolPatch(job, approvalId));
+        if (terminalStatuses.has(job.status)) return;
+        await sleep(1200);
+      }
+      patchToolCall({
+        approvalId,
+        status: "failed",
+        errorCode: "job_poll_timeout",
+        errorMessage: "Timed out while waiting for the approved job to finish.",
+      });
+    },
+    [patchToolCall],
+  );
+
+  const scheduleAutoContinue = useCallback(async () => {
+    if (!sessionId || autoContinuing) return;
+    setAutoContinuing(true);
+    try {
+      const pendingRuns = Array.from(approvalRunPromisesRef.current.values());
+      if (pendingRuns.length > 0) {
+        await Promise.allSettled(pendingRuns);
+      }
+      sendInvoke(
+        "继续处理刚才的审批结果，并基于最新工具结果给出最终结论。",
+        targetNodeId,
+        providerName,
+        executionMode,
+      );
+    } finally {
+      setAutoContinuing(false);
+    }
+  }, [autoContinuing, executionMode, providerName, sendInvoke, sessionId, targetNodeId]);
+
+  const pendingApprovals = useMemo(
+    () =>
+      blocks.flatMap((block) =>
+        block.type === "tool_group"
+          ? block.tool_calls.filter(
+              (tool) => tool.status === "waiting_approval" && Boolean(tool.approvalId),
+            )
+          : [],
+      ),
+    [blocks],
+  );
+
+  const handleToolApprovalDecision = useCallback(
+    async (toolCall: ToolCallState, decision: "approve" | "deny") => {
+      const approvalId = toolCall.approvalId;
+      if (!approvalId || approvalBusyId) return;
+
+      const isLastApproval = pendingApprovals.length <= 1;
+      setApprovalBusyId(approvalId);
+      try {
+        if (decision === "deny") {
+          await denyApproval(approvalId, "Denied from Agent chat");
+          patchToolCall({
+            approvalId,
+            status: "denied",
+            errorMessage: "Denied by user.",
+          });
+        } else {
+          const result = await approveAndRunApproval(approvalId, "Approved from Agent chat");
+          patchToolCall({
+            approvalId,
+            status: "running",
+            invocationId: result.invocation_id,
+            jobId: result.job_id,
+            errorCode: null,
+            errorMessage: null,
+          });
+          const runPromise = waitForJobTerminal(result.job_id, approvalId);
+          approvalRunPromisesRef.current.set(approvalId, runPromise);
+          void runPromise.finally(() => {
+            approvalRunPromisesRef.current.delete(approvalId);
+          });
+        }
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+        queryClient.invalidateQueries({ queryKey: ["approvals"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        if (isLastApproval) {
+          void scheduleAutoContinue();
+        }
+      } catch (error) {
+        patchToolCall({
+          approvalId,
+          status: "waiting_approval",
+          errorCode: "approval_action_failed",
+          errorMessage: error instanceof Error ? error.message : "Approval action failed.",
+        });
+      } finally {
+        setApprovalBusyId(null);
+      }
+    },
+    [
+      approvalBusyId,
+      patchToolCall,
+      pendingApprovals.length,
+      queryClient,
+      scheduleAutoContinue,
+      waitForJobTerminal,
+    ],
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -426,6 +551,23 @@ export function AgentChatPage() {
         {/* Prompt Composer */}
         <div className="border-t border-[var(--border)] bg-[var(--surface-solid)] p-4">
           <div className="mx-auto max-w-3xl space-y-2">
+            {pendingApprovals.length > 0 && (
+              <ApprovalQueueBar
+                toolCall={pendingApprovals[0]}
+                index={1}
+                total={pendingApprovals.length}
+                busy={approvalBusyId === pendingApprovals[0].approvalId}
+                disabled={Boolean(approvalBusyId)}
+                onApprove={() => handleToolApprovalDecision(pendingApprovals[0], "approve")}
+                onDeny={() => handleToolApprovalDecision(pendingApprovals[0], "deny")}
+              />
+            )}
+            {autoContinuing && (
+              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
+                <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
+                Waiting for approved jobs to finish, then continuing automatically...
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <select
                 value={targetNodeId}
@@ -530,6 +672,57 @@ function ChatTimelineBlock({
 
 // ── User Bubble ──
 
+function ApprovalQueueBar({
+  toolCall,
+  index,
+  total,
+  busy,
+  disabled,
+  onApprove,
+  onDeny,
+}: {
+  toolCall: ToolCallState;
+  index: number;
+  total: number;
+  busy: boolean;
+  disabled: boolean;
+  onApprove: () => void;
+  onDeny: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--warning-muted)] bg-[var(--surface-solid)] shadow-sm">
+      <div className="flex items-center gap-3 bg-[var(--warning-muted)]/20 px-3 py-2">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--warning-muted)]/40 text-[var(--warning)]">
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] font-semibold text-[var(--text)]">
+              Approval {index}/{total}
+            </span>
+            <span className="truncate font-mono text-[12px] text-[var(--text-muted)]">
+              {toolCall.name}
+            </span>
+          </div>
+          <p className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]">
+            {toolCall.approvalId} · choose one, then the next approval will appear automatically
+          </p>
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={onDeny} disabled={disabled}>
+            <XCircle size={13} />
+            <span className="ml-1">No</span>
+          </Button>
+          <Button variant="primary" size="sm" onClick={onApprove} disabled={disabled}>
+            <CheckCircle size={13} />
+            <span className="ml-1">Yes, run</span>
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UserBubble({ block }: { block: UserBlock }) {
   return (
     <div className="flex justify-end gap-3">
@@ -564,10 +757,11 @@ function AssistantTextBubble({ block }: { block: AssistantTextBlock }) {
 
 function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
   const succeeded = block.tool_calls.filter((t) => t.status === "succeeded").length;
-  const failed = block.tool_calls.filter((t) => t.status === "failed").length;
+  const failed = block.tool_calls.filter((t) => t.status === "failed" || t.status === "denied").length;
   const running = block.tool_calls.filter(
     (t) => t.status === "running" || t.status === "pending",
   ).length;
+  const waiting = block.tool_calls.filter((t) => t.status === "waiting_approval").length;
 
   return (
     <div className="flex gap-3">
@@ -582,6 +776,7 @@ function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
           <span className="text-[12px] text-[var(--text-subtle)]">{block.tool_calls.length}</span>
           <span className="flex-1" />
           {running > 0 && <span className="text-[11px] text-[var(--info)]">{running} running</span>}
+          {waiting > 0 && <span className="text-[11px] text-[var(--warning)]">{waiting} waiting</span>}
           {succeeded > 0 && (
             <span className="text-[11px] text-[var(--success)]">{succeeded} succeeded</span>
           )}
@@ -633,8 +828,6 @@ function MarkdownMessage({ content, isStreaming }: { content: string; isStreamin
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   const [expanded, setExpanded] = useState(false);
-  const [approvalAction, setApprovalAction] = useState<"idle" | "loading" | "done">("idle");
-  const queryClient = useQueryClient();
 
   const hasDetails = Boolean(
     toolCall.result ||
@@ -650,35 +843,8 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
     succeeded: <CheckCircle size={14} className="text-[var(--success)]" />,
     failed: <XCircle size={14} className="text-[var(--danger)]" />,
     waiting_approval: <AlertTriangle size={14} className="text-[var(--warning)]" />,
+    denied: <XCircle size={14} className="text-[var(--danger)]" />,
   }[toolCall.status];
-
-  const handleApproveAndExecute = async () => {
-    if (!toolCall.approvalId) return;
-    if (!confirm(`Approve and execute "${toolCall.name}"?`)) return;
-    setApprovalAction("loading");
-    try {
-      await approveAndRunApproval(toolCall.approvalId);
-      setApprovalAction("done");
-      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
-      queryClient.invalidateQueries({ queryKey: ["approvals"] });
-    } catch {
-      setApprovalAction("idle");
-    }
-  };
-
-  const handleDeny = async () => {
-    if (!toolCall.approvalId) return;
-    if (!confirm(`Deny "${toolCall.name}"?`)) return;
-    setApprovalAction("loading");
-    try {
-      await denyApproval(toolCall.approvalId);
-      setApprovalAction("done");
-      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
-      queryClient.invalidateQueries({ queryKey: ["approvals"] });
-    } catch {
-      setApprovalAction("idle");
-    }
-  };
 
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)]/80 p-2.5">
@@ -729,13 +895,12 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
               {toolCall.errorMessage}
             </p>
           )}
-          {/* Approval actions */}
-          {toolCall.status === "waiting_approval" && toolCall.approvalId && approvalAction !== "done" && (
+          {toolCall.status === "waiting_approval" && toolCall.approvalId && (
             <div className="rounded-[var(--radius-sm)] border border-[var(--warning-muted)] bg-[var(--warning-muted)]/10 p-2.5 space-y-2">
               <div className="flex items-center gap-1.5">
                 <AlertTriangle size={14} className="text-[var(--warning)]" />
                 <span className="text-[12px] font-medium text-[var(--warning)]">
-                  This operation requires approval
+                  Waiting for approval in the action bar below
                 </span>
               </div>
               {toolCall.approvalId && (
@@ -743,30 +908,6 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
                   approval: {toolCall.approvalId}
                 </p>
               )}
-              <div className="flex gap-2">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleApproveAndExecute}
-                  disabled={approvalAction === "loading"}
-                >
-                  {approvalAction === "loading" ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <CheckCircle size={12} />
-                  )}
-                  <span className="ml-1">Approve and Execute</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleDeny}
-                  disabled={approvalAction === "loading"}
-                >
-                  <XCircle size={12} />
-                  <span className="ml-1">Deny</span>
-                </Button>
-              </div>
             </div>
           )}
           {toolCall.result && (
@@ -980,4 +1121,51 @@ function formatRelativeTime(iso: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function jobToToolPatch(
+  job: JobSummary,
+  approvalId: string,
+): {
+  approvalId: string;
+  status: ToolCallState["status"];
+  invocationId: string;
+  jobId: string;
+  result?: Record<string, unknown>;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+} {
+  if (job.status === "succeeded") {
+    return {
+      approvalId,
+      status: "succeeded",
+      invocationId: job.invocation_id,
+      jobId: job.job_id,
+      result: job.output ?? undefined,
+      errorCode: null,
+      errorMessage: null,
+    };
+  }
+  if (job.status === "failed" || job.status === "timeout" || job.status === "cancelled") {
+    return {
+      approvalId,
+      status: "failed",
+      invocationId: job.invocation_id,
+      jobId: job.job_id,
+      errorCode: job.error_code ?? job.status,
+      errorMessage: job.error_message ?? `Job ${job.status}`,
+    };
+  }
+  return {
+    approvalId,
+    status: "running",
+    invocationId: job.invocation_id,
+    jobId: job.job_id,
+    errorCode: null,
+    errorMessage: null,
+  };
 }

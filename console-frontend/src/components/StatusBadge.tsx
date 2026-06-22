@@ -3,7 +3,11 @@ export function StatusBadge({ status }: { status: string }) {
   const color =
     normalized.includes("success") || normalized === "running" || normalized === "online"
       ? "bg-emerald-50 text-emerald-700"
-      : normalized.includes("fail") || normalized.includes("error") || normalized === "offline"
+      : normalized.includes("fail") ||
+          normalized.includes("error") ||
+          normalized === "offline" ||
+          normalized === "denied" ||
+          normalized === "cancelled"
         ? "bg-rose-50 text-rose-700"
         : normalized.includes("wait") || normalized.includes("approval") || normalized.includes("pending")
           ? "bg-amber-50 text-amber-700"

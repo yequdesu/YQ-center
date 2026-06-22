@@ -45,13 +45,24 @@ export interface ToolCallState {
   callId: string;
   name: string;
   input: Record<string, unknown>;
-  status: "pending" | "running" | "succeeded" | "failed" | "waiting_approval";
+  status: "pending" | "running" | "succeeded" | "failed" | "waiting_approval" | "denied";
   invocationId?: string;
   jobId?: string;
   approvalId?: string;
   result?: Record<string, unknown>;
   errorCode?: string;
   errorMessage?: string;
+}
+
+export interface ToolCallPatch {
+  callId?: string;
+  approvalId?: string;
+  status?: ToolCallState["status"];
+  invocationId?: string;
+  jobId?: string;
+  result?: Record<string, unknown>;
+  errorCode?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface PlanStepState {
@@ -128,28 +139,30 @@ export function useAgentChat({
     [],
   );
 
-  /** Update a specific block by id. */
-  const updateBlock = useCallback(
-    (blockId: string, updater: (block: ChatBlock) => ChatBlock) => {
-      setBlocks((prev) =>
-        prev.map((b) => (b.id === blockId ? updater(b) : b)),
-      );
-    },
-    [],
-  );
-
-  /** Find the most recent tool_group block id. Returns null if none. */
-  const findLastToolGroupId = useCallback(
-    (blocksSnapshot: ChatBlock[]): string | null => {
-      for (let i = blocksSnapshot.length - 1; i >= 0; i--) {
-        if (blocksSnapshot[i].type === "tool_group") {
-          return blocksSnapshot[i].id;
-        }
-      }
-      return null;
-    },
-    [],
-  );
+  const patchToolCall = useCallback((patch: ToolCallPatch) => {
+    setBlocks((prev) =>
+      prev.map((block) => {
+        if (block.type !== "tool_group") return block;
+        let changed = false;
+        const toolCalls = block.tool_calls.map((tool) => {
+          const matchesCallId = patch.callId && tool.callId === patch.callId;
+          const matchesApprovalId = patch.approvalId && tool.approvalId === patch.approvalId;
+          if (!matchesCallId && !matchesApprovalId) return tool;
+          changed = true;
+          return {
+            ...tool,
+            ...(patch.status ? { status: patch.status } : {}),
+            ...(patch.invocationId !== undefined ? { invocationId: patch.invocationId } : {}),
+            ...(patch.jobId !== undefined ? { jobId: patch.jobId } : {}),
+            ...(patch.result !== undefined ? { result: patch.result } : {}),
+            ...(patch.errorCode !== undefined ? { errorCode: patch.errorCode ?? undefined } : {}),
+            ...(patch.errorMessage !== undefined ? { errorMessage: patch.errorMessage ?? undefined } : {}),
+          };
+        });
+        return changed ? { ...block, tool_calls: toolCalls } : block;
+      }),
+    );
+  }, []);
 
   // ── SSE event handlers ──
 
@@ -362,7 +375,7 @@ export function useAgentChat({
     [addBlock, upsertLastBlock],
   );
 
-  /** Patch a tool call inside the most recent tool_group block. */
+  /** Patch a tool call by call_id in the newest matching tool_group block. */
   function patchToolInLastGroup(
     data: Record<string, unknown>,
     patch: (tool: ToolCallState) => ToolCallState,
@@ -373,6 +386,8 @@ export function useAgentChat({
       for (let i = updated.length - 1; i >= 0; i--) {
         const block = updated[i];
         if (block.type === "tool_group") {
+          const hasTool = (block as ToolGroupBlock).tool_calls.some((tool) => tool.callId === callId);
+          if (!hasTool) continue;
           updated[i] = {
             ...block,
             tool_calls: (block as ToolGroupBlock).tool_calls.map((tool) =>
@@ -584,6 +599,7 @@ export function useAgentChat({
     cancel,
     clearBlocks,
     loadPersistedMessages,
+    patchToolCall,
   };
 }
 
@@ -691,7 +707,8 @@ function parseToolStatus(value: unknown): ToolCallState["status"] {
   if (
     value === "succeeded" ||
     value === "failed" ||
-    value === "waiting_approval"
+    value === "waiting_approval" ||
+    value === "denied"
   ) {
     return value;
   }

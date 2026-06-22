@@ -38,6 +38,11 @@ class ResolvedCapability:
     available: bool = True
     unavailable_reason: str | None = None
 
+    @property
+    def resource_keys(self) -> list[str]:
+        """Compatibility alias used by Agent L2 approval creation."""
+        return self.resource_key_template
+
 
 async def resolve_function(
     db: AsyncSession,
