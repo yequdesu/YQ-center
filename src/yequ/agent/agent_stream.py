@@ -174,7 +174,6 @@ async def agent_invoke_stream(
                     known_functions, available_functions,
                     call_path, execution_mode, max_depth,
                     max_total_duration_sec, started_at,
-                    target_node_id,
                 ):
                     yield ev
                     if ev["event_type"] == "agent.tool_call.completed":
