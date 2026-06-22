@@ -752,10 +752,12 @@ async def _execute_tool_call(
     if resolved.effect in ("write", "destructive") and not tc.input.get("approval_id"):
         # Extract resource_key_template from capability's resource_keys (first item if present)
         resource_key_template = resolved.resource_keys[0] if (resolved.resource_keys and len(resolved.resource_keys) > 0) else None
+        approval_input = dict(tc.input)
+        approval_input["dry_run"] = False
         approval = await create_approval(
             db, actor_id=actor_id, session_id=session_id,
             function_name=tc.name, target_node_id=resolved.node_id,
-            input_data=tc.input, risk=resolved.risk, effect=resolved.effect,
+            input_data=approval_input, risk=resolved.risk, effect=resolved.effect,
             resource_keys=resolved.resource_keys if hasattr(resolved, 'resource_keys') else None,
             resource_key_template=resource_key_template,
         )

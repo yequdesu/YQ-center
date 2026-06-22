@@ -418,13 +418,15 @@ async def _execute_and_stream(
     # Handle L2 write operations — create approval
     if func_meta and func_meta.effect in ("write", "destructive") and not tc_input.get("approval_id"):
         from yequ.services.approval_service import create_approval as svc_create_approval
+        approval_input = dict(tc_input)
+        approval_input["dry_run"] = False
         approval = await svc_create_approval(
             db,
             actor_id=session.actor_id,
             session_id=session_id,
             function_name=tc_name,
             target_node_id=resolved.node_id,
-            input_data=tc_input,
+            input_data=approval_input,
             risk=resolved.risk,
             effect=resolved.effect,
         )
