@@ -95,12 +95,17 @@ async def resolve_function(
     offline_reasons: list[str] = []
 
     for node in candidates:
+        # Always verify schedulability. Fall back to stored status when
+        # settings (and thus liveness service) is unavailable (e.g. in tests).
         if settings:
             schedulable, reason = is_node_schedulable(node, settings)
-            if not schedulable:
-                if _node_id:
-                    offline_reasons.append(reason or "node_not_schedulable")
-                continue
+        else:
+            schedulable = node.status == NodeStatus.ONLINE
+            reason = f"node_{node.status}" if not schedulable else None
+        if not schedulable:
+            if _node_id:
+                offline_reasons.append(reason or "node_not_schedulable")
+            continue
 
         cap_result = await db.execute(
             select(Capability)
