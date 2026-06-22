@@ -78,6 +78,11 @@ interface UseAgentChatOptions {
   onConversationSettled?: () => void;
 }
 
+interface SendInvokeOptions {
+  visible?: boolean;
+  suppressUserMessage?: boolean;
+}
+
 // ── Helpers ──
 
 function nowISO(): string {
@@ -409,15 +414,18 @@ export function useAgentChat({
       targetNodeId: string,
       providerName: string,
       executionMode: string,
+      options: SendInvokeOptions = {},
     ) => {
       abortRef.current?.();
 
-      addBlock({
-        type: "user",
-        id: genId(),
-        content: prompt,
-        created_at: nowISO(),
-      } as UserBlock);
+      if (options.visible !== false) {
+        addBlock({
+          type: "user",
+          id: genId(),
+          content: prompt,
+          created_at: nowISO(),
+        } as UserBlock);
+      }
 
       setIsStreaming(true);
       const stream = createEventStream(
@@ -428,6 +436,7 @@ export function useAgentChat({
           prompt,
           target_node_id: targetNodeId || undefined,
           execution_mode: executionMode,
+          suppress_user_message: options.suppressUserMessage ?? (options.visible === false),
         },
         {
           onEvent: (event) => handleInvokeEvent(event),

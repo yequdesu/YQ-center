@@ -150,6 +150,7 @@ class InvokeAgentRequest(BaseModel):
     provider_name: str = Field(default="fake")
     prompt: str = Field(..., min_length=1)
     target_node_id: str | None = Field(default=None)
+    suppress_user_message: bool = Field(default=False)
     call_path: list[str] = Field(default_factory=list)
     step_count: int = Field(default=0, ge=0)
     execution_mode: str = Field(default="auto")
@@ -324,6 +325,7 @@ async def invoke_agent_stream_endpoint(
         session_id=body.session_id,
         prompt=body.prompt,
         target_node_id=body.target_node_id,
+        suppress_user_message=body.suppress_user_message,
         available_functions=available,
         call_path=body.call_path,
         max_depth=body.max_depth,

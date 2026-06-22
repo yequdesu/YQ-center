@@ -300,7 +300,10 @@ export function AgentChatPage() {
           }
         }
       }
-      sendInvoke(buildApprovalContinuationPrompt(outcomes), targetNodeId, providerName, executionMode);
+      sendInvoke(buildApprovalContinuationPrompt(outcomes), targetNodeId, providerName, executionMode, {
+        visible: false,
+        suppressUserMessage: true,
+      });
     } finally {
       setAutoContinuing(false);
     }

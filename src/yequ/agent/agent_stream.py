@@ -71,6 +71,7 @@ async def agent_invoke_stream(
     prompt: str,
     target_node_id: str | None = None,
     available_functions: list[AgentFunction],
+    suppress_user_message: bool = False,
     call_path: list[str] | None = None,
     max_depth: int = 5,
     max_steps: int = 20,
@@ -125,9 +126,21 @@ async def agent_invoke_stream(
         return
 
     yield _event("agent.session.resolved", session_id, trace_id, {"session_status": session.status, "execution_mode": session.execution_mode})
-    yield _event("agent.prompt.received", session_id, trace_id, {"prompt": prompt[:500], "step": step_count + 1})
+    yield _event(
+        "agent.prompt.received",
+        session_id,
+        trace_id,
+        {"prompt": prompt[:500], "step": step_count + 1, "internal": suppress_user_message},
+    )
 
-    await _write_timeline(db, "agent.prompt.received", session_id=session_id, actor=provider.provider_name(), prompt=prompt, step=step_count + 1)
+    await _write_timeline(
+        db,
+        "agent.prompt.received",
+        session_id=session_id,
+        actor=provider.provider_name(),
+        prompt=prompt,
+        step=step_count + 1,
+    )
     await db.commit()
 
     known_functions = {f.name for f in available_functions}
@@ -136,8 +149,9 @@ async def agent_invoke_stream(
     history = await _load_session_history(db, session_id)
     user_message = AgentMessage(role="user", content=prompt)
     history.append(user_message)
-    await _save_session_history(db, session_id, [user_message])
-    await db.commit()
+    if not suppress_user_message:
+        await _save_session_history(db, session_id, [user_message])
+        await db.commit()
 
     yield _event("agent.loop.started", session_id, trace_id, {"max_steps": max_steps, "max_duration_sec": max_total_duration_sec})
 
@@ -261,7 +275,12 @@ async def agent_invoke_stream(
 
         # -- Save history --
         history.append(AgentMessage(role="assistant", content=final_message))
-        await _save_session_history(db, session_id, history)
+        history_to_persist = (
+            [message for message in history if message is not user_message]
+            if suppress_user_message
+            else history
+        )
+        await _save_session_history(db, session_id, history_to_persist)
 
         await _write_timeline(db, "agent.final_response", session_id=session_id, actor=provider.provider_name(), status=loop_state)
         await db.commit()
