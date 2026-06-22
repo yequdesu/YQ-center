@@ -46,6 +46,7 @@ export function AgentChatPage() {
   const [editLabel, setEditLabel] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const sessionInitializedRef = useRef(false);
   const queryClient = useQueryClient();
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
@@ -65,26 +66,34 @@ export function AgentChatPage() {
     refetchInterval: 30_000,
   });
 
+  // Auto-create initial session ONCE on mount (moved out of queryFn to prevent
+  // double creation on every refetch caused by staleTime:0 / React StrictMode).
+  useEffect(() => {
+    if (sessionInitializedRef.current) return;
+    if (sessionId) {
+      sessionInitializedRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    const init = async () => {
+      const s = await createSession({});
+      if (cancelled) return;
+      sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
+      setSessionId(s.session_id);
+      sessionInitializedRef.current = true;
+    };
+    init();
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
   const sessionQuery = useQuery({
     queryKey: ["agent-session", sessionId],
     queryFn: async () => {
-      if (!sessionId) {
-        const s = await createSession({});
-        sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
-        setSessionId(s.session_id);
-        return getSession(s.session_id);
-      }
-      try {
-        const existing = await getSession(sessionId);
-        return existing;
-      } catch {
-        const s = await createSession({});
-        sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
-        setSessionId(s.session_id);
-        return getSession(s.session_id);
-      }
+      if (!sessionId) return null;
+      return getSession(sessionId);
     },
-    staleTime: 0, // Never use stale cache for session detail
+    enabled: !!sessionId,
+    staleTime: 60_000,
   });
 
   const {
@@ -125,9 +134,8 @@ export function AgentChatPage() {
     cancel();
     clearBlocks();
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
+    sessionInitializedRef.current = true; // prevent auto-create
     setSessionId(newId);
-    // Force fresh fetch for the new session
-    queryClient.invalidateQueries({ queryKey: ["agent-session", newId] });
   };
 
   const createNewSession = async () => {
