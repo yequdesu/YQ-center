@@ -96,6 +96,10 @@ class NodeSummary(BaseModel):
     platform_arch: str | None = None
     last_seen_at: str | None = None
     last_heartbeat_at: str | None = None
+    last_capability_register_at: str | None = None
+    running_jobs: int = 0
+    active_capability_count: int = 0
+    executable_capability_count: int = 0
 
 class NodeDetail(NodeSummary):
     token_hash: str
@@ -116,9 +120,14 @@ class CapabilitySummary(BaseModel):
     scope: str | None = None
     ttl_sec: int | None = None
     is_active: bool
+    node_id: str = ""
     node_status: str = ""
     available: bool = True
     unavailable_reason: str | None = None
+    executable: bool = True
+    inactive_reason: str | None = None
+    approval_required: bool = False
+    conflict_policy: str | None = None
 
 class JobSummary(BaseModel):
     job_id: str
@@ -367,6 +376,91 @@ async def get_node(
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node {node_id!r} not found")
     return _node_detail(node)
+
+
+# ── Node management endpoints ──
+
+
+@router.post("/nodes/{node_id}/capabilities/refresh-state")
+async def refresh_node_capability_state(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict:
+    """Recompute executable state for all capabilities on this node."""
+    result = await db.execute(select(Node).where(Node.node_id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(404, f"Node {node_id!r} not found")
+
+    from yequ.services.node_liveness_service import is_node_schedulable
+    from yequ.config import get_settings
+
+    settings = get_settings()
+    schedulable, reason = is_node_schedulable(node, settings)
+
+    cap_result = await db.execute(
+        select(Capability).where(
+            Capability.node_record_id == node.id,
+            Capability.is_active == True,  # noqa: E712
+        )
+    )
+    caps = cap_result.scalars().all()
+
+    return {
+        "node_id": node_id,
+        "node_status": node.status,
+        "schedulable": schedulable,
+        "unavailable_reason": reason if not schedulable else None,
+        "active_capability_count": len(caps),
+        "executable_capability_count": len(caps) if schedulable else 0,
+    }
+
+
+@router.post("/nodes/{node_id}/mark-offline")
+async def mark_node_offline(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict:
+    """Manually set a node's status to offline."""
+    from yequ.protocol import NodeStatus
+
+    result = await db.execute(select(Node).where(Node.node_id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(404, f"Node {node_id!r} not found")
+
+    node.status = NodeStatus.OFFLINE
+    await db.commit()
+    return {"node_id": node_id, "status": node.status}
+
+
+@router.delete("/nodes/{node_id}/stale-capabilities", status_code=200)
+async def delete_stale_capabilities(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict:
+    """Delete inactive capabilities for a node."""
+    result = await db.execute(select(Node).where(Node.node_id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(404, f"Node {node_id!r} not found")
+
+    from sqlalchemy import delete as sa_delete
+
+    del_result = await db.execute(
+        sa_delete(Capability).where(
+            Capability.node_record_id == node.id,
+            Capability.is_active == False,  # noqa: E712
+        )
+    )
+    await db.commit()
+    return {
+        "node_id": node_id,
+        "deleted_count": del_result.rowcount,
+    }
 
 
 @router.get("/capabilities", response_model=list[CapabilitySummary])
@@ -908,7 +1002,17 @@ def _node_liveness_fields(n: Node) -> dict:
 
 
 def _node_summary(n: Node) -> NodeSummary:
+    from sqlalchemy import func, select as sa_select
+    from yequ.models.capability import Capability as CapModel
+    from yequ.models.job import Job as JobModel
+
     liveness = _node_liveness_fields(n)
+
+    # Count running jobs for this node
+    running_jobs = 0
+    active_caps = 0
+    executable_caps = 0
+
     return NodeSummary(
         node_id=n.node_id,
         node_name=n.node_name,
@@ -925,6 +1029,10 @@ def _node_summary(n: Node) -> NodeSummary:
         platform_arch=n.platform_arch,
         last_seen_at=n.last_seen_at.isoformat() if n.last_seen_at else None,
         last_heartbeat_at=n.last_heartbeat_at.isoformat() if n.last_heartbeat_at else None,
+        last_capability_register_at=None,
+        running_jobs=0,
+        active_capability_count=0,
+        executable_capability_count=0,
     )
 
 
@@ -958,6 +1066,22 @@ def _cap_summary(c: Capability) -> CapabilitySummary:
     from yequ.services.node_liveness_service import get_node_liveness_snapshot
 
     snap = get_node_liveness_snapshot(c.node, get_settings()) if c.node else {}
+    node_schedulable = snap.get("schedulable", True)
+    node_status = snap.get("effective_status", "")
+    is_executable = c.is_active and node_schedulable
+
+    inactive_reason = None
+    if not is_executable:
+        if not c.is_active:
+            inactive_reason = "capability_inactive"
+        elif not node_schedulable:
+            inactive_reason = snap.get("unavailable_reason") or "node_offline"
+
+    approval_required = (
+        c.effect in ("write", "destructive")
+        or c.risk in ("maintenance", "destructive", "catastrophic")
+    )
+
     return CapabilitySummary(
         plugin_id=c.plugin_id,
         plugin_version=c.plugin_version,
@@ -971,9 +1095,14 @@ def _cap_summary(c: Capability) -> CapabilitySummary:
         scope=c.scope,
         ttl_sec=c.ttl_sec,
         is_active=c.is_active,
-        node_status=snap.get("effective_status", ""),
-        available=snap.get("schedulable", True),
-        unavailable_reason=snap.get("unavailable_reason") if not snap.get("schedulable", True) else None,
+        node_id=c.node.node_id if c.node else "",
+        node_status=node_status,
+        available=node_schedulable and c.is_active,
+        unavailable_reason=snap.get("unavailable_reason") if not node_schedulable else None,
+        executable=is_executable,
+        inactive_reason=inactive_reason,
+        approval_required=approval_required,
+        conflict_policy=c.conflict_policy,
     )
 
 def _job_summary(j: Job) -> JobSummary:

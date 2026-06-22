@@ -307,7 +307,10 @@ async def handle_job_poll(
 ) -> dict:
     """Process job.poll — return available jobs for this node.
 
-    Returns up to `capacity` jobs that are queued for this node.
+    Returns up to `capacity` jobs that are queued for this node,
+    accounting for currently running jobs on the node.
+
+    capacity = min(payload.capacity, payload.capacity - len(payload.running_jobs))
     Jobs transition from queued to claimed upon poll.
     If no jobs available, returns empty jobs list (job.empty semantics).
     """
@@ -316,7 +319,10 @@ async def handle_job_poll(
     from yequ.models.job import Job
     from yequ.protocol import JobStatus
 
-    capacity = payload.get("capacity", 1)
+    raw_capacity = int(payload.get("capacity", 1))
+    running_jobs = payload.get("running_jobs") or []
+    available_slots = max(raw_capacity - len(running_jobs), 1)
+    effective_capacity = min(raw_capacity, available_slots)
 
     result = await db.execute(
         select(Job)
@@ -324,7 +330,8 @@ async def handle_job_poll(
             Job.node_id == node.node_id,
             Job.status == JobStatus.QUEUED,
         )
-        .limit(capacity)
+        .order_by(Job.created_at.asc())
+        .limit(effective_capacity)
     )
     pending_jobs = result.scalars().all()
 

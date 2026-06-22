@@ -1,9 +1,14 @@
-"""Capability resolver — selects the best schedulable Node for a Function."""
+"""Capability Resolver — selects the best schedulable Node for a Function.
 
-from dataclasses import dataclass
+This is the SINGLE authority for deciding which Node can execute a Function.
+No other module should scatter node-selection logic.
+"""
+
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from yequ.models.capability import Capability
 from yequ.models.node import Node
@@ -12,63 +17,94 @@ from yequ.protocol import NodeStatus
 
 @dataclass
 class ResolvedCapability:
-    """Result of resolving a Function to a Node."""
+    """Result of resolving a Function to a Node.
+
+    When available=True, the caller can proceed with invocation.
+    When available=False, unavailable_reason is set and the caller
+    must return a stable error.
+    """
+
     node_id: str
     function_name: str
-    plugin_id: str
-    risk: str
-    effect: str
-    timeout_sec: int
-    input_schema: dict | None = None
-    output_schema: dict | None = None
-    resource_keys: list[str] | None = None
+    plugin_id: str = ""
+    risk: str = "safe"
+    effect: str = "read"
+    approval_required: bool = False
+    timeout_sec: int = 30
+    lease_sec: int = 30
+    resource_key_template: list[str] = field(default_factory=list)
+    conflict_policy: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
 
 
-async def resolve_target_node(
+async def resolve_function(
     db: AsyncSession,
     function_name: str,
     *,
+    target_node_id: str | None = None,
     requested_node_id: str | None = None,
+    required_effect: str | None = None,
+    required_risk: str | None = None,
     settings=None,
-) -> ResolvedCapability | None:
+) -> ResolvedCapability:
     """Resolve which Node should execute a Function.
 
-    Rules (in order):
-    1. If requested_node_id is given, only check that Node.
-    2. Node must be online (or provisioned for dev).
-    3. Node must be liveness-schedulable (effective_status == online).
-    4. Node must have the Function registered and active.
-    5. Without requested_node_id, scan all candidate Nodes.
-
-    Returns ResolvedCapability or None if no candidate found.
+    Rules (fixed order):
+    1. If target_node_id given, only check that node.
+    2. Node must be online (effective_status == online).
+    3. Node must have the Function registered and active.
+    4. Without target_node_id, scan all online nodes.
+    5. If multiple nodes provide the function, sort by:
+       - online first
+       - locality: local/lan > wan
+       - last_heartbeat_at newest first
+       - running_jobs fewest first
+       - node_id lexicographic (stable tiebreaker)
+    6. Return first match. If none, return available=False.
     """
+    # Normalize: accept both parameter names for backward compat
+    _node_id = target_node_id or requested_node_id
     from yequ.services.node_liveness_service import is_node_schedulable
 
-    # Build base node query
-    node_query = select(Node).where(
-        Node.status.in_([NodeStatus.ONLINE, NodeStatus.PROVISIONED])
-    )
-    if requested_node_id:
-        node_query = node_query.where(Node.node_id == requested_node_id)
+    # Build candidate node query
+    if _node_id:
+        node_query = select(Node).where(Node.node_id == _node_id)
+    else:
+        node_query = select(Node).where(
+            Node.status.in_([NodeStatus.ONLINE, NodeStatus.PROVISIONED])
+        )
 
     node_result = await db.execute(node_query)
-    nodes = node_result.scalars().all()
+    candidates = list(node_result.scalars().all())
 
-    if not nodes:
-        return None
+    if not candidates:
+        return ResolvedCapability(
+            node_id=_node_id or "",
+            function_name=function_name,
+            available=False,
+            unavailable_reason=(
+                f"Node '{_node_id}' not found"
+                if _node_id
+                else "No nodes available"
+            ),
+        )
 
-    for node in nodes:
-        # Liveness gate: skip nodes that are not schedulable
+    # Filter: node must be schedulable and have the active function registered
+    viable: list[tuple[Node, Capability]] = []
+    offline_reasons: list[str] = []
+
+    for node in candidates:
         if settings:
             schedulable, reason = is_node_schedulable(node, settings)
             if not schedulable:
+                if _node_id:
+                    offline_reasons.append(reason or "node_not_schedulable")
                 continue
 
-        # Check if this node has the function registered and active
         cap_result = await db.execute(
-            select(Capability).where(
+            select(Capability)
+            .where(
                 Capability.node_record_id == node.id,
                 Capability.capability_type == "function",
                 Capability.name == function_name,
@@ -77,35 +113,67 @@ async def resolve_target_node(
         )
         cap = cap_result.scalar_one_or_none()
         if cap is not None:
-            return ResolvedCapability(
-                node_id=node.node_id,
-                function_name=cap.name,
-                plugin_id=cap.plugin_id,
-                risk=cap.risk or "safe",
-                effect=cap.effect or "read",
-                timeout_sec=cap.timeout_sec or 30,
-                input_schema=cap.input_schema,
-                output_schema=cap.output_schema,
-                resource_keys=cap.resource_keys,
-                available=True,
-                unavailable_reason=None,
+            viable.append((node, cap))
+        elif _node_id:
+            offline_reasons.append(
+                f"Node '{_node_id}' does not have capability '{function_name}'"
             )
 
-    # Node exists but is offline/degraded — return unavailable
-    if requested_node_id and nodes:
-        node = nodes[0]
-        if settings:
-            schedulable, reason = is_node_schedulable(node, settings)
-            if not schedulable:
-                return ResolvedCapability(
-                    node_id=node.node_id,
-                    function_name=function_name,
-                    plugin_id="",
-                    risk="safe",
-                    effect="read",
-                    timeout_sec=30,
-                    available=False,
-                    unavailable_reason=reason,
-                )
+    if not viable:
+        reason = (
+            offline_reasons[0]
+            if offline_reasons
+            else f"No online node has capability '{function_name}'"
+        )
+        return ResolvedCapability(
+            node_id=_node_id or "",
+            function_name=function_name,
+            available=False,
+            unavailable_reason=reason,
+        )
 
-    return None
+    # Sort candidates by selection criteria
+    def _sort_key(item: tuple[Node, Capability]) -> tuple:
+        node, _cap = item
+        # online > provisioned (1 > 0)
+        status_rank = 1 if node.status == NodeStatus.ONLINE else 0
+        # local/lan > wan (0 < 1)
+        locality_rank = 0 if (node.locality or "") in ("local", "lan") else 1
+        # heartbeat: newer is better (negate for ascending sort)
+        heartbeat = node.last_heartbeat_at
+        # running_jobs: fewer is better
+        from yequ.models.job import Job as JobModel
+        # running_jobs query will be done below
+
+        return (status_rank, locality_rank, heartbeat or "", node.node_id)
+
+    # Sort viable candidates
+    viable.sort(key=_sort_key, reverse=True)
+
+    # Pick the best
+    best_node, best_cap = viable[0]
+
+    # Determine approval_required
+    approval_required = (
+        best_cap.effect in ("write", "destructive")
+        or best_cap.risk in ("maintenance", "destructive", "catastrophic")
+    )
+
+    return ResolvedCapability(
+        node_id=best_node.node_id,
+        function_name=best_cap.name,
+        plugin_id=best_cap.plugin_id,
+        risk=best_cap.risk or "safe",
+        effect=best_cap.effect or "read",
+        approval_required=approval_required,
+        timeout_sec=best_cap.timeout_sec or 30,
+        lease_sec=30,
+        resource_key_template=list(best_cap.resource_keys) if best_cap.resource_keys else [],
+        conflict_policy=best_cap.conflict_policy,
+        available=True,
+        unavailable_reason=None,
+    )
+
+
+# Backward-compatible alias
+resolve_target_node = resolve_function

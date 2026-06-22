@@ -23,6 +23,30 @@ def _make_job_id() -> str:
     return f"job_{uuid.uuid4().hex[:16]}"
 
 
+def _requires_serialization(
+    effect: str,
+    risk: str,
+    approval_id: str | None = None,
+    conflict_policy: str | None = None,
+) -> bool:
+    """Returns True if this operation requires resource lock serialization.
+
+    Safe reads with allow_parallel conflict policy do NOT require locks.
+    Write/destructive/maintenance operations always require locks.
+    Approval-required operations also require locks.
+    """
+    if approval_id:
+        return True
+    if conflict_policy == "serialize":
+        return True
+    if effect in ("write", "destructive"):
+        return True
+    if risk in ("maintenance", "destructive", "catastrophic"):
+        return True
+    # safe + read + allow_parallel (or unspecified) → no serialization needed
+    return False
+
+
 async def create_job(
     db: AsyncSession,
     *,
@@ -35,16 +59,28 @@ async def create_job(
     resource_keys: list[str] | None = None,
     dry_run: bool = False,
     approval_id: str | None = None,
+    risk: str = "safe",
+    effect: str = "read",
+    conflict_policy: str | None = None,
 ) -> Job:
     """Create a new Job and transition it to QUEUED.
 
     Creates the Job in CREATED status, then immediately transitions
     to QUEUED via the state machine (which writes audit events).
 
+    Resource locks are only acquired for jobs that require serialization:
+    - write/destructive/maintenance effect
+    - explicit conflict_policy=serialize
+    - approval_required
+    Safe/read jobs with allow_parallel skip lock acquisition entirely.
+
     Parameters:
         resource_keys: Locks to acquire on this resource before queuing.
         dry_run: If True, job is created but not queued for execution.
         approval_id: Optional approval reference for this job.
+        risk: Risk level of the function (default "safe").
+        effect: Effect of the function (default "read").
+        conflict_policy: Optional conflict policy override.
 
     Returns the Job object (already flushed but not committed --
     caller must commit).
@@ -65,8 +101,9 @@ async def create_job(
     db.add(job)
     await db.flush()
 
-    # Acquire resource locks if needed
-    if resource_keys:
+    # Acquire resource locks only for operations that require serialization.
+    # Safe reads with allow_parallel must not be blocked by locks.
+    if resource_keys and _requires_serialization(effect, risk, approval_id, conflict_policy):
         from yequ.services.resource_lock_service import acquire_lock
         for rk in resource_keys:
             await acquire_lock(db, rk, job.job_id, invocation_id, node_id)
