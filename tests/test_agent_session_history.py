@@ -6,6 +6,12 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 async def test_stream_invoke_persists_session_messages(client: AsyncClient):
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.api.routes.agent import register_provider
+
+    provider = FakeAgentProvider("history-test-provider")
+    register_provider(provider)
+
     session_resp = await client.post(
         "/agent/sessions",
         json={"actor_id": "history-test", "execution_mode": "auto"},
@@ -17,7 +23,7 @@ async def test_stream_invoke_persists_session_messages(client: AsyncClient):
         "/agent/invoke/stream",
         json={
             "session_id": session_id,
-            "provider_name": "fake",
+            "provider_name": "history-test-provider",
             "prompt": "hello persisted history",
             "execution_mode": "auto",
         },

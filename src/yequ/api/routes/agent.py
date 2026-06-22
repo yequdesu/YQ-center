@@ -192,16 +192,20 @@ async def _resolve_provider(provider_name: str) -> AgentProvider:
 
 
 async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
-    """Build the agent function list from built-in defaults + DB capabilities on live nodes."""
+    """Build the agent function list from DB capabilities on schedulable nodes.
+
+    In production, Agent tools must reflect actual Node registrations. Test
+    mode keeps the built-in defaults so isolated provider tests can exercise
+    planning/streaming without provisioning a node fixture.
+    """
     from sqlalchemy.orm import joinedload
 
     from yequ.config import get_settings
-    from yequ.models.node import Node
     from yequ.services.node_liveness_service import is_node_schedulable
 
-    available = _default_functions()
-    existing = {f.name for f in available}
     settings = get_settings()
+    available = _default_functions() if settings.test_mode else []
+    existing = {f.name for f in available}
 
     cap_result = await db.execute(
         select(Capability)
