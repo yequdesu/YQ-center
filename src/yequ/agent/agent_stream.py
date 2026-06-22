@@ -18,6 +18,22 @@ from yequ.logconfig import get_logger
 
 log = get_logger(__name__)
 
+# ── Active stream tracking ──
+_active_stream_sessions: set[str] = set()
+
+
+def is_session_running(session_id: str) -> bool:
+    """Check if a session currently has an active SSE stream."""
+    return session_id in _active_stream_sessions
+
+
+def _mark_stream_active(session_id: str) -> None:
+    _active_stream_sessions.add(session_id)
+
+
+def _mark_stream_inactive(session_id: str) -> None:
+    _active_stream_sessions.discard(session_id)
+
 
 def _make_trace_id() -> str:
     return f"tr_{uuid.uuid4().hex[:16]}"
@@ -79,19 +95,23 @@ async def agent_invoke_stream(
     trace_id = _make_trace_id()
 
     yield _event("stream.open", session_id, trace_id)
+    _mark_stream_active(session_id)
 
     # Constraint checks
     elapsed = (now - started_at).total_seconds()
     if elapsed > max_total_duration_sec:
         yield _event("agent.failed", session_id, trace_id, {"error_code": "max_duration_exceeded", "message": f"Duration {elapsed:.1f}s exceeds max"})
+        _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
     if step_count >= max_steps:
         yield _event("agent.failed", session_id, trace_id, {"error_code": "max_steps_exceeded", "message": f"Max steps {max_steps} exceeded"})
+        _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
     if len(call_path) >= max_depth:
         yield _event("agent.failed", session_id, trace_id, {"error_code": "call_depth_exceeded", "message": f"Depth {len(call_path)} exceeds max {max_depth}"})
+        _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
@@ -100,6 +120,7 @@ async def agent_invoke_stream(
     session = result.scalar_one_or_none()
     if session is None:
         yield _event("agent.failed", session_id, trace_id, {"error_code": "session_not_found", "message": "Session not found"})
+        _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
@@ -250,6 +271,7 @@ async def agent_invoke_stream(
         log.exception("agent stream error: session_id=%s", session_id)
         yield _event("agent.failed", session_id, trace_id, {"error_code": "internal_error", "message": str(e)[:500]})
 
+    _mark_stream_inactive(session_id)
     yield _event("stream.close", session_id, trace_id)
 
 
@@ -586,11 +608,16 @@ async def _execute_tool_calls_scheduled(
         risk = func_meta.risk if func_meta else "safe"
         effect = func_meta.effect if func_meta else "read"
 
-        # Emit created event first
+        # Emit created + arguments events
         yield _event("agent.tool_call.created", session_id, trace_id, {
             "call_id": tc_call_id,
             "name": tc_name,
             "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
+            "input": tc_input,
+        })
+        yield _event("agent.tool_call.arguments", session_id, trace_id, {
+            "call_id": tc_call_id,
+            "name": tc_name,
             "input": tc_input,
         })
 
@@ -744,6 +771,7 @@ async def agent_plan_stream(
     trace_id = _make_trace_id()
 
     yield _event("stream.open", session_id, trace_id)
+    _mark_stream_active(session_id)
 
     from yequ.models.session import Session
 
@@ -756,6 +784,7 @@ async def agent_plan_stream(
             "error_code": "session_not_found",
             "message": "Session not found",
         })
+        _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
@@ -875,6 +904,7 @@ async def agent_plan_stream(
                 "error_code": "function_not_available",
                 "message": f"Function {s['function_name']!r} not registered on node",
             })
+            _mark_stream_inactive(session_id)
             yield _event("stream.close", session_id, trace_id)
             return
 
@@ -918,6 +948,7 @@ async def agent_plan_stream(
         })
 
     yield _event("agent.completed", session_id, trace_id)
+    _mark_stream_inactive(session_id)
     yield _event("stream.close", session_id, trace_id)
 
 

@@ -182,7 +182,8 @@ async def list_sessions(
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[dict]:
     """List all active sessions, sorted by most recent activity."""
-    from sqlalchemy import func, text
+    from sqlalchemy import func
+    from yequ.agent.agent_stream import is_session_running
 
     result = await db.execute(
         select(Session)
@@ -236,7 +237,7 @@ async def list_sessions(
             "label": s.label or s.session_id[:8],
             "last_message_preview": previews.get(s.session_id, ""),
             "message_count": counts.get(s.session_id, 0),
-            "running": False,  # Will be set per-session if a stream is active
+            "running": is_session_running(s.session_id),
         }
         for s in sessions
     ]
@@ -481,6 +482,7 @@ async def list_timeline(
     session_id: str | None = None,
     event_type: str | None = None,
     approval_id: str | None = None,
+    trace_id: str | None = None,
     limit: int = 50,
     created_after: str | None = None,
     created_before: str | None = None,
@@ -489,6 +491,8 @@ async def list_timeline(
 ) -> list[TimelineSummary]:
     """Query timeline events with filters and cursor support."""
     stmt = select(TimelineEvent)
+    if trace_id:
+        stmt = stmt.where(TimelineEvent.trace_id == trace_id)
     if node_id:
         stmt = stmt.where(TimelineEvent.node_id == node_id)
     if job_id:
@@ -765,6 +769,106 @@ async def deny_endpoint(
     try:
         await deny_approval(db, a, denied_by="admin", reason=reason)
         return _approval_dict(a)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post("/approvals/{approval_id}/approve-and-run")
+async def approve_and_run_endpoint(
+    approval_id: str,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    """Approve a pending approval and immediately execute the tool.
+
+    1. Verify approval is pending
+    2. Approve the approval
+    3. Consume the approval
+    4. Create Invocation + Job from the approval's stored parameters
+    5. Return invocation_id, job_id, status
+    """
+    result = await db.execute(
+        select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+    )
+    a = result.scalar_one_or_none()
+    if a is None:
+        raise HTTPException(404, f"Approval {approval_id!r} not found")
+    if a.status != "pending":
+        raise HTTPException(
+            409,
+            f"Approval {approval_id!r} is {a.status}, expected pending",
+        )
+
+    from yequ.services.approval_service import approve_approval, consume_approval
+    from yequ.services.invocation_service import create_invocation, start_invocation
+    from yequ.services.job_service import create_job
+    from yequ.services.node_liveness_service import is_node_schedulable
+    from yequ.config import get_settings
+
+    reason = body.get("reason") if body else None
+
+    # Liveness gate on target node
+    target_node_result = await db.execute(
+        select(Node).where(Node.node_id == a.target_node_id)
+    )
+    target_node = target_node_result.scalar_one_or_none()
+    if target_node is None:
+        raise HTTPException(404, f"Node {a.target_node_id!r} not found")
+
+    schedulable, unschedulable_reason = is_node_schedulable(target_node, get_settings())
+    if not schedulable:
+        raise HTTPException(
+            409,
+            {
+                "error_code": "NODE_UNAVAILABLE",
+                "error_message": f"Node {a.target_node_id} is not schedulable: {unschedulable_reason}",
+            },
+        )
+
+    try:
+        # Approve + consume
+        await approve_approval(db, a, approved_by="admin", reason=reason)
+        # Re-query approval to get updated state after approve
+        await db.refresh(a)
+        # Create invocation
+        input_data = a.input_snapshot or {}
+        inv = await create_invocation(
+            db,
+            actor_type="agent",
+            actor_id=a.actor_id,
+            session_id=a.session_id,
+            function_name=a.function_name,
+            input_payload=input_data,
+            target_node_id=a.target_node_id,
+            execution_mode="auto",
+        )
+        start_invocation(inv)
+
+        # Create job
+        job = await create_job(
+            db,
+            invocation_id=inv.invocation_id,
+            node_id=a.target_node_id,
+            function_name=a.function_name,
+            input_payload=input_data,
+            timeout_sec=30,
+            resource_keys=list(a.resource_keys) if a.resource_keys else [],
+            approval_id=a.approval_id,
+        )
+
+        # Consume the approval
+        await consume_approval(db, a, invocation_id=inv.invocation_id)
+        await db.commit()
+
+        return {
+            "approval_id": a.approval_id,
+            "invocation_id": inv.invocation_id,
+            "job_id": job.job_id,
+            "function_name": a.function_name,
+            "target_node_id": a.target_node_id,
+            "status": job.status,
+        }
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
 

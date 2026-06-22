@@ -160,6 +160,22 @@ export function denyApproval(approvalId: string, reason?: string) {
   );
 }
 
+export interface ApproveAndRunResult {
+  approval_id: string;
+  invocation_id: string;
+  job_id: string;
+  function_name: string;
+  target_node_id: string;
+  status: string;
+}
+
+export function approveAndRunApproval(approvalId: string, reason?: string) {
+  return api.post<ApproveAndRunResult>(
+    `/admin/approvals/${encodeURIComponent(approvalId)}/approve-and-run`,
+    { reason },
+  );
+}
+
 // ── Timeline ──
 
 export function listTimeline(params?: {

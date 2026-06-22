@@ -192,16 +192,33 @@ async def _resolve_provider(provider_name: str) -> AgentProvider:
 
 
 async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
+    """Build the agent function list from built-in defaults + DB capabilities on live nodes."""
+    from sqlalchemy.orm import joinedload
+
+    from yequ.config import get_settings
+    from yequ.models.node import Node
+    from yequ.services.node_liveness_service import is_node_schedulable
+
     available = _default_functions()
     existing = {f.name for f in available}
+    settings = get_settings()
+
     cap_result = await db.execute(
-        select(Capability).where(
+        select(Capability)
+        .where(
             Capability.capability_type == "function",
             Capability.is_active == True,  # noqa: E712
         )
+        .options(joinedload(Capability.node))
     )
-    for cap in cap_result.scalars().all():
+    for cap in cap_result.unique().scalars().all():
         if cap.name in existing:
+            continue
+        # Skip capabilities on non-schedulable nodes
+        if cap.node is None:
+            continue
+        schedulable, _ = is_node_schedulable(cap.node, settings)
+        if not schedulable:
             continue
         available.append(AgentFunction(
             name=cap.name,
@@ -326,7 +343,7 @@ async def agent_plan_endpoint(
         session_id=body.session_id,
         prompt=body.prompt,
         target_node_id=body.target_node_id,
-        available_functions=_default_functions(),
+        available_functions=await _available_functions(db),
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
     )
@@ -345,7 +362,7 @@ async def agent_plan_stream_endpoint(
         session_id=body.session_id,
         prompt=body.prompt,
         target_node_id=body.target_node_id,
-        available_functions=_default_functions(),
+        available_functions=await _available_functions(db),
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
     ))

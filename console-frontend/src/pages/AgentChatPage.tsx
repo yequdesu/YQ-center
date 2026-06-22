@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createSession } from "@/api/agent";
-import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes } from "@/api/admin";
+import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes, approveApproval, denyApproval, approveAndRunApproval } from "@/api/admin";
 import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock } from "@/hooks/useAgentChat";
 import type { MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -575,12 +575,16 @@ function MarkdownMessage({ content, isStreaming }: { content: string; isStreamin
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   const [expanded, setExpanded] = useState(false);
+  const [approvalAction, setApprovalAction] = useState<"idle" | "loading" | "done">("idle");
+  const queryClient = useQueryClient();
+
   const hasDetails = Boolean(
     toolCall.result ||
       toolCall.errorMessage ||
       toolCall.invocationId ||
       toolCall.jobId ||
-      Object.keys(toolCall.input).length > 0,
+      Object.keys(toolCall.input).length > 0 ||
+      toolCall.status === "waiting_approval",
   );
   const statusIcon = {
     pending: <Loader2 size={14} className="animate-spin" />,
@@ -589,6 +593,34 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
     failed: <XCircle size={14} className="text-[var(--danger)]" />,
     waiting_approval: <AlertTriangle size={14} className="text-[var(--warning)]" />,
   }[toolCall.status];
+
+  const handleApproveAndExecute = async () => {
+    if (!toolCall.approvalId) return;
+    if (!confirm(`Approve and execute "${toolCall.name}"?`)) return;
+    setApprovalAction("loading");
+    try {
+      await approveAndRunApproval(toolCall.approvalId);
+      setApprovalAction("done");
+      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+    } catch {
+      setApprovalAction("idle");
+    }
+  };
+
+  const handleDeny = async () => {
+    if (!toolCall.approvalId) return;
+    if (!confirm(`Deny "${toolCall.name}"?`)) return;
+    setApprovalAction("loading");
+    try {
+      await denyApproval(toolCall.approvalId);
+      setApprovalAction("done");
+      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["approvals"] });
+    } catch {
+      setApprovalAction("idle");
+    }
+  };
 
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)]/80 p-2.5">
@@ -638,6 +670,46 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
             <p className="rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
               {toolCall.errorMessage}
             </p>
+          )}
+          {/* Approval actions */}
+          {toolCall.status === "waiting_approval" && toolCall.approvalId && approvalAction !== "done" && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--warning-muted)] bg-[var(--warning-muted)]/10 p-2.5 space-y-2">
+              <div className="flex items-center gap-1.5">
+                <AlertTriangle size={14} className="text-[var(--warning)]" />
+                <span className="text-[12px] font-medium text-[var(--warning)]">
+                  This operation requires approval
+                </span>
+              </div>
+              {toolCall.approvalId && (
+                <p className="text-[11px] font-mono text-[var(--text-subtle)]">
+                  approval: {toolCall.approvalId}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleApproveAndExecute}
+                  disabled={approvalAction === "loading"}
+                >
+                  {approvalAction === "loading" ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <CheckCircle size={12} />
+                  )}
+                  <span className="ml-1">Approve and Execute</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleDeny}
+                  disabled={approvalAction === "loading"}
+                >
+                  <XCircle size={12} />
+                  <span className="ml-1">Deny</span>
+                </Button>
+              </div>
+            </div>
           )}
           {toolCall.result && (
             <div>
