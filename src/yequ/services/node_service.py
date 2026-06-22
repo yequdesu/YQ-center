@@ -467,8 +467,18 @@ async def handle_job_finished(
     job.status = terminal_status
     job.finished_at = now
     job.output = payload.get("output")
-    job.error_code = payload.get("error_code")
-    job.error_message = payload.get("error_message")
+
+    # Normalize error payload: node may send flat error_code/error_message
+    # OR nested error.code / error.message / error.details.
+    raw_error = payload.get("error")
+    if isinstance(raw_error, dict):
+        job.error_code = raw_error.get("code") or payload.get("error_code")
+        job.error_message = raw_error.get("message") or payload.get("error_message")
+        job.error_details = raw_error.get("details")
+    else:
+        job.error_code = payload.get("error_code")
+        job.error_message = payload.get("error_message")
+        job.error_details = None
 
     # Compute global_seq for timeline event
     result = await db.execute(select(func.max(TimelineEvent.global_seq)))
@@ -487,7 +497,8 @@ async def handle_job_finished(
         data={
             "status": terminal_status,
             "output": payload.get("output"),
-            "error_code": payload.get("error_code"),
+            "error_code": job.error_code,
+            "error_message": job.error_message,
             "finished_at": now.isoformat(),
         },
         timestamp=now,
@@ -544,9 +555,20 @@ async def handle_job_finished(
         )
         inv = inv_result.scalar_one_or_none()
         if inv and inv.status not in ("succeeded", "failed", "timeout", "cancelled", "partial"):
-            finish_invocation(inv, new_status)
+            finish_invocation(
+                inv,
+                new_status,
+                error_code=job.error_code,
+                error_message=job.error_message,
+            )
             if job.output:
                 inv.result = job.output
+            if job.error_code:
+                inv.error_code = job.error_code
+            if job.error_message:
+                inv.error_message = job.error_message
+            if job.error_details:
+                inv.error_details = job.error_details
             # Write invocation timeline event
             iev_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
             iev_max = iev_result.scalar() or 0

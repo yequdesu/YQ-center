@@ -31,6 +31,7 @@ class Invocation(Base, TimestampMixin):
     result: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_details: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Invocation(invocation_id={self.invocation_id!r}, status={self.status!r})>"

@@ -226,6 +226,8 @@ async def agent_invoke_stream(
                             "name": name, "call_id": call_id,
                             "status": "failed",
                             "error": data.get("message"),
+                            "error_code": data.get("error_code"),
+                            "error_details": data.get("details"),
                         })
                     elif ev["event_type"] == "agent.tool_call.waiting_approval":
                         ordered_results.append({
@@ -490,12 +492,17 @@ async def _execute_and_stream(
         poll_count += 1
         await asyncio.sleep(0.5)
 
-    # Collect result
+    # Collect result — read both Invocation and Job to preserve error details
     async with async_session_factory() as result_db:
         inv_result = await result_db.execute(
             select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
         )
         inv_final = inv_result.scalar_one_or_none()
+
+        job_result = await result_db.execute(
+            select(JobModel).where(JobModel.job_id == job.job_id)
+        )
+        job_final = job_result.scalar_one_or_none()
 
         yield _event("agent.job.finished", session_id, trace_id, {
             "call_id": call_id,
@@ -511,12 +518,30 @@ async def _execute_and_stream(
                 "result": inv_final.result if inv_final else {},
             })
         else:
+            # Preserve the original error from the Job/Invocation — never
+            # overwrite with a generic "tool_failed".
+            error_code = (
+                job_final.error_code
+                or (inv_final.error_code if inv_final else None)
+                or "tool_failed"
+            )
+            error_message = (
+                job_final.error_message
+                or (inv_final.error_message if inv_final else None)
+                or f"Tool {tc_name} ended with {final_status}"
+            )
+            error_details = (
+                job_final.error_details
+                if job_final
+                else None
+            )
             yield _event("agent.tool_call.failed", session_id, trace_id, {
                 "call_id": call_id,
                 "name": tc_name,
                 "status": final_status,
-                "error_code": "tool_failed",
-                "message": f"Tool {tc_name} ended with {final_status}",
+                "error_code": error_code,
+                "message": error_message,
+                "details": error_details,
             })
 
 

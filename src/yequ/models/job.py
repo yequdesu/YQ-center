@@ -33,6 +33,7 @@ class Job(Base, TimestampMixin):
     output: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_details: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     progress_pct: Mapped[float | None] = mapped_column(Float, nullable=True)

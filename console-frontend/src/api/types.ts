@@ -124,6 +124,7 @@ export interface JobSummary {
   finished_at: string | null;
   error_code: string | null;
   error_message: string | null;
+  error_details: Record<string, unknown> | null;
   cancel_reason: string | null;
   attempt: number;
   output: Record<string, unknown> | null;

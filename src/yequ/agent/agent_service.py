@@ -894,18 +894,36 @@ async def _execute_tool_call(
                                   target_node_id=resolved.node_id, error="tool_timeout")
     else:
         tc.status = "failed"
-        tc.error = {"code": "tool_failed",
-                     "message": f"Tool {tc.name} ended with {final_status}"}
+        # Preserve the original error from Invocation — never overwrite
+        # with a generic "tool_failed".
+        err_code = (
+            inv_final.error_code
+            if inv_final and inv_final.error_code
+            else "tool_failed"
+        )
+        err_message = (
+            inv_final.error_message
+            if inv_final and inv_final.error_message
+            else f"Tool {tc.name} ended with {final_status}"
+        )
+        tc.error = {
+            "code": err_code,
+            "message": err_message,
+        }
+        if inv_final and inv_final.error_details:
+            tc.error["details"] = inv_final.error_details
+
         await _write_timeline(db, "agent.tool.failed", session_id=session_id,
                               actor=provider_name, call_id=tc.call_id,
                               function_name=tc.name, status=final_status,
-                              invocation_id=inv.invocation_id, error_code="tool_failed")
+                              invocation_id=inv.invocation_id,
+                              error_code=err_code, error=err_message)
         if resolved.effect in ("write", "destructive"):
             await _write_timeline(db, "l2.action.failed", session_id=session_id,
                                   actor=provider_name, call_id=tc.call_id,
                                   function_name=tc.name, status=final_status,
                                   invocation_id=inv.invocation_id, job_id=job.job_id,
-                                  target_node_id=resolved.node_id, error=final_status)
+                                  target_node_id=resolved.node_id, error=err_code)
 
     return tc
 

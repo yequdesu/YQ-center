@@ -133,6 +133,7 @@ class JobSummary(BaseModel):
     finished_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    error_details: dict[str, object] | None = None
     cancel_reason: str | None = None
     attempt: int
     output: dict[str, object] | None = None
@@ -989,6 +990,7 @@ def _job_summary(j: Job) -> JobSummary:
         finished_at=j.finished_at.isoformat() if j.finished_at else None,
         error_code=j.error_code,
         error_message=j.error_message,
+        error_details=j.error_details,
         cancel_reason=j.cancel_reason,
         attempt=j.attempt,
         output=j.output,
