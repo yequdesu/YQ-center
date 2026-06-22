@@ -61,6 +61,7 @@ export function AgentChatPage() {
   const [sessionSearch, setSessionSearch] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
   const creatingSessionRef = useRef(false);
+  const reconciledApprovalIdsRef = useRef(new Set<string>());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
@@ -138,6 +139,8 @@ export function AgentChatPage() {
   // Load persisted messages into blocks when session data arrives
   useEffect(() => {
     if (sessionQuery.data?.messages && sessionId) {
+      reconciledApprovalIdsRef.current.clear();
+      setDismissedApprovalIds(new Set());
       loadPersistedMessages(sessionQuery.data.messages);
     }
   }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
@@ -414,6 +417,41 @@ export function AgentChatPage() {
     },
     [dismissApproval, patchToolCall, waitForJobTerminal],
   );
+
+  useEffect(() => {
+    if (!sessionId || blocks.length === 0) return;
+
+    const waitingTools = blocks.flatMap((block) =>
+      block.type === "tool_group"
+        ? block.tool_calls.filter(
+            (tool) =>
+              tool.status === "waiting_approval" &&
+              Boolean(tool.approvalId) &&
+              !dismissedApprovalIds.has(String(tool.approvalId)) &&
+              !reconciledApprovalIdsRef.current.has(String(tool.approvalId)),
+          )
+        : [],
+    );
+
+    if (waitingTools.length === 0) return;
+
+    for (const tool of waitingTools) {
+      const approvalId = String(tool.approvalId);
+      reconciledApprovalIdsRef.current.add(approvalId);
+      void syncProcessedApproval(approvalId, tool.name).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("not found") || message.includes("404")) {
+          dismissApproval(approvalId);
+          patchToolCall({
+            approvalId,
+            status: "failed",
+            errorCode: "approval_not_found",
+            errorMessage: "Approval no longer exists.",
+          });
+        }
+      });
+    }
+  }, [blocks, dismissedApprovalIds, dismissApproval, patchToolCall, sessionId, syncProcessedApproval]);
 
   const handleToolApprovalDecision = useCallback(
     async (toolCall: ToolCallState, decision: "approve" | "deny") => {
