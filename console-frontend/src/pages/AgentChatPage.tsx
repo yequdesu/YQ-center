@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { createSession } from "@/api/agent";
 import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes } from "@/api/admin";
 import { useAgentChat, type ToolCallState, type PlanStepState } from "@/hooks/useAgentChat";
@@ -369,6 +371,9 @@ function ChatBubble({
 }) {
   const isUser = message.role === "user";
   const [runId, setRunId] = useState<string | null>(message.runId ?? null);
+  const hasTools = message.toolCalls.length > 0;
+  const hasPlan = Boolean(message.planSteps && message.planSteps.length > 0);
+  const shouldRenderAssistantText = Boolean(message.content) || Boolean(message.isStreaming && !hasTools);
 
   return (
     <div className={`flex gap-3 ${isUser ? "justify-end" : ""}`}>
@@ -382,47 +387,79 @@ function ChatBubble({
         {isUser ? <User size={14} /> : <Bot size={14} />}
       </div>
 
-      <div
-        className={`max-w-[75%] rounded-[var(--radius-md)] px-4 py-2.5 ${
-          isUser
-            ? "bg-[var(--accent-muted)]"
-            : "border border-[var(--border)] bg-[var(--surface-solid)]"
-        }`}
-      >
-        {message.content && (
+      {isUser ? (
+        <div className="max-w-[75%] rounded-[var(--radius-md)] bg-[var(--accent-muted)] px-4 py-2.5">
           <p className="whitespace-pre-wrap text-[14px] leading-[22px] text-[var(--text)]">
             {message.content}
-            {message.isStreaming && (
-              <span className="ml-0.5 inline-block h-4 w-1 animate-pulse bg-[var(--accent)]" />
-            )}
           </p>
-        )}
+        </div>
+      ) : (
+        <div className="flex w-full max-w-[75%] flex-col gap-2">
+          {hasTools && <ToolCallStack toolCalls={message.toolCalls} />}
 
-        {/* Tool calls */}
-        {message.toolCalls.map((tc) => (
+          {shouldRenderAssistantText && (
+            <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] px-4 py-2.5">
+              <MarkdownMessage content={message.content || "Thinking..."} isStreaming={message.isStreaming} />
+            </div>
+          )}
+
+          {hasPlan && (
+            <PlanStepsPreview
+              steps={message.planSteps ?? []}
+              planId={message.planId}
+              approvalRequired={message.approvalRequired}
+              onApprove={
+                onApproveAndRun && message.planId
+                  ? () => {
+                      onApproveAndRun(message.planId!, (rid) => {
+                        setRunId(rid);
+                      });
+                    }
+                  : undefined
+              }
+            />
+          )}
+
+          {runId && <RunProgressCard runId={runId} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarkdownMessage({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  return (
+    <div className="markdown-body text-[14px] leading-[22px] text-[var(--text)]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      {isStreaming && (
+        <span className="ml-0.5 inline-block h-4 w-1 translate-y-0.5 animate-pulse bg-[var(--accent)]" />
+      )}
+    </div>
+  );
+}
+
+function ToolCallStack({ toolCalls }: { toolCalls: ToolCallState[] }) {
+  const succeeded = toolCalls.filter((tool) => tool.status === "succeeded").length;
+  const failed = toolCalls.filter((tool) => tool.status === "failed").length;
+  const running = toolCalls.filter((tool) => tool.status === "running" || tool.status === "pending").length;
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-muted)] p-2.5 shadow-sm">
+      <div className="mb-2 flex items-center gap-2 px-1">
+        <Wrench size={14} className="text-[var(--text-muted)]" />
+        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+          Tool calls
+        </span>
+        <span className="text-[12px] text-[var(--text-subtle)]">{toolCalls.length}</span>
+        <span className="flex-1" />
+        {running > 0 && <span className="text-[11px] text-[var(--info)]">{running} running</span>}
+        {succeeded > 0 && <span className="text-[11px] text-[var(--success)]">{succeeded} succeeded</span>}
+        {failed > 0 && <span className="text-[11px] text-[var(--danger)]">{failed} failed</span>}
+      </div>
+      <div className="space-y-1.5">
+        {toolCalls.map((tc) => (
           <ToolCallCard key={tc.callId} toolCall={tc} />
         ))}
-
-        {/* Plan steps */}
-        {message.planSteps && message.planSteps.length > 0 && (
-          <PlanStepsPreview
-            steps={message.planSteps}
-            planId={message.planId}
-            approvalRequired={message.approvalRequired}
-            onApprove={
-              onApproveAndRun && message.planId
-                ? () => {
-                    onApproveAndRun(message.planId!, (rid) => {
-                      setRunId(rid);
-                    });
-                  }
-                : undefined
-            }
-          />
-        )}
-
-        {/* Inline run progress (per-bubble) */}
-        {runId && <RunProgressCard runId={runId} />}
       </div>
     </div>
   );
@@ -431,6 +468,14 @@ function ChatBubble({
 // ── Tool Call Card ──
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetails = Boolean(
+    toolCall.result ||
+      toolCall.errorMessage ||
+      toolCall.invocationId ||
+      toolCall.jobId ||
+      Object.keys(toolCall.input).length > 0,
+  );
   const statusIcon = {
     pending: <Loader2 size={14} className="animate-spin" />,
     running: <Loader2 size={14} className="animate-spin text-[var(--info)]" />,
@@ -440,8 +485,22 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   }[toolCall.status];
 
   return (
-    <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] p-2.5">
-      <div className="flex items-center gap-2">
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)]/80 p-2.5">
+      <button
+        type="button"
+        onClick={() => hasDetails && setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 text-left"
+        disabled={!hasDetails}
+      >
+        {hasDetails ? (
+          expanded ? (
+            <ChevronDown size={14} className="text-[var(--text-muted)]" />
+          ) : (
+            <ChevronRight size={14} className="text-[var(--text-muted)]" />
+          )
+        ) : (
+          <span className="w-3.5" />
+        )}
         <Wrench size={14} className="text-[var(--text-muted)]" />
         <span className="text-[13px] font-mono font-medium text-[var(--text)]">
           {toolCall.name}
@@ -449,13 +508,37 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
         <span className="flex-1" />
         {statusIcon}
         <StatusBadge status={toolCall.status} />
-      </div>
-      {toolCall.errorMessage && (
-        <p className="mt-1.5 text-[12px] text-[var(--danger)]">{toolCall.errorMessage}</p>
+      </button>
+      {toolCall.errorMessage && !expanded && (
+        <p className="mt-1.5 line-clamp-2 text-[12px] text-[var(--danger)]">{toolCall.errorMessage}</p>
       )}
-      {toolCall.result && (
-        <div className="mt-1.5">
-          <JsonView data={toolCall.result} />
+      {expanded && (
+        <div className="mt-2 space-y-2">
+          {toolCall.invocationId && (
+            <p className="text-[11px] font-mono text-[var(--text-subtle)]">
+              invocation: {toolCall.invocationId}
+            </p>
+          )}
+          {toolCall.jobId && (
+            <p className="text-[11px] font-mono text-[var(--text-subtle)]">job: {toolCall.jobId}</p>
+          )}
+          {Object.keys(toolCall.input).length > 0 && (
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Input</p>
+              <JsonView data={toolCall.input} />
+            </div>
+          )}
+          {toolCall.errorMessage && (
+            <p className="rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
+              {toolCall.errorMessage}
+            </p>
+          )}
+          {toolCall.result && (
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Result</p>
+              <JsonView data={toolCall.result} />
+            </div>
+          )}
         </div>
       )}
     </div>
