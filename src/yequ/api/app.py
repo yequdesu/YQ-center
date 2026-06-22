@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
         # Mount static assets (JS, CSS, favicon, etc.)
         _assets_dir = _console_dir / "assets"
         if _assets_dir.exists():
-            app.mount("/console/assets", StaticFiles(directory=str(_assets_dir)), name="console_assets")
+            app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="console_assets")
 
         # Favicon
         _favicon = _console_dir / "favicon.svg"
