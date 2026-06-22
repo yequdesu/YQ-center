@@ -85,6 +85,10 @@ export interface NodeSummary {
   platform_arch: string | null;
   last_seen_at: string | null;
   last_heartbeat_at: string | null;
+  last_capability_register_at: string | null;
+  running_jobs: number;
+  active_capability_count: number;
+  executable_capability_count: number;
 }
 
 export interface NodeDetail extends NodeSummary {
@@ -107,6 +111,14 @@ export interface CapabilitySummary {
   scope: string | null;
   ttl_sec: number | null;
   is_active: boolean;
+  node_id?: string;
+  node_status?: string;
+  available?: boolean;
+  unavailable_reason?: string | null;
+  executable?: boolean;
+  inactive_reason?: string | null;
+  approval_required?: boolean;
+  conflict_policy?: string | null;
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
 }
