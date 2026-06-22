@@ -62,9 +62,10 @@ export function AgentChatPage() {
   const creatingSessionRef = useRef(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
   const queryClient = useQueryClient();
-  const approvalRunPromisesRef = useRef(new Map<string, Promise<void>>());
+  const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
@@ -250,12 +251,12 @@ export function AgentChatPage() {
   };
 
   const waitForJobTerminal = useCallback(
-    async (jobId: string, approvalId: string) => {
+    async (jobId: string, approvalId: string, toolName: string): Promise<ApprovalRunOutcome> => {
       const terminalStatuses = new Set(["succeeded", "failed", "timeout", "cancelled"]);
       for (let attempt = 0; attempt < 70; attempt += 1) {
         const job = await getJob(jobId);
         patchToolCall(jobToToolPatch(job, approvalId));
-        if (terminalStatuses.has(job.status)) return;
+        if (terminalStatuses.has(job.status)) return jobToApprovalOutcome(job, approvalId, toolName);
         await sleep(1200);
       }
       patchToolCall({
@@ -264,6 +265,14 @@ export function AgentChatPage() {
         errorCode: "job_poll_timeout",
         errorMessage: "Timed out while waiting for the approved job to finish.",
       });
+      return {
+        approvalId,
+        toolName,
+        jobId,
+        status: "failed",
+        errorCode: "job_poll_timeout",
+        errorMessage: "Timed out while waiting for the approved job to finish.",
+      };
     },
     [patchToolCall],
   );
@@ -273,15 +282,25 @@ export function AgentChatPage() {
     setAutoContinuing(true);
     try {
       const pendingRuns = Array.from(approvalRunPromisesRef.current.values());
+      approvalRunPromisesRef.current.clear();
+      const outcomes: ApprovalRunOutcome[] = [];
       if (pendingRuns.length > 0) {
-        await Promise.allSettled(pendingRuns);
+        const settled = await Promise.allSettled(pendingRuns);
+        for (const item of settled) {
+          if (item.status === "fulfilled") {
+            outcomes.push(item.value);
+          } else {
+            outcomes.push({
+              approvalId: "unknown",
+              toolName: "unknown",
+              status: "failed",
+              errorCode: "approval_result_unavailable",
+              errorMessage: item.reason instanceof Error ? item.reason.message : String(item.reason),
+            });
+          }
+        }
       }
-      sendInvoke(
-        "继续处理刚才的审批结果，并基于最新工具结果给出最终结论。",
-        targetNodeId,
-        providerName,
-        executionMode,
-      );
+      sendInvoke(buildApprovalContinuationPrompt(outcomes), targetNodeId, providerName, executionMode);
     } finally {
       setAutoContinuing(false);
     }
@@ -306,6 +325,7 @@ export function AgentChatPage() {
 
       const isLastApproval = pendingApprovals.length <= 1;
       setApprovalBusyId(approvalId);
+      setApprovalActionError(null);
       try {
         if (decision === "deny") {
           await denyApproval(approvalId, "Denied from Agent chat");
@@ -324,11 +344,8 @@ export function AgentChatPage() {
             errorCode: null,
             errorMessage: null,
           });
-          const runPromise = waitForJobTerminal(result.job_id, approvalId);
+          const runPromise = waitForJobTerminal(result.job_id, approvalId, toolCall.name);
           approvalRunPromisesRef.current.set(approvalId, runPromise);
-          void runPromise.finally(() => {
-            approvalRunPromisesRef.current.delete(approvalId);
-          });
         }
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
         queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -337,11 +354,13 @@ export function AgentChatPage() {
           void scheduleAutoContinue();
         }
       } catch (error) {
+        const message = error instanceof Error ? error.message : "Approval action failed.";
+        setApprovalActionError(message);
         patchToolCall({
           approvalId,
           status: "waiting_approval",
           errorCode: "approval_action_failed",
-          errorMessage: error instanceof Error ? error.message : "Approval action failed.",
+          errorMessage: message,
         });
       } finally {
         setApprovalBusyId(null);
@@ -558,6 +577,7 @@ export function AgentChatPage() {
                 total={pendingApprovals.length}
                 busy={approvalBusyId === pendingApprovals[0].approvalId}
                 disabled={Boolean(approvalBusyId)}
+                error={approvalActionError}
                 onApprove={() => handleToolApprovalDecision(pendingApprovals[0], "approve")}
                 onDeny={() => handleToolApprovalDecision(pendingApprovals[0], "deny")}
               />
@@ -678,6 +698,7 @@ function ApprovalQueueBar({
   total,
   busy,
   disabled,
+  error,
   onApprove,
   onDeny,
 }: {
@@ -686,6 +707,7 @@ function ApprovalQueueBar({
   total: number;
   busy: boolean;
   disabled: boolean;
+  error: string | null;
   onApprove: () => void;
   onDeny: () => void;
 }) {
@@ -707,6 +729,11 @@ function ApprovalQueueBar({
           <p className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]">
             {toolCall.approvalId} · choose one, then the next approval will appear automatically
           </p>
+          {error && (
+            <p className="mt-1 text-[11px] font-medium text-[var(--danger)]">
+              {error}
+            </p>
+          )}
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           <Button variant="ghost" size="sm" onClick={onDeny} disabled={disabled}>
@@ -1127,6 +1154,17 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+interface ApprovalRunOutcome {
+  approvalId: string;
+  toolName: string;
+  status: string;
+  invocationId?: string;
+  jobId?: string;
+  result?: Record<string, unknown>;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
 function jobToToolPatch(
   job: JobSummary,
   approvalId: string,
@@ -1168,4 +1206,32 @@ function jobToToolPatch(
     errorCode: null,
     errorMessage: null,
   };
+}
+
+function jobToApprovalOutcome(job: JobSummary, approvalId: string, toolName: string): ApprovalRunOutcome {
+  return {
+    approvalId,
+    toolName,
+    status: job.status,
+    invocationId: job.invocation_id,
+    jobId: job.job_id,
+    result: job.output ?? undefined,
+    errorCode: job.error_code,
+    errorMessage: job.error_message,
+  };
+}
+
+function buildApprovalContinuationPrompt(outcomes: ApprovalRunOutcome[]): string {
+  const payload = JSON.stringify(outcomes, null, 2);
+  return [
+    "以下是刚才用户在 Agent Console 审批条中处理过的审批结果，已经由系统执行或拒绝，不需要再次请求同一个写操作。",
+    "",
+    "请遵守：",
+    "1. 不要重复调用这些 approval_id 对应的写操作，除非用户明确要求重试。",
+    "2. 如果 status 是 succeeded，直接基于 result 给出结论；必要时只能调用只读工具复核状态。",
+    "3. 如果 status 是 failed/cancelled/timeout/denied，解释失败原因并给出下一步。",
+    "",
+    "approval_results:",
+    payload,
+  ].join("\n");
 }
