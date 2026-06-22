@@ -18,8 +18,12 @@ class Session(Base, TimestampMixin):
     actor_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="auto")
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)

@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createSession } from "@/api/agent";
 import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes } from "@/api/admin";
-import { useAgentChat, type ToolCallState, type PlanStepState } from "@/hooks/useAgentChat";
+import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock } from "@/hooks/useAgentChat";
 import type { MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
@@ -26,6 +26,8 @@ import {
   Trash2,
   Edit3,
   Check,
+  Search,
+  Info,
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
@@ -42,6 +44,7 @@ export function AgentChatPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [editingSessId, setEditingSessId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const refreshSessionHistory = useCallback(() => {
@@ -81,21 +84,22 @@ export function AgentChatPage() {
         return getSession(s.session_id);
       }
     },
-    staleTime: 60_000,
+    staleTime: 0, // Never use stale cache for session detail
   });
 
   const {
-    messages,
+    blocks,
     isStreaming,
     sendInvoke,
     sendPlan,
     cancel,
-    clearMessages,
+    clearBlocks,
     loadPersistedMessages,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
+  // Load persisted messages into blocks when session data arrives
   useEffect(() => {
-    if (sessionQuery.data?.messages) {
+    if (sessionQuery.data?.messages && sessionId) {
       loadPersistedMessages(sessionQuery.data.messages);
     }
   }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
@@ -110,18 +114,30 @@ export function AgentChatPage() {
   // Auto-scroll to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [blocks]);
 
   const switchSession = (newId: string) => {
+    if (isStreaming) {
+      if (!confirm("A stream is in progress. Switching sessions will cancel it. Continue?")) {
+        return;
+      }
+    }
     cancel();
-    clearMessages();
+    clearBlocks();
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
+    // Force fresh fetch for the new session
+    queryClient.invalidateQueries({ queryKey: ["agent-session", newId] });
   };
 
   const createNewSession = async () => {
+    if (isStreaming) {
+      if (!confirm("A stream is in progress. Creating a new session will cancel it. Continue?")) {
+        return;
+      }
+    }
     cancel();
-    clearMessages();
+    clearBlocks();
     const s = await createSession({});
     sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
     setSessionId(s.session_id);
@@ -182,10 +198,27 @@ export function AgentChatPage() {
     [],
   );
 
+  // Filter sessions by search
+  const sessions = sessionsQuery.data ?? [];
+  const filteredSessions = sessionSearch
+    ? sessions.filter(
+        (s) =>
+          s.label.toLowerCase().includes(sessionSearch.toLowerCase()) ||
+          s.session_id.toLowerCase().includes(sessionSearch.toLowerCase()),
+      )
+    : sessions;
+
+  // Sort by updated_at desc (or started_at as fallback)
+  const sortedSessions = [...filteredSessions].sort((a, b) => {
+    const aTime = a.updated_at ?? a.started_at ?? "";
+    const bTime = b.updated_at ?? b.started_at ?? "";
+    return bTime.localeCompare(aTime);
+  });
+
   return (
     <div className="flex h-[calc(100vh-var(--topbar-height))]">
       {/* Session Sidebar */}
-      <aside className="flex w-[200px] flex-shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-muted)]">
+      <aside className="flex w-[240px] flex-shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface-muted)]">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
           <span className="text-[12px] font-semibold text-[var(--text)]">Sessions</span>
           <button
@@ -197,75 +230,127 @@ export function AgentChatPage() {
           </button>
         </div>
 
+        {/* Search */}
+        <div className="border-b border-[var(--border)] px-2 py-1.5">
+          <div className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2 py-1">
+            <Search size={12} className="text-[var(--text-muted)]" />
+            <input
+              value={sessionSearch}
+              onChange={(e) => setSessionSearch(e.target.value)}
+              placeholder="Filter..."
+              className="flex-1 bg-transparent text-[11px] text-[var(--text)] outline-none placeholder:text-[var(--text-subtle)]"
+            />
+          </div>
+        </div>
+
         <div className="flex-1 overflow-y-auto">
-          {(sessionsQuery.data ?? []).map((s) => (
-            <div
-              key={s.session_id}
-              onClick={() => switchSession(s.session_id)}
-              className={`group flex items-center cursor-pointer border-b border-[var(--border)] px-3 py-2 hover:bg-[var(--bg-subtle)] ${
-                s.session_id === sessionId ? "bg-[var(--accent-muted)]" : ""
-              }`}
-            >
-              {editingSessId === s.session_id ? (
-                <form
-                  onSubmit={(e) => { e.preventDefault(); handleRenameSubmit(s.session_id); }}
-                  className="flex flex-1 items-center gap-1"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <input
-                    value={editLabel}
-                    onChange={(e) => setEditLabel(e.target.value)}
-                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 text-[12px] text-[var(--text)] outline-none"
-                    autoFocus
-                    onBlur={() => handleRenameSubmit(s.session_id)}
-                  />
-                  <button type="submit" className="p-0.5 text-[var(--success)]">
-                    <Check size={12} />
-                  </button>
-                </form>
-              ) : (
-                <>
-                  <span className="flex-1 truncate text-[12px] text-[var(--text)]">
-                    {s.label}
-                  </span>
-                  <div className="flex opacity-0 group-hover:opacity-100">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRenameStart(s.session_id, s.label); }}
-                      className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
-                      title="Rename"
-                    >
-                      <Edit3 size={10} />
+          {sortedSessions.map((s) => {
+            const lastMsgPreview = s.last_message_preview ?? "";
+            const messageCount = s.message_count ?? 0;
+            const running = s.running ?? false;
+            const updatedAt = s.updated_at ?? s.started_at ?? "";
+            const isActive = s.session_id === sessionId;
+
+            return (
+              <div
+                key={s.session_id}
+                onClick={() => switchSession(s.session_id)}
+                className={`group cursor-pointer border-b border-[var(--border)] px-3 py-2.5 hover:bg-[var(--bg-subtle)] ${
+                  isActive ? "bg-[var(--accent-muted)]" : ""
+                }`}
+              >
+                {editingSessId === s.session_id ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleRenameSubmit(s.session_id);
+                    }}
+                    className="flex items-center gap-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                      className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 text-[12px] text-[var(--text)] outline-none"
+                      autoFocus
+                      onBlur={() => handleRenameSubmit(s.session_id)}
+                    />
+                    <button type="submit" className="p-0.5 text-[var(--success)]">
+                      <Check size={12} />
                     </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDelete(s.session_id); }}
-                      className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]"
-                      title="Delete"
-                    >
-                      <Trash2 size={10} />
-                    </button>
+                  </form>
+                ) : (
+                  <div className="space-y-1">
+                    {/* Top row: label + status indicator */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="flex-1 truncate text-[12px] font-medium text-[var(--text)]">
+                        {s.label}
+                      </span>
+                      {running && (
+                        <Loader2 size={10} className="animate-spin text-[var(--info)]" />
+                      )}
+                      {s.status === "error" && (
+                        <XCircle size={10} className="text-[var(--danger)]" />
+                      )}
+                      <div className="flex opacity-0 group-hover:opacity-100">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRenameStart(s.session_id, s.label);
+                          }}
+                          className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
+                          title="Rename"
+                        >
+                          <Edit3 size={10} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(s.session_id);
+                          }}
+                          className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]"
+                          title="Delete"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      </div>
+                    </div>
+                    {/* Last message preview */}
+                    {lastMsgPreview && (
+                      <p className="truncate text-[11px] leading-[14px] text-[var(--text-subtle)]">
+                        {lastMsgPreview}
+                      </p>
+                    )}
+                    {/* Meta row: message count + time */}
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+                      {messageCount > 0 && <span>{messageCount} msgs</span>}
+                      {updatedAt && (
+                        <span>{formatRelativeTime(updatedAt)}</span>
+                      )}
+                    </div>
                   </div>
-                </>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       </aside>
 
       {/* Conversation area */}
       <div className="flex flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-6">
-          {messages.length === 0 ? (
+          {blocks.length === 0 ? (
             <EmptyState
               icon={<Bot size={36} />}
               title="YeQu Agent"
               description="Input a prompt to start. The Agent will reason about your request and execute tools accordingly."
             />
           ) : (
-            <div className="mx-auto max-w-3xl space-y-4">
-              {messages.map((msg) => (
-                <ChatBubble
-                  key={msg.id}
-                  message={msg}
+            <div className="mx-auto max-w-3xl space-y-3">
+              {blocks.map((block) => (
+                <ChatTimelineBlock
+                  key={block.id}
+                  block={block}
                   onApproveAndRun={handleApproveAndRun}
                 />
               ))}
@@ -358,114 +443,130 @@ export function AgentChatPage() {
           </div>
         </div>
       </div>
-
-      {/* Inspector (tool calls / plan steps) */}
-      <InspectorPanel messages={messages} sessionId={sessionId} />
     </div>
   );
 }
 
-// ── Chat Bubble ──
+// ── Timeline Block Renderer ──
 
-function ChatBubble({
-  message,
+function ChatTimelineBlock({
+  block,
   onApproveAndRun,
 }: {
-  message: ReturnType<typeof useAgentChat>["messages"][number];
+  block: ChatBlock;
   onApproveAndRun?: (planId: string, onRunStarted: (runId: string) => void) => void;
 }) {
-  const isUser = message.role === "user";
-  const [runId, setRunId] = useState<string | null>(message.runId ?? null);
-  const hasTools = message.toolCalls.length > 0;
-  const hasPlan = Boolean(message.planSteps && message.planSteps.length > 0);
-  const shouldRenderAssistantText = Boolean(message.content) || Boolean(message.isStreaming && !hasTools);
+  switch (block.type) {
+    case "user":
+      return <UserBubble block={block} />;
+    case "assistant_text":
+      return <AssistantTextBubble block={block} />;
+    case "tool_group":
+      return <ToolGroupBubble block={block} />;
+    case "system_event":
+      return <SystemEventBubble block={block} />;
+    default:
+      return null;
+  }
+}
 
+// ── User Bubble ──
+
+function UserBubble({ block }: { block: UserBlock }) {
   return (
-    <div className={`flex gap-3 ${isUser ? "justify-end" : ""}`}>
-      <div
-        className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] ${
-          isUser
-            ? "order-last bg-[var(--accent-muted)] text-[var(--accent)]"
-            : "bg-[var(--bg-subtle)] text-[var(--text-muted)]"
-        }`}
-      >
-        {isUser ? <User size={14} /> : <Bot size={14} />}
+    <div className="flex justify-end gap-3">
+      <div className="max-w-[75%] rounded-[var(--radius-md)] bg-[var(--accent-muted)] px-4 py-2.5">
+        <p className="whitespace-pre-wrap text-[14px] leading-[22px] text-[var(--text)]">
+          {block.content}
+        </p>
       </div>
-
-      {isUser ? (
-        <div className="max-w-[75%] rounded-[var(--radius-md)] bg-[var(--accent-muted)] px-4 py-2.5">
-          <p className="whitespace-pre-wrap text-[14px] leading-[22px] text-[var(--text)]">
-            {message.content}
-          </p>
-        </div>
-      ) : (
-        <div className="flex w-full max-w-[75%] flex-col gap-2">
-          {hasTools && <ToolCallStack toolCalls={message.toolCalls} />}
-
-          {shouldRenderAssistantText && (
-            <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] px-4 py-2.5">
-              <MarkdownMessage content={message.content || "Thinking..."} isStreaming={message.isStreaming} />
-            </div>
-          )}
-
-          {hasPlan && (
-            <PlanStepsPreview
-              steps={message.planSteps ?? []}
-              planId={message.planId}
-              approvalRequired={message.approvalRequired}
-              onApprove={
-                onApproveAndRun && message.planId
-                  ? () => {
-                      onApproveAndRun(message.planId!, (rid) => {
-                        setRunId(rid);
-                      });
-                    }
-                  : undefined
-              }
-            />
-          )}
-
-          {runId && <RunProgressCard runId={runId} />}
-        </div>
-      )}
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-muted)] text-[var(--accent)]">
+        <User size={14} />
+      </div>
     </div>
   );
 }
 
+// ── Assistant Text Bubble ──
+
+function AssistantTextBubble({ block }: { block: AssistantTextBlock }) {
+  return (
+    <div className="flex gap-3">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
+        <Bot size={14} />
+      </div>
+      <div className="max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] px-4 py-2.5">
+        <MarkdownMessage content={block.content || "Thinking..."} isStreaming={block.streaming} />
+      </div>
+    </div>
+  );
+}
+
+// ── Tool Group Bubble ──
+
+function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
+  const succeeded = block.tool_calls.filter((t) => t.status === "succeeded").length;
+  const failed = block.tool_calls.filter((t) => t.status === "failed").length;
+  const running = block.tool_calls.filter(
+    (t) => t.status === "running" || t.status === "pending",
+  ).length;
+
+  return (
+    <div className="flex gap-3">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
+        <Wrench size={14} />
+      </div>
+      <div className="w-full max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-muted)] p-2.5 shadow-sm">
+        <div className="mb-2 flex items-center gap-2 px-1">
+          <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+            Tool calls
+          </span>
+          <span className="text-[12px] text-[var(--text-subtle)]">{block.tool_calls.length}</span>
+          <span className="flex-1" />
+          {running > 0 && <span className="text-[11px] text-[var(--info)]">{running} running</span>}
+          {succeeded > 0 && (
+            <span className="text-[11px] text-[var(--success)]">{succeeded} succeeded</span>
+          )}
+          {failed > 0 && <span className="text-[11px] text-[var(--danger)]">{failed} failed</span>}
+        </div>
+        <div className="space-y-1.5">
+          {block.tool_calls.map((tc) => (
+            <ToolCallCard key={tc.callId} toolCall={tc} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── System Event Bubble (subtle) ──
+
+function SystemEventBubble({ block }: { block: SystemEventBlock }) {
+  return (
+    <div className="flex items-center justify-center gap-2 py-1">
+      <Info size={12} className="text-[var(--text-subtle)]" />
+      <span className="text-[11px] text-[var(--text-muted)]">{block.label}</span>
+    </div>
+  );
+}
+
+// ── Markdown Message ──
+
 function MarkdownMessage({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  if (!content) {
+    return (
+      <span className="flex items-center gap-1 text-[var(--text-muted)]">
+        <Loader2 size={14} className="animate-spin" />
+        Thinking...
+      </span>
+    );
+  }
   return (
     <div className="markdown-body text-[14px] leading-[22px] text-[var(--text)]">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       {isStreaming && (
         <span className="ml-0.5 inline-block h-4 w-1 translate-y-0.5 animate-pulse bg-[var(--accent)]" />
       )}
-    </div>
-  );
-}
-
-function ToolCallStack({ toolCalls }: { toolCalls: ToolCallState[] }) {
-  const succeeded = toolCalls.filter((tool) => tool.status === "succeeded").length;
-  const failed = toolCalls.filter((tool) => tool.status === "failed").length;
-  const running = toolCalls.filter((tool) => tool.status === "running" || tool.status === "pending").length;
-
-  return (
-    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-muted)] p-2.5 shadow-sm">
-      <div className="mb-2 flex items-center gap-2 px-1">
-        <Wrench size={14} className="text-[var(--text-muted)]" />
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
-          Tool calls
-        </span>
-        <span className="text-[12px] text-[var(--text-subtle)]">{toolCalls.length}</span>
-        <span className="flex-1" />
-        {running > 0 && <span className="text-[11px] text-[var(--info)]">{running} running</span>}
-        {succeeded > 0 && <span className="text-[11px] text-[var(--success)]">{succeeded} succeeded</span>}
-        {failed > 0 && <span className="text-[11px] text-[var(--danger)]">{failed} failed</span>}
-      </div>
-      <div className="space-y-1.5">
-        {toolCalls.map((tc) => (
-          <ToolCallCard key={tc.callId} toolCall={tc} />
-        ))}
-      </div>
     </div>
   );
 }
@@ -550,55 +651,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   );
 }
 
-// ── Plan Steps Preview ──
-
-function PlanStepsPreview({
-  steps,
-  planId,
-  approvalRequired,
-  onApprove,
-}: {
-  steps: PlanStepState[];
-  planId?: string;
-  approvalRequired?: boolean;
-  onApprove?: () => void;
-}) {
-  return (
-    <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
-      <div className="flex items-center gap-2">
-        <FileText size={14} className="text-[var(--text-muted)]" />
-        <span className="text-[13px] font-semibold text-[var(--text)]">Maintenance Plan</span>
-        {planId && (
-          <span className="text-[11px] font-mono text-[var(--text-subtle)]">{planId}</span>
-        )}
-      </div>
-
-      <div className="mt-2 space-y-1.5">
-        {steps.map((step) => (
-          <div key={step.seq} className="flex items-center gap-2 text-[13px]">
-            <span className="text-[var(--text-subtle)] w-4 text-right">{step.seq}.</span>
-            <StatusBadge status={step.kind} />
-            <span className="font-mono text-[var(--text)]">{step.functionName}</span>
-            {step.requiresApproval && (
-              <AlertTriangle size={12} className="text-[var(--warning)]" />
-            )}
-          </div>
-        ))}
-      </div>
-
-      {approvalRequired && planId && onApprove && (
-        <div className="mt-3 flex gap-2">
-          <Button variant="primary" size="sm" onClick={onApprove}>
-            <CheckCircle size={14} />
-            <span className="ml-1">Approve & Run</span>
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Run Progress Card (live-polled) ──
+// ── Run Progress Card (live-polled, unchanged from original) ──
 
 function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: () => void }) {
   const [showArtifacts, setShowArtifacts] = useState(false);
@@ -635,12 +688,10 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
   const run = runQuery.data;
   const artifacts = artifactsQuery.data ?? [];
 
-  // Notify parent when run completes
   useEffect(() => {
     if (run && ["succeeded", "failed", "rollback_recommended", "cancelled"].includes(run.status)) {
       if (prevStatusRef.current && prevStatusRef.current !== run.status && onComplete) {
-        // Delay completion so user can see final state
-        // (onComplete is handled by the parent; we just track it)
+        // Parent handles completion
       }
       prevStatusRef.current = run.status;
     }
@@ -667,7 +718,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
 
   return (
     <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
-      {/* Header */}
       <div className="flex items-center gap-2">
         {!isTerminal ? (
           <Loader2 size={14} className="animate-spin text-[var(--info)]" />
@@ -689,7 +739,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
         <StatusBadge status={run.status} />
       </div>
 
-      {/* Step-by-step status */}
       {run.steps && run.steps.length > 0 && (
         <div className="mt-2 space-y-1">
           {run.steps.map((step) => (
@@ -707,7 +756,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
         </div>
       )}
 
-      {/* Rollback recommended warning */}
       {isRollback && (
         <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--warning-muted)] bg-[var(--warning-muted)]/20 p-2">
           <p className="text-[12px] font-medium text-[var(--warning)]">
@@ -716,7 +764,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
         </div>
       )}
 
-      {/* Error artifacts */}
       {errorArtifacts.length > 0 && (
         <div className="mt-2 space-y-1.5">
           {errorArtifacts.map((a) => (
@@ -724,9 +771,7 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
               key={a.artifact_id}
               className="rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2"
             >
-              <p className="text-[12px] font-medium text-[var(--danger)]">
-                Error: {a.name}
-              </p>
+              <p className="text-[12px] font-medium text-[var(--danger)]">Error: {a.name}</p>
               {a.data && (
                 <div className="mt-1">
                   <JsonView data={a.data} />
@@ -737,7 +782,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
         </div>
       )}
 
-      {/* Rollback hint artifacts */}
       {rollbackArtifacts.length > 0 && (
         <div className="mt-2 space-y-1.5">
           {rollbackArtifacts.map((a) => (
@@ -758,7 +802,6 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
         </div>
       )}
 
-      {/* Artifacts summary + expand */}
       {artifacts.length > 0 && (
         <div className="mt-2">
           <button
@@ -794,50 +837,17 @@ function RunProgressCard({ runId, onComplete }: { runId: string; onComplete?: ()
   );
 }
 
-// ── Inspector Panel ──
+// ── Relative time formatter ──
 
-function InspectorPanel({
-  messages,
-  sessionId,
-}: {
-  messages: ReturnType<typeof useAgentChat>["messages"];
-  sessionId: string;
-}) {
-  const lastMsg = [...messages].reverse().find((m) => m.role === "tool" || m.role === "assistant");
-
-  return (
-    <aside className="flex w-[360px] flex-shrink-0 flex-col border-l border-[var(--border)] bg-[var(--surface-muted)] p-4">
-      <h3 className="text-[13px] font-semibold text-[var(--text)]">Inspector</h3>
-
-      <div className="mt-3 space-y-3">
-        <div className="rounded-[var(--radius-sm)] bg-[var(--surface-solid)] p-2.5">
-          <p className="text-[11px] font-medium text-[var(--text-muted)]">Session</p>
-          <p className="mt-0.5 text-[12px] font-mono text-[var(--text)]">{sessionId}</p>
-        </div>
-
-        {lastMsg && lastMsg.toolCalls.length > 0 && (
-          <div className="rounded-[var(--radius-sm)] bg-[var(--surface-solid)] p-2.5">
-            <p className="text-[11px] font-medium text-[var(--text-muted)]">
-              Tool Calls ({lastMsg.toolCalls.length})
-            </p>
-            <div className="mt-1.5 space-y-1">
-              {lastMsg.toolCalls.map((tc) => (
-                <div key={tc.callId} className="flex items-center gap-2 text-[12px]">
-                  <StatusBadge status={tc.status} />
-                  <span className="font-mono text-[var(--text)]">{tc.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {lastMsg?.planId && (
-          <div className="rounded-[var(--radius-sm)] bg-[var(--surface-solid)] p-2.5">
-            <p className="text-[11px] font-medium text-[var(--text-muted)]">Plan</p>
-            <p className="mt-0.5 text-[12px] font-mono text-[var(--text)]">{lastMsg.planId}</p>
-          </div>
-        )}
-      </div>
-    </aside>
-  );
+function formatRelativeTime(iso: string): string {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }

@@ -319,6 +319,10 @@ export interface AgentSessionSummary {
   started_at: string | null;
   closed_at: string | null;
   label: string;
+  updated_at?: string | null;
+  last_message_preview?: string | null;
+  message_count?: number;
+  running?: boolean;
 }
 
 // ── SSE Event types ──

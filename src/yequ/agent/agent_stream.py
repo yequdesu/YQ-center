@@ -161,43 +161,64 @@ async def agent_invoke_stream(
             # Append assistant message with tool_calls
             history.append(AgentMessage(role="assistant", content=provider_result.message or "", tool_calls=provider_result.tool_calls))
 
-            # Execute each tool call
-            for raw_tc in provider_result.tool_calls:
-                tc_name = str(raw_tc.get("name", ""))
-                tc_call_id = str(raw_tc.get("call_id", _make_event_id()))
-                tc_input = raw_tc.get("input", {})
+            # Record original provider call order for history ordering
+            provider_call_order: dict[str, int] = {}
+            for idx, raw_tc in enumerate(provider_result.tool_calls):
+                call_id = str(raw_tc.get("call_id", ""))
+                provider_call_order[call_id] = idx
 
-                yield _event("agent.tool_call.created", session_id, trace_id, {"call_id": tc_call_id, "name": tc_name, "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)), "input": tc_input})
+            # Execute tool calls with concurrency scheduling
+            import json as _json
 
-                # Run tool via existing executor
-                tc_result = {}
-                async for ev in _execute_and_stream(
-                    db, provider, session, session_id, trace_id,
-                    tc_call_id, tc_name, tc_input,
-                    known_functions, available_functions,
-                    call_path, execution_mode, max_depth,
-                    max_total_duration_sec, started_at,
-                    target_node_id=target_node_id,
+            ordered_results: list[dict] = []
+            async for ev in _execute_tool_calls_scheduled(
+                db, provider, session, session_id, trace_id,
+                provider_result.tool_calls, known_functions, available_functions,
+                call_path, execution_mode, max_depth,
+                max_total_duration_sec, started_at, target_node_id,
+            ):
+                yield ev
+                # Collect results from completed/failed/waiting_approval events
+                if ev["event_type"] in (
+                    "agent.tool_call.completed",
+                    "agent.tool_call.failed",
+                    "agent.tool_call.waiting_approval",
                 ):
-                    yield ev
+                    data = ev["data"]
+                    call_id = str(data.get("call_id", ""))
+                    name = str(data.get("name", ""))
                     if ev["event_type"] == "agent.tool_call.completed":
-                        tc_result = {"status": "succeeded", "result": ev["data"].get("result")}
+                        ordered_results.append({
+                            "name": name, "call_id": call_id,
+                            "status": "succeeded",
+                            "result": data.get("result"),
+                        })
                     elif ev["event_type"] == "agent.tool_call.failed":
-                        tc_result = {"status": "failed", "error": ev["data"].get("message")}
+                        ordered_results.append({
+                            "name": name, "call_id": call_id,
+                            "status": "failed",
+                            "error": data.get("message"),
+                        })
                     elif ev["event_type"] == "agent.tool_call.waiting_approval":
-                        tc_result = {
+                        ordered_results.append({
+                            "name": name, "call_id": call_id,
                             "status": "waiting_approval",
-                            "approval_id": ev["data"].get("approval_id"),
-                        }
+                            "approval_id": data.get("approval_id"),
+                        })
                         loop_state = "waiting_approval"
 
-                all_tool_results.append({"name": tc_name, "call_id": tc_call_id, **tc_result})
+            # Sort results by original provider call order
+            ordered_results.sort(key=lambda r: provider_call_order.get(r["call_id"], 999))
 
-                # Append tool observation
-                import json as _json
-                history.append(AgentMessage(role="tool", tool_call_id=tc_call_id, content=_json.dumps(tc_result)))
-                if loop_state == "waiting_approval":
-                    break
+            for tc_result in ordered_results:
+                all_tool_results.append(tc_result)
+                history.append(AgentMessage(
+                    role="tool",
+                    tool_call_id=tc_result["call_id"],
+                    content=_json.dumps(tc_result),
+                ))
+                if tc_result.get("status") == "waiting_approval":
+                    loop_state = "waiting_approval"
 
             yield _event("agent.observing", session_id, trace_id, {"tool_count": len(provider_result.tool_calls)})
             if loop_state == "waiting_approval":
@@ -470,6 +491,237 @@ async def _execute_and_stream(
             })
 
 
+# ── Concurrency scheduling for tool calls ──
+
+CONCURRENCY_MAX = 4  # Configurable later
+
+
+async def _execute_tool_calls_scheduled(
+    db: AsyncSession,
+    provider,
+    session,
+    session_id: str,
+    trace_id: str,
+    tool_calls: list[dict],
+    known_functions: set[str],
+    available_functions: list,
+    call_path: list[str],
+    execution_mode: str,
+    max_depth: int,
+    max_total_duration_sec: int,
+    started_at,
+    target_node_id: str | None = None,
+) -> AsyncGenerator[dict, None]:
+    """Async generator that executes tool calls with concurrency scheduling.
+
+    Yields SSE events in real-time. All created events are emitted first,
+    then concurrent safe/read tools execute in parallel (max 4),
+    then serial tools execute one by one.
+    """
+    from yequ.services.capability_resolver import resolve_target_node
+    from yequ.services.policy import check_policy
+    from yequ.config import get_settings
+    from yequ.models.capability import Capability
+    from sqlalchemy import select as sa_select
+    from yequ.db import async_session_factory
+
+    settings = get_settings()
+
+    # ── Phase 1: Pre-flight validation + emit all created events ──
+    classified: list[dict] = []
+
+    for raw_tc in tool_calls:
+        tc_name = str(raw_tc.get("name", ""))
+        tc_call_id = str(raw_tc.get("call_id", _make_event_id()))
+        tc_input = raw_tc.get("input", {})
+
+        # Unknown function check
+        if tc_name not in known_functions:
+            yield _event("agent.tool_call.created", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+            })
+            yield _event("agent.tool_call.failed", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+                "error_code": "function_not_available",
+                "message": f"Function {tc_name!r} is not available",
+            })
+            classified.append({
+                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
+                "status": "failed", "error": "function_not_available",
+            })
+            continue
+
+        # Loop detection
+        if tc_name in call_path:
+            yield _event("agent.tool_call.created", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+            })
+            yield _event("agent.tool_call.failed", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+                "error_code": "circular_dependency",
+                "message": f"Circular: {tc_name!r} in call_path",
+            })
+            classified.append({
+                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
+                "status": "failed", "error": "circular_dependency",
+            })
+            continue
+
+        # Resolve target node (pre-flight)
+        resolved = await resolve_target_node(
+            db, tc_name,
+            requested_node_id=target_node_id,
+            settings=settings,
+        )
+
+        # Get function metadata
+        func_meta = next((f for f in available_functions if f.name == tc_name), None)
+        risk = func_meta.risk if func_meta else "safe"
+        effect = func_meta.effect if func_meta else "read"
+
+        # Emit created event first
+        yield _event("agent.tool_call.created", session_id, trace_id, {
+            "call_id": tc_call_id,
+            "name": tc_name,
+            "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
+            "input": tc_input,
+        })
+
+        # Node not available
+        if resolved is None:
+            yield _event("agent.tool_call.failed", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+                "error_code": "function_not_available",
+                "message": f"No online node has {tc_name!r}",
+            })
+            classified.append({
+                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
+                "status": "failed", "error": "no_node",
+            })
+            continue
+
+        # Policy check
+        policy_r = check_policy(
+            execution_mode=execution_mode,
+            risk_level=risk,
+            function_name=tc_name,
+        )
+        if not policy_r.allowed:
+            yield _event("agent.tool_call.failed", session_id, trace_id, {
+                "call_id": tc_call_id, "name": tc_name,
+                "error_code": "policy_denied",
+                "message": policy_r.reason or "Policy denied",
+            })
+            classified.append({
+                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
+                "status": "failed", "error": "policy_denied",
+            })
+            continue
+
+        # Look up resource keys from capability
+        cap_result = await db.execute(
+            sa_select(Capability).where(
+                Capability.capability_type == "function",
+                Capability.name == tc_name,
+                Capability.is_active == True,  # noqa: E712
+            ).limit(1)
+        )
+        capability = cap_result.scalar_one_or_none()
+        resource_keys = list(capability.resource_keys) if (capability and capability.resource_keys) else []
+        conflict_policy = capability.conflict_policy if capability else None
+
+        # Determine if concurrent-safe
+        is_safe_read = (risk == "safe" and effect == "read")
+        has_resource_conflict = bool(resource_keys) and conflict_policy == "serialize"
+        is_concurrent_safe = is_safe_read and not has_resource_conflict
+
+        classified.append({
+            "call_id": tc_call_id, "name": tc_name, "input": tc_input,
+            "status": "pending",
+            "resolved": resolved,
+            "func_meta": func_meta,
+            "is_concurrent_safe": is_concurrent_safe,
+            "resource_keys": resource_keys,
+        })
+
+    # ── Phase 2: Split into concurrent vs serial groups ──
+    concurrent_candidates = [t for t in classified if t.get("is_concurrent_safe") and t["status"] == "pending"]
+    serial_tools = [t for t in classified if not t.get("is_concurrent_safe") and t["status"] == "pending"]
+
+    # Move tools with shared resource_keys from concurrent to serial
+    resource_key_owners: dict[str, str] = {}
+    actual_concurrent: list[dict] = []
+    for t in concurrent_candidates:
+        keys = t.get("resource_keys", [])
+        conflicts = [k for k in keys if k in resource_key_owners]
+        if conflicts:
+            serial_tools.append(t)
+        else:
+            for k in keys:
+                resource_key_owners[k] = t["call_id"]
+            actual_concurrent.append(t)
+
+    # ── Phase 3: Execute ──
+
+    # Execute concurrent tools with semaphore (max CONCURRENCY_MAX)
+    if actual_concurrent:
+        semaphore = asyncio.Semaphore(CONCURRENCY_MAX)
+
+        async def _execute_concurrent(tool_info: dict) -> list[dict]:
+            """Execute a single tool call using a fresh DB session."""
+            async with semaphore:
+                collected_events: list[dict] = []
+                try:
+                    async with async_session_factory() as exec_db:
+                        async for ev in _execute_and_stream(
+                            exec_db, provider, session, session_id, trace_id,
+                            tool_info["call_id"], tool_info["name"], tool_info["input"],
+                            known_functions, available_functions,
+                            call_path, execution_mode, max_depth,
+                            max_total_duration_sec, started_at,
+                            target_node_id=target_node_id,
+                        ):
+                            collected_events.append(ev)
+                except Exception as e:
+                    log.exception("concurrent tool execution failed: call_id=%s", tool_info["call_id"])
+                    collected_events.append(_event("agent.tool_call.failed", session_id, trace_id, {
+                        "call_id": tool_info["call_id"],
+                        "name": tool_info["name"],
+                        "error_code": "internal_error",
+                        "message": str(e)[:500],
+                    }))
+                return collected_events
+
+        tasks = [asyncio.create_task(_execute_concurrent(t)) for t in actual_concurrent]
+        # Yield events as tasks complete (interleaving is fine — each event has call_id)
+        for completed in asyncio.as_completed(tasks):
+            tool_events = await completed
+            for ev in tool_events:
+                yield ev
+
+    # Execute serial tools one by one
+    for tool_info in serial_tools:
+        try:
+            async with async_session_factory() as serial_db:
+                async for ev in _execute_and_stream(
+                    serial_db, provider, session, session_id, trace_id,
+                    tool_info["call_id"], tool_info["name"], tool_info["input"],
+                    known_functions, available_functions,
+                    call_path, execution_mode, max_depth,
+                    max_total_duration_sec, started_at,
+                    target_node_id=target_node_id,
+                ):
+                    yield ev
+        except Exception as e:
+            log.exception("serial tool execution failed: call_id=%s", tool_info["call_id"])
+            yield _event("agent.tool_call.failed", session_id, trace_id, {
+                "call_id": tool_info["call_id"],
+                "name": tool_info["name"],
+                "error_code": "internal_error",
+                "message": str(e)[:500],
+            })
+
+
 async def agent_plan_stream(
     db: AsyncSession,
     provider: AgentProvider,
@@ -663,9 +915,83 @@ async def agent_plan_stream(
 
 
 def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -> str:
-    """Produce a human-readable summary from streamed tool results."""
+    """Produce a human-readable summary from streamed tool results.
+
+    Quality rules:
+    - All failed → list each tool and failure reason
+    - Partial success → "已确认 / 未确认 / 下一步"
+    - Node offline / no capability → explicit diagnostic
+    - General → structured summary
+    """
     if not tool_results:
         return "No tools were executed."
+
+    succeeded = [r for r in tool_results if r.get("status") == "succeeded"]
+    failed = [r for r in tool_results if r.get("status") == "failed"]
+    waiting = [r for r in tool_results if r.get("status") == "waiting_approval"]
+    other = [r for r in tool_results if r.get("status") not in ("succeeded", "failed", "waiting_approval")]
+
+    # Check for no-node / capability failures
+    node_failures = [
+        r for r in failed
+        if str(r.get("error", "")).startswith("No online node")
+        or "function_not_available" in str(r.get("error", ""))
+        or "is not available" in str(r.get("error", ""))
+        or "not available" in str(r.get("error", ""))
+    ]
+    if node_failures and not succeeded:
+        names = [r.get("name", "unknown") for r in node_failures]
+        return (
+            f"无法执行检查：没有在线节点提供所需的能力。\n"
+            f"缺失的能力：{', '.join(names)}\n"
+            f"建议：请确认目标节点在线并已注册相应功能后重试。"
+        )
+
+    # All failed
+    if failed and not succeeded:
+        lines = ["所有检查均失败："]
+        for r in failed:
+            name = r.get("name", "unknown")
+            error = r.get("error", "未知错误")
+            lines.append(f"- **{name}**: {error}")
+        return "\n".join(lines)
+
+    # Partial success
+    if succeeded and failed:
+        lines = []
+        lines.append("✅ **已确认**：")
+        for r in succeeded:
+            name = r.get("name", "unknown")
+            lines.append(f"- {name}：正常")
+        lines.append("")
+        lines.append("❌ **未确认**：")
+        for r in failed:
+            name = r.get("name", "unknown")
+            error = r.get("error", "未知错误")
+            lines.append(f"- {name}：{error}")
+        lines.append("")
+        lines.append("🔜 **下一步**：请根据未确认项决定是否需要进一步排查或修复。")
+        if waiting:
+            lines.append(f"⏳ 有 {len(waiting)} 个操作等待审批。")
+        return "\n".join(lines)
+
+    # Waiting approval
+    if waiting and not failed:
+        names = [r.get("name", "unknown") for r in waiting]
+        return (
+            f"⏳ **等待审批**：以下操作需要审批后才能执行：\n"
+            + "\n".join(f"- {n}" for n in names)
+        )
+
+    # All succeeded
+    if succeeded and not failed:
+        lines = [f"✅ 所有 {len(succeeded)} 项检查均通过："]
+        for r in succeeded:
+            name = r.get("name", "unknown")
+            lines.append(f"- {name}：正常")
+        return "\n".join(lines)
+
+    # Fallback: generic summary
     parts = [f"Results ({len(tool_results)} tools, {loop_state}):"]
     for r in tool_results:
         name = r.get("name", "unknown")

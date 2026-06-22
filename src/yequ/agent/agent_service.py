@@ -64,7 +64,9 @@ async def create_agent_session(
         actor_id=actor_id,
         status="active",
         execution_mode=execution_mode,
+        label=session_id[:8],
         started_at=now,
+        updated_at=now,
         metadata_={
             "max_depth": max_depth,
             "max_steps": max_steps,
@@ -993,6 +995,16 @@ async def _save_session_history(
 
     if new_count > 0:
         await db.flush()
+
+    # Update session.updated_at when new messages are persisted
+    if new_count > 0:
+        from yequ.models.session import Session
+        sess_result = await db.execute(
+            select(Session).where(Session.session_id == session_id)
+        )
+        sess = sess_result.scalar_one_or_none()
+        if sess is not None:
+            sess.updated_at = datetime.now(UTC)
 
     # Trim old messages to keep history bounded
     await _trim_history(db, session_id)

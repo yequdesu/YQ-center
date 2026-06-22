@@ -181,14 +181,49 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[dict]:
-    """List all active sessions, newest first."""
+    """List all active sessions, sorted by most recent activity."""
+    from sqlalchemy import func, text
+
     result = await db.execute(
         select(Session)
         .where(Session.status == "active")
-        .order_by(Session.started_at.desc())
+        .order_by(Session.updated_at.desc().nullslast())
         .limit(100)
     )
     sessions = result.scalars().all()
+
+    # Batch-fetch last message preview and message counts
+    session_ids = [s.session_id for s in sessions]
+    previews: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    if session_ids:
+        # Get message counts per session
+        count_result = await db.execute(
+            select(
+                AgentMessageModel.session_id,
+                func.count(AgentMessageModel.id).label("cnt"),
+            )
+            .where(AgentMessageModel.session_id.in_(session_ids))
+            .group_by(AgentMessageModel.session_id)
+        )
+        for row in count_result:
+            counts[row.session_id] = row.cnt
+
+        # Get last user message per session (for preview)
+        for sid in session_ids:
+            preview_result = await db.execute(
+                select(AgentMessageModel)
+                .where(
+                    AgentMessageModel.session_id == sid,
+                    AgentMessageModel.role == "user",
+                )
+                .order_by(AgentMessageModel.created_at.desc())
+                .limit(1)
+            )
+            last_msg = preview_result.scalar_one_or_none()
+            if last_msg and last_msg.content:
+                previews[sid] = last_msg.content[:80]
+
     return [
         {
             "session_id": s.session_id,
@@ -197,7 +232,11 @@ async def list_sessions(
             "execution_mode": s.execution_mode,
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "closed_at": s.closed_at.isoformat() if s.closed_at else None,
-            "label": (s.metadata_ or {}).get("label", s.session_id[:8]),
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "label": s.label or s.session_id[:8],
+            "last_message_preview": previews.get(s.session_id, ""),
+            "message_count": counts.get(s.session_id, 0),
+            "running": False,  # Will be set per-session if a stream is active
         }
         for s in sessions
     ]
@@ -227,10 +266,11 @@ async def get_session(
         "status": sess.status,
         "execution_mode": sess.execution_mode,
         "started_at": sess.started_at.isoformat() if sess.started_at else None,
+        "updated_at": sess.updated_at.isoformat() if sess.updated_at else None,
         "closed_at": sess.closed_at.isoformat() if sess.closed_at else None,
         "close_reason": sess.close_reason,
         "metadata": sess.metadata_,
-        "label": (sess.metadata_ or {}).get("label", sess.session_id[:8]),
+        "label": sess.label or sess.session_id[:8],
         "messages": messages,
     }
 
@@ -261,14 +301,12 @@ async def rename_session(
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> dict:
-    """Rename a session (updates metadata.label)."""
+    """Rename a session (updates label field, preserving metadata)."""
     result = await db.execute(select(Session).where(Session.session_id == session_id))
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
-    meta = dict(sess.metadata_ or {})
-    meta["label"] = body.label
-    sess.metadata_ = meta
+    sess.label = body.label
     await db.commit()
     return {"session_id": session_id, "label": body.label}
 
