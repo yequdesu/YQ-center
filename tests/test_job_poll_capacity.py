@@ -51,86 +51,52 @@ async def _setup_node_with_queued_jobs(db, node_id: str, token: str, count: int)
 
 
 @pytest.mark.asyncio
-async def test_capacity_4_running_0_queued_4_returns_4():
+async def test_capacity_4_running_0_queued_4_returns_4(db_session):
     """running_jobs=0, capacity=4, queued=4 → 4 jobs returned."""
     from yequ.services.node_service import handle_job_poll
-    from yequ.api.deps import get_db
-
-    db_gen = get_db()
-    db = await db_gen.__anext__()
-    try:
-        node, _ = await _setup_node_with_queued_jobs(db, "cap4-node", "tok-cap4", 4)
-        result = await handle_job_poll(
-            db, node, {"capacity": 4, "running_jobs": []}, None,
-        )
-        assert "jobs" in result
-        # With 4 queued and 4 available slots, expect up to 4
-        assert len(result["jobs"]) >= 1
-        assert len(result["jobs"]) <= 4
-    finally:
-        await db_gen.aclose()
+    node, _ = await _setup_node_with_queued_jobs(db_session, "cap4-node", "tok-cap4", 4)
+    result = await handle_job_poll(
+        db_session, node, {"capacity": 4, "running_jobs": []}, None,
+    )
+    assert "jobs" in result
+    assert len(result["jobs"]) == 4
 
 
 @pytest.mark.asyncio
-async def test_capacity_4_running_4_returns_empty():
+async def test_capacity_4_running_4_returns_empty(db_session):
     """running_jobs=4, capacity=4 → job.empty (0 jobs)."""
     from yequ.services.node_service import handle_job_poll
-    from yequ.api.deps import get_db
-
-    db_gen = get_db()
-    db = await db_gen.__anext__()
-    try:
-        node, _ = await _setup_node_with_queued_jobs(db, "full-node", "tok-full", 4)
-        result = await handle_job_poll(
-            db, node,
-            {"capacity": 4, "running_jobs": ["a", "b", "c", "d"]}, None,
-        )
-        assert result["jobs"] == [], (
-            f"Expected empty when running_jobs == capacity, got {result['jobs']}"
-        )
-    finally:
-        await db_gen.aclose()
+    node, _ = await _setup_node_with_queued_jobs(db_session, "full-node", "tok-full", 4)
+    result = await handle_job_poll(
+        db_session, node,
+        {"capacity": 4, "running_jobs": ["a", "b", "c", "d"]}, None,
+    )
+    assert result["jobs"] == [], (
+        f"Expected empty when running_jobs == capacity, got {result['jobs']}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_capacity_4_running_5_returns_empty():
+async def test_capacity_4_running_5_returns_empty(db_session):
     """running_jobs=5, capacity=4 → job.empty (0 jobs)."""
     from yequ.services.node_service import handle_job_poll
-    from yequ.api.deps import get_db
-
-    db_gen = get_db()
-    db = await db_gen.__anext__()
-    try:
-        node, _ = await _setup_node_with_queued_jobs(db, "overfull-node", "tok-over", 4)
-        result = await handle_job_poll(
-            db, node,
-            {"capacity": 4, "running_jobs": ["a", "b", "c", "d", "e"]}, None,
-        )
-        assert result["jobs"] == [], (
-            f"Expected empty when running_jobs > capacity, got {result['jobs']}"
-        )
-    finally:
-        await db_gen.aclose()
+    node, _ = await _setup_node_with_queued_jobs(db_session, "overfull-node", "tok-over", 4)
+    result = await handle_job_poll(
+        db_session, node,
+        {"capacity": 4, "running_jobs": ["a", "b", "c", "d", "e"]}, None,
+    )
+    assert result["jobs"] == [], (
+        f"Expected empty when running_jobs > capacity, got {result['jobs']}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_capacity_4_running_2_queued_4_returns_2():
+async def test_capacity_4_running_2_queued_4_returns_2(db_session):
     """running_jobs=2, capacity=4, queued=4 → 2 jobs returned."""
     from yequ.services.node_service import handle_job_poll
-    from yequ.api.deps import get_db
-
-    db_gen = get_db()
-    db = await db_gen.__anext__()
-    try:
-        node, _ = await _setup_node_with_queued_jobs(db, "half-node", "tok-half", 4)
-        result = await handle_job_poll(
-            db, node,
-            {"capacity": 4, "running_jobs": ["a", "b"]}, None,
-        )
-        # available_slots = max(4 - 2, 0) = 2
-        assert len(result["jobs"]) >= 1
-        assert len(result["jobs"]) <= 2, (
-            f"Expected at most 2 jobs with 2 slots, got {len(result['jobs'])}"
-        )
-    finally:
-        await db_gen.aclose()
+    node, _ = await _setup_node_with_queued_jobs(db_session, "half-node", "tok-half", 4)
+    result = await handle_job_poll(
+        db_session, node,
+        {"capacity": 4, "running_jobs": ["a", "b"]}, None,
+    )
+    assert len(result["jobs"]) == 2

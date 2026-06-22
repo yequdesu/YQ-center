@@ -364,12 +364,17 @@ async def _execute_and_stream(
         requested_node_id=target_node_id,
         settings=get_settings(),
     )
-    if resolved is None:
+    if resolved is None or not resolved.available:
+        message = (
+            resolved.unavailable_reason
+            if resolved is not None and resolved.unavailable_reason
+            else f"No online node has {tc_name!r}"
+        )
         yield _event("agent.tool_call.failed", session_id, trace_id, {
             "call_id": call_id,
             "name": tc_name,
             "error_code": "function_not_available",
-            "message": f"No online node has {tc_name!r}",
+            "message": message,
         })
         return
 
@@ -647,11 +652,16 @@ async def _execute_tool_calls_scheduled(
         })
 
         # Node not available
-        if resolved is None:
+        if resolved is None or not resolved.available:
+            message = (
+                resolved.unavailable_reason
+                if resolved is not None and resolved.unavailable_reason
+                else f"No online node has {tc_name!r}"
+            )
             yield _event("agent.tool_call.failed", session_id, trace_id, {
                 "call_id": tc_call_id, "name": tc_name,
                 "error_code": "function_not_available",
-                "message": f"No online node has {tc_name!r}",
+                "message": message,
             })
             classified.append({
                 "call_id": tc_call_id, "name": tc_name, "input": tc_input,

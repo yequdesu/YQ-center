@@ -5,14 +5,15 @@ No other module should scatter node-selection logic.
 """
 
 from dataclasses import dataclass, field
+from datetime import UTC
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from yequ.models.capability import Capability
+from yequ.models.job import Job
 from yequ.models.node import Node
-from yequ.protocol import NodeStatus
+from yequ.protocol import JobStatus, NodeStatus
 
 
 @dataclass
@@ -118,6 +119,20 @@ async def resolve_function(
         )
         cap = cap_result.scalar_one_or_none()
         if cap is not None:
+            if required_effect and cap.effect != required_effect:
+                if _node_id:
+                    offline_reasons.append(
+                        f"Capability '{function_name}' effect is '{cap.effect}', "
+                        f"requires '{required_effect}'"
+                    )
+                continue
+            if required_risk and cap.risk != required_risk:
+                if _node_id:
+                    offline_reasons.append(
+                        f"Capability '{function_name}' risk is '{cap.risk}', "
+                        f"requires '{required_risk}'"
+                    )
+                continue
             viable.append((node, cap))
         elif _node_id:
             offline_reasons.append(
@@ -137,23 +152,44 @@ async def resolve_function(
             unavailable_reason=reason,
         )
 
-    # Sort candidates by selection criteria
+    node_ids = [node.node_id for node, _cap in viable]
+    running_counts = dict.fromkeys(node_ids, 0)
+    running_result = await db.execute(
+        select(Job.node_id, func.count(Job.id))
+        .where(
+            Job.node_id.in_(node_ids),
+            Job.status.in_([
+                JobStatus.CLAIMED,
+                JobStatus.RUNNING,
+                JobStatus.CANCELLING,
+            ]),
+        )
+        .group_by(Job.node_id)
+    )
+    running_counts.update({node_id: int(count) for node_id, count in running_result.all()})
+
+    def _heartbeat_sort_value(node: Node) -> float:
+        if node.last_heartbeat_at is None:
+            return float("inf")
+        heartbeat = node.last_heartbeat_at
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        return -heartbeat.timestamp()
+
     def _sort_key(item: tuple[Node, Capability]) -> tuple:
         node, _cap = item
-        # online > provisioned (1 > 0)
-        status_rank = 1 if node.status == NodeStatus.ONLINE else 0
-        # local/lan > wan (0 < 1)
-        locality_rank = 0 if (node.locality or "") in ("local", "lan") else 1
-        # heartbeat: newer is better (negate for ascending sort)
-        heartbeat = node.last_heartbeat_at
-        # running_jobs: fewer is better
-        from yequ.models.job import Job as JobModel
-        # running_jobs query will be done below
+        status_rank = 0 if node.status == NodeStatus.ONLINE else 1
+        locality_rank = {"local": 0, "lan": 1}.get((node.locality or "").lower(), 2)
+        return (
+            status_rank,
+            locality_rank,
+            running_counts.get(node.node_id, 0),
+            _heartbeat_sort_value(node),
+            node.node_id,
+        )
 
-        return (status_rank, locality_rank, heartbeat or "", node.node_id)
-
-    # Sort viable candidates
-    viable.sort(key=_sort_key, reverse=True)
+    # Sort viable candidates by the fixed routing contract.
+    viable.sort(key=_sort_key)
 
     # Pick the best
     best_node, best_cap = viable[0]

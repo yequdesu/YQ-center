@@ -310,7 +310,7 @@ async def handle_job_poll(
     Returns up to `capacity` jobs that are queued for this node,
     accounting for currently running jobs on the node.
 
-    capacity = min(payload.capacity, payload.capacity - len(payload.running_jobs))
+    available_slots = max(payload.capacity - len(payload.running_jobs), 0)
     Jobs transition from queued to claimed upon poll.
     If no jobs available, returns empty jobs list (job.empty semantics).
     """
