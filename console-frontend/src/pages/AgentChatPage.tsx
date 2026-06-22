@@ -44,6 +44,11 @@ export function AgentChatPage() {
   const [editLabel, setEditLabel] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const refreshSessionHistory = useCallback(() => {
+    if (!sessionId) return;
+    queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+  }, [queryClient, sessionId]);
 
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
@@ -87,7 +92,7 @@ export function AgentChatPage() {
     cancel,
     clearMessages,
     loadPersistedMessages,
-  } = useAgentChat({ sessionId });
+  } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
   useEffect(() => {
     if (sessionQuery.data?.messages) {

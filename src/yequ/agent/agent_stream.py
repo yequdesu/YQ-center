@@ -113,7 +113,10 @@ async def agent_invoke_stream(
 
     # -- Load history + append user message --
     history = await _load_session_history(db, session_id)
-    history.append(AgentMessage(role="user", content=prompt))
+    user_message = AgentMessage(role="user", content=prompt)
+    history.append(user_message)
+    await _save_session_history(db, session_id, [user_message])
+    await db.commit()
 
     yield _event("agent.loop.started", session_id, trace_id, {"max_steps": max_steps, "max_duration_sec": max_total_duration_sec})
 
@@ -210,6 +213,7 @@ async def agent_invoke_stream(
         await _save_session_history(db, session_id, history)
 
         await _write_timeline(db, "agent.final_response", session_id=session_id, actor=provider.provider_name(), status=loop_state)
+        await db.commit()
         yield _event("agent.completed", session_id, trace_id, {"status": loop_state, "message": final_message})
 
     except TimeoutError:

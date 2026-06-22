@@ -38,9 +38,10 @@ export interface PlanStepState {
 interface UseAgentChatOptions {
   sessionId: string;
   onPlanCreated?: (planId: string) => void;
+  onConversationSettled?: () => void;
 }
 
-export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) {
+export function useAgentChat({ sessionId, onPlanCreated, onConversationSettled }: UseAgentChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
@@ -50,7 +51,7 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
   }, []);
 
   const loadPersistedMessages = useCallback((persisted: AgentSessionMessage[]) => {
-    setMessages(persisted.map(messageFromPersisted));
+    setMessages(messagesFromPersisted(persisted));
   }, []);
 
   const addMessage = useCallback((msg: ChatMessage) => {
@@ -108,17 +109,19 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
               content: m.content || `Error: ${error.message}`,
               isStreaming: false,
             }));
+            onConversationSettled?.();
           },
           onClose: () => {
             setIsStreaming(false);
             updateCurrentAssistant((m) => ({ ...m, isStreaming: false }));
+            onConversationSettled?.();
           },
         },
       );
 
       abortRef.current = () => stream.abort();
     },
-    [addMessage, sessionId, updateCurrentAssistant],
+    [addMessage, onConversationSettled, sessionId, updateCurrentAssistant],
   );
 
   const sendPlan = useCallback(
@@ -160,17 +163,19 @@ export function useAgentChat({ sessionId, onPlanCreated }: UseAgentChatOptions) 
               content: m.content || `Error: ${error.message}`,
               isStreaming: false,
             }));
+            onConversationSettled?.();
           },
           onClose: () => {
             setIsStreaming(false);
             updateCurrentAssistant((m) => ({ ...m, isStreaming: false }));
+            onConversationSettled?.();
           },
         },
       );
 
       abortRef.current = () => stream.abort();
     },
-    [addMessage, onPlanCreated, sessionId, updateCurrentAssistant],
+    [addMessage, onConversationSettled, onPlanCreated, sessionId, updateCurrentAssistant],
   );
 
   const cancel = useCallback(() => {
@@ -390,14 +395,27 @@ function appendContent(current: string, next: string): string {
   return `${current}\n\n${next}`;
 }
 
-function messageFromPersisted(message: AgentSessionMessage): ChatMessage {
-  return {
-    id: message.message_id,
-    role: message.role,
-    content: message.content ?? "",
-    toolCalls: toolCallsFromPersisted(message.tool_calls),
-    timestamp: message.created_at ?? new Date().toISOString(),
-  };
+function messagesFromPersisted(persisted: AgentSessionMessage[]): ChatMessage[] {
+  const restored: ChatMessage[] = [];
+
+  for (const message of persisted) {
+    if (message.role === "system") continue;
+
+    if (message.role === "tool") {
+      mergeToolResult(restored, message);
+      continue;
+    }
+
+    restored.push({
+      id: message.message_id,
+      role: message.role,
+      content: message.content ?? "",
+      toolCalls: toolCallsFromPersisted(message.tool_calls),
+      timestamp: message.created_at ?? new Date().toISOString(),
+    });
+  }
+
+  return restored;
 }
 
 function toolCallsFromPersisted(raw: Record<string, unknown>[]): ToolCallState[] {
@@ -405,6 +423,50 @@ function toolCallsFromPersisted(raw: Record<string, unknown>[]): ToolCallState[]
     callId: String(item.call_id ?? ""),
     name: String(item.name ?? ""),
     input: asRecord(item.input),
-    status: "pending",
+    status: parseToolStatus(item.status),
   }));
+}
+
+function mergeToolResult(messages: ChatMessage[], message: AgentSessionMessage) {
+  const callId = message.tool_call_id;
+  if (!callId) return;
+
+  const target = [...messages]
+    .reverse()
+    .find((item) => item.role === "assistant" && item.toolCalls.some((tool) => tool.callId === callId));
+  if (!target) return;
+
+  const parsed = parseToolMessageContent(message.content);
+  target.toolCalls = target.toolCalls.map((tool) => {
+    if (tool.callId !== callId) return tool;
+    const status = parseToolStatus(parsed.status);
+    const result = asRecord(parsed.result);
+    const errorMessage = parsed.error ? String(parsed.error) : undefined;
+
+    return {
+      ...tool,
+      status,
+      result: Object.keys(result).length > 0 ? result : tool.result,
+      approvalId: parsed.approval_id ? String(parsed.approval_id) : tool.approvalId,
+      errorMessage: errorMessage ?? tool.errorMessage,
+    };
+  });
+}
+
+function parseToolMessageContent(content: string | null): Record<string, unknown> {
+  if (!content) return {};
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return asRecord(parsed);
+  } catch {
+    return { status: "failed", error: content };
+  }
+}
+
+function parseToolStatus(value: unknown): ToolCallState["status"] {
+  if (value === "succeeded" || value === "failed" || value === "waiting_approval") {
+    return value;
+  }
+  if (value === "running") return "running";
+  return "pending";
 }
