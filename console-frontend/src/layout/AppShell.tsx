@@ -2,14 +2,14 @@ import { Link, Outlet } from "@tanstack/react-router";
 import { Bot, ClipboardList, Gauge, GitBranch, History, Network, ShieldCheck, Wrench } from "lucide-react";
 
 const navItems = [
-  { to: "/console", label: "Dashboard", icon: Gauge },
-  { to: "/console/chat", label: "Agent", icon: Bot },
-  { to: "/console/nodes", label: "Nodes", icon: Network },
-  { to: "/console/approvals", label: "Approvals", icon: ShieldCheck },
-  { to: "/console/maintenance", label: "Maintenance", icon: Wrench },
-  { to: "/console/invocations", label: "Invocations", icon: GitBranch },
-  { to: "/console/jobs", label: "Jobs", icon: ClipboardList },
-  { to: "/console/timeline", label: "Timeline", icon: History },
+  { to: "/", label: "Dashboard", icon: Gauge },
+  { to: "/chat", label: "Agent", icon: Bot },
+  { to: "/nodes", label: "Nodes", icon: Network },
+  { to: "/approvals", label: "Approvals", icon: ShieldCheck },
+  { to: "/maintenance", label: "Maintenance", icon: Wrench },
+  { to: "/invocations", label: "Invocations", icon: GitBranch },
+  { to: "/jobs", label: "Jobs", icon: ClipboardList },
+  { to: "/timeline", label: "Timeline", icon: History },
 ];
 
 export function AppShell() {

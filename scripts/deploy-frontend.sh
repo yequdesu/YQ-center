@@ -29,11 +29,12 @@ fi
 echo ""
 echo -e "${YELLOW}[1/3] Checking dependencies ...${NC}"
 cd "$CONSOLE_SRC"
-if [ ! -d "node_modules" ]; then
-    echo "  Installing npm packages ..."
-    npm install
+if [ -f "package-lock.json" ]; then
+    echo "  Installing exact npm packages from package-lock.json ..."
+    npm ci
 else
-    echo "  node_modules exists, skipping install."
+    echo "  package-lock.json not found; falling back to npm install ..."
+    npm install
 fi
 
 # ── 3. Build ──
