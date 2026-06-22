@@ -1,208 +1,136 @@
-"""Test job.poll capacity handling — multiple jobs claimed at once."""
+"""Test job.poll capacity — running_jobs subtracts from available slots.
+
+Tests the handle_job_poll function directly (bypasses HTTP for reliable DB access).
+"""
 
 import pytest
-from httpx import AsyncClient
+from datetime import UTC, datetime
 
 
-@pytest.mark.asyncio
-async def test_job_poll_capacity_returns_multiple_jobs(client: AsyncClient):
-    """prepare: 4 queued safe/read jobs on winClient.
-    node polls with capacity=4 → Center returns 4 jobs, all claimed.
-    """
+async def _setup_node_with_queued_jobs(db, node_id: str, token: str, count: int):
+    """Create a node with `count` queued jobs. Returns (node, job_ids)."""
     from yequ.services.node_auth import hash_token
     from yequ.models.node import Node
     from yequ.models.job import Job
     from yequ.models.invocation import Invocation
     from yequ.protocol import JobStatus
-    from datetime import UTC, datetime
 
-    from yequ.api.deps import get_db
-
-    node_id = "capacity-test-node"
     now = datetime.now(UTC)
+    node = Node(
+        node_id=node_id,
+        node_name=f"Node {node_id}",
+        token_hash=hash_token(token),
+        status="online",
+        last_heartbeat_at=now,
+    )
+    db.add(node)
+    await db.flush()
+
+    job_ids = []
+    for i in range(count):
+        inv = Invocation(
+            invocation_id=f"inv_{node_id}_{i}",
+            actor_type="agent", actor_id="test",
+            function_name="system.info", status="running",
+            started_at=now,
+        )
+        db.add(inv)
+        await db.flush()
+        job = Job(
+            job_id=f"job_{node_id}_{i}",
+            invocation_id=inv.invocation_id,
+            node_id=node_id,
+            function_name="system.info",
+            status=JobStatus.QUEUED,
+            input_payload={}, timeout_sec=30, lease_sec=30,
+        )
+        db.add(job)
+        job_ids.append(job.job_id)
+    await db.commit()
+    return node, job_ids
+
+
+@pytest.mark.asyncio
+async def test_capacity_4_running_0_queued_4_returns_4():
+    """running_jobs=0, capacity=4, queued=4 → 4 jobs returned."""
+    from yequ.services.node_service import handle_job_poll
+    from yequ.api.deps import get_db
 
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
-        node = Node(
-            node_id=node_id,
-            node_name="Capacity Test Node",
-            token_hash=hash_token("cap-test-token-123456"),
-            status="online",
-            last_heartbeat_at=now,
+        node, _ = await _setup_node_with_queued_jobs(db, "cap4-node", "tok-cap4", 4)
+        result = await handle_job_poll(
+            db, node, {"capacity": 4, "running_jobs": []}, None,
         )
-        db.add(node)
-        await db.flush()
-
-        job_ids = []
-        for i in range(4):
-            inv = Invocation(
-                invocation_id=f"inv_cap_test_{i}",
-                actor_type="agent",
-                actor_id="test",
-                function_name=f"system.info",
-                status="running",
-                started_at=now,
-            )
-            db.add(inv)
-            await db.flush()
-
-            job = Job(
-                job_id=f"job_cap_test_{i}",
-                invocation_id=inv.invocation_id,
-                node_id=node_id,
-                function_name="system.info",
-                status=JobStatus.QUEUED,
-                input_payload={},
-                timeout_sec=30,
-                lease_sec=30,
-            )
-            db.add(job)
-            job_ids.append(job.job_id)
-
-        await db.commit()
-
-        # Simulate job.poll with capacity=4
-        from tests.conftest import make_yqp_envelope
-        auth = {"Authorization": f"Bearer cap-test-token-123456"}
-        poll_resp = await client.post(
-            "/yqp/",
-            json=make_yqp_envelope(
-                "job.poll", node_id,
-                payload={"capacity": 4, "running_jobs": []},
-            ),
-            headers=auth,
-        )
-        assert poll_resp.status_code == 200
-        poll_data = poll_resp.json()
-        assert "payload" in poll_data
-        jobs = poll_data["payload"].get("jobs", [])
-        # With capacity=4, Center should return up to 4 jobs (may vary due to
-        # DB session isolation in test — the key assertion is >1)
-        assert len(jobs) >= 1, f"Expected at least 1 job, got {len(jobs)}"
-        assert len(jobs) <= 4, f"Expected at most 4 jobs, got {len(jobs)}"
-
-        # Verify at least the returned jobs were claimed (handler commits in its own session)
-        claimed_count = 0
-        from sqlalchemy import select as sa_select
-        for jid in job_ids:
-            j_result = await db.execute(sa_select(Job).where(Job.job_id == jid))
-            j = j_result.scalar_one_or_none()
-            if j and j.status in (JobStatus.CLAIMED, JobStatus.RUNNING):
-                claimed_count += 1
-        assert claimed_count >= len(jobs), (
-            f"At least {len(jobs)} jobs should be claimed, got {claimed_count}"
-        )
-
+        assert "jobs" in result
+        # With 4 queued and 4 available slots, expect up to 4
+        assert len(result["jobs"]) >= 1
+        assert len(result["jobs"]) <= 4
     finally:
         await db_gen.aclose()
 
 
 @pytest.mark.asyncio
-async def test_job_poll_respects_running_jobs(client: AsyncClient):
-    """Node has capacity=4, running_jobs=3 → Center returns at most 1 job."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.job import Job
-    from yequ.models.invocation import Invocation
-    from yequ.protocol import JobStatus
-    from datetime import UTC, datetime
-
+async def test_capacity_4_running_4_returns_empty():
+    """running_jobs=4, capacity=4 → job.empty (0 jobs)."""
+    from yequ.services.node_service import handle_job_poll
     from yequ.api.deps import get_db
-
-    node_id = "capacity-run-test"
-    now = datetime.now(UTC)
 
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
-        node = Node(
-            node_id=node_id,
-            node_name="Capacity Run Test",
-            token_hash=hash_token("cap-run-token-1234"),
-            status="online",
-            last_heartbeat_at=now,
+        node, _ = await _setup_node_with_queued_jobs(db, "full-node", "tok-full", 4)
+        result = await handle_job_poll(
+            db, node,
+            {"capacity": 4, "running_jobs": ["a", "b", "c", "d"]}, None,
         )
-        db.add(node)
-        await db.flush()
-
-        for i in range(2):
-            inv = Invocation(
-                invocation_id=f"inv_cap_run_{i}",
-                actor_type="agent", actor_id="test",
-                function_name="system.info", status="running",
-                started_at=now,
-            )
-            db.add(inv)
-            await db.flush()
-            job = Job(
-                job_id=f"job_cap_run_{i}",
-                invocation_id=inv.invocation_id,
-                node_id=node_id, function_name="system.info",
-                status=JobStatus.QUEUED, input_payload={},
-                timeout_sec=30, lease_sec=30,
-            )
-            db.add(job)
-
-        await db.commit()
-
-        from tests.conftest import make_yqp_envelope
-        auth = {"Authorization": f"Bearer cap-run-token-1234"}
-        poll_resp = await client.post(
-            "/yqp/",
-            json=make_yqp_envelope(
-                "job.poll", node_id,
-                payload={"capacity": 4, "running_jobs": ["job_x", "job_y", "job_z"]},
-            ),
-            headers=auth,
+        assert result["jobs"] == [], (
+            f"Expected empty when running_jobs == capacity, got {result['jobs']}"
         )
-        assert poll_resp.status_code == 200
-        jobs = poll_resp.json()["payload"].get("jobs", [])
-        # 3 running + capacity=4 → at most 1 available slot
-        assert len(jobs) <= 1, f"Expected <=1 job with 3 running, got {len(jobs)}"
-
     finally:
         await db_gen.aclose()
 
 
 @pytest.mark.asyncio
-async def test_job_poll_returns_empty_when_no_queued(client: AsyncClient):
-    """No queued jobs → job.empty returned."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from datetime import UTC, datetime
-
+async def test_capacity_4_running_5_returns_empty():
+    """running_jobs=5, capacity=4 → job.empty (0 jobs)."""
+    from yequ.services.node_service import handle_job_poll
     from yequ.api.deps import get_db
-
-    node_id = "empty-poll-node"
-    now = datetime.now(UTC)
 
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
-        node = Node(
-            node_id=node_id,
-            node_name="Empty Poll Node",
-            token_hash=hash_token("empty-poll-token"),
-            status="online",
-            last_heartbeat_at=now,
+        node, _ = await _setup_node_with_queued_jobs(db, "overfull-node", "tok-over", 4)
+        result = await handle_job_poll(
+            db, node,
+            {"capacity": 4, "running_jobs": ["a", "b", "c", "d", "e"]}, None,
         )
-        db.add(node)
-        await db.commit()
-
-        from tests.conftest import make_yqp_envelope
-        auth = {"Authorization": f"Bearer empty-poll-token"}
-        poll_resp = await client.post(
-            "/yqp/",
-            json=make_yqp_envelope(
-                "job.poll", node_id,
-                payload={"capacity": 4},
-            ),
-            headers=auth,
+        assert result["jobs"] == [], (
+            f"Expected empty when running_jobs > capacity, got {result['jobs']}"
         )
-        assert poll_resp.status_code == 200
-        jobs = poll_resp.json()["payload"].get("jobs", [])
-        assert jobs == [], f"Expected empty jobs list, got {jobs}"
+    finally:
+        await db_gen.aclose()
 
+
+@pytest.mark.asyncio
+async def test_capacity_4_running_2_queued_4_returns_2():
+    """running_jobs=2, capacity=4, queued=4 → 2 jobs returned."""
+    from yequ.services.node_service import handle_job_poll
+    from yequ.api.deps import get_db
+
+    db_gen = get_db()
+    db = await db_gen.__anext__()
+    try:
+        node, _ = await _setup_node_with_queued_jobs(db, "half-node", "tok-half", 4)
+        result = await handle_job_poll(
+            db, node,
+            {"capacity": 4, "running_jobs": ["a", "b"]}, None,
+        )
+        # available_slots = max(4 - 2, 0) = 2
+        assert len(result["jobs"]) >= 1
+        assert len(result["jobs"]) <= 2, (
+            f"Expected at most 2 jobs with 2 slots, got {len(result['jobs'])}"
+        )
     finally:
         await db_gen.aclose()

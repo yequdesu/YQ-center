@@ -321,8 +321,10 @@ async def handle_job_poll(
 
     raw_capacity = int(payload.get("capacity", 1))
     running_jobs = payload.get("running_jobs") or []
-    available_slots = max(raw_capacity - len(running_jobs), 1)
-    effective_capacity = min(raw_capacity, available_slots)
+    available_slots = max(raw_capacity - len(running_jobs), 0)
+
+    if available_slots <= 0:
+        return {"jobs": []}
 
     result = await db.execute(
         select(Job)
@@ -331,7 +333,7 @@ async def handle_job_poll(
             Job.status == JobStatus.QUEUED,
         )
         .order_by(Job.created_at.asc())
-        .limit(effective_capacity)
+        .limit(available_slots)
     )
     pending_jobs = result.scalars().all()
 
