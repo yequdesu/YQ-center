@@ -80,16 +80,27 @@ async def test_stream_block_ordering_assistant_text_between_tool_groups(
     assert "agent.prompt.received" in event_types
     assert "agent.completed" in event_types
 
-    # Check that tool calls appear before final text
+    # The provider text attached to a tool-call response should stream before
+    # the tool group, so the chat can render narration -> tools -> narration.
     tc_indices = [i for i, t in enumerate(event_types) if t == "agent.tool_call.created"]
     delta_indices = [i for i, t in enumerate(event_types) if t == "agent.output.delta"]
+    delta_contents = [
+        str(e.get("data", {}).get("content", ""))
+        for e in events
+        if e["event_type"] == "agent.output.delta"
+    ]
 
-    if tc_indices and delta_indices:
-        # At least one tool call created before the final output delta
-        assert tc_indices[0] < delta_indices[-1], (
-            f"Tool call created should appear before final output.delta. "
-            f"First tool_call.created at {tc_indices[0]}, last output.delta at {delta_indices[-1]}"
-        )
+    assert delta_indices, "Expected streamed assistant text"
+    assert "Let me check the system." in delta_contents
+    assert delta_indices[0] < tc_indices[0], (
+        f"Intermediate assistant text should appear before tool calls. "
+        f"First output.delta at {delta_indices[0]}, first tool_call.created at {tc_indices[0]}"
+    )
+    assert "System looks healthy." in delta_contents
+    assert tc_indices[-1] < delta_indices[-1], (
+        f"Final assistant text should appear after tool calls. "
+        f"Last tool_call.created at {tc_indices[-1]}, last output.delta at {delta_indices[-1]}"
+    )
 
     # Verify agent.completed is NOT included as a big content bubble
     completed_events = [e for e in events if e["event_type"] == "agent.completed"]

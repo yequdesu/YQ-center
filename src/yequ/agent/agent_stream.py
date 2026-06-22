@@ -158,8 +158,15 @@ async def agent_invoke_stream(
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
+            # Stream assistant text immediately when the provider sends text
+            # together with tool calls. Without this, intermediate narration is
+            # only persisted in history and appears late after a refresh.
+            assistant_text = provider_result.message or ""
+            if assistant_text:
+                yield _event("agent.output.delta", session_id, trace_id, {"content": assistant_text})
+
             # Append assistant message with tool_calls
-            history.append(AgentMessage(role="assistant", content=provider_result.message or "", tool_calls=provider_result.tool_calls))
+            history.append(AgentMessage(role="assistant", content=assistant_text, tool_calls=provider_result.tool_calls))
 
             # Record original provider call order for history ordering
             provider_call_order: dict[str, int] = {}
