@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { createSession } from "@/api/agent";
 import { getSession, getMaintenanceRun, listMaintenanceRunArtifacts, approvePlan, runPlan, listSessions, renameSession, deleteSession, listNodes, approveApproval, denyApproval, approveAndRunApproval } from "@/api/admin";
 import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock } from "@/hooks/useAgentChat";
-import type { MaintenanceArtifactDetail } from "@/api/types";
+import type { AgentSessionSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
 import { Button } from "@/components/Button";
@@ -46,7 +46,8 @@ export function AgentChatPage() {
   const [editLabel, setEditLabel] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const sessionInitializedRef = useRef(false);
+  const creatingSessionRef = useRef(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const queryClient = useQueryClient();
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
@@ -66,26 +67,6 @@ export function AgentChatPage() {
     refetchInterval: 30_000,
   });
 
-  // Auto-create initial session ONCE on mount (moved out of queryFn to prevent
-  // double creation on every refetch caused by staleTime:0 / React StrictMode).
-  useEffect(() => {
-    if (sessionInitializedRef.current) return;
-    if (sessionId) {
-      sessionInitializedRef.current = true;
-      return;
-    }
-    let cancelled = false;
-    const init = async () => {
-      const s = await createSession({});
-      if (cancelled) return;
-      sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
-      setSessionId(s.session_id);
-      sessionInitializedRef.current = true;
-    };
-    init();
-    return () => { cancelled = true; };
-  }, [sessionId]);
-
   const sessionQuery = useQuery({
     queryKey: ["agent-session", sessionId],
     queryFn: async () => {
@@ -93,6 +74,7 @@ export function AgentChatPage() {
       return getSession(sessionId);
     },
     enabled: !!sessionId,
+    retry: false,
     staleTime: 60_000,
   });
 
@@ -105,6 +87,33 @@ export function AgentChatPage() {
     clearBlocks,
     loadPersistedMessages,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
+
+  // Session selection is idempotent: never create sessions implicitly.
+  // If a stored/active session disappears, select an existing session if one
+  // exists; otherwise leave the chat in an explicit empty-session state.
+  useEffect(() => {
+    if (!sessionsQuery.isSuccess) return;
+    const sessions = sessionsQuery.data ?? [];
+    if (!sessionId) {
+      const firstSession = sessions[0]?.session_id;
+      if (firstSession) {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, firstSession);
+        setSessionId(firstSession);
+      }
+      return;
+    }
+    if (sessions.some((s) => s.session_id === sessionId)) return;
+
+    queryClient.removeQueries({ queryKey: ["agent-session", sessionId] });
+    clearBlocks();
+    const nextSession = sessions[0]?.session_id ?? "";
+    if (nextSession) {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, nextSession);
+    } else {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+    setSessionId(nextSession);
+  }, [clearBlocks, queryClient, sessionId, sessionsQuery.data, sessionsQuery.isSuccess]);
 
   // Load persisted messages into blocks when session data arrives
   useEffect(() => {
@@ -134,22 +143,47 @@ export function AgentChatPage() {
     cancel();
     clearBlocks();
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
-    sessionInitializedRef.current = true; // prevent auto-create
     setSessionId(newId);
   };
 
   const createNewSession = async () => {
+    if (creatingSessionRef.current) return;
     if (isStreaming) {
       if (!confirm("A stream is in progress. Creating a new session will cancel it. Continue?")) {
         return;
       }
     }
+    creatingSessionRef.current = true;
+    setIsCreatingSession(true);
     cancel();
     clearBlocks();
-    const s = await createSession({});
-    sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
-    setSessionId(s.session_id);
-    queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    try {
+      const s = await createSession({});
+      const now = new Date().toISOString();
+      const summary: AgentSessionSummary = {
+        session_id: s.session_id,
+        actor_id: "agent",
+        status: "active",
+        execution_mode: s.execution_mode,
+        started_at: now,
+        closed_at: null,
+        label: s.session_id.slice(0, 8),
+        updated_at: now,
+        last_message_preview: "",
+        message_count: 0,
+        running: false,
+      };
+      queryClient.setQueryData<AgentSessionSummary[]>(["agent-sessions"], (old) => [
+        summary,
+        ...(old ?? []).filter((session) => session.session_id !== s.session_id),
+      ]);
+      sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
+      setSessionId(s.session_id);
+      queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    } finally {
+      creatingSessionRef.current = false;
+      setIsCreatingSession(false);
+    }
   };
 
   const handleRenameStart = (id: string, currentLabel: string) => {
@@ -168,17 +202,28 @@ export function AgentChatPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this session and all its messages?")) return;
+    const wasActive = id === sessionId;
+    const nextSession = (sessionsQuery.data ?? []).find((s) => s.session_id !== id)?.session_id ?? "";
     await deleteSession(id);
+    queryClient.setQueryData<AgentSessionSummary[]>(["agent-sessions"], (old) =>
+      (old ?? []).filter((session) => session.session_id !== id),
+    );
+    queryClient.removeQueries({ queryKey: ["agent-session", id] });
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
-    if (id === sessionId) {
-      const s = await createSession({});
-      sessionStorage.setItem(SESSION_STORAGE_KEY, s.session_id);
-      setSessionId(s.session_id);
+    if (wasActive) {
+      cancel();
+      clearBlocks();
+      if (nextSession) {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, nextSession);
+      } else {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      }
+      setSessionId(nextSession);
     }
   };
 
   const handleSend = () => {
-    if (!prompt.trim() || isStreaming) return;
+    if (!sessionId || !prompt.trim() || isStreaming) return;
     if (autoPlan) {
       sendPlan(prompt.trim(), targetNodeId, providerName);
     } else {
@@ -231,10 +276,11 @@ export function AgentChatPage() {
           <span className="text-[12px] font-semibold text-[var(--text)]">Sessions</span>
           <button
             onClick={createNewSession}
+            disabled={isCreatingSession}
             className="rounded-[var(--radius-sm)] p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
             title="New session"
           >
-            <Plus size={14} />
+            {isCreatingSession ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
           </button>
         </div>
 
@@ -350,8 +396,12 @@ export function AgentChatPage() {
           {blocks.length === 0 ? (
             <EmptyState
               icon={<Bot size={36} />}
-              title="YeQu Agent"
-              description="Input a prompt to start. The Agent will reason about your request and execute tools accordingly."
+              title={sessionId ? "YeQu Agent" : "No Session"}
+              description={
+                sessionId
+                  ? "Input a prompt to start. The Agent will reason about your request and execute tools accordingly."
+                  : "Create a session with the plus button to start a conversation."
+              }
             />
           ) : (
             <div className="mx-auto max-w-3xl space-y-3">
@@ -430,16 +480,16 @@ export function AgentChatPage() {
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={autoPlan ? "Describe maintenance task..." : "Ask the agent..."}
+                placeholder={!sessionId ? "Create a session to start..." : autoPlan ? "Describe maintenance task..." : "Ask the agent..."}
                 rows={2}
                 className="flex-1 resize-none rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-3 py-2 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--text-subtle)]"
-                disabled={isStreaming}
+                disabled={!sessionId || isStreaming}
               />
               <Button
                 variant="primary"
                 size="md"
                 onClick={handleSend}
-                disabled={!prompt.trim() || isStreaming}
+                disabled={!sessionId || !prompt.trim() || isStreaming}
               >
                 {isStreaming ? (
                   <Loader2 size={16} className="animate-spin" />
