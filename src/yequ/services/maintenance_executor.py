@@ -248,6 +248,23 @@ async def execute_plan_run(
 
         # Create invocation + job for this step
         try:
+            from yequ.config import get_settings
+            from yequ.services.capability_resolver import resolve_target_node
+
+            resolved = await resolve_target_node(
+                db,
+                step.function_name,
+                requested_node_id=plan.target_node_id,
+                settings=get_settings(),
+            )
+            if resolved is None or not resolved.available:
+                reason = (
+                    resolved.unavailable_reason
+                    if resolved and resolved.unavailable_reason
+                    else f"No online node has capability {step.function_name!r}"
+                )
+                raise RuntimeError(reason)
+
             inv = await create_invocation(
                 db,
                 actor_type="system",
@@ -269,8 +286,10 @@ async def execute_plan_run(
                 db,
                 invocation_id=inv.invocation_id,
                 node_id=plan.target_node_id,
+                runtime_id=resolved.runtime_id,
                 function_name=step.function_name,
                 input_payload=step.input_data or {},
+                execution_requirements_snapshot=resolved.execution_requirements,
                 timeout_sec=step.timeout_sec,
                 resource_keys=step.resource_keys or [],
                 dry_run=effective_dry_run,

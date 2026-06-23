@@ -17,6 +17,7 @@ from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.resource_lock import ResourceLock
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import NodeStatus
@@ -108,6 +109,18 @@ class NodeDetail(NodeSummary):
     job_delivery_mode: str | None = None
     created_at: str | None = None
 
+class RuntimeSummary(BaseModel):
+    runtime_id: str
+    node_id: str
+    kind: str
+    status: str
+    labels: list[str] = Field(default_factory=list)
+    owner: str | None = None
+    privilege: str | None = None
+    interactive: bool = False
+    last_seen_at: str | None = None
+    metadata: dict[str, object] | None = None
+
 class CapabilitySummary(BaseModel):
     plugin_id: str
     plugin_version: str
@@ -122,6 +135,7 @@ class CapabilitySummary(BaseModel):
     timeout_sec: int | None = None
     idempotency: str | None = None
     execution_context: str | None = None
+    execution_requirements: dict[str, object] | None = None
     hidden_input_fields: list[str] = Field(default_factory=list)
     preflight_supported: bool = False
     scope: str | None = None
@@ -140,6 +154,8 @@ class JobSummary(BaseModel):
     job_id: str
     invocation_id: str
     node_id: str
+    runtime_id: str | None = None
+    execution_requirements: dict[str, object] | None = None
     function_name: str
     status: str
     timeout_sec: int
@@ -469,6 +485,45 @@ async def get_node(
 
 
 # ── Node management endpoints ──
+
+
+@router.get("/runtimes", response_model=list[RuntimeSummary])
+async def list_runtimes(
+    node_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[RuntimeSummary]:
+    """List platform-neutral runtime instances reported by Nodes."""
+    stmt = select(RuntimeInstance, Node.node_id).join(
+        Node, RuntimeInstance.node_record_id == Node.id
+    )
+    if node_id:
+        stmt = stmt.where(Node.node_id == node_id)
+    stmt = stmt.order_by(Node.node_id, RuntimeInstance.runtime_id)
+    result = await db.execute(stmt)
+    return [
+        _runtime_summary(runtime, runtime_node_id)
+        for runtime, runtime_node_id in result.all()
+    ]
+
+
+@router.get("/nodes/{node_id}/runtimes", response_model=list[RuntimeSummary])
+async def list_node_runtimes(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[RuntimeSummary]:
+    """List runtimes for a single Node."""
+    node_result = await db.execute(select(Node).where(Node.node_id == node_id))
+    node = node_result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id!r} not found")
+    result = await db.execute(
+        select(RuntimeInstance)
+        .where(RuntimeInstance.node_record_id == node.id)
+        .order_by(RuntimeInstance.runtime_id)
+    )
+    return [_runtime_summary(runtime, node.node_id) for runtime in result.scalars().all()]
 
 
 @router.post("/nodes/{node_id}/capabilities/refresh-state")
@@ -1011,6 +1066,39 @@ async def approve_and_run_endpoint(
             },
         )
 
+    cap_result = await db.execute(
+        select(Capability).where(
+            Capability.node_record_id == target_node.id,
+            Capability.capability_type == "function",
+            Capability.name == a.function_name,
+            Capability.is_active == True,  # noqa: E712
+        ).limit(1)
+    )
+    capability = cap_result.scalar_one_or_none()
+    resolved = None
+    if capability is not None:
+        from yequ.services.capability_resolver import resolve_target_node
+        resolved = await resolve_target_node(
+            db,
+            a.function_name,
+            requested_node_id=a.target_node_id,
+            settings=get_settings(),
+        )
+        if resolved is None or not resolved.available:
+            raise HTTPException(
+                409,
+                {
+                    "error_code": resolved.unavailable_code if resolved else "FUNCTION_NOT_AVAILABLE",
+                    "error_message": (
+                        resolved.unavailable_reason
+                        if resolved and resolved.unavailable_reason
+                        else f"No online node has capability {a.function_name!r}"
+                    ),
+                    "node_id": a.target_node_id,
+                    "function_name": a.function_name,
+                },
+            )
+
     try:
         # Approve + consume
         await approve_approval(db, a, approved_by="admin", reason=reason)
@@ -1035,8 +1123,10 @@ async def approve_and_run_endpoint(
             db,
             invocation_id=inv.invocation_id,
             node_id=a.target_node_id,
+            runtime_id=resolved.runtime_id if resolved else None,
             function_name=a.function_name,
             input_payload=input_data,
+            execution_requirements_snapshot=resolved.execution_requirements if resolved else None,
             timeout_sec=30,
             resource_keys=list(a.resource_keys) if a.resource_keys else [],
             approval_id=a.approval_id,
@@ -1151,6 +1241,21 @@ def _node_detail(n: Node) -> NodeDetail:
     )
 
 
+def _runtime_summary(runtime: RuntimeInstance, node_id: str) -> RuntimeSummary:
+    return RuntimeSummary(
+        runtime_id=runtime.runtime_id,
+        node_id=node_id,
+        kind=runtime.kind,
+        status=runtime.status,
+        labels=list(runtime.labels or []),
+        owner=runtime.owner,
+        privilege=runtime.privilege,
+        interactive=bool(runtime.interactive),
+        last_seen_at=runtime.last_seen_at.isoformat() if runtime.last_seen_at else None,
+        metadata=runtime.metadata_json,
+    )
+
+
 def _cap_summary(c: Capability) -> CapabilitySummary:
     from yequ.config import get_settings
     from yequ.services.node_liveness_service import get_node_liveness_snapshot
@@ -1186,6 +1291,7 @@ def _cap_summary(c: Capability) -> CapabilitySummary:
         timeout_sec=c.timeout_sec,
         idempotency=c.idempotency,
         execution_context=c.execution_context,
+        execution_requirements=c.execution_requirements,
         hidden_input_fields=list(c.hidden_input_fields or []),
         preflight_supported=c.preflight_supported,
         scope=c.scope,
@@ -1206,6 +1312,8 @@ def _job_summary(j: Job) -> JobSummary:
         job_id=j.job_id,
         invocation_id=j.invocation_id,
         node_id=j.node_id,
+        runtime_id=j.runtime_id,
+        execution_requirements=j.execution_requirements_snapshot,
         function_name=j.function_name,
         status=j.status,
         timeout_sec=j.timeout_sec,
@@ -1350,6 +1458,7 @@ async def create_invocation_endpoint(
     # Look up the capability to get risk/effect and resource_key_template
     cap_result = await db.execute(
         select(Capability).where(
+            Capability.node_record_id == node.id,
             Capability.capability_type == "function",
             Capability.name == body.function_name,
             Capability.is_active == True,  # noqa: E712
@@ -1359,6 +1468,32 @@ async def create_invocation_endpoint(
     func_risk = capability.risk if capability else "safe"
     func_effect = capability.effect if capability else "read"
     resource_key_template = capability.resource_keys[0] if (capability and capability.resource_keys) else None
+
+    resolved = None
+    if capability is not None:
+        from yequ.services.capability_resolver import resolve_target_node
+        resolved = await resolve_target_node(
+            db,
+            body.function_name,
+            requested_node_id=body.target_node_id,
+            settings=get_settings(),
+        )
+        if resolved is None or not resolved.available:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error_code": resolved.unavailable_code if resolved else "FUNCTION_NOT_AVAILABLE",
+                    "error_message": (
+                        resolved.unavailable_reason
+                        if resolved and resolved.unavailable_reason
+                        else f"No online node has capability {body.function_name!r}"
+                    ),
+                    "node_id": body.target_node_id,
+                    "function_name": body.function_name,
+                },
+            )
+        func_risk = resolved.risk
+        func_effect = resolved.effect
 
     # If approval_id was provided, verify and consume it (bypassing L2 policy)
     if body.approval_id:
@@ -1494,8 +1629,10 @@ async def create_invocation_endpoint(
             db,
             invocation_id=inv.invocation_id,
             node_id=body.target_node_id,
+            runtime_id=resolved.runtime_id if resolved else None,
             function_name=body.function_name,
             input_payload=body.input_payload,
+            execution_requirements_snapshot=resolved.execution_requirements if resolved else None,
             timeout_sec=body.timeout_sec,
             lease_sec=body.lease_sec,
             resource_keys=res_keys,

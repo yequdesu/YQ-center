@@ -62,6 +62,8 @@ async def create_job(
     risk: str = "safe",
     effect: str = "read",
     conflict_policy: str | None = None,
+    runtime_id: str | None = None,
+    execution_requirements_snapshot: dict[str, object] | None = None,
 ) -> Job:
     """Create a new Job and transition it to QUEUED.
 
@@ -89,8 +91,10 @@ async def create_job(
         job_id=_make_job_id(),
         invocation_id=invocation_id,
         node_id=node_id,
+        runtime_id=runtime_id,
         function_name=function_name,
         input_payload=input_payload or {},
+        execution_requirements_snapshot=execution_requirements_snapshot,
         status=JobStatus.CREATED,
         timeout_sec=timeout_sec,
         lease_sec=lease_sec,

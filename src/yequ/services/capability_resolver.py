@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.models.capability import Capability
 from yequ.models.job import Job
 from yequ.models.node import Node
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.protocol import JobStatus, NodeStatus
 
 
@@ -35,13 +36,100 @@ class ResolvedCapability:
     lease_sec: int = 30
     resource_key_template: list[str] = field(default_factory=list)
     conflict_policy: str | None = None
+    runtime_id: str | None = None
+    execution_requirements: dict | None = None
     available: bool = True
+    unavailable_code: str | None = None
     unavailable_reason: str | None = None
 
     @property
     def resource_keys(self) -> list[str]:
         """Compatibility alias used by Agent L2 approval creation."""
         return self.resource_key_template
+
+
+def _legacy_runtime_id(node: Node) -> str:
+    return f"{node.node_id}/runtime/default"
+
+
+def _requirements_from_context(context: str | None) -> dict | None:
+    if context == "system":
+        return {"runtime_kind": "privileged"}
+    if context == "user":
+        return {"runtime_kind": "interactive", "interactive": True}
+    if context == "hybrid":
+        return {"runtime_kind": "interactive", "fallback_runtime_kind": "privileged"}
+    return None
+
+
+def _capability_requirements(capability: Capability) -> dict:
+    raw = capability.execution_requirements or _requirements_from_context(capability.execution_context)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _runtime_matches(runtime: RuntimeInstance, requirements: dict) -> bool:
+    if runtime.status not in ("online", "degraded"):
+        return False
+
+    kind = requirements.get("runtime_kind")
+    fallback_kind = requirements.get("fallback_runtime_kind")
+    allowed_kinds = {str(k) for k in (kind, fallback_kind) if k}
+    if allowed_kinds and runtime.kind not in allowed_kinds:
+        return False
+
+    required_interactive = requirements.get("interactive")
+    if required_interactive is not None and bool(runtime.interactive) != bool(required_interactive):
+        return False
+
+    required_privilege = requirements.get("privilege")
+    if required_privilege and runtime.privilege != required_privilege:
+        return False
+
+    required_labels = requirements.get("labels") or []
+    if required_labels:
+        runtime_labels = set(runtime.labels or [])
+        if any(str(label) not in runtime_labels for label in required_labels):
+            return False
+
+    return True
+
+
+async def _select_runtime(
+    db: AsyncSession,
+    node: Node,
+    capability: Capability,
+) -> tuple[str | None, dict, str | None]:
+    """Select a platform-neutral runtime for a capability.
+
+    Returns (runtime_id, requirements, unavailable_reason). A None reason means
+    the runtime requirements were satisfied.
+    """
+    requirements = _capability_requirements(capability)
+    result = await db.execute(
+        select(RuntimeInstance)
+        .where(RuntimeInstance.node_record_id == node.id)
+        .order_by(RuntimeInstance.runtime_id)
+    )
+    runtimes = list(result.scalars().all())
+
+    if not requirements:
+        runtime = next((r for r in runtimes if r.status in ("online", "degraded")), None)
+        return (runtime.runtime_id if runtime else None, requirements, None)
+
+    for runtime in runtimes:
+        if _runtime_matches(runtime, requirements):
+            return runtime.runtime_id, requirements, None
+
+    # Compatibility for legacy nodes/tests that have not reported runtimes yet.
+    # Only privileged/default requirements can use this virtual runtime.
+    if not runtimes and requirements.get("runtime_kind") == "privileged":
+        return _legacy_runtime_id(node), requirements, None
+
+    return (
+        None,
+        requirements,
+        f"No online runtime on node '{node.node_id}' satisfies {requirements}",
+    )
 
 
 async def resolve_function(
@@ -89,6 +177,7 @@ async def resolve_function(
             node_id=_node_id or "",
             function_name=function_name,
             available=False,
+            unavailable_code="node_not_found" if _node_id else "no_nodes_available",
             unavailable_reason=(
                 f"Node '{_node_id}' not found"
                 if _node_id
@@ -97,7 +186,7 @@ async def resolve_function(
         )
 
     # Filter: node must be schedulable and have the active function registered
-    viable: list[tuple[Node, Capability]] = []
+    viable: list[tuple[Node, Capability, str | None, dict]] = []
     offline_reasons: list[str] = []
 
     for node in candidates:
@@ -138,7 +227,12 @@ async def resolve_function(
                         f"requires '{required_risk}'"
                     )
                 continue
-            viable.append((node, cap))
+            runtime_id, requirements, runtime_reason = await _select_runtime(db, node, cap)
+            if runtime_reason:
+                if _node_id:
+                    offline_reasons.append(runtime_reason)
+                continue
+            viable.append((node, cap, runtime_id, requirements))
         elif _node_id:
             offline_reasons.append(
                 f"Node '{_node_id}' does not have capability '{function_name}'"
@@ -154,10 +248,11 @@ async def resolve_function(
             node_id=_node_id or "",
             function_name=function_name,
             available=False,
+            unavailable_code="capability_or_runtime_unavailable",
             unavailable_reason=reason,
         )
 
-    node_ids = [node.node_id for node, _cap in viable]
+    node_ids = [node.node_id for node, _cap, _runtime_id, _requirements in viable]
     running_counts = dict.fromkeys(node_ids, 0)
     running_result = await db.execute(
         select(Job.node_id, func.count(Job.id))
@@ -181,8 +276,8 @@ async def resolve_function(
             heartbeat = heartbeat.replace(tzinfo=UTC)
         return -heartbeat.timestamp()
 
-    def _sort_key(item: tuple[Node, Capability]) -> tuple:
-        node, _cap = item
+    def _sort_key(item: tuple[Node, Capability, str | None, dict]) -> tuple:
+        node, _cap, _runtime_id, _requirements = item
         status_rank = 0 if node.status == NodeStatus.ONLINE else 1
         locality_rank = {"local": 0, "lan": 1}.get((node.locality or "").lower(), 2)
         return (
@@ -197,7 +292,7 @@ async def resolve_function(
     viable.sort(key=_sort_key)
 
     # Pick the best
-    best_node, best_cap = viable[0]
+    best_node, best_cap, best_runtime_id, best_requirements = viable[0]
 
     # Determine approval_required
     approval_required = (
@@ -216,7 +311,10 @@ async def resolve_function(
         lease_sec=30,
         resource_key_template=list(best_cap.resource_keys) if best_cap.resource_keys else [],
         conflict_policy=best_cap.conflict_policy,
+        runtime_id=best_runtime_id,
+        execution_requirements=best_requirements,
         available=True,
+        unavailable_code=None,
         unavailable_reason=None,
     )
 

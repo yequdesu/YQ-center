@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.capability import Capability
 from yequ.models.node import Node
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
 
@@ -34,6 +35,7 @@ async def handle_hello(
 
     node.heartbeat_interval_sec = settings.default_heartbeat_interval_sec
     node.job_delivery_mode = JobDeliveryMode.POLL
+    await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=node.last_seen_at)
 
     # Write node.online timeline event
     result = await db.execute(select(func.max(TimelineEvent.global_seq)))
@@ -74,6 +76,7 @@ async def handle_heartbeat(
     now = datetime.now(UTC)
     node.last_seen_at = now
     node.last_heartbeat_at = now
+    await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=now)
 
     # If node was offline or rejoining, bring back to online
     if node.status in (NodeStatus.OFFLINE, NodeStatus.REJOINING):
@@ -119,6 +122,7 @@ async def handle_register_capabilities(
     registered_count = 0
     failed_count = 0
     now = datetime.now(UTC)
+    await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=now)
 
     for plugin in plugins:
         plugin_id = plugin["plugin_id"]
@@ -175,6 +179,10 @@ async def handle_register_capabilities(
                 resource_keys=fn.get("resource_keys"),
                 conflict_policy=fn.get("conflict_policy"),
                 execution_context=fn.get("execution_context"),
+                execution_requirements=(
+                    fn.get("execution_requirements")
+                    or _execution_requirements_from_context(fn.get("execution_context"))
+                ),
                 hidden_input_fields=fn.get("hidden_input_fields"),
                 examples=fn.get("examples"),
                 failure_modes=fn.get("failure_modes"),
@@ -214,6 +222,89 @@ async def handle_register_capabilities(
         "failed_count": failed_count,
         "accepted_at": now.isoformat(),
     }
+
+
+def _legacy_runtime_id(node: Node) -> str:
+    """Default runtime for legacy Nodes that do not yet report runtimes."""
+    return f"{node.node_id}/runtime/default"
+
+
+def _execution_requirements_from_context(context: str | None) -> dict | None:
+    """Map deprecated execution_context to platform-neutral requirements."""
+    if context == "system":
+        return {"runtime_kind": "privileged"}
+    if context == "user":
+        return {"runtime_kind": "interactive", "interactive": True}
+    if context == "hybrid":
+        return {
+            "runtime_kind": "interactive",
+            "fallback_runtime_kind": "privileged",
+        }
+    return None
+
+
+async def _sync_runtime_instances(
+    db: AsyncSession,
+    node: Node,
+    runtimes: list[dict],
+    *,
+    now: datetime,
+) -> None:
+    """Synchronize the runtime snapshot reported by a Node.
+
+    Center stores only platform-neutral runtime attributes. OS-specific
+    worker implementation details stay inside the Node and may appear only as
+    opaque metadata.
+    """
+    if not runtimes:
+        runtimes = [{
+            "runtime_id": _legacy_runtime_id(node),
+            "kind": "privileged",
+            "status": "online",
+            "labels": ["legacy"],
+            "interactive": False,
+            "metadata": {"source": "legacy_default"},
+        }]
+
+    seen: set[str] = set()
+    for raw in runtimes:
+        runtime_id = str(raw.get("runtime_id") or "").strip()
+        if not runtime_id:
+            continue
+        seen.add(runtime_id)
+
+        result = await db.execute(
+            select(RuntimeInstance).where(
+                RuntimeInstance.node_record_id == node.id,
+                RuntimeInstance.runtime_id == runtime_id,
+            )
+        )
+        runtime = result.scalar_one_or_none()
+        if runtime is None:
+            runtime = RuntimeInstance(
+                node_record_id=node.id,
+                runtime_id=runtime_id,
+            )
+            db.add(runtime)
+
+        runtime.kind = str(raw.get("kind") or runtime.kind or "privileged")
+        runtime.status = str(raw.get("status") or runtime.status or "online")
+        labels = raw.get("labels")
+        runtime.labels = [str(label) for label in labels] if isinstance(labels, list) else []
+        runtime.owner = raw.get("owner")
+        runtime.privilege = raw.get("privilege")
+        runtime.interactive = bool(raw.get("interactive", False))
+        runtime.last_seen_at = now
+        metadata = raw.get("metadata")
+        runtime.metadata_json = metadata if isinstance(metadata, dict) else None
+
+    if seen:
+        result = await db.execute(
+            select(RuntimeInstance).where(RuntimeInstance.node_record_id == node.id)
+        )
+        for runtime in result.scalars().all():
+            if runtime.runtime_id not in seen and runtime.status == "online":
+                runtime.status = "offline"
 
 
 async def handle_signal_report(
@@ -365,6 +456,8 @@ async def handle_job_poll(
             "invocation_id": job.invocation_id,
             "function": job.function_name,
             "input": job.input_payload or {},
+            "runtime_id": job.runtime_id,
+            "execution_requirements": job.execution_requirements_snapshot or {},
             "timeout_sec": job.timeout_sec,
             "lease_sec": job.lease_sec,
             "approval_id": getattr(job, "approval_id", None),

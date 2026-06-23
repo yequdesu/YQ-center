@@ -45,6 +45,7 @@ class Capability(Base, TimestampMixin):
     resource_keys: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     conflict_policy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     execution_context: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_requirements: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     hidden_input_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     examples: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     failure_modes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)

@@ -17,6 +17,7 @@ from yequ.models.maintenance_plan import (
 )
 from yequ.models.node import Node
 from yequ.models.resource_lock import ResourceLock
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 
@@ -37,6 +38,7 @@ __all__ = [
     "Node",
     "ResourceLock",
     "RollbackHint",
+    "RuntimeInstance",
     "Session",
     "TimelineEvent",
     "TimestampMixin",

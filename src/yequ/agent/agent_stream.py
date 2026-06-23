@@ -487,8 +487,10 @@ async def _execute_and_stream(
         db,
         invocation_id=inv.invocation_id,
         node_id=resolved.node_id,
+        runtime_id=resolved.runtime_id,
         function_name=tc_name,
         input_payload=tc_input,
+        execution_requirements_snapshot=resolved.execution_requirements,
         timeout_sec=resolved.timeout_sec,
     )
     await db.commit()

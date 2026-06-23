@@ -13,6 +13,7 @@ from yequ.protocol import NodeStatus
 
 if TYPE_CHECKING:
     from yequ.models.capability import Capability
+    from yequ.models.runtime_instance import RuntimeInstance
 
 
 class Node(Base, TimestampMixin):
@@ -37,6 +38,9 @@ class Node(Base, TimestampMixin):
 
     capabilities: Mapped[list[Capability]] = relationship(
         "Capability", back_populates="node", cascade="all, delete-orphan"
+    )
+    runtime_instances: Mapped[list[RuntimeInstance]] = relationship(
+        "RuntimeInstance", back_populates="node", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

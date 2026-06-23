@@ -18,10 +18,12 @@ import yequ.models.approval  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
 import yequ.models.job  # noqa: F401
+import yequ.models.maintenance_plan  # noqa: F401
 
 # Import all models so Base.metadata is populated
 import yequ.models.node  # noqa: F401
 import yequ.models.resource_lock  # noqa: F401
+import yequ.models.runtime_instance  # noqa: F401
 import yequ.models.session  # noqa: F401
 import yequ.models.timeline  # noqa: F401
 from yequ.api.app import create_app
