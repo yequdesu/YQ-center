@@ -215,7 +215,8 @@ class DeepSeekProvider(AgentProvider):
                     "1. Choose the right tool(s) for the user's request.\n"
                     "2. For multi-step checks, call multiple tools in one response.\n"
                     "3. Never invent tool names -- only use listed tools.\n"
-                    "4. Respond in the user's language."
+                    "4. Respond in the user's language.\n"
+                    "5. Never mention internal implementation fields such as dry_run or approval_id; call preview-only checks preflight or 预演."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -333,6 +334,11 @@ class DeepSeekProvider(AgentProvider):
             "clear natural-language summary in the user's language.\n"
             "5. Never invent tool names.\n"
             "6. If a tool fails or is denied, explain the situation to the user.\n"
+            "7. Never mention internal implementation fields such as dry_run "
+            "or approval_id. If an operation is previewed before execution, "
+            "describe it to the user as a preflight check or 预演.\n"
+            "8. Do not retry a denied write operation by changing internal "
+            "parameters. Ask the user for a new instruction when approval is denied.\n"
         )
 
     def _build_fresh_messages(
@@ -369,7 +375,7 @@ class DeepSeekProvider(AgentProvider):
                         "type": "function",
                         "function": {
                             "name": self._sanitize_name(str(tc.get("name", ""))),
-                            "arguments": json.dumps(tc.get("input", {})),
+                            "arguments": json.dumps(_sanitize_tool_input_for_provider(tc.get("input", {}))),
                         },
                     }
                     for tc in m.tool_calls
@@ -410,3 +416,15 @@ class DeepSeekProvider(AgentProvider):
             if self._sanitize_name(f.name) == sanitized:
                 return f.name
         return sanitized  # fallback
+
+
+def _sanitize_tool_input_for_provider(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_tool_input_for_provider(item)
+            for key, item in value.items()
+            if key not in {"approval_id", "dry_run"}
+        }
+    if isinstance(value, list):
+        return [_sanitize_tool_input_for_provider(item) for item in value]
+    return value

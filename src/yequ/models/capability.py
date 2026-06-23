@@ -31,6 +31,9 @@ class Capability(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="loaded")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_visible_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     # Function-specific fields
     input_schema: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -41,6 +44,11 @@ class Capability(Base, TimestampMixin):
     idempotency: Mapped[str | None] = mapped_column(String(32), nullable=True)
     resource_keys: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     conflict_policy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_context: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    hidden_input_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    examples: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    failure_modes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    preflight_supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Signal-specific fields
     scope: Mapped[str | None] = mapped_column(String(16), nullable=True)

@@ -225,17 +225,77 @@ async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
         schedulable, _ = is_node_schedulable(cap.node, settings)
         if not schedulable:
             continue
-        available.append(AgentFunction(
-            name=cap.name,
-            description=f"Node capability: {cap.name} ({cap.plugin_id})",
-            input_schema=cap.input_schema or {},
-            risk=cap.risk or "safe",
-            effect=cap.effect or "read",
-            timeout_sec=cap.timeout_sec or 30,
-            output_schema=cap.output_schema,
-        ))
+        available.append(_agent_function_from_capability(cap))
         existing.add(cap.name)
     return available
+
+
+INTERNAL_TOOL_INPUT_FIELDS = {"approval_id", "dry_run"}
+
+
+def _agent_function_from_capability(cap: Capability) -> AgentFunction:
+    """Convert a registered Node capability into the LLM-visible tool contract.
+
+    Node manifests may carry operational fields that are required by Center or
+    the Node daemon but should not be chosen or narrated by the LLM. The Agent
+    sees a stable operator-facing contract; Center injects internal fields when
+    it executes approvals/preflight.
+    """
+    hidden_fields = set(cap.hidden_input_fields or []) | INTERNAL_TOOL_INPUT_FIELDS
+    return AgentFunction(
+        name=cap.name,
+        description=_capability_agent_description(cap),
+        input_schema=_strip_internal_input_fields(cap.input_schema or {}, hidden_fields),
+        risk=cap.risk or "safe",
+        effect=cap.effect or "read",
+        timeout_sec=cap.timeout_sec or 30,
+        output_schema=cap.output_schema,
+    )
+
+
+def _capability_agent_description(cap: Capability) -> str:
+    description = (cap.agent_description or cap.description or "").strip()
+    if description:
+        return description
+
+    effect = cap.effect or "read"
+    risk = cap.risk or "safe"
+    context = cap.execution_context or "node"
+    approval_note = (
+        " This operation changes system state and Center will ask the user for approval before execution."
+        if effect in ("write", "destructive") or risk in ("maintenance", "destructive", "catastrophic")
+        else ""
+    )
+    return (
+        f"{cap.name} provided by node plugin {cap.plugin_id}. "
+        f"Execution context: {context}. Effect: {effect}. Risk: {risk}."
+        f"{approval_note}"
+    )
+
+
+def _strip_internal_input_fields(
+    schema: dict[str, object],
+    hidden_fields: set[str],
+) -> dict[str, object]:
+    if not schema or not hidden_fields:
+        return dict(schema)
+
+    cleaned = dict(schema)
+    properties = cleaned.get("properties")
+    if isinstance(properties, dict):
+        cleaned["properties"] = {
+            key: value for key, value in properties.items()
+            if key not in hidden_fields
+        }
+
+    required = cleaned.get("required")
+    if isinstance(required, list):
+        cleaned["required"] = [
+            key for key in required
+            if not isinstance(key, str) or key not in hidden_fields
+        ]
+
+    return cleaned
 
 
 def _sse_response(event_source):

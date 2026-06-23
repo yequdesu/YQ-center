@@ -112,11 +112,17 @@ class CapabilitySummary(BaseModel):
     plugin_version: str
     capability_type: str
     name: str
+    description: str | None = None
+    agent_description: str | None = None
+    user_visible_name: str | None = None
     status: str
     risk: str | None = None
     effect: str | None = None
     timeout_sec: int | None = None
     idempotency: str | None = None
+    execution_context: str | None = None
+    hidden_input_fields: list[str] = Field(default_factory=list)
+    preflight_supported: bool = False
     scope: str | None = None
     ttl_sec: int | None = None
     is_active: bool
@@ -1087,11 +1093,17 @@ def _cap_summary(c: Capability) -> CapabilitySummary:
         plugin_version=c.plugin_version,
         capability_type=c.capability_type,
         name=c.name,
+        description=c.description,
+        agent_description=c.agent_description,
+        user_visible_name=c.user_visible_name,
         status=c.status,
         risk=c.risk,
         effect=c.effect,
         timeout_sec=c.timeout_sec,
         idempotency=c.idempotency,
+        execution_context=c.execution_context,
+        hidden_input_fields=list(c.hidden_input_fields or []),
+        preflight_supported=c.preflight_supported,
         scope=c.scope,
         ttl_sec=c.ttl_sec,
         is_active=c.is_active,

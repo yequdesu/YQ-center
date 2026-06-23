@@ -163,6 +163,9 @@ async def handle_register_capabilities(
                 capability_type="function",
                 name=fn["name"],
                 status=plugin_status,
+                description=fn.get("description"),
+                agent_description=fn.get("agent_description"),
+                user_visible_name=fn.get("user_visible_name"),
                 input_schema=fn.get("input_schema"),
                 output_schema=fn.get("output_schema"),
                 risk=fn.get("risk"),
@@ -171,6 +174,15 @@ async def handle_register_capabilities(
                 idempotency=fn.get("idempotency"),
                 resource_keys=fn.get("resource_keys"),
                 conflict_policy=fn.get("conflict_policy"),
+                execution_context=fn.get("execution_context"),
+                hidden_input_fields=fn.get("hidden_input_fields"),
+                examples=fn.get("examples"),
+                failure_modes=fn.get("failure_modes"),
+                preflight_supported=bool(
+                    fn.get("preflight_supported")
+                    or fn.get("dry_run_supported")
+                    or "dry_run" in (fn.get("input_schema") or {}).get("properties", {})
+                ),
                 is_active=True,
                 registered_at=now,
             )

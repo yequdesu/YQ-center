@@ -31,6 +31,12 @@ from yequ.services.approval_service import consume_approval, create_approval, ve
 
 log = logging.getLogger(__name__)
 
+AGENT_HIDDEN_RESULT_FIELDS = {
+    "approval_id",
+    "dry_run",
+    "approval_enforced",
+}
+
 
 def _make_call_id() -> str:
     return f"call_{uuid.uuid4().hex[:16]}"
@@ -42,6 +48,24 @@ def _make_session_id() -> str:
 
 def _iso(ts: datetime | None) -> str | None:
     return ts.isoformat() if ts else None
+
+
+def sanitize_tool_payload_for_agent(value):
+    """Remove internal execution fields before feeding tool observations to LLMs.
+
+    The database and API may retain these fields for audit/debugging. The LLM
+    should reason about operator concepts like approval and preflight, not
+    implementation flags such as dry_run or approval_id.
+    """
+    if isinstance(value, dict):
+        return {
+            key: sanitize_tool_payload_for_agent(item)
+            for key, item in value.items()
+            if key not in AGENT_HIDDEN_RESULT_FIELDS
+        }
+    if isinstance(value, list):
+        return [sanitize_tool_payload_for_agent(item) for item in value]
+    return value
 
 
 async def create_agent_session(
@@ -396,8 +420,8 @@ async def agent_invoke(
             # Append tool observation
             obs_content = _json.dumps({
                 "status": executed.status,
-                "result": executed.result,
-                "error": executed.error,
+                "result": sanitize_tool_payload_for_agent(executed.result),
+                "error": sanitize_tool_payload_for_agent(executed.error),
             })
             history.append(AgentMessage(
                 role="tool", tool_call_id=tc_call_id, content=obs_content,
