@@ -1,11 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
 import { listApprovals, listJobs, listNodes, listTimeline } from "@/api/admin";
+import { LoadingSkeleton } from "@/components/LoadingSkeleton";
+import { EmptyState } from "@/components/EmptyState";
+import { Gauge } from "lucide-react";
 
 export function DashboardPage() {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: listNodes });
   const jobs = useQuery({ queryKey: ["jobs", "dashboard"], queryFn: () => listJobs({ limit: 100 }) });
   const approvals = useQuery({ queryKey: ["approvals", "dashboard"], queryFn: () => listApprovals({ status: "pending", limit: 50 }) });
   const timeline = useQuery({ queryKey: ["timeline", "dashboard"], queryFn: () => listTimeline({ limit: 8 }) });
+
+  if (nodes.isPending || jobs.isPending) {
+    return <Page title="Dashboard"><LoadingSkeleton lines={4} /></Page>;
+  }
+  if (nodes.isError) {
+    return <Page title="Dashboard"><EmptyState icon={<Gauge size={36} />} title="Failed to load" description={nodes.error?.message ?? "Could not fetch node data"} /></Page>;
+  }
 
   const online = (nodes.data ?? []).filter((node) => node.status === "online").length;
   const runningJobs = (jobs.data ?? []).filter((job) => job.status === "running").length;

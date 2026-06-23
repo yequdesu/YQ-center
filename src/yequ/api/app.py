@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             log.exception("token bootstrap failed")
 
+    from yequ.services.approval_service import _scan_expired_approvals
     from yequ.services.timeline_writer import get_timeline_writer
     from yequ.services.timeout_scanner import get_scanner
     from yequ.services.node_liveness_scanner import get_liveness_scanner
@@ -108,10 +109,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await scanner.start()
         await tl_writer.start()
         await liveness_scanner.start()
+        approval_scanner_task = asyncio.create_task(
+            _scan_expired_approvals(), name="approval-expiry-scanner"
+        )
 
     yield
 
     if not settings.test_mode:
+        approval_scanner_task.cancel()
+        try:
+            await approval_scanner_task
+        except asyncio.CancelledError:
+            pass
         await liveness_scanner.stop()
         await scanner.stop()
         await tl_writer.stop()

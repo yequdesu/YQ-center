@@ -3,14 +3,22 @@ import { useQuery } from "@tanstack/react-query";
 import { listNodes } from "@/api/admin";
 import { Page, Panel } from "./DashboardPage";
 import { StatusBadge } from "@/components/StatusBadge";
+import { LoadingSkeleton } from "@/components/LoadingSkeleton";
+import { EmptyState } from "@/components/EmptyState";
+import { Network } from "lucide-react";
 
 export function NodesPage() {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: listNodes, refetchInterval: 10_000 });
+
+  if (nodes.isPending) return <Page title="Nodes"><LoadingSkeleton lines={3} /></Page>;
+  if (nodes.isError) return <Page title="Nodes"><EmptyState icon={<Network size={36} />} title="Failed to load" description={nodes.error?.message} /></Page>;
+  if (!nodes.data?.length) return <Page title="Nodes"><EmptyState icon={<Network size={36} />} title="No nodes" description="Provision a node to get started." /></Page>;
+
   return (
     <Page title="Nodes">
       <Panel title="Registered Nodes">
         <div className="space-y-2">
-          {(nodes.data ?? []).map((node) => (
+          {nodes.data!.map((node) => (
             <Link
               key={node.node_id}
               to="/nodes/$nodeId"

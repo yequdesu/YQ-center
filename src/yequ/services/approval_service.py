@@ -236,3 +236,36 @@ async def verify_approval(
     if _hash_input(input_data) != approval.input_hash:
         raise ValueError("Input hash mismatch")
     return approval
+
+
+async def _scan_expired_approvals() -> None:
+    """Background task: periodically expire stale pending approvals."""
+    import asyncio
+
+    from sqlalchemy import update as sa_update
+
+    from yequ.db import async_session_factory
+    from yequ.logconfig import get_logger
+    from yequ.models.approval import ApprovalRequest
+
+    _log = get_logger("approval_expiry_scanner")
+    while True:
+        try:
+            await asyncio.sleep(60)
+            async with async_session_factory() as db:
+                now = datetime.now(UTC)
+                result = await db.execute(
+                    sa_update(ApprovalRequest)
+                    .where(
+                        ApprovalRequest.status == "pending",
+                        ApprovalRequest.expires_at < now,
+                    )
+                    .values(status="expired")
+                )
+                if result.rowcount:
+                    await db.commit()
+                    _log.info("expired %d pending approvals", result.rowcount)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            _log.exception("approval expiry scan failed")
