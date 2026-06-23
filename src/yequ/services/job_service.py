@@ -157,9 +157,9 @@ async def timeout_job(
 ) -> None:
     """Mark a job as TIMEOUT due to lease expiry.
 
-    Only CLAIMED or RUNNING jobs can time out.
+    CLAIMED, RUNNING, or CANCELLING jobs can time out.
     """
-    if job.status not in (JobStatus.CLAIMED, JobStatus.RUNNING):
+    if job.status not in (JobStatus.CLAIMED, JobStatus.RUNNING, JobStatus.CANCELLING):
         raise ValueError(f"Cannot timeout job in status {job.status}")
 
     await transition(
@@ -167,6 +167,9 @@ async def timeout_job(
         node_id=node_id,
         reason="lease_expired",
     )
+    # Release any resource locks held by the timed-out job
+    from yequ.services.resource_lock_service import release_lock
+    await release_lock(db, job.job_id)
 
 
 async def find_expired_jobs(db: AsyncSession) -> list[Job]:

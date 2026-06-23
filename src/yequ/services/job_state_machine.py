@@ -20,7 +20,7 @@ VALID_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
         JobStatus.CANCELLING,
         JobStatus.TIMEOUT,
     },
-    JobStatus.CANCELLING: {JobStatus.CANCELLED, JobStatus.FAILED},
+    JobStatus.CANCELLING: {JobStatus.CANCELLED, JobStatus.FAILED, JobStatus.TIMEOUT},
     # Terminal states — no outgoing transitions
     JobStatus.SUCCEEDED: set(),
     JobStatus.FAILED: set(),

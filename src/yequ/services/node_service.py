@@ -6,11 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.logconfig import get_logger
 from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
+
+log = get_logger(__name__)
 
 
 async def handle_hello(
@@ -841,13 +844,24 @@ async def handle_reconcile_jobs(
             continue
 
         # Rule 3: Center is non-terminal (running/claimed/queued/created),
-        # Daemon completed — accept the result
+        # Daemon completed — accept the result and sync Center state
         if center_status in non_terminal_statuses and local_status in daemon_terminal:
-            if local_status == "succeeded" and "output" in kj:
+            if local_status == "succeeded":
                 job.status = JobStatus.SUCCEEDED
                 job.finished_at = now
                 job.output = kj.get("output")
-                await db.commit()
+            elif local_status == "failed":
+                job.status = JobStatus.FAILED
+                job.finished_at = now
+                job.error_code = kj.get("error_code")
+                job.error_message = kj.get("error_message")
+            elif local_status == "cancelled":
+                job.status = JobStatus.CANCELLED
+                job.finished_at = now
+            elif local_status == "timeout":
+                job.status = JobStatus.TIMEOUT
+                job.finished_at = now
+            await db.commit()
 
             actions.append({
                 "job_id": job_id,
