@@ -292,7 +292,7 @@ async def agent_invoke(
         executable_calls = [tc for tc in provider_result.tool_calls if not is_task_completed(tc)]
 
         if task_completed_call:
-            final_provider_message = task_completed_call.get("input", {}).get("message", provider_result.message or "")
+            final_provider_message = provider_result.message or task_completed_call.get("input", {}).get("message", "")
             loop_state = "completed"
             await _write_timeline(db, "agent.provider.completed", session_id=session_id,
                                   actor=provider.provider_name(), success=True, final=True)

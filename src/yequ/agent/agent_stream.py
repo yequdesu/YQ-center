@@ -225,7 +225,10 @@ async def agent_invoke_stream(
             executable_calls = [tc for tc in provider_tool_calls if not is_task_completed(tc)]
 
             if task_completed:
-                final_message = task_completed.get("input", {}).get("message", assistant_text)
+                # LLM's streamed text is the authoritative answer.
+                # task_completed.message is only a fallback when the LLM
+                # produced no streaming text at all (edge case).
+                final_message = assistant_text or task_completed.get("input", {}).get("message", "")
                 loop_state = "completed"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 if not executable_calls:
