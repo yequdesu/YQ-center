@@ -305,6 +305,9 @@ export function AgentChatPage() {
           }
         }
       }
+      if (outcomes.length === 0) {
+        return;
+      }
       sendInvoke(buildApprovalContinuationPromptV2(outcomes), targetNodeId, providerName, executionMode, {
         visible: false,
         suppressUserMessage: true,

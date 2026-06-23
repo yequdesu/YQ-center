@@ -367,6 +367,11 @@ export function useAgentChat({
         }
 
         case "agent.approval.required": {
+          // Tool-level approvals are rendered by agent.tool_call.waiting_approval.
+          // Rendering both creates a confusing duplicate/flash in the chat.
+          if (data.approval_id && data.call_id) {
+            break;
+          }
           addBlock({
             type: "system_event",
             id: genId(),
