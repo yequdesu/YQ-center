@@ -3,6 +3,8 @@
 import pytest
 from httpx import AsyncClient
 
+from tests.conftest import make_yqp_envelope
+
 
 @pytest.mark.asyncio
 async def test_approval_detail_can_be_fetched(client: AsyncClient):
@@ -223,6 +225,117 @@ async def test_agent_waiting_approval_contains_actionable_payload(client: AsyncC
     ]
     # At least one approval-related event should be present for a write operation
     assert len(waiting_events) + len(approval_events) >= 0, "Approval flow events should be present"
+
+
+@pytest.mark.asyncio
+async def test_stream_waiting_approval_persists_approval_id_for_console_refresh(
+    client: AsyncClient,
+    provisioned_node,
+):
+    """Session history must preserve approval_id for frontend approval recovery.
+
+    The LLM provider still receives sanitized tool observations, but the console
+    needs approval_id in persisted history to rebuild its approval action bar
+    after query refresh, route switch, or browser reload.
+    """
+    import json
+
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
+
+    node, node_token = provisioned_node
+    auth = {"Authorization": f"Bearer {node_token}"}
+
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={"daemon_version": "0.1.0"},
+        ),
+        headers=auth,
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [{
+                    "plugin_id": "system.service",
+                    "plugin_version": "1.0.0",
+                    "functions": [{
+                        "name": "system.service.ensure_running",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}},
+                            "required": ["name"],
+                        },
+                        "output_schema": {"type": "object", "properties": {}},
+                        "risk": "maintenance",
+                        "effect": "write",
+                        "timeout_sec": 30,
+                        "idempotency": "idempotent",
+                    }],
+                    "signals": [],
+                }],
+            },
+        ),
+        headers=auth,
+    )
+
+    fake = FakeAgentProvider("approval-history-test")
+    fake.add_functions([
+        AgentFunction(
+            name="system.service.ensure_running",
+            description="Ensure a service is running",
+            risk="maintenance",
+            effect="write",
+        ),
+    ])
+    fake.set_sequence([
+        ProviderInvokeResult(
+            message="This needs approval.",
+            tool_calls=[{
+                "call_id": "approval_call_1",
+                "name": "system.service.ensure_running",
+                "input": {"name": "Spooler"},
+            }],
+            success=True,
+        ),
+    ])
+    register_provider(fake)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "approval-history-test", "execution_mode": "auto"},
+    )
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/invoke/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "approval-history-test",
+            "prompt": "ensure spooler is running",
+            "execution_mode": "auto",
+            "target_node_id": node.node_id,
+        },
+    )
+    assert stream_resp.status_code == 200
+    assert "agent.tool_call.waiting_approval" in stream_resp.text
+
+    detail_resp = await client.get(f"/admin/sessions/{session_id}")
+    assert detail_resp.status_code == 200
+    tool_messages = [
+        message for message in detail_resp.json()["messages"]
+        if message["role"] == "tool"
+    ]
+    assert tool_messages, "waiting approval should persist a tool observation"
+    payload = json.loads(tool_messages[-1]["content"])
+    assert payload["status"] == "waiting_approval"
+    assert payload["approval_id"].startswith("apv_")
 
 
 @pytest.mark.asyncio

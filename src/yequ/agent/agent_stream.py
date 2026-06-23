@@ -86,7 +86,6 @@ async def agent_invoke_stream(
         _fallback_synthesis,
         _load_session_history,
         _save_session_history,
-        sanitize_tool_payload_for_agent,
     )
     from yequ.agent.provider import AgentMessage
     from yequ.models.session import Session
@@ -274,7 +273,7 @@ async def agent_invoke_stream(
                 history.append(AgentMessage(
                     role="tool",
                     tool_call_id=tc_result["call_id"],
-                    content=_json.dumps(sanitize_tool_payload_for_agent(tc_result)),
+                    content=_json.dumps(tc_result),
                 ))
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = "waiting_approval"

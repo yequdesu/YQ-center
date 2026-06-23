@@ -365,7 +365,7 @@ class DeepSeekProvider(AgentProvider):
         for m in messages:
             d: dict[str, object] = {"role": m.role}
             if m.content is not None:
-                d["content"] = m.content
+                d["content"] = _sanitize_tool_observation_content(m.content) if m.role == "tool" else m.content
             if m.tool_call_id is not None:
                 d["tool_call_id"] = m.tool_call_id
             if m.tool_calls is not None:
@@ -428,3 +428,17 @@ def _sanitize_tool_input_for_provider(value: object) -> object:
     if isinstance(value, list):
         return [_sanitize_tool_input_for_provider(item) for item in value]
     return value
+
+
+def _sanitize_tool_observation_content(content: str) -> str:
+    """Hide internal execution fields from the LLM while preserving DB history.
+
+    Session history keeps approval_id so the console can reconstruct pending
+    approvals after refresh. Provider context must not see that internal field.
+    """
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    sanitized = _sanitize_tool_input_for_provider(parsed)
+    return json.dumps(sanitized, ensure_ascii=False)
