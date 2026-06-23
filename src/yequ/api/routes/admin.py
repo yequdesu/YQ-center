@@ -1077,11 +1077,11 @@ async def approve_and_run_endpoint(
     capability = cap_result.scalar_one_or_none()
     resolved = None
     if capability is not None:
-        from yequ.services.capability_resolver import resolve_target_node
-        resolved = await resolve_target_node(
+        from yequ.services.capability_resolver import resolve_function
+        resolved = await resolve_function(
             db,
             a.function_name,
-            requested_node_id=a.target_node_id,
+            target_node_id=a.target_node_id,
             settings=get_settings(),
         )
         if resolved is None or not resolved.available:
@@ -1471,11 +1471,11 @@ async def create_invocation_endpoint(
 
     resolved = None
     if capability is not None:
-        from yequ.services.capability_resolver import resolve_target_node
-        resolved = await resolve_target_node(
+        from yequ.services.capability_resolver import resolve_function
+        resolved = await resolve_function(
             db,
             body.function_name,
-            requested_node_id=body.target_node_id,
+            target_node_id=body.target_node_id,
             settings=get_settings(),
         )
         if resolved is None or not resolved.available:

@@ -384,17 +384,17 @@ async def _execute_and_stream(
     max_total_duration_sec, started_at, target_node_id=None,
 ) -> AsyncGenerator[dict, None]:
     """Execute a single tool call and stream its lifecycle events."""
-    from yequ.services.capability_resolver import resolve_target_node
+    from yequ.services.capability_resolver import resolve_function
     from yequ.services.invocation_service import create_invocation, start_invocation
     from yequ.services.job_service import create_job
     from yequ.services.policy import check_policy
 
     # Resolve target node
     from yequ.config import get_settings
-    resolved = await resolve_target_node(
+    resolved = await resolve_function(
         db,
         tc_name,
-        requested_node_id=target_node_id,
+        target_node_id=target_node_id,
         settings=get_settings(),
     )
     if resolved is None or not resolved.available:
@@ -614,7 +614,7 @@ async def _execute_tool_calls_scheduled(
     then concurrent safe/read tools execute in parallel (max 4),
     then serial tools execute one by one.
     """
-    from yequ.services.capability_resolver import resolve_target_node
+    from yequ.services.capability_resolver import resolve_function
     from yequ.services.policy import check_policy
     from yequ.config import get_settings
     from yequ.models.capability import Capability
@@ -664,9 +664,9 @@ async def _execute_tool_calls_scheduled(
             continue
 
         # Resolve target node (pre-flight)
-        resolved = await resolve_target_node(
+        resolved = await resolve_function(
             db, tc_name,
-            requested_node_id=target_node_id,
+            target_node_id=target_node_id,
             settings=settings,
         )
 

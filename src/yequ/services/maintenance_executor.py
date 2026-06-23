@@ -249,12 +249,12 @@ async def execute_plan_run(
         # Create invocation + job for this step
         try:
             from yequ.config import get_settings
-            from yequ.services.capability_resolver import resolve_target_node
+            from yequ.services.capability_resolver import resolve_function
 
-            resolved = await resolve_target_node(
+            resolved = await resolve_function(
                 db,
                 step.function_name,
-                requested_node_id=plan.target_node_id,
+                target_node_id=plan.target_node_id,
                 settings=get_settings(),
             )
             if resolved is None or not resolved.available:

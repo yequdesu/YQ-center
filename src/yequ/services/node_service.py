@@ -224,13 +224,8 @@ async def handle_register_capabilities(
     }
 
 
-def _legacy_runtime_id(node: Node) -> str:
-    """Default runtime for legacy Nodes that do not yet report runtimes."""
-    return f"{node.node_id}/runtime/default"
-
-
 def _execution_requirements_from_context(context: str | None) -> dict | None:
-    """Map deprecated execution_context to platform-neutral requirements."""
+    """Map execution_context to platform-neutral requirements."""
     if context == "system":
         return {"runtime_kind": "privileged"}
     if context == "user":
@@ -257,14 +252,8 @@ async def _sync_runtime_instances(
     opaque metadata.
     """
     if not runtimes:
-        runtimes = [{
-            "runtime_id": _legacy_runtime_id(node),
-            "kind": "privileged",
-            "status": "online",
-            "labels": ["legacy"],
-            "interactive": False,
-            "metadata": {"source": "legacy_default"},
-        }]
+        log.warning("node %s reported no runtimes — skipping runtime sync", node.node_id)
+        return
 
     seen: set[str] = set()
     for raw in runtimes:
@@ -422,8 +411,8 @@ async def handle_job_poll(
     from yequ.models.job import Job
     from yequ.protocol import JobStatus
 
-    raw_capacity = int(payload.get("capacity", 1))
-    running_jobs = payload.get("running_jobs") or []
+    raw_capacity = int(payload.get("capacity"))
+    running_jobs = payload.get("running_jobs", [])
     available_slots = max(raw_capacity - len(running_jobs), 0)
 
     if available_slots <= 0:

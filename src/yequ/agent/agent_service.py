@@ -398,7 +398,7 @@ async def agent_invoke(
                 execution_mode=execution_mode, call_path=list(call_path),
                 max_depth=max_depth, deadline=deadline,
                 provider_name=provider.provider_name(),
-                requested_node_id=target_node_id,
+                target_node_id=target_node_id,
             )
             iteration_results.append(executed)
 
@@ -537,7 +537,7 @@ async def agent_plan(
         if "check_and_fix" in msg or "repair" in msg:
             intent = "check_and_fix"
     except Exception:
-        pass  # provider unavailable -> readonly_check
+        log.warning("intent classification failed, defaulting to readonly_check")
 
     # ── Step 2: infer function and input from registered tool contracts ──
     seed_calls = await _infer_plan_seed_calls(
@@ -666,6 +666,7 @@ async def _infer_plan_seed_calls(
         )
         return [c for c in (result.tool_calls or []) if isinstance(c, dict)]
     except Exception:
+        log.warning("failed to generate seed tool calls from provider")
         return []
 
 
@@ -830,14 +831,14 @@ async def _execute_tool_call(
     max_depth: int,
     deadline: datetime,
     provider_name: str,
-    requested_node_id: str | None = None,
+    target_node_id: str | None = None,
 ) -> AgentToolCall:
     """Execute a single tool call through the Center pipeline.
 
     Flow: validate -> resolve node -> create Invocation -> wait -> collect.
     Returns the AgentToolCall with execution results filled in.
     """
-    from yequ.services.capability_resolver import resolve_target_node
+    from yequ.services.capability_resolver import resolve_function
     from yequ.services.invocation_service import create_invocation, start_invocation
     from yequ.services.job_service import create_job
     from yequ.services.policy import check_policy
@@ -847,10 +848,10 @@ async def _execute_tool_call(
 
     # -- Resolve target node --
     from yequ.config import get_settings
-    resolved = await resolve_target_node(
+    resolved = await resolve_function(
         db,
         tc.name,
-        requested_node_id=requested_node_id,
+        target_node_id=target_node_id,
         settings=get_settings(),
     )
     if resolved is None:

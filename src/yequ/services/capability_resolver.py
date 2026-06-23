@@ -42,16 +42,6 @@ class ResolvedCapability:
     unavailable_code: str | None = None
     unavailable_reason: str | None = None
 
-    @property
-    def resource_keys(self) -> list[str]:
-        """Compatibility alias used by Agent L2 approval creation."""
-        return self.resource_key_template
-
-
-def _legacy_runtime_id(node: Node) -> str:
-    return f"{node.node_id}/runtime/default"
-
-
 def _requirements_from_context(context: str | None) -> dict | None:
     if context == "system":
         return {"runtime_kind": "privileged"}
@@ -120,11 +110,6 @@ async def _select_runtime(
         if _runtime_matches(runtime, requirements):
             return runtime.runtime_id, requirements, None
 
-    # Compatibility for legacy nodes/tests that have not reported runtimes yet.
-    # Only privileged/default requirements can use this virtual runtime.
-    if not runtimes and requirements.get("runtime_kind") == "privileged":
-        return _legacy_runtime_id(node), requirements, None
-
     return (
         None,
         requirements,
@@ -136,8 +121,7 @@ async def resolve_function(
     db: AsyncSession,
     function_name: str,
     *,
-    target_node_id: str | None = None,
-    requested_node_id: str | None = None,
+    targettarget_node_id: str | None = None,
     required_effect: str | None = None,
     required_risk: str | None = None,
     settings=None,
@@ -145,10 +129,10 @@ async def resolve_function(
     """Resolve which Node should execute a Function.
 
     Rules (fixed order):
-    1. If target_node_id given, only check that node.
+    1. If targettarget_node_id given, only check that node.
     2. Node must be online (effective_status == online).
     3. Node must have the Function registered and active.
-    4. Without target_node_id, scan all online nodes.
+    4. Without targettarget_node_id, scan all online nodes.
     5. If multiple nodes provide the function, sort by:
        - online first
        - locality: local/lan > wan
@@ -157,13 +141,11 @@ async def resolve_function(
        - node_id lexicographic (stable tiebreaker)
     6. Return first match. If none, return available=False.
     """
-    # Normalize: accept both parameter names for backward compat
-    _node_id = target_node_id or requested_node_id
     from yequ.services.node_liveness_service import is_node_schedulable
 
     # Build candidate node query
-    if _node_id:
-        node_query = select(Node).where(Node.node_id == _node_id)
+    if targettarget_node_id:
+        node_query = select(Node).where(Node.node_id == targettarget_node_id)
     else:
         node_query = select(Node).where(
             Node.status.in_([NodeStatus.ONLINE, NodeStatus.PROVISIONED])
@@ -174,13 +156,13 @@ async def resolve_function(
 
     if not candidates:
         return ResolvedCapability(
-            node_id=_node_id or "",
+            node_id=target_node_id or "",
             function_name=function_name,
             available=False,
-            unavailable_code="node_not_found" if _node_id else "no_nodes_available",
+            unavailable_code="node_not_found" if target_node_id else "no_nodes_available",
             unavailable_reason=(
-                f"Node '{_node_id}' not found"
-                if _node_id
+                f"Node '{target_node_id}' not found"
+                if target_node_id
                 else "No nodes available"
             ),
         )
@@ -198,7 +180,7 @@ async def resolve_function(
             schedulable = node.status == NodeStatus.ONLINE
             reason = f"node_{node.status}" if not schedulable else None
         if not schedulable:
-            if _node_id:
+            if target_node_id:
                 offline_reasons.append(reason or "node_not_schedulable")
             continue
 
@@ -214,14 +196,14 @@ async def resolve_function(
         cap = cap_result.scalar_one_or_none()
         if cap is not None:
             if required_effect and cap.effect != required_effect:
-                if _node_id:
+                if target_node_id:
                     offline_reasons.append(
                         f"Capability '{function_name}' effect is '{cap.effect}', "
                         f"requires '{required_effect}'"
                     )
                 continue
             if required_risk and cap.risk != required_risk:
-                if _node_id:
+                if target_node_id:
                     offline_reasons.append(
                         f"Capability '{function_name}' risk is '{cap.risk}', "
                         f"requires '{required_risk}'"
@@ -229,13 +211,13 @@ async def resolve_function(
                 continue
             runtime_id, requirements, runtime_reason = await _select_runtime(db, node, cap)
             if runtime_reason:
-                if _node_id:
+                if target_node_id:
                     offline_reasons.append(runtime_reason)
                 continue
             viable.append((node, cap, runtime_id, requirements))
-        elif _node_id:
+        elif target_node_id:
             offline_reasons.append(
-                f"Node '{_node_id}' does not have capability '{function_name}'"
+                f"Node '{target_node_id}' does not have capability '{function_name}'"
             )
 
     if not viable:
@@ -245,7 +227,7 @@ async def resolve_function(
             else f"No online node has capability '{function_name}'"
         )
         return ResolvedCapability(
-            node_id=_node_id or "",
+            node_id=target_node_id or "",
             function_name=function_name,
             available=False,
             unavailable_code="capability_or_runtime_unavailable",
@@ -319,5 +301,3 @@ async def resolve_function(
     )
 
 
-# Backward-compatible alias
-resolve_target_node = resolve_function
