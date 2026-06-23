@@ -1,6 +1,7 @@
 """Agent API endpoints — session management and provider invocation."""
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -298,9 +299,35 @@ def _strip_internal_input_fields(
     return cleaned
 
 
-def _sse_response(event_source):
+def _sse_response(
+    event_source,
+    turn_context: dict[str, Any] | None = None,
+):
     async def event_generator():
+        turn_id: str | None = None
         async for event in event_source:
+            if turn_context is not None:
+                from yequ.services.agent_turn_service import (
+                    create_agent_turn,
+                    record_agent_turn_event,
+                )
+
+                event = dict(event)
+                data = dict(event.get("data") or {})
+                if turn_id is None:
+                    turn_id = await create_agent_turn(
+                        session_id=turn_context["session_id"],
+                        prompt=turn_context["prompt"],
+                        provider_name=turn_context["provider_name"],
+                        target_node_id=turn_context.get("target_node_id"),
+                        execution_mode=turn_context["execution_mode"],
+                        trace_id=str(event.get("trace_id") or ""),
+                        metadata=turn_context.get("metadata"),
+                    )
+                event["turn_id"] = turn_id
+                data["turn_id"] = turn_id
+                event["data"] = data
+                await record_agent_turn_event(turn_id, event)
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -393,7 +420,17 @@ async def invoke_agent_stream_endpoint(
         max_total_duration_sec=body.max_total_duration_sec,
         step_count=body.step_count,
         execution_mode=body.execution_mode,
-    ))
+    ), turn_context={
+        "session_id": body.session_id,
+        "prompt": body.prompt,
+        "provider_name": provider.provider_name(),
+        "target_node_id": body.target_node_id,
+        "execution_mode": body.execution_mode,
+        "metadata": {
+            "suppress_user_message": body.suppress_user_message,
+            "step_count": body.step_count,
+        },
+    })
 
 
 @router.post("/plan")

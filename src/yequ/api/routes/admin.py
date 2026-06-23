@@ -11,6 +11,7 @@ from yequ.api.deps import get_admin_token, get_db
 from yequ.models.api_token import ApiToken
 from yequ.models.approval import ApprovalRequest
 from yequ.models.agent_message import AgentMessage as AgentMessageModel
+from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.models.capability import Capability
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
@@ -276,6 +277,12 @@ async def get_session(
         .order_by(AgentMessageModel.created_at.asc())
     )
     messages = [_agent_message_dict(m) for m in message_result.scalars().all()]
+    turn_result = await db.execute(
+        select(AgentTurn)
+        .where(AgentTurn.session_id == session_id)
+        .order_by(AgentTurn.started_at.asc(), AgentTurn.id.asc())
+    )
+    turns = [_agent_turn_dict(t) for t in turn_result.scalars().all()]
     return {
         "session_id": sess.session_id,
         "actor_type": sess.actor_type,
@@ -289,6 +296,7 @@ async def get_session(
         "metadata": sess.metadata_,
         "label": sess.label or sess.session_id[:8],
         "messages": messages,
+        "turns": turns,
     }
 
 
@@ -309,6 +317,44 @@ async def list_session_messages(
         .order_by(AgentMessageModel.created_at.asc())
     )
     return [_agent_message_dict(m) for m in message_result.scalars().all()]
+
+
+@router.get("/sessions/{session_id}/turns")
+async def list_session_turns(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[dict]:
+    """Return persisted Agent turns for one session."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+
+    turn_result = await db.execute(
+        select(AgentTurn)
+        .where(AgentTurn.session_id == session_id)
+        .order_by(AgentTurn.started_at.asc(), AgentTurn.id.asc())
+    )
+    return [_agent_turn_dict(t) for t in turn_result.scalars().all()]
+
+
+@router.get("/agent-turns/{turn_id}/events")
+async def list_agent_turn_events(
+    turn_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[dict]:
+    """Return the durable SSE event stream for one Agent turn."""
+    result = await db.execute(select(AgentTurn).where(AgentTurn.turn_id == turn_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Agent turn {turn_id!r} not found")
+
+    event_result = await db.execute(
+        select(AgentTurnEvent)
+        .where(AgentTurnEvent.turn_id == turn_id)
+        .order_by(AgentTurnEvent.seq.asc(), AgentTurnEvent.created_at.asc())
+    )
+    return [_agent_turn_event_dict(e) for e in event_result.scalars().all()]
 
 
 @router.patch("/sessions/{session_id}")
@@ -343,6 +389,12 @@ async def delete_session(
     await db.execute(
         sql_delete(AgentMessageModel).where(AgentMessageModel.session_id == session_id)
     )
+    await db.execute(
+        sql_delete(AgentTurnEvent).where(AgentTurnEvent.session_id == session_id)
+    )
+    await db.execute(
+        sql_delete(AgentTurn).where(AgentTurn.session_id == session_id)
+    )
     await db.delete(sess)
     await db.commit()
 
@@ -356,6 +408,38 @@ def _agent_message_dict(message: AgentMessageModel) -> dict:
         "tool_call_id": message.tool_call_id,
         "tool_calls": message.tool_calls or [],
         "created_at": message.created_at.isoformat() if message.created_at else None,
+    }
+
+
+def _agent_turn_dict(turn: AgentTurn) -> dict:
+    return {
+        "turn_id": turn.turn_id,
+        "session_id": turn.session_id,
+        "trace_id": turn.trace_id,
+        "provider_name": turn.provider_name,
+        "target_node_id": turn.target_node_id,
+        "execution_mode": turn.execution_mode,
+        "status": turn.status,
+        "prompt": turn.prompt,
+        "error_code": turn.error_code,
+        "error_message": turn.error_message,
+        "started_at": turn.started_at.isoformat() if turn.started_at else None,
+        "updated_at": turn.updated_at.isoformat() if turn.updated_at else None,
+        "completed_at": turn.completed_at.isoformat() if turn.completed_at else None,
+        "metadata": turn.metadata_ or {},
+    }
+
+
+def _agent_turn_event_dict(event: AgentTurnEvent) -> dict:
+    return {
+        "event_id": event.event_id,
+        "turn_id": event.turn_id,
+        "session_id": event.session_id,
+        "trace_id": event.trace_id,
+        "seq": event.seq,
+        "event_type": event.event_type,
+        "data": event.data or {},
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import yequ.models.api_token  # noqa: F401
 import yequ.models.agent_message  # noqa: F401
+import yequ.models.agent_turn  # noqa: F401
 import yequ.models.approval  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
