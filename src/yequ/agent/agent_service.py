@@ -539,9 +539,15 @@ async def agent_plan(
     except Exception:
         pass  # provider unavailable -> readonly_check
 
-    # ── Step 2: Parse the function + service name from prompt ──
-    service_name = _extract_service_name(prompt, available_functions)
-    function_name = _extract_function_for_service(prompt, available_functions)
+    # ── Step 2: infer function and input from registered tool contracts ──
+    seed_calls = await _infer_plan_seed_calls(
+        provider,
+        prompt=prompt,
+        available_functions=available_functions,
+        session_id=session_id,
+    )
+    function_name = _select_check_function(available_functions, seed_calls)
+    plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
 
     # ── Step 3: Build IR steps based on intent ──
     steps_ir = []
@@ -551,28 +557,23 @@ async def agent_plan(
         steps_ir.append({
             "seq": 1, "kind": "check",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "always", "depends_on": [],
             "risk": "readonly", "requires_approval": False,
         })
         # Repair
-        repair_func = "system.service.ensure_running"
-        rollback_hint = _build_rollback_hint(service_name, repair_func, available_functions)
-        if any(f.name == repair_func for f in available_functions):
+        repair_func = _select_repair_function(function_name, available_functions, seed_calls)
+        rollback_hint = _build_rollback_hint(
+            function_name=function_name,
+            repair_function_name=repair_func,
+            input_data=plan_input,
+            available_functions=available_functions,
+        )
+        if repair_func:
             steps_ir.append({
                 "seq": 2, "kind": "repair",
                 "function_name": repair_func,
-                "input": {"name": service_name},
-                "condition": "if_previous_unhealthy",
-                "depends_on": [1],
-                "risk": "maintenance_write", "requires_approval": True,
-                "rollback_hint": rollback_hint,
-            })
-        elif any(f.name == "system.service.restart" for f in available_functions):
-            steps_ir.append({
-                "seq": 2, "kind": "repair",
-                "function_name": "system.service.restart",
-                "input": {"name": service_name},
+                "input": _input_for_function(repair_func, plan_input, seed_calls),
                 "condition": "if_previous_unhealthy",
                 "depends_on": [1],
                 "risk": "maintenance_write", "requires_approval": True,
@@ -582,7 +583,7 @@ async def agent_plan(
         steps_ir.append({
             "seq": 3, "kind": "verify",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "after_repair", "depends_on": [2],
             "risk": "readonly", "requires_approval": False,
         })
@@ -591,7 +592,7 @@ async def agent_plan(
         steps_ir.append({
             "seq": 1, "kind": "check",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "always", "depends_on": [],
             "risk": "readonly", "requires_approval": False,
         })
@@ -641,56 +642,181 @@ async def agent_plan(
     }
 
 
-def _extract_service_name(prompt: str, available_functions: list) -> str:
-    """Extract service name from prompt. Maps common names to Windows service names."""
-    mapping = {
-        "print": "Spooler", "spooler": "Spooler", "打印": "Spooler",
-        "eventlog": "EventLog", "event log": "EventLog", "event": "EventLog",
-        "time": "W32Time", "w32time": "W32Time",
-        "firewall": "MpsSvc", "windows firewall": "MpsSvc",
-        "defender": "WinDefend", "windows defender": "WinDefend",
-        "update": "wuauserv", "windows update": "wuauserv",
-    }
-    prompt_lower = prompt.lower()
-    for key, svc in mapping.items():
-        if key in prompt_lower:
-            return svc
-    return "Spooler"  # default
+async def _infer_plan_seed_calls(
+    provider: AgentProvider,
+    *,
+    prompt: str,
+    available_functions: list[AgentFunction],
+    session_id: str,
+) -> list[dict[str, object]]:
+    """Ask the provider for tool-shaped planning hints without execution."""
+    try:
+        result = await asyncio.wait_for(
+            provider.invoke(
+                (
+                    "Select the tool calls that best describe this maintenance "
+                    "plan. Do not execute anything; return tool calls only when "
+                    "the available tool schema is sufficient.\n"
+                    f"User request: {prompt}"
+                ),
+                available_functions=available_functions,
+                context={"session_id": session_id, "purpose": "maintenance_plan_seed"},
+            ),
+            timeout=30.0,
+        )
+        return [c for c in (result.tool_calls or []) if isinstance(c, dict)]
+    except Exception:
+        return []
 
 
 def _build_rollback_hint(
-    service_name: str,
+    *,
     function_name: str,
-    available_functions: list,
+    repair_function_name: str | None,
+    input_data: dict[str, object],
+    available_functions: list[AgentFunction],
 ) -> dict:
-    """Build a rollback hint for a repair/write step.
-
-    Returns a structured rollback hint dict. If the service name
-    can be determined, uses the standard Windows service rollback.
-    Otherwise returns a conservative manual_review hint.
-    """
-    # Known service name → standard Windows service rollback
-    if service_name:
+    """Build a platform-neutral rollback hint for a repair/write step."""
+    rollback_function = _select_rollback_function(function_name, available_functions)
+    if rollback_function:
         return {
-            "action": "restore_service_state",
-            "target_type": "windows_service",
-            "service_name": service_name,
-            "rollback_function": "system.service.ensure_state",
+            "action": "restore_previous_state",
+            "target_type": _tool_family(function_name),
+            "target_input": dict(input_data),
+            "repair_function": repair_function_name,
+            "rollback_function": rollback_function,
             "requires_approval": True,
         }
-    # Unknown target → conservative
     return {
         "action": "manual_review",
-        "reason": "rollback_target_unknown",
+        "reason": "rollback_function_not_registered",
+        "target_type": _tool_family(function_name),
+        "target_input": dict(input_data),
+        "repair_function": repair_function_name,
         "requires_approval": True,
     }
 
 
-def _extract_function_for_service(prompt: str, available_functions: list) -> str:
-    """Determine the appropriate check function."""
-    if any("service" in f.name for f in available_functions):
-        return "system.service.status"
-    return "system.metrics.snapshot"  # fallback
+def _select_check_function(
+    available_functions: list[AgentFunction],
+    seed_calls: list[dict[str, object]],
+) -> str:
+    available = {f.name: f for f in available_functions}
+    for call in seed_calls:
+        name = str(call.get("name") or "")
+        func = available.get(name)
+        if func and func.effect == "read":
+            return name
+    preferred = [
+        f for f in available_functions
+        if f.effect == "read"
+        and any(token in f.name.rsplit(".", 1)[-1] for token in ("status", "check", "detail", "snapshot"))
+    ]
+    if preferred:
+        return sorted(preferred, key=lambda f: (0 if "status" in f.name else 1, f.name))[0].name
+    read_funcs = [f for f in available_functions if f.effect == "read"]
+    if read_funcs:
+        return sorted(read_funcs, key=lambda f: f.name)[0].name
+    return available_functions[0].name if available_functions else ""
+
+
+def _select_repair_function(
+    check_function_name: str,
+    available_functions: list[AgentFunction],
+    seed_calls: list[dict[str, object]],
+) -> str | None:
+    available = {f.name: f for f in available_functions}
+    family = _tool_family(check_function_name)
+    for call in seed_calls:
+        name = str(call.get("name") or "")
+        func = available.get(name)
+        if func and func.effect in ("write", "destructive"):
+            return name
+    candidates = [
+        f for f in available_functions
+        if f.effect in ("write", "destructive") and _tool_family(f.name) == family
+    ]
+    if not candidates:
+        candidates = [f for f in available_functions if f.effect in ("write", "destructive")]
+    if not candidates:
+        return None
+    priority = ("ensure", "repair", "restart", "set", "start")
+    return sorted(
+        candidates,
+        key=lambda f: (
+            next((i for i, token in enumerate(priority) if token in f.name), len(priority)),
+            f.name,
+        ),
+    )[0].name
+
+
+def _select_rollback_function(
+    function_name: str,
+    available_functions: list[AgentFunction],
+) -> str | None:
+    family = _tool_family(function_name)
+    candidates = [
+        f for f in available_functions
+        if f.effect in ("write", "destructive")
+        and _tool_family(f.name) == family
+        and any(token in f.name for token in ("restore", "rollback", "ensure_state", "set_state"))
+    ]
+    return sorted(candidates, key=lambda f: f.name)[0].name if candidates else None
+
+
+def _infer_plan_input(
+    prompt: str,
+    function_name: str,
+    available_functions: list[AgentFunction],
+    seed_calls: list[dict[str, object]],
+) -> dict[str, object]:
+    seeded = _input_for_function(function_name, {}, seed_calls)
+    if seeded:
+        return seeded
+    func = next((f for f in available_functions if f.name == function_name), None)
+    required: list[str] = []
+    if func and isinstance(func.input_schema, dict):
+        raw_required = func.input_schema.get("required")
+        required = list(raw_required) if isinstance(raw_required, list) else []
+    if required == ["name"]:
+        target = _quoted_or_named_target(prompt)
+        return {"name": target} if target else {}
+    return {}
+
+
+def _input_for_function(
+    function_name: str | None,
+    fallback: dict[str, object],
+    seed_calls: list[dict[str, object]],
+) -> dict[str, object]:
+    if function_name:
+        for call in seed_calls:
+            if call.get("name") == function_name and isinstance(call.get("input"), dict):
+                return dict(call["input"])  # type: ignore[arg-type]
+    return dict(fallback)
+
+
+def _quoted_or_named_target(prompt: str) -> str | None:
+    import re
+
+    quoted = re.search(r"[`\"'“”‘’]([^`\"'“”‘’]{1,96})[`\"'“”‘’]", prompt)
+    if quoted:
+        return quoted.group(1).strip()
+    target_match = re.search(
+        r"(?:service|process|daemon|task)\s+([A-Za-z0-9_.:-]{2,96})",
+        prompt,
+        re.IGNORECASE,
+    )
+    if target_match:
+        return target_match.group(1).strip()
+    return None
+
+
+def _tool_family(function_name: str) -> str:
+    parts = function_name.split(".")
+    if len(parts) <= 2:
+        return function_name
+    return ".".join(parts[:-1])
 
 
 async def _execute_tool_call(
@@ -1231,7 +1357,7 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
             count = tc.result.get("total", 0)
             highest = tc.result.get("highest_level", "?")
             parts.append(f"{count} recent events (highest: {highest})")
-            highlights.append(f"EventLog: {count} events, highest level: {highest}")
+            highlights.append(f"Event log: {count} events, highest level: {highest}")
 
         elif tc.name == "system.disk.detail" and tc.result:
             drives = tc.result if isinstance(tc.result, list) else [tc.result]

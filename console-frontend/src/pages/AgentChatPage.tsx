@@ -51,7 +51,7 @@ export function AgentChatPage() {
     return sessionStorage.getItem(SESSION_STORAGE_KEY) ?? "";
   });
   const [prompt, setPrompt] = useState("");
-  const [targetNodeId, setTargetNodeId] = useState("winClient");
+  const [targetNodeId, setTargetNodeId] = useState("");
   const [executionMode, setExecutionMode] = useState("auto");
   const [providerName, setProviderName] = useState("deepseek");
   const [autoPlan, setAutoPlan] = useState(false);

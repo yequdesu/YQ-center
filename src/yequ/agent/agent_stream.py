@@ -872,8 +872,11 @@ async def agent_plan_stream(
 
     from yequ.agent.agent_service import (
         _build_rollback_hint,
-        _extract_function_for_service,
-        _extract_service_name,
+        _infer_plan_input,
+        _infer_plan_seed_calls,
+        _input_for_function,
+        _select_check_function,
+        _select_repair_function,
     )
     from yequ.services.maintenance_service import create_plan
 
@@ -907,35 +910,36 @@ async def agent_plan_stream(
     except Exception:
         pass
 
-    service_name = _extract_service_name(prompt, available_functions)  # type: ignore[arg-type]
-    function_name = _extract_function_for_service(prompt, available_functions)  # type: ignore[arg-type]
+    seed_calls = await _infer_plan_seed_calls(
+        provider,
+        prompt=prompt,
+        available_functions=available_functions,
+        session_id=session_id,
+    )
+    function_name = _select_check_function(available_functions, seed_calls)
+    plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
 
     steps_ir: list[dict] = []
     if intent == "check_and_fix":
         steps_ir.append({
             "seq": 1, "kind": "check",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "always", "depends_on": [],
             "risk": "readonly", "requires_approval": False,
         })
-        repair_func = "system.service.ensure_running"
-        rollback_hint = _build_rollback_hint(service_name, repair_func, available_functions)  # type: ignore[arg-type]
-        if any(f.name == repair_func for f in available_functions):
+        repair_func = _select_repair_function(function_name, available_functions, seed_calls)
+        rollback_hint = _build_rollback_hint(
+            function_name=function_name,
+            repair_function_name=repair_func,
+            input_data=plan_input,
+            available_functions=available_functions,
+        )
+        if repair_func:
             steps_ir.append({
                 "seq": 2, "kind": "repair",
                 "function_name": repair_func,
-                "input": {"name": service_name},
-                "condition": "if_previous_unhealthy",
-                "depends_on": [1],
-                "risk": "maintenance_write", "requires_approval": True,
-                "rollback_hint": rollback_hint,
-            })
-        elif any(f.name == "system.service.restart" for f in available_functions):
-            steps_ir.append({
-                "seq": 2, "kind": "repair",
-                "function_name": "system.service.restart",
-                "input": {"name": service_name},
+                "input": _input_for_function(repair_func, plan_input, seed_calls),
                 "condition": "if_previous_unhealthy",
                 "depends_on": [1],
                 "risk": "maintenance_write", "requires_approval": True,
@@ -944,7 +948,7 @@ async def agent_plan_stream(
         steps_ir.append({
             "seq": 3, "kind": "verify",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "after_repair", "depends_on": [2],
             "risk": "readonly", "requires_approval": False,
         })
@@ -952,7 +956,7 @@ async def agent_plan_stream(
         steps_ir.append({
             "seq": 1, "kind": "check",
             "function_name": function_name,
-            "input": {"name": service_name},
+            "input": plan_input,
             "condition": "always", "depends_on": [],
             "risk": "readonly", "requires_approval": False,
         })

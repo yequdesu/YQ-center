@@ -208,7 +208,7 @@ class DeepSeekProvider(AgentProvider):
             {
                 "role": "system",
                 "content": (
-                    "You are an infrastructure control agent for a Windows machine. "
+                    "You are an infrastructure control agent for registered compute nodes. "
                     "You have these tools:\n"
                     f"{func_descriptions}\n\n"
                     "Rules:\n"

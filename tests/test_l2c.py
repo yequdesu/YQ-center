@@ -968,8 +968,8 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
 
 
 @pytest.mark.asyncio
-async def test_rollback_hint_default_service_name(client: AsyncClient, l2c_setup):
-    """Planner uses Spooler as default service name when prompt is vague."""
+async def test_rollback_hint_for_vague_target_requires_manual_review(client: AsyncClient, l2c_setup):
+    """Planner must not invent a platform-specific target when the prompt is vague."""
     node_id, token, auth = l2c_setup
 
     from yequ.agent.fake_provider import FakeAgentProvider
@@ -996,8 +996,9 @@ async def test_rollback_hint_default_service_name(client: AsyncClient, l2c_setup
     repair = [s for s in data["steps"] if s["kind"] == "repair"]
     if repair:
         hint = repair[0].get("rollback_hint") or {}
-        assert hint.get("service_name") == "Spooler", \
-            f"Default service should be Spooler, got: {hint.get('service_name')}"
+        assert hint.get("action") == "manual_review", hint
+        assert "service_name" not in hint
+        assert hint.get("target_input") == {}
 
 
 # ── Deduplication tests: each terminal event appears exactly once ──

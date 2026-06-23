@@ -16,6 +16,7 @@ from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token, get_db
 from yequ.models.capability import Capability
+from yequ.models.node import Node
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -33,7 +34,7 @@ def get_provider(name: str) -> AgentProvider | None:
     return _provider_registry.get(name)
 
 
-# -- Default available functions for testing --
+# -- Default available functions for testing only --
 def _default_functions() -> list[AgentFunction]:
     """L1 + L2 functions available to the Agent.
 
@@ -55,10 +56,10 @@ def _default_functions() -> list[AgentFunction]:
         ),
         AgentFunction(
             name="system.service.status",
-            description="Get the current status (running/stopped), startup type (auto/manual/disabled), and display name of a specific Windows service. Requires 'name' parameter -- the service name like 'Spooler', 'EventLog', 'W32Time', 'lanmanserver'. Use this when asked about a specific service.",
+            description="Get the current status, startup mode, and display name of a named service on a node. Requires the exact service identifier in 'name'. Use this when asked about a specific service.",
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Windows service name, e.g. Spooler, EventLog, W32Time"}},
+                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
                 "required": ["name"],
             },
             risk="safe", effect="read", timeout_sec=5,
@@ -77,13 +78,13 @@ def _default_functions() -> list[AgentFunction]:
         ),
         AgentFunction(
             name="system.network.routes",
-            description="Get the Windows network route table: destination network, netmask, gateway, interface IP, metric, and route type for each entry. Use this when asked about routing table, network routes, next hop, interface routes, or how network traffic is routed.",
+            description="Get the node network route table: destination network, netmask, gateway, interface IP, metric, and route type for each entry. Use this when asked about routing table, network routes, next hop, interface routes, or how network traffic is routed.",
             input_schema={"type": "object", "properties": {}},
             risk="safe", effect="read", timeout_sec=5,
         ),
         AgentFunction(
             name="system.eventlog.query",
-            description="Query recent Windows Event Log entries. Returns event count, severity levels (Error/Warning/Information), and recent event summaries. Accepts optional 'source' parameter ('Application' or 'System', default: both) and 'limit' (default: 50). Use this when asked about system errors, recent warnings, or what happened on the machine.",
+            description="Query recent node event log entries. Returns event count, severity levels, and recent event summaries. Accepts optional source and limit parameters. Use this when asked about system errors, recent warnings, or what happened on the machine.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -96,20 +97,20 @@ def _default_functions() -> list[AgentFunction]:
         # L2 maintenance write functions — require approval
         AgentFunction(
             name="system.service.ensure_running",
-            description="Ensure a Windows service is running. If stopped, start it. Requires 'name' parameter. REQUIRES APPROVAL for write operations.",
+            description="Ensure a named service is running. If stopped, start it. Requires 'name' parameter. Requires approval for write operations.",
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Windows service name"}},
+                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
                 "required": ["name"],
             },
             risk="maintenance", effect="write", timeout_sec=30,
         ),
         AgentFunction(
             name="system.service.restart",
-            description="Restart a Windows service. Requires 'name' parameter. REQUIRES APPROVAL.",
+            description="Restart a named service. Requires 'name' parameter. Requires approval.",
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Windows service name"}},
+                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
                 "required": ["name"],
             },
             risk="maintenance", effect="write", timeout_sec=30,
@@ -164,7 +165,7 @@ class AgentPlanRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     provider_name: str = Field(default="deepseek")
     prompt: str = Field(..., min_length=1)
-    target_node_id: str = Field(default="winClient")
+    target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
     max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
 
@@ -229,6 +230,26 @@ async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
         available.append(_agent_function_from_capability(cap))
         existing.add(cap.name)
     return available
+
+
+async def _default_target_node_id(db: AsyncSession) -> str:
+    """Pick a schedulable target node without embedding a platform default."""
+    from yequ.config import get_settings
+    from yequ.services.node_liveness_service import is_node_schedulable
+
+    settings = get_settings()
+    result = await db.execute(select(Node).order_by(Node.last_heartbeat_at.desc().nullslast(), Node.node_id.asc()))
+    for node in result.scalars().all():
+        schedulable, _ = is_node_schedulable(node, settings)
+        if schedulable:
+            return node.node_id
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error_code": "no_schedulable_node",
+            "message": "No schedulable node is available for this plan.",
+        },
+    )
 
 
 INTERNAL_TOOL_INPUT_FIELDS = {"approval_id", "dry_run"}
@@ -441,11 +462,12 @@ async def agent_plan_endpoint(
 ) -> dict:
     provider = await _resolve_provider(body.provider_name)
 
+    target_node_id = body.target_node_id or await _default_target_node_id(db)
     return await agent_plan(
         db, provider,
         session_id=body.session_id,
         prompt=body.prompt,
-        target_node_id=body.target_node_id,
+        target_node_id=target_node_id,
         available_functions=await _available_functions(db),
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
@@ -459,12 +481,13 @@ async def agent_plan_stream_endpoint(
     _token: dict[str, str] = Depends(get_agent_token),
 ):
     provider = await _resolve_provider(body.provider_name)
+    target_node_id = body.target_node_id or await _default_target_node_id(db)
     return _sse_response(agent_plan_stream(
         db,
         provider,
         session_id=body.session_id,
         prompt=body.prompt,
-        target_node_id=body.target_node_id,
+        target_node_id=target_node_id,
         available_functions=await _available_functions(db),
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
