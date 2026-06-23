@@ -4,6 +4,7 @@ Does NOT connect to a real LLM. Used for integration testing
 the Agent->Center pipeline without external dependencies.
 """
 
+from collections.abc import AsyncGenerator
 from typing import Sequence
 
 from yequ.agent.provider import (
@@ -143,6 +144,28 @@ class FakeAgentProvider(AgentProvider):
             success=self._default_result.success,
             tool_calls=list(self._default_result.function_calls),
         )
+
+    async def invoke_stream(
+        self,
+        prompt: str = "",
+        *,
+        available_functions: list[AgentFunction] | None = None,
+        messages: list[AgentMessage] | None = None,
+        context: dict[str, object] | None = None,
+    ):
+        """Simulate streaming — calls invoke() and yields delta + done events."""
+        result = await self.invoke(
+            prompt, available_functions=available_functions or [],
+            messages=messages, context=context,
+        )
+        if result.message:
+            yield {"type": "delta", "content": result.message}
+        yield {
+            "type": "done",
+            "tool_calls": result.tool_calls,
+            "usage": result.usage,
+            "finish_reason": result.finish_reason,
+        }
 
     def list_functions(self) -> list[AgentFunction]:
         return list(self._functions)

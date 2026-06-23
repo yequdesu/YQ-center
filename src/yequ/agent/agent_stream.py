@@ -185,41 +185,47 @@ async def agent_invoke_stream(
             yield _event("agent.loop.iteration", session_id, trace_id, {"iteration": current_step, "max_steps": max_steps})
             yield _event("agent.provider.started", session_id, trace_id, {"provider_name": provider.provider_name()})
 
-            # Call provider with history
-            provider_result = await asyncio.wait_for(
-                provider.invoke("", available_functions=available_functions,
-                                messages=history,
-                                context={"call_path": list(call_path), "session_id": session_id, "step": current_step}),
-                timeout=45.0,
-            )
+            # Call provider with streaming — text deltas are yielded in real-time
+            assistant_text = ""
+            provider_tool_calls: list[dict] = []
+            provider_error = None
+            try:
+                async for chunk in provider.invoke_stream(
+                    "", available_functions=available_functions,
+                    messages=history,
+                    context={"call_path": list(call_path), "session_id": session_id, "step": current_step},
+                ):
+                    if chunk["type"] == "delta":
+                        assistant_text += chunk["content"]
+                        yield _event("agent.output.delta", session_id, trace_id, {"content": chunk["content"]})
+                    elif chunk["type"] == "done":
+                        provider_tool_calls = chunk.get("tool_calls", [])
+                    elif chunk["type"] == "error":
+                        provider_error = chunk.get("message", "Provider error")
+            except TimeoutError:
+                provider_error = "provider_timeout"
+            except Exception as e:
+                log.exception("provider stream error: session_id=%s", session_id)
+                provider_error = str(e)[:500]
 
-            if not provider_result.success:
+            if provider_error:
                 loop_state = "provider_failed"
-                yield _event("agent.provider.failed", session_id, trace_id, {"error_code": provider_result.error_code, "message": provider_result.error_message or ""})
+                yield _event("agent.provider.failed", session_id, trace_id, {"error_code": "llm_error", "message": provider_error})
                 break
 
             # No tool calls = final answer
-            if not provider_result.tool_calls:
-                final_message = provider_result.message or ""
+            if not provider_tool_calls:
+                final_message = assistant_text
                 loop_state = "completed"
-                if final_message:
-                    yield _event("agent.output.delta", session_id, trace_id, {"content": final_message})
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
-            # Stream assistant text immediately when the provider sends text
-            # together with tool calls. Without this, intermediate narration is
-            # only persisted in history and appears late after a refresh.
-            assistant_text = provider_result.message or ""
-            if assistant_text:
-                yield _event("agent.output.delta", session_id, trace_id, {"content": assistant_text})
-
             # Append assistant message with tool_calls
-            history.append(AgentMessage(role="assistant", content=assistant_text, tool_calls=provider_result.tool_calls))
+            history.append(AgentMessage(role="assistant", content=assistant_text, tool_calls=provider_tool_calls))
 
             # Record original provider call order for history ordering
             provider_call_order: dict[str, int] = {}
-            for idx, raw_tc in enumerate(provider_result.tool_calls):
+            for idx, raw_tc in enumerate(provider_tool_calls):
                 call_id = str(raw_tc.get("call_id", ""))
                 provider_call_order[call_id] = idx
 
@@ -229,7 +235,7 @@ async def agent_invoke_stream(
             ordered_results: list[dict] = []
             async for ev in _execute_tool_calls_scheduled(
                 db, provider, session, session_id, trace_id,
-                provider_result.tool_calls, known_functions, available_functions,
+                provider_tool_calls, known_functions, available_functions,
                 call_path, execution_mode, max_depth,
                 max_total_duration_sec, started_at, target_node_id,
             ):
@@ -278,7 +284,7 @@ async def agent_invoke_stream(
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = "waiting_approval"
 
-            yield _event("agent.observing", session_id, trace_id, {"tool_count": len(provider_result.tool_calls)})
+            yield _event("agent.observing", session_id, trace_id, {"tool_count": len(provider_tool_calls)})
             if loop_state == "waiting_approval":
                 break
 

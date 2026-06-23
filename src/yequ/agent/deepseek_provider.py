@@ -183,12 +183,17 @@ class DeepSeekProvider(AgentProvider):
 
     async def invoke_stream(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
-        available_functions: list[AgentFunction],
+        available_functions: list[AgentFunction] | None = None,
+        messages: list[AgentMessage] | None = None,
         context: dict[str, object] | None = None,
     ) -> AsyncGenerator[dict[str, object], None]:
         """Invoke DeepSeek with streaming response.
+
+        When `messages` is provided, it is used as the full conversation
+        history (with system prompt prepended if not already present).
+        Otherwise, a fresh conversation is built from `prompt` + functions.
 
         Yields dicts with keys:
           - type: "delta" (text chunk), "tool_call" (accumulated tool call),
@@ -201,31 +206,34 @@ class DeepSeekProvider(AgentProvider):
         functions = available_functions if available_functions else self._functions
         tools = self._functions_to_tools(functions)
 
-        func_descriptions = "\n".join(
-            f"- {f.name}: {f.description}" for f in functions
-        )
-        messages: list[dict[str, object]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an infrastructure control agent for registered compute nodes. "
-                    "You have these tools:\n"
-                    f"{func_descriptions}\n\n"
-                    "Rules:\n"
-                    "1. Choose the right tool(s) for the user's request.\n"
-                    "2. For multi-step checks, call multiple tools in one response.\n"
-                    "3. Never invent tool names -- only use listed tools.\n"
-                    "4. Respond in the user's language.\n"
-                    "5. Never mention internal implementation fields such as dry_run or approval_id; call preview-only checks preflight or 预演."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ]
+        if messages:
+            # Build conversation from history, prepend system prompt
+            oai_messages = self._to_openai_messages(messages)
+            # Ensure a system message is present
+            if not oai_messages or oai_messages[0].get("role") != "system":
+                func_descs = "\n".join(
+                    f"- {f.name}: {f.description}" for f in functions
+                )
+                oai_messages.insert(0, {
+                    "role": "system",
+                    "content": self._system_prompt() + "\n\nAvailable tools:\n" + func_descs,
+                })
+        else:
+            func_descriptions = "\n".join(
+                f"- {f.name}: {f.description}" for f in functions
+            )
+            oai_messages = [
+                {
+                    "role": "system",
+                    "content": self._system_prompt() + "\n\nAvailable tools:\n" + func_descriptions,
+                },
+                {"role": "user", "content": prompt},
+            ]
 
         try:
             kwargs: dict = {
                 "model": self._model,
-                "messages": messages,
+                "messages": oai_messages,
                 "max_tokens": 2048,
                 "stream": True,
                 "stream_options": {"include_usage": True},
