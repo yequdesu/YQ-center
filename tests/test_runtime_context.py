@@ -131,7 +131,7 @@ async def test_resolver_selects_runtime_by_platform_neutral_requirements(
         desktop = await resolve_function(
             db,
             "runtime.desktop.list",
-            requested_node_id=node.node_id,
+            target_node_id=node.node_id,
         )
         assert desktop.available is True
         assert desktop.runtime_id == f"{node.node_id}/runtime/interactive"
@@ -140,7 +140,7 @@ async def test_resolver_selects_runtime_by_platform_neutral_requirements(
         maintenance = await resolve_function(
             db,
             "runtime.maintenance.restart",
-            requested_node_id=node.node_id,
+            target_node_id=node.node_id,
         )
         assert maintenance.available is True
         assert maintenance.runtime_id == f"{node.node_id}/runtime/privileged"

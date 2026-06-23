@@ -142,10 +142,10 @@ async def test_resolver_ignores_inactive_after_snapshot(client: AsyncClient):
 
         await db.commit()
 
-        result = await resolve_function(db, "snap.func.x", requested_node_id="snap-c")
+        result = await resolve_function(db, "snap.func.x", target_node_id="snap-c")
         assert result.available is False, "Deactivated function should be unavailable"
 
-        result = await resolve_function(db, "snap.func.y", requested_node_id="snap-c")
+        result = await resolve_function(db, "snap.func.y", target_node_id="snap-c")
         assert result.available is True, "Active function should be available"
     finally:
         await db_gen.aclose()

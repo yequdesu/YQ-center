@@ -121,7 +121,7 @@ async def resolve_function(
     db: AsyncSession,
     function_name: str,
     *,
-    targettarget_node_id: str | None = None,
+    target_node_id: str | None = None,
     required_effect: str | None = None,
     required_risk: str | None = None,
     settings=None,
@@ -129,10 +129,10 @@ async def resolve_function(
     """Resolve which Node should execute a Function.
 
     Rules (fixed order):
-    1. If targettarget_node_id given, only check that node.
+    1. If target_node_id given, only check that node.
     2. Node must be online (effective_status == online).
     3. Node must have the Function registered and active.
-    4. Without targettarget_node_id, scan all online nodes.
+    4. Without target_node_id, scan all online nodes.
     5. If multiple nodes provide the function, sort by:
        - online first
        - locality: local/lan > wan
@@ -144,8 +144,8 @@ async def resolve_function(
     from yequ.services.node_liveness_service import is_node_schedulable
 
     # Build candidate node query
-    if targettarget_node_id:
-        node_query = select(Node).where(Node.node_id == targettarget_node_id)
+    if target_node_id:
+        node_query = select(Node).where(Node.node_id == target_node_id)
     else:
         node_query = select(Node).where(
             Node.status.in_([NodeStatus.ONLINE, NodeStatus.PROVISIONED])

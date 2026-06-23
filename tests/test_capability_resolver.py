@@ -44,7 +44,7 @@ async def test_resolve_online_node_succeeds(client: AsyncClient):
 
         result = await resolve_function(
             db, "system.resolver.test",
-            requested_node_id="resolver-online-node",
+            target_node_id="resolver-online-node",
         )
         assert result.available is True
         assert result.node_id == "resolver-online-node"
@@ -91,7 +91,7 @@ async def test_resolve_offline_node_fails(client: AsyncClient):
 
         result = await resolve_function(
             db, "system.resolver.offline_test",
-            requested_node_id="resolver-offline-node",
+            target_node_id="resolver-offline-node",
         )
         assert result.available is False
         assert result.unavailable_reason is not None
@@ -204,7 +204,7 @@ async def test_inactive_capability_not_available(client: AsyncClient):
 
         result = await resolve_function(
             db, "system.inactive.test",
-            requested_node_id="inactive-cap-node",
+            target_node_id="inactive-cap-node",
         )
         assert result.available is False
     finally:
