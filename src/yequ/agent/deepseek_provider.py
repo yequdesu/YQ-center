@@ -18,6 +18,7 @@ from yequ.agent.provider import (
     AgentMessage,
     AgentProvider,
     ProviderInvokeResult,
+    sanitize_tool_payload_for_agent,
 )
 from yequ.config import get_settings
 from yequ.logconfig import get_logger
@@ -383,7 +384,7 @@ class DeepSeekProvider(AgentProvider):
                         "type": "function",
                         "function": {
                             "name": self._sanitize_name(str(tc.get("name", ""))),
-                            "arguments": json.dumps(_sanitize_tool_input_for_provider(tc.get("input", {}))),
+                            "arguments": json.dumps(sanitize_tool_payload_for_agent(tc.get("input", {}))),
                         },
                     }
                     for tc in m.tool_calls
@@ -426,18 +427,6 @@ class DeepSeekProvider(AgentProvider):
         return sanitized  # fallback
 
 
-def _sanitize_tool_input_for_provider(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: _sanitize_tool_input_for_provider(item)
-            for key, item in value.items()
-            if key not in {"approval_id", "dry_run"}
-        }
-    if isinstance(value, list):
-        return [_sanitize_tool_input_for_provider(item) for item in value]
-    return value
-
-
 def _sanitize_tool_observation_content(content: str) -> str:
     """Hide internal execution fields from the LLM while preserving DB history.
 
@@ -448,5 +437,5 @@ def _sanitize_tool_observation_content(content: str) -> str:
         parsed = json.loads(content)
     except json.JSONDecodeError:
         return content
-    sanitized = _sanitize_tool_input_for_provider(parsed)
+    sanitized = sanitize_tool_payload_for_agent(parsed)
     return json.dumps(sanitized, ensure_ascii=False)

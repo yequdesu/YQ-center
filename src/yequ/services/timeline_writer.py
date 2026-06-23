@@ -8,11 +8,20 @@ Job state transition events remain synchronous for correctness.
 import asyncio
 import contextlib
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from yequ.db import async_session_factory
 from yequ.logconfig import get_logger
 from yequ.models.timeline import TimelineEvent
 
 log = get_logger(__name__)
+
+
+async def next_global_seq(db: AsyncSession) -> int:
+    """Return the next available global_seq for a new timeline event."""
+    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+    return (result.scalar() or 0) + 1
 
 # Max batch size for a single DB transaction
 BATCH_SIZE = 50

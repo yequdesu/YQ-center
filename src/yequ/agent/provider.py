@@ -8,6 +8,28 @@ directly — all execution goes through the Center's standard path.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+# Fields that must be hidden from LLM context (internal execution flags).
+# The DB and API retain these for audit; the LLM must not see them.
+AGENT_HIDDEN_RESULT_FIELDS = {"approval_id", "dry_run", "approval_enforced"}
+
+
+def sanitize_tool_payload_for_agent(value: object) -> object:
+    """Remove internal execution fields before feeding tool results to an LLM.
+
+    Strips approval_id, dry_run, and approval_enforced recursively from
+    dicts and lists. These are implementation details the LLM should not
+    reason about.
+    """
+    if isinstance(value, dict):
+        return {
+            key: sanitize_tool_payload_for_agent(item)
+            for key, item in value.items()
+            if key not in AGENT_HIDDEN_RESULT_FIELDS
+        }
+    if isinstance(value, list):
+        return [sanitize_tool_payload_for_agent(item) for item in value]
+    return value
+
 
 @dataclass
 class AgentMessage:
