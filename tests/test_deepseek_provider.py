@@ -1,10 +1,11 @@
 """Tests for DeepSeek LLM Provider."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 
-from yequ.agent.provider import AgentFunction
+from yequ.agent.provider import AgentFunction, AgentMessage
 
 
 @pytest.fixture
@@ -90,3 +91,82 @@ class TestDeepSeekProvider:
         p = deepseek_provider
         funcs = [AgentFunction(name="existing.func")]
         assert p._resolve_name("nonexistent_func", funcs) == "nonexistent_func"
+
+    @pytest.mark.asyncio
+    async def test_invoke_stream_builds_system_prompt_with_functions(self, deepseek_provider):
+        p = deepseek_provider
+
+        async def fake_stream():
+            yield SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        p._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+
+        chunks = [
+            chunk
+            async for chunk in p.invoke_stream(
+                "inspect files",
+                available_functions=[
+                    AgentFunction(
+                        name="system.file.list",
+                        description="List files in a directory",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    )
+                ],
+            )
+        ]
+
+        assert chunks[0] == {"type": "delta", "content": "ok"}
+        assert chunks[-1]["type"] == "done"
+        assert chunks[-1]["tool_calls"] == []
+
+    @pytest.mark.asyncio
+    async def test_invoke_stream_messages_path_builds_system_prompt(self, deepseek_provider):
+        p = deepseek_provider
+
+        async def fake_stream():
+            yield SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        p._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+        functions = [
+            AgentFunction(
+                name="system.file.list",
+                description="List files in a directory",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            )
+        ]
+
+        chunks = [
+            chunk
+            async for chunk in p.invoke_stream(
+                available_functions=functions,
+                messages=[AgentMessage(role="user", content="list USB files")],
+            )
+        ]
+
+        assert chunks[0] == {"type": "delta", "content": "ok"}
+        call_kwargs = p._client.chat.completions.create.call_args.kwargs
+        assert "system.file.list" in call_kwargs["messages"][0]["content"]

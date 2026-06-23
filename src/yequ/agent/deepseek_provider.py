@@ -209,25 +209,13 @@ class DeepSeekProvider(AgentProvider):
 
         if messages:
             # Build conversation from history, prepend system prompt
-            oai_messages = self._to_openai_messages(messages)
+            oai_messages = self._to_openai_messages(messages, functions)
             # Ensure a system message is present
             if not oai_messages or oai_messages[0].get("role") != "system":
-                func_descs = "\n".join(
-                    f"- {f.name}: {f.description}" for f in functions
-                )
-                oai_messages.insert(0, {
-                    "role": "system",
-                    "content": self._system_prompt() + "\n\nAvailable tools:\n" + func_descs,
-                })
+                oai_messages.insert(0, {"role": "system", "content": self._system_prompt(functions)})
         else:
-            func_descriptions = "\n".join(
-                f"- {f.name}: {f.description}" for f in functions
-            )
             oai_messages = [
-                {
-                    "role": "system",
-                    "content": self._system_prompt() + "\n\nAvailable tools:\n" + func_descriptions,
-                },
+                {"role": "system", "content": self._system_prompt(functions)},
                 {"role": "user", "content": prompt},
             ]
 
