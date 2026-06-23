@@ -948,7 +948,7 @@ function AssistantTextBubble({ block }: { block: AssistantTextBlock }) {
         <Bot size={14} />
       </div>
       <div className="max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] px-4 py-2.5">
-        <MarkdownMessage content={block.content || "Thinking..."} isStreaming={block.streaming} />
+        <MarkdownMessage content={block.content} isStreaming={block.streaming} />
       </div>
     </div>
   );
@@ -1008,19 +1008,34 @@ function SystemEventBubble({ block }: { block: SystemEventBlock }) {
 
 function MarkdownMessage({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   if (!content) {
+    if (!isStreaming) return null;
     return (
-      <span className="flex items-center gap-1 text-[var(--text-muted)]">
-        <Loader2 size={14} className="animate-spin" />
-        Thinking...
-      </span>
+      <ThinkingIndicator />
     );
   }
   return (
     <div className="markdown-body text-[14px] leading-[22px] text-[var(--text)]">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       {isStreaming && (
-        <span className="ml-0.5 inline-block h-4 w-1 translate-y-0.5 animate-pulse bg-[var(--accent)]" />
+        <span className="ml-1 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse rounded-full bg-[var(--accent)]/70 shadow-[0_0_10px_rgba(47,127,143,0.35)]" />
       )}
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2.5 py-0.5 text-[13px] text-[var(--text-muted)]">
+      <span className="relative flex h-5 w-5 items-center justify-center">
+        <span className="absolute h-5 w-5 animate-ping rounded-full bg-[var(--accent-muted)]" />
+        <span className="relative h-2.5 w-2.5 rounded-full bg-[var(--accent)]/75 shadow-[0_0_16px_rgba(47,127,143,0.32)]" />
+      </span>
+      <span className="font-medium">Thinking</span>
+      <span className="flex items-center gap-1">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--text-subtle)] [animation-delay:-0.24s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--text-subtle)] [animation-delay:-0.12s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--text-subtle)]" />
+      </span>
     </div>
   );
 }

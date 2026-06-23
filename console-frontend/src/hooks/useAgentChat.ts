@@ -171,6 +171,47 @@ export function useAgentChat({
 
   // ── SSE event handlers ──
 
+  const addAssistantThinkingBlock = useCallback(() => {
+    addBlock({
+      type: "assistant_text",
+      id: genId(),
+      content: "",
+      streaming: true,
+      created_at: nowISO(),
+    } as AssistantTextBlock);
+  }, [addBlock]);
+
+  const finishAssistantStreaming = useCallback(() => {
+    setBlocks((prev) =>
+      prev
+        .filter(
+          (block) =>
+            block.type !== "assistant_text" ||
+            block.content.trim() ||
+            !block.streaming,
+        )
+        .map((block) =>
+          block.type === "assistant_text"
+            ? ({ ...block, streaming: false } as AssistantTextBlock)
+            : block,
+        ),
+    );
+  }, []);
+
+  const removeTrailingEmptyThinkingBlock = useCallback(() => {
+    setBlocks((prev) => {
+      const last = prev[prev.length - 1];
+      if (
+        last?.type === "assistant_text" &&
+        last.streaming &&
+        !last.content.trim()
+      ) {
+        return prev.slice(0, -1);
+      }
+      return prev;
+    });
+  }, []);
+
   const handleInvokeEvent = useCallback(
     (event: SseEvent) => {
       const data = event.data as Record<string, unknown>;
@@ -179,10 +220,23 @@ export function useAgentChat({
         case "agent.provider.started": {
           // Optionally start an assistant_text block — but we don't create one yet.
           // We wait for the first real delta or tool_call to determine what comes first.
+          upsertLastBlock(
+            (b): b is AssistantTextBlock =>
+              b.type === "assistant_text" && b.streaming && !b.content.trim(),
+            () => ({
+              type: "assistant_text",
+              id: genId(),
+              content: "",
+              streaming: true,
+              created_at: nowISO(),
+            }),
+            (prev) => prev,
+          );
           break;
         }
 
         case "agent.tool_call.created": {
+          removeTrailingEmptyThinkingBlock();
           const callId = String(data.call_id ?? "");
           const toolCall: ToolCallState = {
             callId,
@@ -324,31 +378,15 @@ export function useAgentChat({
         }
 
         case "agent.completed": {
-          // Mark last assistant_text as no longer streaming
-          setBlocks((prev) => {
-            const updated = [...prev];
-            for (let i = updated.length - 1; i >= 0; i--) {
-              if (updated[i].type === "assistant_text") {
-                updated[i] = {
-                  ...updated[i],
-                  streaming: false,
-                } as AssistantTextBlock;
-                break;
-              }
-            }
-            // Add subtle system event instead of big bubble
-            return [
-              ...updated,
-              {
-                type: "system_event",
-                id: genId(),
-                label: data.status
-                  ? `Completed (${String(data.status)})`
-                  : "Completed",
-                created_at: nowISO(),
-              } as SystemEventBlock,
-            ];
-          });
+          finishAssistantStreaming();
+          addBlock({
+            type: "system_event",
+            id: genId(),
+            label: data.status
+              ? `Completed (${String(data.status)})`
+              : "Completed",
+            created_at: nowISO(),
+          } as SystemEventBlock);
           setIsStreaming(false);
           break;
         }
@@ -356,6 +394,7 @@ export function useAgentChat({
         case "agent.failed":
         case "agent.provider.failed": {
           const errorMsg = String(data.message ?? "Unknown error");
+          finishAssistantStreaming();
           addBlock({
             type: "system_event",
             id: genId(),
@@ -382,7 +421,7 @@ export function useAgentChat({
         }
       }
     },
-    [addBlock, upsertLastBlock],
+    [addBlock, finishAssistantStreaming, removeTrailingEmptyThinkingBlock, upsertLastBlock],
   );
 
   /** Patch a tool call by call_id in the newest matching tool_group block. */
@@ -431,6 +470,7 @@ export function useAgentChat({
           created_at: nowISO(),
         } as UserBlock);
       }
+      addAssistantThinkingBlock();
 
       setIsStreaming(true);
       const stream = createEventStream(
@@ -447,6 +487,7 @@ export function useAgentChat({
           onEvent: (event) => handleInvokeEvent(event),
           onError: (error) => {
             setIsStreaming(false);
+            finishAssistantStreaming();
             addBlock({
               type: "system_event",
               id: genId(),
@@ -457,19 +498,7 @@ export function useAgentChat({
           },
           onClose: () => {
             setIsStreaming(false);
-            setBlocks((prev) => {
-              const updated = [...prev];
-              for (let i = updated.length - 1; i >= 0; i--) {
-                if (updated[i].type === "assistant_text") {
-                  updated[i] = {
-                    ...updated[i],
-                    streaming: false,
-                  } as AssistantTextBlock;
-                  break;
-                }
-              }
-              return updated;
-            });
+            finishAssistantStreaming();
             onConversationSettled?.();
           },
         },
@@ -477,7 +506,7 @@ export function useAgentChat({
 
       abortRef.current = () => stream.abort();
     },
-    [addBlock, handleInvokeEvent, onConversationSettled, sessionId],
+    [addAssistantThinkingBlock, addBlock, finishAssistantStreaming, handleInvokeEvent, onConversationSettled, sessionId],
   );
 
   const sendPlan = useCallback(
@@ -490,6 +519,7 @@ export function useAgentChat({
         content: prompt,
         created_at: nowISO(),
       } as UserBlock);
+      addAssistantThinkingBlock();
 
       setIsStreaming(true);
       const stream = createEventStream(
@@ -504,6 +534,7 @@ export function useAgentChat({
           onEvent: (event) => handlePlanEvent(event),
           onError: (error) => {
             setIsStreaming(false);
+            finishAssistantStreaming();
             addBlock({
               type: "system_event",
               id: genId(),
@@ -514,6 +545,7 @@ export function useAgentChat({
           },
           onClose: () => {
             setIsStreaming(false);
+            finishAssistantStreaming();
             onConversationSettled?.();
           },
         },
@@ -521,7 +553,7 @@ export function useAgentChat({
 
       abortRef.current = () => stream.abort();
     },
-    [addBlock, onConversationSettled, sessionId],
+    [addAssistantThinkingBlock, addBlock, finishAssistantStreaming, onConversationSettled, sessionId],
   );
 
   const handlePlanEvent = useCallback(
@@ -574,6 +606,7 @@ export function useAgentChat({
         }
 
         case "agent.completed": {
+          finishAssistantStreaming();
           setIsStreaming(false);
           addBlock({
             type: "system_event",
@@ -585,6 +618,7 @@ export function useAgentChat({
         }
 
         case "agent.failed": {
+          finishAssistantStreaming();
           setIsStreaming(false);
           addBlock({
             type: "system_event",
@@ -596,14 +630,15 @@ export function useAgentChat({
         }
       }
     },
-    [addBlock, upsertLastBlock, onPlanCreated],
+    [addBlock, finishAssistantStreaming, upsertLastBlock, onPlanCreated],
   );
 
   const cancel = useCallback(() => {
     abortRef.current?.();
     abortRef.current = null;
     setIsStreaming(false);
-  }, []);
+    finishAssistantStreaming();
+  }, [finishAssistantStreaming]);
 
   return {
     blocks,
