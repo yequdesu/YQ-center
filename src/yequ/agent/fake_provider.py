@@ -4,6 +4,7 @@ Does NOT connect to a real LLM. Used for integration testing
 the Agent->Center pipeline without external dependencies.
 """
 
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Sequence
 
@@ -134,7 +135,20 @@ class FakeAgentProvider(AgentProvider):
                     retryable=result.retryable,
                 )
 
-        # 3. Default
+        # 3. Default — ensure task_completed is always present
+        default_calls = list(self._default_result.function_calls)
+        if not any(c.get("name") == "task_completed" for c in default_calls):
+            from yequ.agent.provider import TASK_COMPLETED_FUNCTION
+            default_message = (
+                self._default_result.output.get("message", "")
+                if self._default_result.output
+                else ""
+            )
+            default_calls.append({
+                "name": "task_completed",
+                "call_id": f"call_{uuid.uuid4().hex[:16]}",
+                "input": {"message": default_message or "default fake response"},
+            })
         return ProviderInvokeResult(
             message=(
                 self._default_result.output.get("message", "")
@@ -142,7 +156,7 @@ class FakeAgentProvider(AgentProvider):
                 else ""
             ),
             success=self._default_result.success,
-            tool_calls=list(self._default_result.function_calls),
+            tool_calls=default_calls,
         )
 
     async def invoke_stream(

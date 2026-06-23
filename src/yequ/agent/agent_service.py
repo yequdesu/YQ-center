@@ -189,6 +189,10 @@ async def agent_invoke(
     )
 
     # L1 readonly policy: build a set of known function names from available_functions
+    from yequ.agent.provider import TASK_COMPLETED_FUNCTION, is_task_completed
+
+    if not any(f.name == TASK_COMPLETED_FUNCTION.name for f in available_functions):
+        available_functions = list(available_functions) + [TASK_COMPLETED_FUNCTION]
     known_functions = {f.name for f in available_functions}
 
     # -- Step 1: Write agent.prompt.received + COMMIT before provider call --
@@ -283,12 +287,23 @@ async def agent_invoke(
             total_usage = provider_result.usage
             total_usage["tool_calls"] = total_usage.get("tool_calls", 0) + len(provider_result.tool_calls)
 
-        # -- No tool calls? This is the final answer --
-        if not provider_result.tool_calls:
-            final_provider_message = provider_result.message or ""
+        # -- Check for task_completed: the explicit loop exit signal --
+        task_completed_call = next((tc for tc in provider_result.tool_calls if is_task_completed(tc)), None)
+        executable_calls = [tc for tc in provider_result.tool_calls if not is_task_completed(tc)]
+
+        if task_completed_call:
+            final_provider_message = task_completed_call.get("input", {}).get("message", provider_result.message or "")
             loop_state = "completed"
             await _write_timeline(db, "agent.provider.completed", session_id=session_id,
                                   actor=provider.provider_name(), success=True, final=True)
+            if not executable_calls:
+                break
+            # Fall through: task_completed with additional tools
+
+        if not executable_calls and not task_completed_call:
+            log.warning("provider returned no tool calls and no task_completed — protocol error")
+            final_provider_message = provider_result.message or ""
+            loop_state = "protocol_error"
             break
 
         # -- Append assistant message with tool_calls --
@@ -300,7 +315,7 @@ async def agent_invoke(
 
         # -- Validate + execute each tool call --
         iteration_results: list[AgentToolCall] = []
-        for raw_tc in provider_result.tool_calls:
+        for raw_tc in executable_calls:
             tc_name = str(raw_tc.get("name", ""))
             tc_call_id = str(raw_tc.get("call_id", _make_call_id()))
             tc_input = raw_tc.get("input", {})

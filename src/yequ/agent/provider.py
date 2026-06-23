@@ -31,6 +31,11 @@ def sanitize_tool_payload_for_agent(value: object) -> object:
     return value
 
 
+def is_task_completed(tool_call: dict) -> bool:
+    """Return True if this tool call is the task_completed signal."""
+    return tool_call.get("name") == "task_completed"
+
+
 @dataclass
 class AgentMessage:
     """A single message in a multi-turn conversation.
@@ -59,6 +64,33 @@ class AgentFunction:
     risk: str = "safe"
     effect: str = "read"
     timeout_sec: int = 30
+
+
+# The explicit termination signal for the ReAct loop.
+# When the LLM decides the task is complete, it MUST call this tool instead
+# of returning an empty tool_calls list. The orchestrator recognizes this
+# function name and treats it as the loop exit condition.
+TASK_COMPLETED_FUNCTION = AgentFunction(
+    name="task_completed",
+    description=(
+        "Call this tool when the task is complete. Include a final summary "
+        "in the user's language explaining what was done and what was found. "
+        "You MUST call this tool as the last action — do not just stop "
+        "without calling it."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "Final summary in the user's language",
+            },
+        },
+        "required": ["message"],
+    },
+    risk="safe",
+    effect="read",
+)
 
 
 @dataclass

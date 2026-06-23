@@ -236,6 +236,8 @@ export function useAgentChat({
         }
 
         case "agent.tool_call.created": {
+          // task_completed is a protocol signal — never render it
+          if (String(data.name ?? "") === "task_completed") break;
           removeTrailingEmptyThinkingBlock();
           const callId = String(data.call_id ?? "");
           const toolCall: ToolCallState = {
@@ -704,8 +706,11 @@ function blocksFromPersisted(persisted: AgentSessionMessage[]): ChatBlock[] {
 
     // Assistant message
     if (message.role === "assistant") {
-      const hasToolCalls =
-        message.tool_calls && message.tool_calls.length > 0;
+      // Filter out task_completed — it's a protocol signal, not a visible tool
+      const visibleToolCalls = (message.tool_calls || []).filter(
+        (tc: Record<string, unknown>) => tc.name !== "task_completed",
+      );
+      const hasToolCalls = visibleToolCalls.length > 0;
       const hasContent = Boolean(message.content);
 
       // Tool calls come first in timeline (LLM decided to call tools before synthesizing)
@@ -713,7 +718,7 @@ function blocksFromPersisted(persisted: AgentSessionMessage[]): ChatBlock[] {
         blocks.push({
           type: "tool_group",
           id: `${message.message_id}_tg`,
-          tool_calls: toolCallsFromPersisted(message.tool_calls),
+          tool_calls: toolCallsFromPersisted(visibleToolCalls),
           created_at: message.created_at ?? nowISO(),
         } as ToolGroupBlock);
       }

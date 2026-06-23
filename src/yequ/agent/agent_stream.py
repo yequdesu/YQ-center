@@ -144,6 +144,11 @@ async def agent_invoke_stream(
     )
     await db.commit()
 
+    from yequ.agent.provider import TASK_COMPLETED_FUNCTION
+
+    # Ensure task_completed is always available so the LLM can signal completion
+    if not any(f.name == TASK_COMPLETED_FUNCTION.name for f in available_functions):
+        available_functions = list(available_functions) + [TASK_COMPLETED_FUNCTION]
     known_functions = {f.name for f in available_functions}
 
     # -- Load history + append user message --
@@ -213,10 +218,25 @@ async def agent_invoke_stream(
                 yield _event("agent.provider.failed", session_id, trace_id, {"error_code": "llm_error", "message": provider_error})
                 break
 
-            # No tool calls = final answer
-            if not provider_tool_calls:
-                final_message = assistant_text
+            # Check for task_completed — the explicit loop exit signal
+            from yequ.agent.provider import is_task_completed
+
+            task_completed = next((tc for tc in provider_tool_calls if is_task_completed(tc)), None)
+            executable_calls = [tc for tc in provider_tool_calls if not is_task_completed(tc)]
+
+            if task_completed:
+                final_message = task_completed.get("input", {}).get("message", assistant_text)
                 loop_state = "completed"
+                yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
+                if not executable_calls:
+                    break
+                # Fall through: task_completed with additional tools — execute them then break
+
+            # No tool calls and no task_completed — LLM protocol violation
+            if not executable_calls and not task_completed:
+                log.warning("provider returned no tool calls and no task_completed — treating as protocol error")
+                final_message = assistant_text or "[系统] Agent 未按协议返回 task_completed 信号。"
+                loop_state = "protocol_error"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
@@ -235,7 +255,7 @@ async def agent_invoke_stream(
             ordered_results: list[dict] = []
             async for ev in _execute_tool_calls_scheduled(
                 db, provider, session, session_id, trace_id,
-                provider_tool_calls, known_functions, available_functions,
+                executable_calls, known_functions, available_functions,
                 call_path, execution_mode, max_depth,
                 max_total_duration_sec, started_at, target_node_id,
             ):
@@ -284,8 +304,10 @@ async def agent_invoke_stream(
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = "waiting_approval"
 
-            yield _event("agent.observing", session_id, trace_id, {"tool_count": len(provider_tool_calls)})
+            yield _event("agent.observing", session_id, trace_id, {"tool_count": len(executable_calls)})
             if loop_state == "waiting_approval":
+                break
+            if task_completed:
                 break
 
         # -- Fallback synthesis --
