@@ -1,5 +1,6 @@
 """Admin endpoints for Nodes, runtimes, and capabilities."""
 
+from datetime import UTC, datetime
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,8 +23,8 @@ from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.signal_state import SignalState
 from yequ.services.signal_state_service import (
+    compute_signal_freshness,
     list_signal_states,
-    refresh_signal_freshness,
     signal_state_to_dict,
 )
 from yequ.shared_types import JsonObject
@@ -41,9 +42,10 @@ async def _signal_counts_by_node(
         stmt = stmt.where(SignalState.node_id == node_id)
     result = await db.execute(stmt)
     counts: dict[str, dict[str, int]] = {}
+    now = datetime.now(UTC)
     for state in result.scalars().all():
         by_node = counts.setdefault(state.node_id, {"fresh": 0, "stale": 0})
-        if state.freshness_status == "stale":
+        if compute_signal_freshness(state, now=now) == "stale":
             by_node["stale"] += 1
         else:
             by_node["fresh"] += 1
@@ -62,7 +64,6 @@ async def list_nodes(
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> list[NodeSummary]:
     """List all provisioned nodes."""
-    await refresh_signal_freshness(db)
     result = await db.execute(select(Node).order_by(Node.node_id))
     nodes = result.scalars().all()
     signal_counts = await _signal_counts_by_node(db)
@@ -83,7 +84,6 @@ async def get_node(
     node = result.scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node {node_id!r} not found")
-    await refresh_signal_freshness(db, node_id=node_id)
     detail = _node_detail(node)
     signal_counts = await _signal_counts_by_node(db, node_id=node_id)
     _apply_signal_counts(detail, signal_counts.get(node_id, {}))
@@ -143,6 +143,7 @@ async def list_signals(
         node_id=node_id,
         signal_name=signal_name,
         freshness_status=freshness_status,
+        refresh=False,
     )
     return [signal_state_to_dict(state) for state in states]
 
@@ -162,6 +163,7 @@ async def list_node_signals(
         db,
         node_id=node_id,
         freshness_status=freshness_status,
+        refresh=False,
     )
     return [signal_state_to_dict(state) for state in states]
 

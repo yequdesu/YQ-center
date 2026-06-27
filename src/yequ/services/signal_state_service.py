@@ -153,7 +153,7 @@ async def list_signal_states(
     node_id: str | None = None,
     signal_name: str | None = None,
     freshness_status: str | None = None,
-    refresh: bool = True,
+    refresh: bool = False,
 ) -> list[SignalState]:
     """List current signal states, optionally filtering by node and freshness."""
     if refresh:
@@ -164,15 +164,25 @@ async def list_signal_states(
         stmt = stmt.where(SignalState.node_id == node_id)
     if signal_name:
         stmt = stmt.where(SignalState.signal_name == signal_name)
-    if freshness_status:
+    if freshness_status and refresh:
         stmt = stmt.where(SignalState.freshness_status == freshness_status)
     stmt = stmt.order_by(SignalState.node_id, SignalState.signal_name)
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    states = list(result.scalars().all())
+    if freshness_status and not refresh:
+        current = datetime.now(UTC)
+        states = [
+            state
+            for state in states
+            if compute_signal_freshness(state, now=current) == freshness_status
+        ]
+    return states
 
 
 def signal_state_to_dict(state: SignalState) -> dict[str, object]:
     """Serialize a SignalState for Admin API responses."""
+    freshness_status = compute_signal_freshness(state)
+    quality = "stale" if freshness_status == "stale" and state.quality == "ok" else state.quality
     return {
         "node_id": state.node_id,
         "capability_id": state.capability_id,
@@ -181,8 +191,8 @@ def signal_state_to_dict(state: SignalState) -> dict[str, object]:
         "value_schema": state.value_schema,
         "scope": state.scope,
         "ttl_sec": state.ttl_sec,
-        "freshness_status": state.freshness_status,
-        "quality": state.quality,
+        "freshness_status": freshness_status,
+        "quality": quality,
         "collected_at": state.collected_at.isoformat() if state.collected_at else None,
         "reported_at": state.reported_at.isoformat() if state.reported_at else None,
         "expires_at": state.expires_at.isoformat() if state.expires_at else None,
