@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.api_token import ApiToken
 from yequ.models.timeline import TimelineEvent
+from yequ.services.timeline_writer import add_timeline_event
 
 
 def hash_token(token: str) -> str:
@@ -22,12 +23,8 @@ async def _write_audit(
     detail: str = "",
 ) -> None:
     """Write an auth audit event."""
-    # Compute next global_seq
-    from sqlalchemy import func, select
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type=event_type,
         actor_type="system",
         actor_id="token_auth",
@@ -36,8 +33,7 @@ async def _write_audit(
             "detail": detail,
         },
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)
 
 
 async def authenticate_scoped_token(
@@ -102,7 +98,8 @@ async def authenticate_scoped_token(
     # Check scope
     if api_token.scope != required_scope:
         await _write_audit(
-            db, "token.scope_denied",
+            db,
+            "token.scope_denied",
             scope=api_token.scope,
             detail=f"token scope={api_token.scope}, required={required_scope}",
         )

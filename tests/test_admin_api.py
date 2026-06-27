@@ -9,13 +9,16 @@ from tests.conftest import make_yqp_envelope
 async def _create_approval(client: AsyncClient, node_id: str) -> str:
     """Helper: create an approved approval and return its id."""
     # Create approval
-    r = await client.post("/admin/approvals", json={
-        "function_name": "test.func",
-        "target_node_id": node_id,
-        "input_data": {},
-        "risk": "maintenance",
-        "effect": "write",
-    })
+    r = await client.post(
+        "/admin/approvals",
+        json={
+            "function_name": "test.func",
+            "target_node_id": node_id,
+            "input_data": {},
+            "risk": "maintenance",
+            "effect": "write",
+        },
+    )
     approval_id = r.json()["approval_id"]
     # Approve it
     await client.post(f"/admin/approvals/{approval_id}/approve")
@@ -25,8 +28,12 @@ async def _create_approval(client: AsyncClient, node_id: str) -> str:
 async def _invoke(client: AsyncClient, node_id: str, **extra) -> dict:
     """Helper: create an invocation with approval."""
     approval_id = await _create_approval(client, node_id)
-    body = {"function_name": "test.func", "target_node_id": node_id,
-            "approval_id": approval_id, **extra}
+    body = {
+        "function_name": "test.func",
+        "target_node_id": node_id,
+        "approval_id": approval_id,
+        **extra,
+    }
     r = await client.post("/admin/invocations", json=body)
     assert r.status_code == 201
     return r.json()
@@ -36,11 +43,14 @@ async def _invoke(client: AsyncClient, node_id: str, **extra) -> dict:
 async def test_list_nodes(client: AsyncClient):
     """GET /admin/nodes should return list of nodes."""
     # Provision a node first
-    await client.post("/admin/nodes", json={
-        "node_id": "admin-test-node",
-        "node_name": "Admin Test",
-        "token": "tok-12345678",
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": "admin-test-node",
+            "node_name": "Admin Test",
+            "token": "tok-12345678",
+        },
+    )
     r = await client.get("/admin/nodes")
     assert r.status_code == 200
     nodes = r.json()
@@ -51,9 +61,14 @@ async def test_list_nodes(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_get_node_detail(client: AsyncClient):
     """GET /admin/nodes/{node_id} should return node details."""
-    await client.post("/admin/nodes", json={
-        "node_id": "detail-node", "node_name": "Detail Node", "token": "tok-detail",
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": "detail-node",
+            "node_name": "Detail Node",
+            "token": "tok-detail",
+        },
+    )
     r = await client.get("/admin/nodes/detail-node")
     assert r.status_code == 200
     assert r.json()["node_name"] == "Detail Node"
@@ -74,21 +89,43 @@ async def test_list_capabilities(client: AsyncClient):
     node_id = "cap-test-node"
     auth = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "Cap Test", "token": token,
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "Cap Test",
+            "token": token,
+        },
+    )
     # Register capabilities via YQP
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "test.plugin",
-            "plugin_version": "1.0.0",
-            "functions": [{"name": "test.func", "input_schema": {}, "output_schema": {},
-                           "risk": "safe", "effect": "read", "timeout_sec": 5,
-                           "idempotency": "idempotent"}],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.plugin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "test.func",
+                                "input_schema": {},
+                                "output_schema": {},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
 
     r = await client.get(f"/admin/capabilities?node_id={node_id}")
     assert r.status_code == 200
@@ -102,9 +139,14 @@ async def test_list_jobs(client: AsyncClient):
     """GET /admin/jobs should list jobs with filters."""
     token = "tok-job-list"
     node_id = "job-list-node"
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "Job List", "token": token,
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "Job List",
+            "token": token,
+        },
+    )
 
     # Create an invocation (which creates a job)
     await _invoke(client, node_id)
@@ -130,9 +172,14 @@ async def test_get_job_detail(client: AsyncClient):
     """GET /admin/jobs/{job_id} should return job details."""
     token = "tok-jd-123"
     node_id = "jd-node"
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "JD", "token": token,
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "JD",
+            "token": token,
+        },
+    )
     data = await _invoke(client, node_id)
     job_id = data["job_id"]
 
@@ -154,9 +201,14 @@ async def test_get_invocation_detail(client: AsyncClient):
     """GET /admin/invocations/{invocation_id} should include jobs."""
     token = "tok-inv-12"
     node_id = "inv-node"
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "Inv", "token": token,
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "Inv",
+            "token": token,
+        },
+    )
     data = await _invoke(client, node_id)
     inv_id = data["invocation_id"]
 
@@ -175,14 +227,24 @@ async def test_list_timeline_filtered(client: AsyncClient):
     node_id = "tl-node"
     auth = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "TL", "token": token,
-    })
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "TL",
+            "token": token,
+        },
+    )
     # Do a hello to create timeline events
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.hello", node_id,
-        payload={"daemon_version": "0.1.0"},
-    ), headers=auth)
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            payload={"daemon_version": "0.1.0"},
+        ),
+        headers=auth,
+    )
 
     # List timeline
     r = await client.get("/admin/timeline")

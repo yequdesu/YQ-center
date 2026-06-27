@@ -8,15 +8,14 @@ Central authority for:
 """
 
 from datetime import UTC, datetime
-from typing import Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol.enums import NodeStatus
-
+from yequ.services.timeline_writer import add_timeline_event
 
 # ── Effective status computation ──
 
@@ -54,7 +53,7 @@ def compute_effective_status(node: Node, settings) -> str:
     age_sec = (now - last_hb).total_seconds()
 
     # Compute thresholds
-    offline_threshold = interval * multiplier          # e.g. 10 * 3 = 30s
+    offline_threshold = interval * multiplier  # e.g. 10 * 3 = 30s
     degraded_threshold = interval * (multiplier - 1)  # e.g. 10 * 2 = 20s
 
     if age_sec > offline_threshold:
@@ -70,7 +69,7 @@ def compute_effective_status(node: Node, settings) -> str:
 # ── Schedulability ──
 
 
-def is_node_schedulable(node: Node, settings) -> Tuple[bool, str | None]:
+def is_node_schedulable(node: Node, settings) -> tuple[bool, str | None]:
     """Return (True, None) if the node can accept new jobs, or (False, reason)."""
     effective = compute_effective_status(node, settings)
     if effective == NodeStatus.ONLINE:
@@ -92,9 +91,6 @@ async def _write_node_timeline(
     data: dict | None = None,
 ) -> None:
     """Write a node lifecycle timeline event synchronously."""
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-
     event_data: dict = {
         "node_id": node.node_id,
         "stored_status": node.status,
@@ -104,7 +100,7 @@ async def _write_node_timeline(
         event_data.update(data)
 
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type=event_type,
         actor_type="system",
         actor_id="node_liveness",
@@ -112,8 +108,7 @@ async def _write_node_timeline(
         data=event_data,
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)
 
 
 # ── Stale node detection ──
@@ -160,7 +155,9 @@ async def mark_timed_out_nodes(
 
             # Write node.offline timeline event
             await _write_node_timeline(
-                db, "node.offline", node,
+                db,
+                "node.offline",
+                node,
                 data={
                     "reason": "heartbeat_timeout",
                     "last_heartbeat_at": node.last_heartbeat_at.isoformat(),
@@ -188,11 +185,7 @@ async def _timeout_queued_jobs_for_node(
     Returns count of jobs cancelled.
     """
     from yequ.models.job import Job as JobModel
-
-    dispatch_timeout = getattr(settings, "job_dispatch_timeout_sec", 30)
-
-    now = datetime.now(UTC)
-    cutoff = datetime.now(UTC)  # All queued jobs — immediate cutoff on offline
+    from yequ.services.job_service import cancel_job
 
     result = await db.execute(
         select(JobModel).where(
@@ -204,29 +197,14 @@ async def _timeout_queued_jobs_for_node(
 
     count = 0
     for job in queued_jobs:
-        job.status = "cancelled"
-        job.finished_at = now
+        await cancel_job(
+            db,
+            job,
+            reason="node_offline_before_claim",
+            node_id=node_id,
+        )
         job.error_code = "NODE_OFFLINE_BEFORE_CLAIM"
         job.error_message = f"Node {node_id} went offline before job was claimed"
-
-        # Write job.timeout timeline event
-        job_res = await db.execute(select(func.max(TimelineEvent.global_seq)))
-        job_max_seq = job_res.scalar() or 0
-        job_event = TimelineEvent(
-            global_seq=job_max_seq + 1,
-            event_type="job.cancelled",
-            actor_type="system",
-            actor_id="node_liveness",
-            node_id=node_id,
-            job_id=job.job_id,
-            data={
-                "reason": "node_offline_before_claim",
-                "node_id": node_id,
-                "error_code": "NODE_OFFLINE_BEFORE_CLAIM",
-            },
-            timestamp=now,
-        )
-        db.add(job_event)
         count += 1
 
     if count > 0:

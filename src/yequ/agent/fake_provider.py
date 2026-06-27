@@ -5,8 +5,6 @@ the Agent->Center pipeline without external dependencies.
 """
 
 import uuid
-from collections.abc import AsyncGenerator
-from typing import Sequence
 
 from yequ.agent.provider import (
     AgentFunction,
@@ -138,17 +136,18 @@ class FakeAgentProvider(AgentProvider):
         # 3. Default — ensure task_completed is always present
         default_calls = list(self._default_result.function_calls)
         if not any(c.get("name") == "task_completed" for c in default_calls):
-            from yequ.agent.provider import TASK_COMPLETED_FUNCTION
             default_message = (
                 self._default_result.output.get("message", "")
                 if self._default_result.output
                 else ""
             )
-            default_calls.append({
-                "name": "task_completed",
-                "call_id": f"call_{uuid.uuid4().hex[:16]}",
-                "input": {"message": default_message or "default fake response"},
-            })
+            default_calls.append(
+                {
+                    "name": "task_completed",
+                    "call_id": f"call_{uuid.uuid4().hex[:16]}",
+                    "input": {"message": default_message or "default fake response"},
+                }
+            )
         return ProviderInvokeResult(
             message=(
                 self._default_result.output.get("message", "")
@@ -169,8 +168,10 @@ class FakeAgentProvider(AgentProvider):
     ):
         """Simulate streaming — calls invoke() and yields delta + done events."""
         result = await self.invoke(
-            prompt, available_functions=available_functions or [],
-            messages=messages, context=context,
+            prompt,
+            available_functions=available_functions or [],
+            messages=messages,
+            context=context,
         )
         if result.message:
             yield {"type": "delta", "content": result.message}

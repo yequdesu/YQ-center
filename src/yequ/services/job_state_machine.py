@@ -67,6 +67,7 @@ async def transition(
     output: dict | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    error_details: dict | None = None,
 ) -> None:
     """Execute a job state transition.
 
@@ -87,14 +88,8 @@ async def transition(
     Raises:
         ValueError: If the transition is not allowed or job is already terminal
     """
-    from sqlalchemy import func, select
-
     from yequ.models.timeline import TimelineEvent
-
-    # Compute next global_seq
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    next_seq = max_seq + 1
+    from yequ.services.timeline_writer import add_timeline_event
 
     current = JobStatus(job.status)
     target = JobStatus(target_status)
@@ -103,7 +98,7 @@ async def transition(
     if target not in VALID_TRANSITIONS.get(current, set()):
         # Write audit event for the illegal attempt before raising
         event = TimelineEvent(
-            global_seq=next_seq,
+            global_seq=0,
             event_type="job.invalid_transition",
             actor_type="system",
             actor_id=node_id or "unknown",
@@ -116,17 +111,12 @@ async def transition(
                 "reason": reason,
             },
         )
-        db.add(event)
-        await db.flush()
-        raise ValueError(
-            f"Invalid transition: {current.value} -> {target.value}"
-        )
+        await add_timeline_event(db, event)
+        raise ValueError(f"Invalid transition: {current.value} -> {target.value}")
 
     # Reject if already terminal — terminal states are immutable
     if is_terminal(job.status):
-        raise ValueError(
-            f"Job {job.job_id} already in terminal state {job.status}"
-        )
+        raise ValueError(f"Job {job.job_id} already in terminal state {job.status}")
 
     now = datetime.now(UTC)
     old_status = job.status
@@ -146,6 +136,8 @@ async def transition(
             job.error_code = error_code
         if error_message:
             job.error_message = error_message
+        if error_details is not None:
+            job.error_details = error_details
     elif target == JobStatus.SUCCEEDED:
         job.finished_at = now
         if output is not None:
@@ -164,9 +156,15 @@ async def transition(
         event_data["reason"] = reason
     if error_code:
         event_data["error_code"] = error_code
+    if error_message:
+        event_data["error_message"] = error_message
+    if error_details is not None:
+        event_data["error_details"] = error_details
+    if output is not None:
+        event_data["output"] = output
 
     event = TimelineEvent(
-        global_seq=next_seq,
+        global_seq=0,
         event_type=f"job.{target.value}",
         actor_type="system",
         actor_id=node_id or "unknown",
@@ -176,5 +174,4 @@ async def transition(
         data=event_data,
         timestamp=now,
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)

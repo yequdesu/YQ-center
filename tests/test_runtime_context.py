@@ -116,6 +116,50 @@ async def test_runtime_instances_are_reported_and_queryable(
 
 
 @pytest.mark.asyncio
+async def test_runtime_ids_are_node_scoped(client: AsyncClient):
+    """Different nodes may use the same local runtime_id."""
+    nodes = [
+        ("runtime-scope-a", "runtime-token-a"),
+        ("runtime-scope-b", "runtime-token-b"),
+    ]
+    for node_id, token in nodes:
+        resp = await client.post(
+            "/admin/nodes",
+            json={
+                "node_id": node_id,
+                "node_name": node_id,
+                "token": token,
+            },
+        )
+        assert resp.status_code == 201
+        hello = await client.post(
+            "/yqp/",
+            json=make_yqp_envelope(
+                "node.hello",
+                node_id,
+                payload={
+                    "daemon_version": "0.2.0",
+                    "runtimes": [
+                        {
+                            "runtime_id": "default",
+                            "kind": "privileged",
+                            "status": "online",
+                        }
+                    ],
+                },
+            ),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert hello.status_code == 200
+
+    for node_id, _token in nodes:
+        resp = await client.get(f"/admin/nodes/{node_id}/runtimes")
+        assert resp.status_code == 200
+        runtimes = resp.json()
+        assert [runtime["runtime_id"] for runtime in runtimes] == ["default"]
+
+
+@pytest.mark.asyncio
 async def test_resolver_selects_runtime_by_platform_neutral_requirements(
     client: AsyncClient,
     provisioned_node,

@@ -5,12 +5,13 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.approval import ApprovalRequest
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import ApprovalStatus
+from yequ.services.timeline_writer import add_timeline_event
 
 
 def _make_approval_id() -> str:
@@ -53,7 +54,9 @@ async def create_approval(
     # Compute resource keys if not explicitly provided
     if not resource_keys:
         resource_keys = compute_resource_keys(
-            function_name, target_node_id, input_data,
+            function_name,
+            target_node_id,
+            input_data,
             resource_key_template=resource_key_template,
         )
 
@@ -77,20 +80,23 @@ async def create_approval(
     await db.commit()
 
     # Write timeline event for approval.requested
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="approval.requested",
-        actor_type="admin", actor_id=actor_id,
+        actor_type="admin",
+        actor_id=actor_id,
         session_id=session_id,
         invocation_id=invocation_id,
         node_id=target_node_id,
-        data={"approval_id": approval.approval_id, "function_name": function_name,
-              "risk": risk, "effect": effect},
+        data={
+            "approval_id": approval.approval_id,
+            "function_name": function_name,
+            "risk": risk,
+            "effect": effect,
+        },
         timestamp=now,
     )
-    db.add(event)
+    await add_timeline_event(db, event)
     await db.commit()
     return approval
 
@@ -115,20 +121,22 @@ async def approve_approval(
     approval.updated_at = datetime.now(UTC)
     await db.commit()
 
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="approval.approved",
-        actor_type="admin", actor_id=approved_by,
+        actor_type="admin",
+        actor_id=approved_by,
         session_id=approval.session_id,
         invocation_id=approval.invocation_id,
         node_id=approval.target_node_id,
-        data={"approval_id": approval.approval_id, "function_name": approval.function_name,
-              "reason": reason},
+        data={
+            "approval_id": approval.approval_id,
+            "function_name": approval.function_name,
+            "reason": reason,
+        },
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
+    await add_timeline_event(db, event)
     await db.commit()
     return approval
 
@@ -148,20 +156,22 @@ async def deny_approval(
     approval.updated_at = datetime.now(UTC)
     await db.commit()
 
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="approval.denied",
-        actor_type="admin", actor_id=denied_by,
+        actor_type="admin",
+        actor_id=denied_by,
         session_id=approval.session_id,
         invocation_id=approval.invocation_id,
         node_id=approval.target_node_id,
-        data={"approval_id": approval.approval_id, "function_name": approval.function_name,
-              "reason": reason},
+        data={
+            "approval_id": approval.approval_id,
+            "function_name": approval.function_name,
+            "reason": reason,
+        },
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
+    await add_timeline_event(db, event)
     await db.commit()
     return approval
 
@@ -179,22 +189,20 @@ async def consume_approval(
     approval.consumed_invocation_id = invocation_id
 
     # Write timeline event using the same db session to avoid SQLite lock conflict
-    from sqlalchemy import func, select as sqla_select
     from yequ.models.timeline import TimelineEvent
 
-    result = await db.execute(sqla_select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="approval.consumed",
-        actor_type="system", actor_id="approval_service",
+        actor_type="system",
+        actor_id="approval_service",
         session_id=approval.session_id,
         invocation_id=invocation_id or approval.invocation_id,
         node_id=approval.target_node_id,
         data={"approval_id": approval.approval_id, "function_name": approval.function_name},
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
+    await add_timeline_event(db, event)
 
     await db.commit()
     return approval

@@ -1,5 +1,8 @@
 """Tests for approval endpoints including approve-and-run."""
 
+import json
+from contextlib import suppress
+
 import pytest
 from httpx import AsyncClient
 
@@ -9,10 +12,10 @@ from tests.conftest import make_yqp_envelope
 @pytest.mark.asyncio
 async def test_approval_detail_can_be_fetched(client: AsyncClient):
     """Verify GET /admin/approvals/{id} returns full detail."""
-    from yequ.services.approval_service import create_approval
-
     # Create an approval
     from yequ.api.deps import get_db
+    from yequ.services.approval_service import create_approval
+
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
@@ -45,9 +48,9 @@ async def test_approval_detail_can_be_fetched(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_approval_approve_changes_status(client: AsyncClient):
     """Verify POST /admin/approvals/{id}/approve sets status to approved."""
+    from yequ.api.deps import get_db
     from yequ.services.approval_service import create_approval
 
-    from yequ.api.deps import get_db
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
@@ -75,9 +78,9 @@ async def test_approval_approve_changes_status(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_approval_deny_changes_status(client: AsyncClient):
     """Verify POST /admin/approvals/{id}/deny sets status to denied."""
+    from yequ.api.deps import get_db
     from yequ.services.approval_service import create_approval
 
-    from yequ.api.deps import get_db
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
@@ -105,11 +108,10 @@ async def test_approval_deny_changes_status(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_approve_and_run_creates_invocation_and_job(client: AsyncClient):
     """Verify POST /approve-and-run creates both an invocation and a job."""
+    from yequ.api.deps import get_db
+    from yequ.models.node import Node
     from yequ.services.approval_service import create_approval
     from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-
-    from yequ.api.deps import get_db
 
     # Provision a node that can run the function
     db_gen = get_db()
@@ -153,33 +155,41 @@ async def test_approve_and_run_creates_invocation_and_job(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_agent_waiting_approval_contains_actionable_payload(client: AsyncClient):
     """Verify agent.tool_call.waiting_approval event has approval_id and actionable fields."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("approval-event-test")
-    fake.add_functions([
-        AgentFunction(
-            name="system.service.ensure_running",
-            description="Ensure a service is running",
-            risk="maintenance",
-            effect="write",
-        ),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Need to fix service.",
-            tool_calls=[
-                {"call_id": "w1", "name": "system.service.ensure_running", "input": {"name": "TestSvc"}},
-            ],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="Done.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.service.ensure_running",
+                description="Ensure a service is running",
+                risk="maintenance",
+                effect="write",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Need to fix service.",
+                tool_calls=[
+                    {
+                        "call_id": "w1",
+                        "name": "system.service.ensure_running",
+                        "input": {"name": "TestSvc"},
+                    },
+                ],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="Done.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -201,28 +211,19 @@ async def test_agent_waiting_approval_contains_actionable_payload(client: AsyncC
     )
     assert stream_resp.status_code == 200
 
-    import json
     events = []
     for frame in stream_resp.text.strip().split("\n\n"):
         for line in frame.split("\n"):
             if line.strip().startswith("data:"):
                 payload = line.strip()[5:].strip()
                 if payload:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         events.append(json.loads(payload))
-                    except json.JSONDecodeError:
-                        pass
 
-    waiting_events = [
-        e for e in events
-        if e["event_type"] == "agent.tool_call.waiting_approval"
-    ]
+    waiting_events = [e for e in events if e["event_type"] == "agent.tool_call.waiting_approval"]
     # With no real node, this may fail with function_not_available instead
     # The important thing is that approval flow events fire when a write is needed
-    approval_events = [
-        e for e in events
-        if e["event_type"] == "agent.approval.required"
-    ]
+    approval_events = [e for e in events if e["event_type"] == "agent.approval.required"]
     # At least one approval-related event should be present for a write operation
     assert len(waiting_events) + len(approval_events) >= 0, "Approval flow events should be present"
 
@@ -262,49 +263,59 @@ async def test_stream_waiting_approval_persists_approval_id_for_console_refresh(
             "node.register_capabilities",
             node.node_id,
             payload={
-                "plugins": [{
-                    "plugin_id": "system.service",
-                    "plugin_version": "1.0.0",
-                    "functions": [{
-                        "name": "system.service.ensure_running",
-                        "input_schema": {
-                            "type": "object",
-                            "properties": {"name": {"type": "string"}},
-                            "required": ["name"],
-                        },
-                        "output_schema": {"type": "object", "properties": {}},
-                        "risk": "maintenance",
-                        "effect": "write",
-                        "timeout_sec": 30,
-                        "idempotency": "idempotent",
-                    }],
-                    "signals": [],
-                }],
+                "plugins": [
+                    {
+                        "plugin_id": "system.service",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.service.ensure_running",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}},
+                                    "required": ["name"],
+                                },
+                                "output_schema": {"type": "object", "properties": {}},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 30,
+                                "idempotency": "idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ],
             },
         ),
         headers=auth,
     )
 
     fake = FakeAgentProvider("approval-history-test")
-    fake.add_functions([
-        AgentFunction(
-            name="system.service.ensure_running",
-            description="Ensure a service is running",
-            risk="maintenance",
-            effect="write",
-        ),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="This needs approval.",
-            tool_calls=[{
-                "call_id": "approval_call_1",
-                "name": "system.service.ensure_running",
-                "input": {"name": "Spooler"},
-            }],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.service.ensure_running",
+                description="Ensure a service is running",
+                risk="maintenance",
+                effect="write",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="This needs approval.",
+                tool_calls=[
+                    {
+                        "call_id": "approval_call_1",
+                        "name": "system.service.ensure_running",
+                        "input": {"name": "Spooler"},
+                    }
+                ],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -329,8 +340,7 @@ async def test_stream_waiting_approval_persists_approval_id_for_console_refresh(
     detail_resp = await client.get(f"/admin/sessions/{session_id}")
     assert detail_resp.status_code == 200
     tool_messages = [
-        message for message in detail_resp.json()["messages"]
-        if message["role"] == "tool"
+        message for message in detail_resp.json()["messages"] if message["role"] == "tool"
     ]
     assert tool_messages, "waiting approval should persist a tool observation"
     payload = json.loads(tool_messages[-1]["content"])
@@ -344,33 +354,41 @@ async def test_agent_text_confirm_does_not_auto_approve(client: AsyncClient):
 
     The agent must require explicit button click, not natural language approval.
     """
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("no-auto-approve-test")
-    fake.add_functions([
-        AgentFunction(
-            name="system.service.ensure_running",
-            description="Ensure a service is running",
-            risk="maintenance",
-            effect="write",
-        ),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="I need approval to run this.",
-            tool_calls=[
-                {"call_id": "w1", "name": "system.service.ensure_running", "input": {"name": "TestSvc"}},
-            ],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="Approved by the tool.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.service.ensure_running",
+                description="Ensure a service is running",
+                risk="maintenance",
+                effect="write",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="I need approval to run this.",
+                tool_calls=[
+                    {
+                        "call_id": "w1",
+                        "name": "system.service.ensure_running",
+                        "input": {"name": "TestSvc"},
+                    },
+                ],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="Approved by the tool.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -395,16 +413,15 @@ async def test_agent_text_confirm_does_not_auto_approve(client: AsyncClient):
     # The key assertion: the text "确认" does NOT bypass the approval flow
     # The provider returns a tool_call which MUST go through the approval path
     import json
+
     events = []
     for frame in stream_resp.text.strip().split("\n\n"):
         for line in frame.split("\n"):
             if line.strip().startswith("data:"):
                 payload = line.strip()[5:].strip()
                 if payload:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         events.append(json.loads(payload))
-                    except json.JSONDecodeError:
-                        pass
 
     # The stream should contain tool_call events (going through proper flow)
     tool_created = [e for e in events if e["event_type"] == "agent.tool_call.created"]
@@ -421,9 +438,9 @@ async def test_agent_text_confirm_does_not_auto_approve(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_already_processed_approval_rejected(client: AsyncClient):
     """Verify that approving an already-processed approval returns 409."""
-    from yequ.services.approval_service import create_approval, approve_approval
-
     from yequ.api.deps import get_db
+    from yequ.services.approval_service import approve_approval, create_approval
+
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:

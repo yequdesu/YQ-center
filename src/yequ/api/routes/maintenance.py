@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
+from yequ.models.approval import ApprovalRequest
 from yequ.models.maintenance_plan import (
     MaintenanceArtifact,
     MaintenancePlan,
@@ -39,6 +40,15 @@ class CreatePlanRequest(BaseModel):
     max_total_duration_sec: int | None = None
     rollback_strategy: str | None = None
     execution_mode: str = Field(default="auto")
+
+
+class ResumeRunRequest(BaseModel):
+    approval_id: str | None = None
+
+
+class RejectRunRequest(BaseModel):
+    approval_id: str | None = None
+    reason: str | None = None
 
 
 @router.post("/plans", status_code=201)
@@ -88,9 +98,7 @@ async def get_plan(
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
 ) -> dict:
-    result = await db.execute(
-        select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id)
-    )
+    result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
         raise HTTPException(404, f"Plan {plan_id!r} not found")
@@ -107,9 +115,7 @@ async def approve_plan_endpoint(
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
 ) -> dict:
-    result = await db.execute(
-        select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id)
-    )
+    result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
         raise HTTPException(404)
@@ -117,6 +123,7 @@ async def approve_plan_endpoint(
     # Auto-create and approve if none provided
     if not approval_id:
         from yequ.services.approval_service import approve_approval, create_approval
+
         steps_data = await get_steps(db, plan_id)
         repair_steps = [s for s in steps_data if s.requires_approval]
         approval = await create_approval(
@@ -145,9 +152,7 @@ async def run_plan_endpoint(
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
 ) -> dict:
-    result = await db.execute(
-        select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id)
-    )
+    result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
         raise HTTPException(404)
@@ -158,21 +163,22 @@ async def run_plan_endpoint(
     from yequ.config import get_settings
     from yequ.services.node_liveness_service import is_node_schedulable
 
-    node_result = await db.execute(
-        select(Node).where(Node.node_id == plan.target_node_id)
-    )
+    node_result = await db.execute(select(Node).where(Node.node_id == plan.target_node_id))
     target_node = node_result.scalar_one_or_none()
     if target_node is None:
         raise HTTPException(404, f"Target node {plan.target_node_id!r} not found")
 
     schedulable, reason = is_node_schedulable(target_node, get_settings())
     if not schedulable:
-        raise HTTPException(409, detail={
-            "error_code": "NODE_UNAVAILABLE",
-            "error_message": f"Node {plan.target_node_id} is not schedulable: {reason}",
-            "node_id": plan.target_node_id,
-            "effective_status": reason or "unavailable",
-        })
+        raise HTTPException(
+            409,
+            detail={
+                "error_code": "NODE_UNAVAILABLE",
+                "error_message": f"Node {plan.target_node_id} is not schedulable: {reason}",
+                "node_id": plan.target_node_id,
+                "effective_status": reason or "unavailable",
+            },
+        )
 
     run = await run_plan(db, plan)
     run = await execute_plan_run(db, plan, run, approval_id=approval_id, dry_run=dry_run)
@@ -196,15 +202,161 @@ async def run_plan_endpoint(
     }
 
 
+@router.post("/runs/{run_id}/resume")
+async def resume_run_endpoint(
+    run_id: str,
+    body: ResumeRunRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(404, f"Run {run_id!r} not found")
+    if run.status != "waiting_approval":
+        raise HTTPException(409, f"Cannot resume run in status {run.status}")
+
+    plan_result = await db.execute(
+        select(MaintenancePlan).where(MaintenancePlan.plan_id == run.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(404, f"Plan {run.plan_id!r} not found")
+
+    approval_id = (body.approval_id if body else None) or plan.approval_id
+    if not approval_id and isinstance(run.summary, dict):
+        approval_id = run.summary.get("approval_id")  # type: ignore[assignment]
+    if not approval_id:
+        raise HTTPException(409, "Run is waiting for approval but no approval_id is linked")
+
+    approval_result = await db.execute(
+        select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+    )
+    approval = approval_result.scalar_one_or_none()
+    if approval is None:
+        raise HTTPException(404, f"Approval {approval_id!r} not found")
+    if approval.status not in ("approved", "consumed"):
+        raise HTTPException(409, f"Approval {approval_id!r} is {approval.status}")
+
+    if run.current_step_id:
+        step_result = await db.execute(
+            select(MaintenanceStep).where(MaintenanceStep.step_id == run.current_step_id)
+        )
+        step = step_result.scalar_one_or_none()
+        if step and step.status == "requires_approval":
+            step.status = "pending"
+            step.error = None
+            step.started_at = None
+            step.finished_at = None
+
+    run.status = "running"
+    run.finished_at = None
+    plan.status = "running"
+    plan.finished_at = None
+    await db.flush()
+
+    run = await execute_plan_run(db, plan, run, approval_id=approval_id)
+    run = await finalize_run(db, plan, run)
+    steps = await get_steps(db, plan.plan_id)
+    return {
+        "run_id": run.run_id,
+        "plan_id": run.plan_id,
+        "status": run.status,
+        "summary": run.summary,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "steps": [_step_dict(s) for s in steps],
+    }
+
+
+@router.post("/runs/{run_id}/reject")
+async def reject_run_endpoint(
+    run_id: str,
+    body: RejectRunRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    _token: dict = Depends(get_admin_token),
+) -> dict:
+    result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(404, f"Run {run_id!r} not found")
+    if run.status != "waiting_approval":
+        raise HTTPException(409, f"Cannot reject run in status {run.status}")
+
+    plan_result = await db.execute(
+        select(MaintenancePlan).where(MaintenancePlan.plan_id == run.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(404, f"Plan {run.plan_id!r} not found")
+
+    approval_id = (body.approval_id if body else None) or plan.approval_id
+    if not approval_id and isinstance(run.summary, dict):
+        approval_id = run.summary.get("approval_id")  # type: ignore[assignment]
+    reason = (body.reason if body else None) or "maintenance_run_rejected"
+
+    if approval_id:
+        approval_result = await db.execute(
+            select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
+        )
+        approval = approval_result.scalar_one_or_none()
+        if approval and approval.status == "pending":
+            from yequ.services.approval_service import deny_approval
+
+            await deny_approval(db, approval, denied_by="admin", reason=reason)
+
+    now = datetime.now(UTC)
+    if run.current_step_id:
+        step_result = await db.execute(
+            select(MaintenanceStep).where(MaintenanceStep.step_id == run.current_step_id)
+        )
+        step = step_result.scalar_one_or_none()
+        if step:
+            step.status = "failed"
+            step.error = "approval_denied"
+            step.finished_at = now
+
+    run.status = "cancelled"
+    run.finished_at = now
+    run.summary = {
+        "reason": "approval_denied",
+        "approval_id": approval_id,
+        "message": reason,
+    }
+    plan.status = "cancelled"
+    plan.finished_at = now
+
+    from yequ.models.timeline import TimelineEvent
+    from yequ.services.timeline_writer import add_timeline_event
+
+    await add_timeline_event(
+        db,
+        TimelineEvent(
+            global_seq=0,
+            event_type="maintenance.run.cancelled",
+            actor_type="admin",
+            actor_id="admin",
+            node_id=plan.target_node_id,
+            data={
+                "run_id": run.run_id,
+                "plan_id": plan.plan_id,
+                "approval_id": approval_id or "",
+                "reason": reason,
+            },
+            timestamp=now,
+        ),
+    )
+    await db.commit()
+    return _run_dict(run)
+
+
 @router.get("/runs/{run_id}")
 async def get_run(
     run_id: str,
     db: AsyncSession = Depends(get_db),
     _token: dict = Depends(get_admin_token),
 ) -> dict:
-    result = await db.execute(
-        select(MaintenanceRun).where(MaintenanceRun.run_id == run_id)
-    )
+    result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(404)
@@ -277,9 +429,7 @@ async def run_events_stream(
     every 2 seconds. Closes when the run reaches terminal status.
     """
     # Verify run exists
-    run_result = await db.execute(
-        select(MaintenanceRun).where(MaintenanceRun.run_id == run_id)
-    )
+    run_result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
     r = run_result.scalar_one_or_none()
     if r is None:
         raise HTTPException(404, f"Run {run_id!r} not found")
@@ -304,7 +454,8 @@ async def run_events_stream(
 
         # Check if run already terminal
         if r.status in terminal_statuses:
-            yield f"data: {json.dumps({'event_type': 'stream.close', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+            close_event = {"event_type": "stream.close", "run_id": run_id}
+            yield f"data: {json.dumps(close_event, ensure_ascii=False)}\n\n"
             return
 
         # Poll for new events
@@ -332,7 +483,8 @@ async def run_events_stream(
                 )
                 run = run_check.scalar_one_or_none()
                 if run and run.status in terminal_statuses:
-                    yield f"data: {json.dumps({'event_type': 'stream.close', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+                    close_event = {"event_type": "stream.close", "run_id": run_id}
+                    yield f"data: {json.dumps(close_event, ensure_ascii=False)}\n\n"
                     return
 
     return StreamingResponse(

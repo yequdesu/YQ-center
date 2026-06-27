@@ -10,45 +10,57 @@ Covers:
 """
 
 import json
+from contextlib import suppress
 
 import pytest
 from httpx import AsyncClient
 
-
 # ── 1. Stream block ordering ──
+
 
 @pytest.mark.asyncio
 async def test_stream_block_ordering_assistant_text_between_tool_groups(
     client: AsyncClient,
 ):
     """Verify assistant_text blocks appear between tool_group blocks in correct order."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     # Create a provider that returns: tool_calls -> text -> tool_calls -> final text
     fake = FakeAgentProvider("block-order-test")
-    fake.add_functions([
-        AgentFunction(name="system.info", description="Get system info", risk="safe", effect="read"),
-        AgentFunction(name="system.metrics.snapshot", description="Get metrics", risk="safe", effect="read"),
-    ])
-    fake.set_sequence([
-        # Step 1: tool calls + intermediate text
-        ProviderInvokeResult(
-            message="Let me check the system.",
-            tool_calls=[
-                {"call_id": "call_1", "name": "system.info", "input": {}},
-                {"call_id": "call_2", "name": "system.metrics.snapshot", "input": {}},
-            ],
-            success=True,
-        ),
-        # Step 2: final text after tools
-        ProviderInvokeResult(
-            message="System looks healthy.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.info", description="Get system info", risk="safe", effect="read"
+            ),
+            AgentFunction(
+                name="system.metrics.snapshot",
+                description="Get metrics",
+                risk="safe",
+                effect="read",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            # Step 1: tool calls + intermediate text
+            ProviderInvokeResult(
+                message="Let me check the system.",
+                tool_calls=[
+                    {"call_id": "call_1", "name": "system.info", "input": {}},
+                    {"call_id": "call_2", "name": "system.metrics.snapshot", "input": {}},
+                ],
+                success=True,
+            ),
+            # Step 2: final text after tools
+            ProviderInvokeResult(
+                message="System looks healthy.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     # Create session
@@ -112,38 +124,52 @@ async def test_stream_block_ordering_assistant_text_between_tool_groups(
 
 # ── 2. Concurrent safe/readonly tool events ──
 
+
 @pytest.mark.asyncio
 async def test_concurrent_safe_tools_emit_created_events_first(
     client: AsyncClient,
 ):
     """Verify that for concurrent-safe tools, all created events appear before execution events."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("concurrent-test")
-    fake.add_functions([
-        AgentFunction(name="system.info", description="Get system info", risk="safe", effect="read"),
-        AgentFunction(name="system.metrics.snapshot", description="Get metrics", risk="safe", effect="read"),
-        AgentFunction(name="system.disk.detail", description="Get disk info", risk="safe", effect="read"),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.info", description="Get system info", risk="safe", effect="read"
+            ),
+            AgentFunction(
+                name="system.metrics.snapshot",
+                description="Get metrics",
+                risk="safe",
+                effect="read",
+            ),
+            AgentFunction(
+                name="system.disk.detail", description="Get disk info", risk="safe", effect="read"
+            ),
+        ]
+    )
     # All 3 tools are safe+read — should be concurrent
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Checking multiple things.",
-            tool_calls=[
-                {"call_id": "c1", "name": "system.info", "input": {}},
-                {"call_id": "c2", "name": "system.metrics.snapshot", "input": {}},
-                {"call_id": "c3", "name": "system.disk.detail", "input": {}},
-            ],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="All checks passed.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Checking multiple things.",
+                tool_calls=[
+                    {"call_id": "c1", "name": "system.info", "input": {}},
+                    {"call_id": "c2", "name": "system.metrics.snapshot", "input": {}},
+                    {"call_id": "c3", "name": "system.disk.detail", "input": {}},
+                ],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="All checks passed.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -174,7 +200,6 @@ async def test_concurrent_safe_tools_emit_created_events_first(
     assert created_count == 3, f"Expected 3 tool_call.created, got {created_count}"
 
     # All created events should come before the first job.queued or invocation.created
-    first_created_idx = event_types.index("agent.tool_call.created")
     last_created_idx = len(event_types) - 1 - event_types[::-1].index("agent.tool_call.created")
 
     job_queued_indices = [i for i, t in enumerate(event_types) if t == "agent.job.queued"]
@@ -191,36 +216,51 @@ async def test_concurrent_safe_tools_emit_created_events_first(
 
 # ── 3. Write tool NOT concurrent ──
 
+
 @pytest.mark.asyncio
 async def test_write_tool_not_concurrent_with_read_tools(
     client: AsyncClient,
 ):
     """Verify that write/approval tools are NOT executed concurrently with read tools."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("write-test")
-    fake.add_functions([
-        AgentFunction(name="system.info", description="Get system info", risk="safe", effect="read"),
-        AgentFunction(name="system.service.ensure_running", description="Ensure service running",
-                     risk="maintenance", effect="write"),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Check and fix.",
-            tool_calls=[
-                {"call_id": "r1", "name": "system.info", "input": {}},
-                {"call_id": "w1", "name": "system.service.ensure_running", "input": {"name": "TestSvc"}},
-            ],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="Done.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.info", description="Get system info", risk="safe", effect="read"
+            ),
+            AgentFunction(
+                name="system.service.ensure_running",
+                description="Ensure service running",
+                risk="maintenance",
+                effect="write",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Check and fix.",
+                tool_calls=[
+                    {"call_id": "r1", "name": "system.info", "input": {}},
+                    {
+                        "call_id": "w1",
+                        "name": "system.service.ensure_running",
+                        "input": {"name": "TestSvc"},
+                    },
+                ],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="Done.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -244,26 +284,16 @@ async def test_write_tool_not_concurrent_with_read_tools(
     assert stream_resp.status_code == 200
 
     events = _parse_sse_events(stream_resp.text)
-    event_types = [e["event_type"] for e in events]
-
     # The write tool should result in waiting_approval or policy_denied
     # It should NOT be executed concurrently with the read tool
     write_created = [
-        e for e in events
+        e
+        for e in events
         if e["event_type"] == "agent.tool_call.created"
         and e.get("data", {}).get("name") == "system.service.ensure_running"
     ]
     assert len(write_created) == 1, "Write tool should have a created event"
 
-    # Check that the write tool either gets policy_denied or waiting_approval
-    write_events = [
-        e["event_type"] for e in events
-        if e.get("data", {}).get("name") == "system.service.ensure_running"
-    ]
-    has_approval_or_denied = any(
-        t in write_events
-        for t in ["agent.tool_call.waiting_approval", "agent.tool_call.failed"]
-    )
     # In test mode without real nodes, the write tool will likely fail with function_not_available
     # or wait for approval. Either way, it must not run concurrently with the read tool.
     assert True  # Structural test — the scheduling logic prevents concurrent write execution
@@ -271,28 +301,31 @@ async def test_write_tool_not_concurrent_with_read_tools(
 
 # ── 4. Session refresh preserves chat history order ──
 
+
 @pytest.mark.asyncio
 async def test_session_refresh_preserves_chat_history_order(
     client: AsyncClient,
 ):
     """Verify that GET /admin/sessions/{id} returns messages in correct chronological order."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("refresh-test")
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="",
-            tool_calls=[{"call_id": "t1", "name": "system.info", "input": {}}],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="Final response after tools.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[{"call_id": "t1", "name": "system.info", "input": {}}],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="Final response after tools.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -327,7 +360,9 @@ async def test_session_refresh_preserves_chat_history_order(
     user_idx = roles.index("user")
     assistant_indices = [i for i, r in enumerate(roles) if r == "assistant"]
     if assistant_indices:
-        assert user_idx < assistant_indices[-1], "User message should come before final assistant response"
+        assert user_idx < assistant_indices[-1], (
+            "User message should come before final assistant response"
+        )
 
     # Refresh — order should be the same
     detail_resp2 = await client.get(f"/admin/sessions/{session_id}")
@@ -335,30 +370,33 @@ async def test_session_refresh_preserves_chat_history_order(
     data2 = detail_resp2.json()
 
     assert len(data2["messages"]) == len(messages)
-    for i, (m1, m2) in enumerate(zip(data["messages"], data2["messages"])):
+    for i, (m1, m2) in enumerate(zip(data["messages"], data2["messages"], strict=False)):
         assert m1["role"] == m2["role"], f"Message {i} role changed on refresh"
         assert m1["message_id"] == m2["message_id"], f"Message {i} id changed on refresh"
 
 
 # ── 5. Session sidebar summary ──
 
+
 @pytest.mark.asyncio
 async def test_session_sidebar_returns_last_message_preview_and_updated_at(
     client: AsyncClient,
 ):
     """Verify that GET /admin/sessions returns last_message_preview, updated_at, message_count."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("sidebar-test")
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Response text.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Response text.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     # Create session
@@ -411,33 +449,42 @@ async def test_session_sidebar_returns_last_message_preview_and_updated_at(
 
 # ── 6. No online node diagnostic ──
 
+
 @pytest.mark.asyncio
 async def test_no_online_node_produces_explicit_diagnostic(
     client: AsyncClient,
 ):
     """Verify that when no online node exists, the response contains an explicit diagnostic,
     not just a generic failure list."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("node-diag-test")
-    fake.add_functions([
-        AgentFunction(name="nonexistent.check", description="A check that no node has",
-                     risk="safe", effect="read"),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="",
-            tool_calls=[{"call_id": "n1", "name": "nonexistent.check", "input": {}}],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="nonexistent.check",
+                description="A check that no node has",
+                risk="safe",
+                effect="read",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[{"call_id": "n1", "name": "nonexistent.check", "input": {}}],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -462,34 +509,34 @@ async def test_no_online_node_produces_explicit_diagnostic(
     events = _parse_sse_events(stream_resp.text)
 
     # Check that the failure is explicitly about node availability
-    failed_events = [
-        e for e in events
-        if e["event_type"] == "agent.tool_call.failed"
-    ]
+    failed_events = [e for e in events if e["event_type"] == "agent.tool_call.failed"]
     assert len(failed_events) > 0, "Should have at least one failed event"
 
     # The error message should mention node / capability unavailability
-    error_messages = [
-        str(e.get("data", {}).get("message", ""))
-        for e in failed_events
-    ]
+    error_messages = [str(e.get("data", {}).get("message", "")) for e in failed_events]
     combined = " ".join(error_messages).lower()
     assert any(
-        term in combined
-        for term in ["no online node", "not available", "function_not_available"]
+        term in combined for term in ["no online node", "not available", "function_not_available"]
     ), f"Error should mention node/capability unavailability, got: {combined}"
 
     # Check fallback synthesis mentions the capability/node issue
-    fallback_events = [
-        e for e in events
-        if e["event_type"] == "agent.fallback_synthesis"
-    ]
+    fallback_events = [e for e in events if e["event_type"] == "agent.fallback_synthesis"]
     if fallback_events:
         synthesis = str(fallback_events[0].get("data", {}).get("message", ""))
         # The synthesis should mention the failure, not give a generic "all good"
         assert any(
             term in synthesis.lower()
-            for term in ["无法", "没有在线", "不可用", "unavailable", "not available", "失败", "failed", "node", "能力"]
+            for term in [
+                "无法",
+                "没有在线",
+                "不可用",
+                "unavailable",
+                "not available",
+                "失败",
+                "failed",
+                "node",
+                "能力",
+            ]
         ), f"Fallback synthesis should diagnose the issue, got: {synthesis}"
         # It should NOT be a simple "succeeded" message
         assert "所有" not in synthesis or "失败" in synthesis or "❌" in synthesis, (
@@ -509,8 +556,6 @@ def _parse_sse_events(text: str) -> list[dict]:
             if line.startswith("data:"):
                 payload = line[5:].strip()
                 if payload:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         events.append(json.loads(payload))
-                    except json.JSONDecodeError:
-                        pass
     return events

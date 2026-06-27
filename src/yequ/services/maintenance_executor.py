@@ -3,10 +3,12 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from yequ.agent.agent_service import _wait_invocation_terminal
+from yequ.models.approval import ApprovalRequest
+from yequ.models.invocation import Invocation
+from yequ.models.job import Job as JobModel
 from yequ.models.maintenance_plan import (
     MaintenanceArtifact,
     MaintenancePlan,
@@ -14,11 +16,10 @@ from yequ.models.maintenance_plan import (
     MaintenanceStep,
     RollbackHint,
 )
-from yequ.models.invocation import Invocation
-from yequ.models.job import Job as JobModel
 from yequ.models.timeline import TimelineEvent
 from yequ.services.invocation_service import create_invocation, start_invocation
 from yequ.services.job_service import create_job
+from yequ.services.timeline_writer import add_timeline_event
 
 
 def _make_artifact_id() -> str:
@@ -27,6 +28,29 @@ def _make_artifact_id() -> str:
 
 def _make_hint_id() -> str:
     return f"hint_{uuid.uuid4().hex[:16]}"
+
+
+async def _wait_invocation_terminal_for_plan(
+    session_factory: async_sessionmaker[AsyncSession],
+    invocation_id: str,
+    deadline: datetime,
+    poll_interval: float = 0.5,
+) -> str:
+    """Poll a maintenance step invocation using the caller's DB bind."""
+    import asyncio
+
+    terminal_statuses = {"succeeded", "failed", "timeout", "cancelled", "partial"}
+    while datetime.now(UTC) < deadline:
+        async with session_factory() as poll_db:
+            result = await poll_db.execute(
+                select(Invocation).where(Invocation.invocation_id == invocation_id)
+            )
+            inv = result.scalar_one_or_none()
+            if inv and inv.status in terminal_statuses:
+                return inv.status
+        await asyncio.sleep(poll_interval)
+
+    return "timeout"
 
 
 async def _write_artifact(
@@ -73,10 +97,8 @@ async def _write_artifact(
             resolved_approval_id = plan_obj.approval_id
 
     # Timeline event
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="maintenance.artifact.created",
         actor_type="system",
         actor_id="maintenance_executor",
@@ -92,8 +114,7 @@ async def _write_artifact(
         },
         timestamp=now,
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)
     return artifact
 
 
@@ -127,11 +148,19 @@ async def execute_plan_run(
 
     # Write run started timeline event
     await _write_maintenance_timeline(
-        db, "maintenance.run.started", run.run_id, plan.plan_id, plan.target_node_id,
+        db,
+        "maintenance.run.started",
+        run.run_id,
+        plan.plan_id,
+        plan.target_node_id,
         approval_id=plan.approval_id,
     )
 
     for step in steps:
+        if step.status in ("succeeded", "skipped"):
+            completed_steps.add(step.step_id)
+            continue
+
         # Check depends_on — consider both succeeded AND skipped as "completed"
         if step.depends_on:
             unmet = [s for s in step.depends_on if s not in completed_steps]
@@ -142,17 +171,19 @@ async def execute_plan_run(
                 .where(MaintenanceStep.seq.in_([int(d) for d in step.depends_on]))
             )
             dep_steps_list = list(dep_steps_r.scalars().all())
-            all_deps_done = all(
-                ds.status in ("succeeded", "skipped")
-                for ds in dep_steps_list
-            )
+            all_deps_done = all(ds.status in ("succeeded", "skipped") for ds in dep_steps_list)
             if not all_deps_done:
                 step.status = "skipped"
                 step.skip_reason = f"Unmet dependencies: {unmet}"
                 step.finished_at = datetime.now(UTC)
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
-                    step_id=step.step_id, function_name=step.function_name,
+                    db,
+                    "maintenance.step.skipped",
+                    run.run_id,
+                    plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
                     error=step.skip_reason,
                 )
                 await db.flush()
@@ -175,8 +206,13 @@ async def execute_plan_run(
                 step.skip_reason = "previous_healthy"
                 step.finished_at = datetime.now(UTC)
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
-                    step_id=step.step_id, function_name=step.function_name,
+                    db,
+                    "maintenance.step.skipped",
+                    run.run_id,
+                    plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
                     error=step.skip_reason,
                 )
                 completed_steps.add(step.step_id)
@@ -199,8 +235,13 @@ async def execute_plan_run(
                 step.skip_reason = "previous step did not fail"
                 step.finished_at = datetime.now(UTC)
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
-                    step_id=step.step_id, function_name=step.function_name,
+                    db,
+                    "maintenance.step.skipped",
+                    run.run_id,
+                    plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
                     error=step.skip_reason,
                 )
                 completed_steps.add(step.step_id)
@@ -211,8 +252,13 @@ async def execute_plan_run(
             step.skip_reason = "manual step requires operator intervention"
             step.finished_at = datetime.now(UTC)
             await _write_maintenance_timeline(
-                db, "maintenance.step.skipped", run.run_id, plan.plan_id, plan.target_node_id,
-                step_id=step.step_id, function_name=step.function_name,
+                db,
+                "maintenance.step.skipped",
+                run.run_id,
+                plan.plan_id,
+                plan.target_node_id,
+                step_id=step.step_id,
+                function_name=step.function_name,
                 error=step.skip_reason,
             )
             completed_steps.add(step.step_id)
@@ -236,10 +282,108 @@ async def execute_plan_run(
                 target_node_id=plan.target_node_id,
             )
 
+        effective_approval_id = approval_id or plan.approval_id or None
+        approval: ApprovalRequest | None = None
+        if effective_approval_id:
+            approval_result = await db.execute(
+                select(ApprovalRequest).where(ApprovalRequest.approval_id == effective_approval_id)
+            )
+            approval = approval_result.scalar_one_or_none()
+            if approval is None:
+                effective_approval_id = None
+
+        if step.requires_approval and not dry_run:
+            if approval is None:
+                from yequ.services.approval_service import create_approval
+
+                approval = await create_approval(
+                    db,
+                    actor_id=plan.actor_id,
+                    session_id=plan.session_id,
+                    function_name=step.function_name,
+                    target_node_id=plan.target_node_id,
+                    input_data=step.input_data or {},
+                    risk=step.risk or plan.risk,
+                    effect="write" if step.kind in ("repair", "write", "rollback") else "read",
+                    resource_keys=step.resource_keys or [],
+                    invocation_id=run.run_id,
+                )
+                effective_approval_id = approval.approval_id
+                plan.approval_id = approval.approval_id
+
+            if approval.status == "pending":
+                now = datetime.now(UTC)
+                step.status = "requires_approval"
+                step.started_at = now
+                step.finished_at = now
+                step.error = "approval_required"
+                run.status = "waiting_approval"
+                run.current_step_id = step.step_id
+                run.summary = {
+                    "reason": "approval_required",
+                    "step_id": step.step_id,
+                    "function_name": step.function_name,
+                    "approval_id": effective_approval_id,
+                }
+                plan.status = "waiting_approval"
+                await _write_maintenance_timeline(
+                    db,
+                    "maintenance.step.requires_approval",
+                    run.run_id,
+                    plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
+                    error="approval_required",
+                    approval_id=effective_approval_id,
+                )
+                await db.commit()
+                return run
+
+            if approval.status in ("denied", "expired"):
+                now = datetime.now(UTC)
+                step.status = "failed"
+                step.error = f"approval_{approval.status}"
+                step.finished_at = now
+                run.status = "cancelled"
+                run.finished_at = now
+                run.current_step_id = step.step_id
+                run.summary = {
+                    "reason": f"approval_{approval.status}",
+                    "step_id": step.step_id,
+                    "function_name": step.function_name,
+                    "approval_id": effective_approval_id,
+                }
+                plan.status = "cancelled"
+                plan.finished_at = now
+                await _write_maintenance_timeline(
+                    db,
+                    "maintenance.run.cancelled",
+                    run.run_id,
+                    plan.plan_id,
+                    plan.target_node_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
+                    error=f"approval_{approval.status}",
+                    approval_id=effective_approval_id,
+                )
+                await db.commit()
+                return run
+
+            if approval.status == "approved":
+                from yequ.services.approval_service import consume_approval
+
+                await consume_approval(db, approval, invocation_id=run.run_id)
+
         # Write step started timeline event
         await _write_maintenance_timeline(
-            db, "maintenance.step.started", run.run_id, plan.plan_id, plan.target_node_id,
-            step_id=step.step_id, function_name=step.function_name,
+            db,
+            "maintenance.step.started",
+            run.run_id,
+            plan.plan_id,
+            plan.target_node_id,
+            step_id=step.step_id,
+            function_name=step.function_name,
         )
 
         step.status = "running"
@@ -321,6 +465,7 @@ async def execute_plan_run(
             else:
                 # Check __test_fail_stage (only in test mode)
                 from yequ.config import get_settings
+
                 if get_settings().test_mode:
                     fail_stage = (step.input_data or {}).get("__test_fail_stage", "")
                     if fail_stage == "repair" and step.kind == "repair":
@@ -356,8 +501,17 @@ async def execute_plan_run(
                 inv_final = inv_to_fail
             else:
                 # Wait for step to reach terminal state
-                deadline = datetime.now(UTC) + timedelta(seconds=step.timeout_sec + 30)
-                final_status = await _wait_invocation_terminal(inv.invocation_id, deadline)
+                deadline = datetime.now(UTC) + timedelta(seconds=max(1, step.timeout_sec))
+                wait_session_factory = async_sessionmaker(
+                    db.bind,
+                    class_=AsyncSession,
+                    expire_on_commit=False,
+                )
+                final_status = await _wait_invocation_terminal_for_plan(
+                    wait_session_factory,
+                    inv.invocation_id,
+                    deadline,
+                )
 
                 # Collect result
                 inv_result = await db.execute(
@@ -371,10 +525,15 @@ async def execute_plan_run(
                 step.result = inv_final.result if inv_final else {}
                 completed_steps.add(step.step_id)
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.succeeded", run.run_id, plan.plan_id,
+                    db,
+                    "maintenance.step.succeeded",
+                    run.run_id,
+                    plan.plan_id,
                     plan.target_node_id,
-                    step_id=step.step_id, function_name=step.function_name,
-                    job_id=step.job_id, invocation_id=step.invocation_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
+                    job_id=step.job_id,
+                    invocation_id=step.invocation_id,
                 )
 
                 # --- Write success artifacts ---
@@ -404,8 +563,11 @@ async def execute_plan_run(
                         kind="after",
                         name=f"after_{step.function_name}",
                         data=step.result,
-                        summary={"step_kind": step.kind, "function_name": step.function_name,
-                                 "status": "succeeded"},
+                        summary={
+                            "step_kind": step.kind,
+                            "function_name": step.function_name,
+                            "status": "succeeded",
+                        },
                         plan_id=plan.plan_id,
                         target_node_id=plan.target_node_id,
                     )
@@ -454,14 +616,21 @@ async def execute_plan_run(
                 )
                 failed_job = job_result.scalar_one_or_none()
                 if failed_job and failed_job.error_code:
-                    step.error = f"{failed_job.error_code}: {failed_job.error_message or 'no details'}"
+                    step.error = (
+                        f"{failed_job.error_code}: {failed_job.error_message or 'no details'}"
+                    )
                 else:
                     step.error = f"Step ended with {final_status}"
                 await _write_maintenance_timeline(
-                    db, "maintenance.step.failed", run.run_id, plan.plan_id,
+                    db,
+                    "maintenance.step.failed",
+                    run.run_id,
+                    plan.plan_id,
                     plan.target_node_id,
-                    step_id=step.step_id, function_name=step.function_name,
-                    job_id=step.job_id, invocation_id=step.invocation_id,
+                    step_id=step.step_id,
+                    function_name=step.function_name,
+                    job_id=step.job_id,
+                    invocation_id=step.invocation_id,
                     error=step.error,
                 )
 
@@ -520,7 +689,10 @@ async def execute_plan_run(
                     run.status = "rollback_recommended"
                     run.rollback_recommended = True
                     await _write_rollback_recommended(
-                        db, run, step, plan,
+                        db,
+                        run,
+                        step,
+                        plan,
                         reason=f"Repair step {step.function_name} failed: {step.error}",
                     )
                 elif step.kind == "verify":
@@ -528,8 +700,13 @@ async def execute_plan_run(
                     run.status = "rollback_recommended"
                     run.rollback_recommended = True
                     await _write_rollback_recommended(
-                        db, run, step, plan,
-                        reason=f"Verify step {step.function_name} failed after repair: {step.error}",
+                        db,
+                        run,
+                        step,
+                        plan,
+                        reason=(
+                            f"Verify step {step.function_name} failed after repair: {step.error}"
+                        ),
                     )
 
                 run.finished_at = datetime.now(UTC)
@@ -547,10 +724,15 @@ async def execute_plan_run(
 
             # Write step failed timeline event
             await _write_maintenance_timeline(
-                db, "maintenance.step.failed", run.run_id, plan.plan_id,
+                db,
+                "maintenance.step.failed",
+                run.run_id,
+                plan.plan_id,
                 plan.target_node_id,
-                step_id=step.step_id, function_name=step.function_name,
-                job_id=step.job_id, invocation_id=step.invocation_id,
+                step_id=step.step_id,
+                function_name=step.function_name,
+                job_id=step.job_id,
+                invocation_id=step.invocation_id,
                 error=str(e)[:500],
             )
 
@@ -583,15 +765,23 @@ async def execute_plan_run(
                 run.status = "rollback_recommended"
                 run.rollback_recommended = True
                 await _write_rollback_recommended(
-                    db, run, step, plan,
+                    db,
+                    run,
+                    step,
+                    plan,
                     reason=f"Repair step {step.function_name} exception: {str(e)[:200]}",
                 )
             elif step.kind == "verify":
                 run.status = "rollback_recommended"
                 run.rollback_recommended = True
                 await _write_rollback_recommended(
-                    db, run, step, plan,
-                    reason=f"Verify step {step.function_name} exception after repair: {str(e)[:200]}",
+                    db,
+                    run,
+                    step,
+                    plan,
+                    reason=(
+                        f"Verify step {step.function_name} exception after repair: {str(e)[:200]}"
+                    ),
                 )
 
             if not step.continue_on_failure:
@@ -627,26 +817,48 @@ async def finalize_run(
     run.finished_at = now
     plan.finished_at = now
 
-    # Build summary
+    # Build summary without dropping waiting-approval context from the executor.
+    previous_summary = run.summary if isinstance(run.summary, dict) else {}
     run.summary = {
+        **previous_summary,
         "total_steps": len(steps),
         "succeeded": len([s for s in steps if s.status == "succeeded"]),
         "failed": len([s for s in steps if s.status == "failed"]),
         "skipped": len([s for s in steps if s.status == "skipped"]),
     }
+    if run.status == "waiting_approval":
+        plan.status = "waiting_approval"
+        run.finished_at = None
+        plan.finished_at = None
+        await _write_maintenance_timeline(
+            db,
+            "maintenance.run.waiting_approval",
+            run.run_id,
+            plan.plan_id,
+            plan.target_node_id,
+            approval_id=plan.approval_id,
+        )
+        await db.commit()
+        return run
+
+    if run.status == "cancelled":
+        plan.status = "cancelled"
+        if run.finished_at is None:
+            run.finished_at = datetime.now(UTC)
+        if plan.finished_at is None:
+            plan.finished_at = run.finished_at
+        await db.commit()
+        return run
+
     # Run status: failed > rollback_recommended > partially_succeeded > succeeded
     # (keep status set by executor if already failed/rollback_recommended)
     if run.status not in ("failed", "rollback_recommended"):
         if any(s.status == "failed" for s in steps):
             # Determine if any failed step was repair/write → rollback_recommended
             failed_repair = any(
-                s.status == "failed" and s.kind in ("repair", "write", "rollback")
-                for s in steps
+                s.status == "failed" and s.kind in ("repair", "write", "rollback") for s in steps
             )
-            failed_verify = any(
-                s.status == "failed" and s.kind == "verify"
-                for s in steps
-            )
+            failed_verify = any(s.status == "failed" and s.kind == "verify" for s in steps)
             if failed_repair or failed_verify:
                 run.status = "rollback_recommended"
                 run.rollback_recommended = True
@@ -660,12 +872,14 @@ async def finalize_run(
 
     # Write run completed/failed timeline event
     event_type = (
-        "maintenance.run.succeeded"
-        if run.status == "succeeded"
-        else "maintenance.run.failed"
+        "maintenance.run.succeeded" if run.status == "succeeded" else "maintenance.run.failed"
     )
     await _write_maintenance_timeline(
-        db, event_type, run.run_id, plan.plan_id, plan.target_node_id,
+        db,
+        event_type,
+        run.run_id,
+        plan.plan_id,
+        plan.target_node_id,
         approval_id=plan.approval_id,
     )
 
@@ -673,10 +887,12 @@ async def finalize_run(
     # (execute_plan_run may have already written it for early-return failures)
     if run.rollback_recommended:
         existing = await db.execute(
-            select(TimelineEvent).where(
+            select(TimelineEvent)
+            .where(
                 TimelineEvent.event_type == "maintenance.rollback.recommended",
                 TimelineEvent.data.op("->>")("run_id") == run.run_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         if not existing.scalar_one_or_none():
             await _write_rollback_recommended_timeline(db, run, plan)
@@ -807,10 +1023,8 @@ async def _write_rollback_recommended_timeline(
         for a in artifacts
     ]
 
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="maintenance.rollback.recommended",
         actor_type="system",
         actor_id="maintenance_executor",
@@ -825,8 +1039,7 @@ async def _write_rollback_recommended_timeline(
         },
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)
 
 
 async def _write_maintenance_timeline(
@@ -844,9 +1057,6 @@ async def _write_maintenance_timeline(
     approval_id: str | None = None,
 ) -> None:
     """Write a maintenance timeline event."""
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-
     # Resolve approval_id from plan if not explicitly passed
     if not approval_id:
         plan_result = await db.execute(
@@ -861,12 +1071,15 @@ async def _write_maintenance_timeline(
         "plan_id": plan_id,
         "approval_id": approval_id or "",
     }
-    if step_id: data["step_id"] = step_id
-    if function_name: data["function_name"] = function_name
-    if error: data["error"] = error
+    if step_id:
+        data["step_id"] = step_id
+    if function_name:
+        data["function_name"] = function_name
+    if error:
+        data["error"] = error
 
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type=event_type,
         actor_type="system",
         actor_id="maintenance_executor",
@@ -876,5 +1089,4 @@ async def _write_maintenance_timeline(
         data=data,
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)

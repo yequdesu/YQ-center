@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 
 from fastapi import FastAPI
@@ -10,6 +10,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from yequ.api.routes.admin import router as admin_router
+from yequ.api.routes.admin_activity import router as admin_activity_router
+from yequ.api.routes.admin_approvals import router as admin_approvals_router
+from yequ.api.routes.admin_invocations import router as admin_invocations_router
+from yequ.api.routes.admin_nodes import router as admin_nodes_router
+from yequ.api.routes.admin_provisioning import router as admin_provisioning_router
+from yequ.api.routes.admin_sessions import router as admin_sessions_router
 from yequ.api.routes.agent import router as agent_router
 from yequ.api.routes.health import router as health_router
 from yequ.api.routes.maintenance import router as maintenance_router
@@ -98,18 +104,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.exception("token bootstrap failed")
 
     from yequ.services.approval_service import _scan_expired_approvals
+    from yequ.services.node_liveness_scanner import get_liveness_scanner
+    from yequ.services.signal_state_scanner import get_signal_state_scanner
     from yequ.services.timeline_writer import get_timeline_writer
     from yequ.services.timeout_scanner import get_scanner
-    from yequ.services.node_liveness_scanner import get_liveness_scanner
 
     scanner = get_scanner()
     tl_writer = get_timeline_writer()
     liveness_scanner = get_liveness_scanner()
+    signal_state_scanner = get_signal_state_scanner()
 
     if not settings.test_mode:
         await scanner.start()
         await tl_writer.start()
         await liveness_scanner.start()
+        await signal_state_scanner.start()
         approval_scanner_task = asyncio.create_task(
             _scan_expired_approvals(), name="approval-expiry-scanner"
         )
@@ -118,10 +127,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if not settings.test_mode:
         approval_scanner_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await approval_scanner_task
-        except asyncio.CancelledError:
-            pass
+        await signal_state_scanner.stop()
         await liveness_scanner.stop()
         await scanner.stop()
         await tl_writer.stop()
@@ -142,26 +150,38 @@ def create_app() -> FastAPI:
         from yequ.config import get_settings
 
         settings = get_settings()
-        if settings.debug or settings.debug_timeline:
-            if request.method in ("POST", "PUT", "PATCH"):
-                body_bytes = await request.body()
-                body_str = body_bytes.decode("utf-8", errors="replace")
-                has_utf8 = any(ord(c) > 127 for c in body_str)
-                has_replacement = "�" in body_str
-                log.info(
-                    "raw body: method=%s path=%s size=%d has_utf8=%s has_replacement=%s preview=%s",
-                    request.method, request.url.path, len(body_bytes),
-                    has_utf8, has_replacement, repr(body_str[:200]),
-                )
-                # Re-attach body so route handlers can read it
-                from starlette.requests import Request as _Request
-                request._body = body_bytes
+        if (settings.debug or settings.debug_timeline) and request.method in (
+            "POST",
+            "PUT",
+            "PATCH",
+        ):
+            body_bytes = await request.body()
+            body_str = body_bytes.decode("utf-8", errors="replace")
+            has_utf8 = any(ord(c) > 127 for c in body_str)
+            has_replacement = "�" in body_str
+            log.info(
+                "raw body: method=%s path=%s size=%d has_utf8=%s has_replacement=%s preview=%s",
+                request.method,
+                request.url.path,
+                len(body_bytes),
+                has_utf8,
+                has_replacement,
+                repr(body_str[:200]),
+            )
+            # Re-attach body so route handlers can read it
+            request._body = body_bytes
         response = await call_next(request)
         return response
 
     app.include_router(health_router)
     app.include_router(agent_router)
     app.include_router(admin_router)
+    app.include_router(admin_activity_router)
+    app.include_router(admin_approvals_router)
+    app.include_router(admin_invocations_router)
+    app.include_router(admin_nodes_router)
+    app.include_router(admin_provisioning_router)
+    app.include_router(admin_sessions_router)
     app.include_router(maintenance_router)
     app.include_router(yqp_router)
 
@@ -171,11 +191,16 @@ def create_app() -> FastAPI:
         # Mount static assets (JS, CSS, favicon, etc.)
         _assets_dir = _console_dir / "assets"
         if _assets_dir.exists():
-            app.mount("/console/assets", StaticFiles(directory=str(_assets_dir)), name="console_assets")
+            app.mount(
+                "/console/assets",
+                StaticFiles(directory=str(_assets_dir)),
+                name="console_assets",
+            )
 
         # Favicon
         _favicon = _console_dir / "favicon.svg"
         if _favicon.exists():
+
             @app.get("/console/favicon.svg", include_in_schema=False)
             async def _console_favicon():
                 return FileResponse(_favicon)

@@ -19,21 +19,27 @@ class TestValidTransitions:
     """All valid transitions defined in VALID_TRANSITIONS must succeed."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("source,target", [
-        (JobStatus.CREATED, JobStatus.QUEUED),
-        (JobStatus.QUEUED, JobStatus.CLAIMED),
-        (JobStatus.QUEUED, JobStatus.CANCELLED),
-        (JobStatus.CLAIMED, JobStatus.RUNNING),
-        (JobStatus.CLAIMED, JobStatus.TIMEOUT),
-        (JobStatus.RUNNING, JobStatus.SUCCEEDED),
-        (JobStatus.RUNNING, JobStatus.FAILED),
-        (JobStatus.RUNNING, JobStatus.CANCELLING),
-        (JobStatus.RUNNING, JobStatus.TIMEOUT),
-        (JobStatus.CANCELLING, JobStatus.CANCELLED),
-        (JobStatus.CANCELLING, JobStatus.FAILED),
-    ])
+    @pytest.mark.parametrize(
+        "source,target",
+        [
+            (JobStatus.CREATED, JobStatus.QUEUED),
+            (JobStatus.QUEUED, JobStatus.CLAIMED),
+            (JobStatus.QUEUED, JobStatus.CANCELLED),
+            (JobStatus.CLAIMED, JobStatus.RUNNING),
+            (JobStatus.CLAIMED, JobStatus.TIMEOUT),
+            (JobStatus.RUNNING, JobStatus.SUCCEEDED),
+            (JobStatus.RUNNING, JobStatus.FAILED),
+            (JobStatus.RUNNING, JobStatus.CANCELLING),
+            (JobStatus.RUNNING, JobStatus.TIMEOUT),
+            (JobStatus.CANCELLING, JobStatus.CANCELLED),
+            (JobStatus.CANCELLING, JobStatus.FAILED),
+        ],
+    )
     async def test_valid_transition(
-        self, db_session: AsyncSession, source, target,
+        self,
+        db_session: AsyncSession,
+        source,
+        target,
     ):
         """Each valid transition should execute without error."""
         job = Job(
@@ -54,18 +60,24 @@ class TestInvalidTransitions:
     """Invalid transitions must raise ValueError."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("source,target", [
-        (JobStatus.CREATED, JobStatus.RUNNING),       # skip queued
-        (JobStatus.QUEUED, JobStatus.SUCCEEDED),      # skip claimed+running
-        (JobStatus.CLAIMED, JobStatus.SUCCEEDED),     # skip running
-        (JobStatus.RUNNING, JobStatus.QUEUED),        # backward
-        (JobStatus.SUCCEEDED, JobStatus.FAILED),      # terminal -> anything
-        (JobStatus.FAILED, JobStatus.SUCCEEDED),      # terminal -> anything
-        (JobStatus.CANCELLED, JobStatus.RUNNING),     # terminal -> anything
-        (JobStatus.TIMEOUT, JobStatus.RUNNING),       # terminal -> anything
-    ])
+    @pytest.mark.parametrize(
+        "source,target",
+        [
+            (JobStatus.CREATED, JobStatus.RUNNING),  # skip queued
+            (JobStatus.QUEUED, JobStatus.SUCCEEDED),  # skip claimed+running
+            (JobStatus.CLAIMED, JobStatus.SUCCEEDED),  # skip running
+            (JobStatus.RUNNING, JobStatus.QUEUED),  # backward
+            (JobStatus.SUCCEEDED, JobStatus.FAILED),  # terminal -> anything
+            (JobStatus.FAILED, JobStatus.SUCCEEDED),  # terminal -> anything
+            (JobStatus.CANCELLED, JobStatus.RUNNING),  # terminal -> anything
+            (JobStatus.TIMEOUT, JobStatus.RUNNING),  # terminal -> anything
+        ],
+    )
     async def test_invalid_transition_raises(
-        self, db_session: AsyncSession, source, target,
+        self,
+        db_session: AsyncSession,
+        source,
+        target,
     ):
         """Invalid transitions must raise ValueError."""
         job = Job(

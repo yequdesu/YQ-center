@@ -104,9 +104,7 @@ async def aggregate_invocation_status(
 
     Returns an InvocationStatus value.
     """
-    result = await db.execute(
-        select(Job).where(Job.invocation_id == invocation_id)
-    )
+    result = await db.execute(select(Job).where(Job.invocation_id == invocation_id))
     jobs = list(result.scalars().all())
 
     if not jobs:

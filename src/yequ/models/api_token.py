@@ -10,9 +10,7 @@ from yequ.models.base import Base, generate_uuid
 
 class ApiToken(Base):
     __tablename__ = "api_tokens"
-    __table_args__ = (
-        UniqueConstraint("token_hash", "scope", name="uq_api_tokens_hash_scope"),
-    )
+    __table_args__ = (UniqueConstraint("token_hash", "scope", name="uq_api_tokens_hash_scope"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
     token_hash: Mapped[str] = mapped_column(String(256), nullable=False, index=True)

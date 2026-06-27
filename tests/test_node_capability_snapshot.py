@@ -8,14 +8,17 @@ from tests.conftest import make_yqp_envelope
 
 async def _setup_node_with_hello(client, db, node_id, token):
     """Provision + hello a node, returning the Node object."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
     from datetime import UTC, datetime
+
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
 
     now = datetime.now(UTC)
     node = Node(
-        node_id=node_id, node_name=f"Node {node_id}",
-        token_hash=hash_token(token), status="online",
+        node_id=node_id,
+        node_name=f"Node {node_id}",
+        token_hash=hash_token(token),
+        status="online",
         last_heartbeat_at=now,
     )
     db.add(node)
@@ -36,12 +39,19 @@ async def _register(client, node_id, token, functions):
     resp = await client.post(
         "/yqp/",
         json=make_yqp_envelope(
-            "node.register_capabilities", node_id,
-            payload={"plugins": [{
-                "plugin_id": "test.snapshot",
-                "plugin_version": "1.0", "status": "loaded",
-                "functions": functions, "signals": [],
-            }]},
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.snapshot",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": functions,
+                        "signals": [],
+                    }
+                ]
+            },
         ),
         headers=auth,
     )
@@ -50,22 +60,31 @@ async def _register(client, node_id, token, functions):
 
 @pytest.mark.asyncio
 async def test_first_register_creates_capabilities(client: AsyncClient):
-    from yequ.models.capability import Capability
+    from sqlalchemy import func
+    from sqlalchemy import select as sa_select
+
     from yequ.api.deps import get_db
-    from sqlalchemy import select as sa_select, func
+    from yequ.models.capability import Capability
 
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
         node = await _setup_node_with_hello(client, db, "snap-a", "tok-snapa")
-        await _register(client, "snap-a", "tok-snapa", [
-            {"name": "snap.func.one", "risk": "safe", "effect": "read"},
-            {"name": "snap.func.two", "risk": "safe", "effect": "read"},
-            {"name": "snap.func.three", "risk": "safe", "effect": "read"},
-        ])
+        await _register(
+            client,
+            "snap-a",
+            "tok-snapa",
+            [
+                {"name": "snap.func.one", "risk": "safe", "effect": "read"},
+                {"name": "snap.func.two", "risk": "safe", "effect": "read"},
+                {"name": "snap.func.three", "risk": "safe", "effect": "read"},
+            ],
+        )
 
         count_result = await db.execute(
-            sa_select(func.count()).select_from(Capability).where(
+            sa_select(func.count())
+            .select_from(Capability)
+            .where(
                 Capability.node_record_id == node.id,
                 Capability.is_active == True,  # noqa: E712
                 Capability.capability_type == "function",
@@ -78,9 +97,11 @@ async def test_first_register_creates_capabilities(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_second_register_replaces_old_capabilities(client: AsyncClient):
-    from yequ.models.capability import Capability
+    from sqlalchemy import func
+    from sqlalchemy import select as sa_select
+
     from yequ.api.deps import get_db
-    from sqlalchemy import select as sa_select, func
+    from yequ.models.capability import Capability
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -88,19 +109,31 @@ async def test_second_register_replaces_old_capabilities(client: AsyncClient):
         node = await _setup_node_with_hello(client, db, "snap-b", "tok-snapb")
 
         # First: 3 functions
-        await _register(client, "snap-b", "tok-snapb", [
-            {"name": "replace.a", "risk": "safe", "effect": "read"},
-            {"name": "replace.b", "risk": "safe", "effect": "read"},
-            {"name": "replace.c", "risk": "safe", "effect": "read"},
-        ])
+        await _register(
+            client,
+            "snap-b",
+            "tok-snapb",
+            [
+                {"name": "replace.a", "risk": "safe", "effect": "read"},
+                {"name": "replace.b", "risk": "safe", "effect": "read"},
+                {"name": "replace.c", "risk": "safe", "effect": "read"},
+            ],
+        )
         # Second: only 2
-        await _register(client, "snap-b", "tok-snapb", [
-            {"name": "replace.a", "risk": "safe", "effect": "read"},
-            {"name": "replace.b", "risk": "safe", "effect": "read"},
-        ])
+        await _register(
+            client,
+            "snap-b",
+            "tok-snapb",
+            [
+                {"name": "replace.a", "risk": "safe", "effect": "read"},
+                {"name": "replace.b", "risk": "safe", "effect": "read"},
+            ],
+        )
 
         active_result = await db.execute(
-            sa_select(func.count()).select_from(Capability).where(
+            sa_select(func.count())
+            .select_from(Capability)
+            .where(
                 Capability.node_record_id == node.id,
                 Capability.is_active == True,  # noqa: E712
                 Capability.capability_type == "function",
@@ -123,8 +156,8 @@ async def test_second_register_replaces_old_capabilities(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_resolver_ignores_inactive_after_snapshot(client: AsyncClient):
-    from yequ.services.capability_resolver import resolve_function
     from yequ.api.deps import get_db
+    from yequ.services.capability_resolver import resolve_function
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -132,13 +165,23 @@ async def test_resolver_ignores_inactive_after_snapshot(client: AsyncClient):
         await _setup_node_with_hello(client, db, "snap-c", "tok-snapc")
 
         # Register func.x
-        await _register(client, "snap-c", "tok-snapc", [
-            {"name": "snap.func.x", "risk": "safe", "effect": "read"},
-        ])
+        await _register(
+            client,
+            "snap-c",
+            "tok-snapc",
+            [
+                {"name": "snap.func.x", "risk": "safe", "effect": "read"},
+            ],
+        )
         # Re-register: only func.y (snapshot deactivates func.x)
-        await _register(client, "snap-c", "tok-snapc", [
-            {"name": "snap.func.y", "risk": "safe", "effect": "read"},
-        ])
+        await _register(
+            client,
+            "snap-c",
+            "tok-snapc",
+            [
+                {"name": "snap.func.y", "risk": "safe", "effect": "read"},
+            ],
+        )
 
         await db.commit()
 

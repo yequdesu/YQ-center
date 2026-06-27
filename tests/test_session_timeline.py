@@ -1,6 +1,7 @@
 """Tests for session running tracking and timeline trace_id filter."""
 
 import json
+from contextlib import suppress
 
 import pytest
 from httpx import AsyncClient
@@ -9,18 +10,20 @@ from httpx import AsyncClient
 @pytest.mark.asyncio
 async def test_session_running_reflects_active_stream(client: AsyncClient):
     """Verify running=true appears for sessions with active invoke streams."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("running-test")
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Response text.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Response text.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     # Create session
@@ -56,7 +59,9 @@ async def test_session_running_reflects_active_stream(client: AsyncClient):
     sessions_after = list_after.json()
     ours_after = next((s for s in sessions_after if s["session_id"] == session_id), None)
     assert ours_after is not None
-    assert ours_after.get("running") is False, "Session should not be running after stream completes"
+    assert ours_after.get("running") is False, (
+        "Session should not be running after stream completes"
+    )
 
 
 @pytest.mark.asyncio
@@ -65,18 +70,20 @@ async def test_timeline_can_filter_by_trace_invocation_job_approval(
 ):
     """Verify list_timeline supports filtering by trace_id, invocation_id, job_id, approval_id."""
     # Create a session and invoke to generate timeline events
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("timeline-filter-test")
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="Response.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Response.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -125,23 +132,24 @@ async def test_timeline_can_filter_by_trace_invocation_job_approval(
     assert resp.status_code == 200
     prompt_events = resp.json()
     # At least our event should be there
-    assert any(
-        e.get("session_id") == session_id
-        for e in prompt_events
-    ), "Our session's prompt event should be in the filtered timeline"
+    assert any(e.get("session_id") == session_id for e in prompt_events), (
+        "Our session's prompt event should be in the filtered timeline"
+    )
 
 
 @pytest.mark.asyncio
 async def test_timeline_trace_id_filtering_returns_correct_events(client: AsyncClient):
     """Verify trace_id filter returns only events with matching trace_id."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("trace-id-test")
-    fake.set_sequence([
-        ProviderInvokeResult(message="Done.", tool_calls=[], success=True),
-    ])
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(message="Done.", tool_calls=[], success=True),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -193,31 +201,37 @@ async def test_timeline_trace_id_filtering_returns_correct_events(client: AsyncC
 @pytest.mark.asyncio
 async def test_unknown_requested_capability_returns_clear_message(client: AsyncClient):
     """Verify that requesting a non-existent function returns a clear error."""
-    from yequ.api.routes.agent import register_provider
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
 
     fake = FakeAgentProvider("unknown-cap-test")
-    fake.add_functions([
-        AgentFunction(
-            name="system.info",
-            description="Get system info",
-            risk="safe",
-            effect="read",
-        ),
-    ])
-    fake.set_sequence([
-        ProviderInvokeResult(
-            message="",
-            tool_calls=[{"call_id": "u1", "name": "system.app.launch", "input": {"name": "cloudmusic"}}],
-            success=True,
-        ),
-        ProviderInvokeResult(
-            message="",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    fake.add_functions(
+        [
+            AgentFunction(
+                name="system.info",
+                description="Get system info",
+                risk="safe",
+                effect="read",
+            ),
+        ]
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[
+                    {"call_id": "u1", "name": "system.app.launch", "input": {"name": "cloudmusic"}}
+                ],
+                success=True,
+            ),
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(fake)
 
     session_resp = await client.post(
@@ -244,21 +258,14 @@ async def test_unknown_requested_capability_returns_clear_message(client: AsyncC
             if line.strip().startswith("data:"):
                 payload = line.strip()[5:].strip()
                 if payload:
-                    try:
+                    with suppress(json.JSONDecodeError):
                         events.append(json.loads(payload))
-                    except json.JSONDecodeError:
-                        pass
 
     # The stream should contain a clear error about function unavailability
-    failed_events = [
-        e for e in events if e["event_type"] == "agent.tool_call.failed"
-    ]
+    failed_events = [e for e in events if e["event_type"] == "agent.tool_call.failed"]
     assert len(failed_events) > 0, "Should have at least one tool_call.failed event"
 
-    error_codes = {
-        str(e.get("data", {}).get("error_code", ""))
-        for e in failed_events
-    }
+    error_codes = {str(e.get("data", {}).get("error_code", "")) for e in failed_events}
     assert "function_not_available" in error_codes, (
         f"Error should be function_not_available, got: {error_codes}"
     )
@@ -267,12 +274,11 @@ async def test_unknown_requested_capability_returns_clear_message(client: AsyncC
 @pytest.mark.asyncio
 async def test_offline_node_capability_not_available(client: AsyncClient):
     """Verify capabilities on offline nodes are not returned as available."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
-    from yequ.protocol import NodeStatus
-
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.protocol import NodeStatus
+    from yequ.services.node_auth import hash_token
 
     # Create an offline node with a capability
     db_gen = get_db()

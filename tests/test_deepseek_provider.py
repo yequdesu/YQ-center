@@ -1,7 +1,7 @@
 """Tests for DeepSeek LLM Provider."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,10 +38,7 @@ class TestDeepSeekProvider:
             AgentFunction(name="system.metrics.snapshot"),
             AgentFunction(name="system.info"),
         ]
-        assert (
-            p._resolve_name("system_metrics_snapshot", funcs)
-            == "system.metrics.snapshot"
-        )
+        assert p._resolve_name("system_metrics_snapshot", funcs) == "system.metrics.snapshot"
         assert p._resolve_name("system_info", funcs) == "system.info"
         assert p._resolve_name("unknown_func", funcs) == "unknown_func"
 
@@ -72,10 +69,12 @@ class TestDeepSeekProvider:
 
     def test_add_functions(self, deepseek_provider):
         p = deepseek_provider
-        p.add_functions([
-            AgentFunction(name="func.a"),
-            AgentFunction(name="func.b"),
-        ])
+        p.add_functions(
+            [
+                AgentFunction(name="func.a"),
+                AgentFunction(name="func.b"),
+            ]
+        )
         assert len(p.list_functions()) == 2
 
     def test_default_functions_empty(self, deepseek_provider):

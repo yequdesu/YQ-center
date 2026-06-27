@@ -3,12 +3,13 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import LockStatus
+from yequ.services.timeline_writer import add_timeline_event
 
 
 def _make_lock_id() -> str:
@@ -38,13 +39,14 @@ async def acquire_lock(
     existing = result.scalar_one_or_none()
     if existing is not None:
         # Write lock conflict timeline event before raising
-        c_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-        c_max = c_result.scalar() or 0
         conflict_event = TimelineEvent(
-            global_seq=c_max + 1,
+            global_seq=0,
             event_type="resource.lock.conflict",
-            actor_type="system", actor_id="resource_lock",
-            node_id=node_id, job_id=job_id, invocation_id=invocation_id,
+            actor_type="system",
+            actor_id="resource_lock",
+            node_id=node_id,
+            job_id=job_id,
+            invocation_id=invocation_id,
             data={
                 "resource_key": resource_key,
                 "existing_job_id": existing.job_id,
@@ -52,11 +54,8 @@ async def acquire_lock(
             },
             timestamp=datetime.now(UTC),
         )
-        db.add(conflict_event)
-        await db.flush()
-        raise ValueError(
-            f"Resource {resource_key!r} is locked by job {existing.job_id!r}"
-        )
+        await add_timeline_event(db, conflict_event)
+        raise ValueError(f"Resource {resource_key!r} is locked by job {existing.job_id!r}")
 
     now = datetime.now(UTC)
     lock = ResourceLock(
@@ -72,18 +71,18 @@ async def acquire_lock(
     db.add(lock)
     await db.flush()
 
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="resource.lock.acquired",
-        actor_type="system", actor_id="resource_lock",
-        node_id=node_id, job_id=job_id, invocation_id=invocation_id,
+        actor_type="system",
+        actor_id="resource_lock",
+        node_id=node_id,
+        job_id=job_id,
+        invocation_id=invocation_id,
         data={"resource_key": resource_key, "lock_id": lock.lock_id},
         timestamp=datetime.now(UTC),
     )
-    db.add(event)
-    await db.flush()
+    await add_timeline_event(db, event)
     return lock
 
 
@@ -103,17 +102,18 @@ async def release_lock(
     for lock in locks:
         lock.status = LockStatus.RELEASED
         lock.released_at = now
-        result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-        max_seq = result.scalar() or 0
         event = TimelineEvent(
-            global_seq=max_seq + 1,
+            global_seq=0,
             event_type="resource.lock.released",
-            actor_type="system", actor_id="resource_lock",
-            node_id=lock.node_id, job_id=lock.job_id, invocation_id=lock.invocation_id,
+            actor_type="system",
+            actor_id="resource_lock",
+            node_id=lock.node_id,
+            job_id=lock.job_id,
+            invocation_id=lock.invocation_id,
             data={"resource_key": lock.resource_key, "lock_id": lock.lock_id},
             timestamp=datetime.now(UTC),
         )
-        db.add(event)
+        await add_timeline_event(db, event)
     return locks
 
 
@@ -159,6 +159,7 @@ def compute_resource_keys(
         keys.append(f"node:{node_id}:maintenance:dns")
     elif "temp.cleanup" in function_name:
         import hashlib
+
         path = str(input_data.get("path", ""))
         path_hash = hashlib.md5(path.encode()).hexdigest()[:8]
         keys.append(f"node:{node_id}:maintenance:temp:{path_hash}")

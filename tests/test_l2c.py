@@ -11,7 +11,6 @@ from sqlalchemy import select
 from tests.conftest import make_yqp_envelope
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
-from yequ.models.maintenance_plan import MaintenanceArtifact
 
 
 def _uid() -> str:
@@ -25,6 +24,7 @@ async def _auto_complete_jobs(stop_event: asyncio.Event, node_id: str):
     _wait_invocation_terminal() doesn't time out.
     """
     from yequ.db import async_session_factory as _asf
+
     seen: set[str] = set()
     while not stop_event.is_set():
         try:
@@ -68,6 +68,7 @@ async def _auto_complete_jobs(stop_event: asyncio.Event, node_id: str):
 async def _auto_fail_jobs(stop_event: asyncio.Event, node_id: str):
     """Background task: mark invocations as failed to simulate repair failure."""
     from yequ.db import async_session_factory as _asf
+
     seen: set[str] = set()
     while not stop_event.is_set():
         try:
@@ -108,25 +109,86 @@ async def l2c_setup(client: AsyncClient):
     token = f"tok-{_uid()}"
     auth = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": f"L2C-{node_id}", "token": token,
-    })
-    await client.post("/yqp/", json=make_yqp_envelope("node.hello", node_id, {
-        "daemon_version": "0.1.0",
-    }), headers=auth)
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "test.plugin", "plugin_version": "1.0.0",
-            "functions": [
-                {"name": "system.metrics.snapshot", "input_schema": {"type": "object"}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-                {"name": "system.info", "input_schema": {"type": "object"}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-                {"name": "system.service.status", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-                {"name": "system.service.ensure_running", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}}, "output_schema": {"type": "object"}, "risk": "maintenance", "effect": "write", "timeout_sec": 30, "idempotency": "non_idempotent"},
-            ],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": f"L2C-{node_id}",
+            "token": token,
+        },
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            {
+                "daemon_version": "0.1.0",
+            },
+        ),
+        headers=auth,
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.plugin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.metrics.snapshot",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                            {
+                                "name": "system.info",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                            {
+                                "name": "system.service.status",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}},
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                            {
+                                "name": "system.service.ensure_running",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}},
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 30,
+                                "idempotency": "non_idempotent",
+                            },
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
 
     return node_id, token, auth
 
@@ -153,6 +215,7 @@ async def _run_with_completer(
         # We'll handle this with a custom completer
         async def _fail_verify_only(stop_event, nid):
             from yequ.db import async_session_factory as _asf
+
             seen: set[str] = set()
             fail_verify: set[str] = set()
             while not stop_event.is_set():
@@ -207,6 +270,7 @@ async def _run_with_completer(
                 except Exception:
                     pass
                 await asyncio.sleep(0.1)
+
         completer = asyncio.create_task(_fail_verify_only(stop, node_id))
     else:
         completer = asyncio.create_task(_auto_complete_jobs(stop, node_id))
@@ -231,15 +295,21 @@ async def test_healthy_branch_check_only(client: AsyncClient, l2c_setup):
     node_id, token, auth = l2c_setup
 
     # Create a check-only plan
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check Spooler status", "target_node_id": node_id,
-        "steps": [{
-            "function_name": "system.service.status",
-            "input": {"name": "Spooler"},
-            "kind": "check",
-            "condition": "always",
-        }],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check Spooler status",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                }
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -278,35 +348,44 @@ async def test_healthy_branch_repair_skipped(client: AsyncClient, l2c_setup):
     """
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check and repair Spooler if needed", "target_node_id": node_id,
-        "steps": [
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "check", "condition": "always", "seq": 1,
-            },
-            {
-                "function_name": "system.service.ensure_running",
-                "input": {"name": "Spooler"},
-                "kind": "repair", "condition": "if_previous_unhealthy",
-                "depends_on": [1], "requires_approval": True,
-                "rollback_hint": {
-                    "action": "restore_service_state",
-                    "target_type": "windows_service",
-                    "service_name": "Spooler",
-                    "rollback_function": "system.service.ensure_state",
-                    "requires_approval": True,
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check and repair Spooler if needed",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
                 },
-            },
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "verify", "condition": "after_repair",
-                "depends_on": [2],
-            },
-        ],
-    })
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "verify",
+                    "condition": "after_repair",
+                    "depends_on": [2],
+                },
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -360,35 +439,44 @@ async def test_unhealthy_branch_full_repair(client: AsyncClient, l2c_setup):
     node_id, token, auth = l2c_setup
 
     # Create check+repair+verify plan
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check and fix Spooler", "target_node_id": node_id,
-        "steps": [
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "check", "condition": "always", "seq": 1,
-            },
-            {
-                "function_name": "system.service.ensure_running",
-                "input": {"name": "Spooler"},
-                "kind": "repair", "condition": "if_previous_unhealthy",
-                "depends_on": [1], "requires_approval": True,
-                "rollback_hint": {
-                    "action": "restore_service_state",
-                    "target_type": "windows_service",
-                    "service_name": "Spooler",
-                    "rollback_function": "system.service.ensure_state",
-                    "requires_approval": True,
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check and fix Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
                 },
-            },
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "verify", "condition": "after_repair",
-                "depends_on": [2],
-            },
-        ],
-    })
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "verify",
+                    "condition": "after_repair",
+                    "depends_on": [2],
+                },
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -402,6 +490,7 @@ async def test_unhealthy_branch_full_repair(client: AsyncClient, l2c_setup):
     async def _unhealthy_completer(stop_event, nid):
         """First invocation (check) returns service not running."""
         from yequ.db import async_session_factory as _asf
+
         check_done = False
         while not stop_event.is_set():
             try:
@@ -472,7 +561,9 @@ async def test_unhealthy_branch_full_repair(client: AsyncClient, l2c_setup):
     steps = data.get("steps", [])
     step_statuses = {s["kind"]: s["status"] for s in steps}
     assert step_statuses.get("check") == "succeeded"
-    assert step_statuses.get("repair") == "succeeded", f"Repair status: {step_statuses.get('repair')}"
+    assert step_statuses.get("repair") == "succeeded", (
+        f"Repair status: {step_statuses.get('repair')}"
+    )
     assert step_statuses.get("verify") == "succeeded"
 
     # Artifacts should include all
@@ -500,29 +591,37 @@ async def test_repair_failed_rollback_recommended(client: AsyncClient, l2c_setup
     """Repair step fails → rollback_recommended, error+rollback_hint artifacts."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Fix Spooler", "target_node_id": node_id,
-        "steps": [
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "check", "condition": "always", "seq": 1,
-            },
-            {
-                "function_name": "system.service.ensure_running",
-                "input": {"name": "Spooler"},
-                "kind": "repair", "condition": "if_previous_unhealthy",
-                "depends_on": [1], "requires_approval": True,
-                "rollback_hint": {
-                    "action": "restore_service_state",
-                    "target_type": "windows_service",
-                    "service_name": "Spooler",
-                    "rollback_function": "system.service.ensure_state",
-                    "requires_approval": True,
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Fix Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
                 },
-            },
-        ],
-    })
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -536,6 +635,7 @@ async def test_repair_failed_rollback_recommended(client: AsyncClient, l2c_setup
     async def _repair_fail_completer(stop_event, nid):
         """Check returns unhealthy, repair fails."""
         from yequ.db import async_session_factory as _asf
+
         check_done = False
         while not stop_event.is_set():
             try:
@@ -622,8 +722,9 @@ async def test_repair_failed_rollback_recommended(client: AsyncClient, l2c_setup
     if r.status_code == 200:
         events = r.json()
         event_types = {e["event_type"] for e in events}
-        assert "maintenance.rollback.recommended" in event_types, \
+        assert "maintenance.rollback.recommended" in event_types, (
             f"Expected maintenance.rollback.recommended in timeline, got: {event_types}"
+        )
         assert "maintenance.artifact.created" in event_types
 
 
@@ -635,35 +736,44 @@ async def test_verify_failed_rollback_recommended(client: AsyncClient, l2c_setup
     """Verify step fails after repair succeeded → rollback_recommended."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check+fix+verify Spooler", "target_node_id": node_id,
-        "steps": [
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "check", "condition": "always", "seq": 1,
-            },
-            {
-                "function_name": "system.service.ensure_running",
-                "input": {"name": "Spooler"},
-                "kind": "repair", "condition": "if_previous_unhealthy",
-                "depends_on": [1], "requires_approval": True,
-                "rollback_hint": {
-                    "action": "restore_service_state",
-                    "target_type": "windows_service",
-                    "service_name": "Spooler",
-                    "rollback_function": "system.service.ensure_state",
-                    "requires_approval": True,
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check+fix+verify Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
                 },
-            },
-            {
-                "function_name": "system.service.status",
-                "input": {"name": "Spooler"},
-                "kind": "verify", "condition": "after_repair",
-                "depends_on": [2],
-            },
-        ],
-    })
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "verify",
+                    "condition": "after_repair",
+                    "depends_on": [2],
+                },
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -675,6 +785,7 @@ async def test_verify_failed_rollback_recommended(client: AsyncClient, l2c_setup
     async def _verify_fail_completer(stop_event, nid):
         """Check unhealthy, repair succeeds, verify fails."""
         from yequ.db import async_session_factory as _asf
+
         inv_count = 0
         seen: set[str] = set()
         while not stop_event.is_set():
@@ -762,22 +873,43 @@ async def test_artifact_filter_by_kind(client: AsyncClient, l2c_setup):
     """Filter artifacts by kind parameter."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check Spooler", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "check", "condition": "always"},
-            {"function_name": "system.service.ensure_running", "input": {"name": "Spooler"},
-             "kind": "repair", "condition": "if_previous_unhealthy", "depends_on": [1],
-             "requires_approval": True,
-             "rollback_hint": {"action": "restore_service_state",
-                               "target_type": "windows_service", "service_name": "Spooler",
-                               "rollback_function": "system.service.ensure_state",
-                               "requires_approval": True}},
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "verify", "condition": "after_repair", "depends_on": [2]},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                },
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "verify",
+                    "condition": "after_repair",
+                    "depends_on": [2],
+                },
+            ],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
@@ -788,6 +920,7 @@ async def test_artifact_filter_by_kind(client: AsyncClient, l2c_setup):
 
     async def _unhealthy(stop_event, nid):
         from yequ.db import async_session_factory as _asf
+
         check_done = False
         while not stop_event.is_set():
             try:
@@ -801,7 +934,11 @@ async def test_artifact_filter_by_kind(client: AsyncClient, l2c_setup):
                     for inv in result.scalars().all():
                         if not check_done:
                             inv.status = "succeeded"
-                            inv.result = {"status": "stopped", "found": False, "service_name": "Spooler"}
+                            inv.result = {
+                                "status": "stopped",
+                                "found": False,
+                                "service_name": "Spooler",
+                            }
                             inv.finished_at = datetime.now(UTC)
                             job_results = await db.execute(
                                 select(Job).where(Job.invocation_id == inv.invocation_id)
@@ -813,7 +950,11 @@ async def test_artifact_filter_by_kind(client: AsyncClient, l2c_setup):
                             check_done = True
                         else:
                             inv.status = "succeeded"
-                            inv.result = {"status": "running", "found": True, "service_name": "Spooler"}
+                            inv.result = {
+                                "status": "running",
+                                "found": True,
+                                "service_name": "Spooler",
+                            }
                             inv.finished_at = datetime.now(UTC)
                             job_results = await db.execute(
                                 select(Job).where(Job.invocation_id == inv.invocation_id)
@@ -869,13 +1010,21 @@ async def test_artifacts_ordered_by_created_at_asc(client: AsyncClient, l2c_setu
     """Artifacts are returned in created_at ASC order."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check Spooler", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "check", "condition": "always"},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                },
+            ],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await _run_with_completer(client, plan_id, node_id)
@@ -897,20 +1046,27 @@ async def test_timeline_by_approval_id_includes_artifact_events(client: AsyncCli
     """Timeline by approval_id includes maintenance.artifact.created events."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check Spooler", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "check", "condition": "always"},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check Spooler",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                },
+            ],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
     approval_id = r.json()["approval_id"]
 
-    r = await _run_with_completer(client, plan_id, node_id, approval_id)
-    run_id = r.json()["run_id"]
+    await _run_with_completer(client, plan_id, node_id, approval_id)
 
     # Timeline by approval_id
     r = await client.get(f"/admin/timeline?approval_id={approval_id}")
@@ -923,11 +1079,110 @@ async def test_timeline_by_approval_id_includes_artifact_events(client: AsyncCli
     # Should include maintenance events
     assert "maintenance.plan.created" in event_types or "maintenance.run.started" in event_types
     # Should include artifact events
-    assert "maintenance.artifact.created" in event_types, \
+    assert "maintenance.artifact.created" in event_types, (
         f"Expected maintenance.artifact.created in timeline. Got types: {event_types}"
+    )
 
 
 # ── Planner rollback_hint test ──
+
+
+@pytest.mark.asyncio
+async def test_waiting_approval_run_can_resume_after_approval(client: AsyncClient, l2c_setup):
+    """Draft maintenance run pauses for approval, then resumes after approval."""
+    node_id, _token, _auth = l2c_setup
+    plan_resp = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "repair after explicit approval",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "seq": 1,
+                    "kind": "repair",
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "requires_approval": True,
+                    "timeout_sec": 5,
+                }
+            ],
+        },
+    )
+    assert plan_resp.status_code == 201
+    plan_id = plan_resp.json()["plan_id"]
+
+    run_resp = await client.post(f"/admin/maintenance/plans/{plan_id}/run")
+    assert run_resp.status_code == 200
+    run_data = run_resp.json()
+    assert run_data["status"] == "waiting_approval"
+    run_id = run_data["run_id"]
+    approval_id = run_data["summary"]["approval_id"]
+
+    approval_resp = await client.get(f"/admin/approvals/{approval_id}")
+    assert approval_resp.status_code == 200
+    assert approval_resp.json()["status"] == "pending"
+
+    approve_resp = await client.post(f"/admin/approvals/{approval_id}/approve")
+    assert approve_resp.status_code == 200
+
+    stop = asyncio.Event()
+    completer = asyncio.create_task(_auto_complete_jobs(stop, node_id))
+    try:
+        resume_resp = await client.post(f"/admin/maintenance/runs/{run_id}/resume")
+    finally:
+        stop.set()
+        await completer
+
+    assert resume_resp.status_code == 200, resume_resp.text
+    resumed = resume_resp.json()
+    assert resumed["status"] == "succeeded"
+    repair_steps = [s for s in resumed["steps"] if s["kind"] == "repair"]
+    assert repair_steps[0]["status"] == "succeeded"
+
+    approval_after = await client.get(f"/admin/approvals/{approval_id}")
+    assert approval_after.json()["status"] == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_waiting_approval_run_reject_cancels_run(client: AsyncClient, l2c_setup):
+    """Rejecting a waiting maintenance run denies approval and cancels the run."""
+    node_id, _token, _auth = l2c_setup
+    plan_resp = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "reject repair",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "seq": 1,
+                    "kind": "repair",
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "requires_approval": True,
+                }
+            ],
+        },
+    )
+    plan_id = plan_resp.json()["plan_id"]
+
+    run_resp = await client.post(f"/admin/maintenance/plans/{plan_id}/run")
+    run_data = run_resp.json()
+    assert run_data["status"] == "waiting_approval"
+    run_id = run_data["run_id"]
+    approval_id = run_data["summary"]["approval_id"]
+
+    reject_resp = await client.post(
+        f"/admin/maintenance/runs/{run_id}/reject",
+        json={"reason": "operator rejected"},
+    )
+    assert reject_resp.status_code == 200
+    assert reject_resp.json()["status"] == "cancelled"
+
+    approval_after = await client.get(f"/admin/approvals/{approval_id}")
+    assert approval_after.json()["status"] == "denied"
+
+    run_detail = await client.get(f"/admin/maintenance/runs/{run_id}")
+    assert run_detail.json()["status"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -936,10 +1191,9 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
     node_id, token, auth = l2c_setup
 
     # Override provider for check_and_fix
-    from yequ.api.routes.agent import register_provider, get_provider
-    from yequ.agent.provider import AgentResult
     from yequ.agent.fake_provider import FakeAgentProvider
-    from yequ.api.routes.agent import _default_functions
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import _default_functions, register_provider
 
     # Always create a fresh provider to avoid cross-test contamination
     prov = FakeAgentProvider(provider_name="fake")
@@ -948,13 +1202,16 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
     prov.add_response("fix", AgentResult(success=True, output={"message": "check_and_fix"}))
     register_provider(prov)
 
-    r = await client.post("/agent/plan", json={
-        "session_id": f"sess_{_uid()}",
-        "provider_name": "fake",
-        "prompt": "check print spooler and fix if unhealthy",
-        "target_node_id": node_id,
-        "execution_mode": "auto",
-    })
+    r = await client.post(
+        "/agent/plan",
+        json={
+            "session_id": f"sess_{_uid()}",
+            "provider_name": "fake",
+            "prompt": "check print spooler and fix if unhealthy",
+            "target_node_id": node_id,
+            "execution_mode": "auto",
+        },
+    )
     assert r.status_code in (200, 201), f"Status: {r.status_code}, body: {r.text[:500]}"
     data = r.json()
     steps = data.get("steps", [])
@@ -968,7 +1225,9 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
 
 
 @pytest.mark.asyncio
-async def test_rollback_hint_for_vague_target_requires_manual_review(client: AsyncClient, l2c_setup):
+async def test_rollback_hint_for_vague_target_requires_manual_review(
+    client: AsyncClient, l2c_setup
+):
     """Planner must not invent a platform-specific target when the prompt is vague."""
     node_id, token, auth = l2c_setup
 
@@ -984,13 +1243,16 @@ async def test_rollback_hint_for_vague_target_requires_manual_review(client: Asy
     register_provider(prov)
 
     # Vague prompt — no specific service mentioned
-    r = await client.post("/agent/plan", json={
-        "session_id": f"sess_{_uid()}",
-        "provider_name": "fake",
-        "prompt": "check and fix the service",
-        "target_node_id": node_id,
-        "execution_mode": "auto",
-    })
+    r = await client.post(
+        "/agent/plan",
+        json={
+            "session_id": f"sess_{_uid()}",
+            "provider_name": "fake",
+            "prompt": "check and fix the service",
+            "target_node_id": node_id,
+            "execution_mode": "auto",
+        },
+    )
     assert r.status_code in (200, 201), f"Status: {r.status_code}, body: {r.text[:500]}"
     data = r.json()
     repair = [s for s in data["steps"] if s["kind"] == "repair"]
@@ -1025,20 +1287,37 @@ async def test_repair_failed_rollback_recommended_once(client: AsyncClient, l2c_
     """Repair failure writes maintenance.rollback.recommended exactly once."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Test dedup repair fail", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "check", "condition": "always", "seq": 1},
-            {"function_name": "test.maintenance.repair_fail", "input": {"name": "Spooler"},
-             "kind": "repair", "condition": "if_previous_unhealthy", "depends_on": [1],
-             "requires_approval": True,
-             "rollback_hint": {"action": "restore_service_state",
-                               "target_type": "windows_service", "service_name": "Spooler",
-                               "rollback_function": "system.service.ensure_state",
-                               "requires_approval": True}},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Test dedup repair fail",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
+                },
+                {
+                    "function_name": "test.maintenance.repair_fail",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+            ],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
@@ -1049,6 +1328,7 @@ async def test_repair_failed_rollback_recommended_once(client: AsyncClient, l2c_
 
     async def _completer(stop_event, nid):
         from yequ.db import async_session_factory as _asf
+
         check_done = False
         while not stop_event.is_set():
             try:
@@ -1062,8 +1342,11 @@ async def test_repair_failed_rollback_recommended_once(client: AsyncClient, l2c_
                     for inv in result.scalars().all():
                         if not check_done:
                             inv.status = "succeeded"
-                            inv.result = {"status": "stopped", "found": False,
-                                          "service_name": "Spooler"}
+                            inv.result = {
+                                "status": "stopped",
+                                "found": False,
+                                "service_name": "Spooler",
+                            }
                             inv.finished_at = datetime.now(UTC)
                             job_result = await db.execute(
                                 select(Job).where(Job.invocation_id == inv.invocation_id)
@@ -1105,22 +1388,44 @@ async def test_verify_failed_rollback_recommended_once(client: AsyncClient, l2c_
     """Verify failure writes maintenance.rollback.recommended exactly once."""
     node_id, token, auth = l2c_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Test dedup verify fail", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.status", "input": {"name": "Spooler"},
-             "kind": "check", "condition": "always", "seq": 1},
-            {"function_name": "system.service.ensure_running", "input": {"name": "Spooler"},
-             "kind": "repair", "condition": "if_previous_unhealthy", "depends_on": [1],
-             "requires_approval": True,
-             "rollback_hint": {"action": "restore_service_state",
-                               "target_type": "windows_service", "service_name": "Spooler",
-                               "rollback_function": "system.service.ensure_state",
-                               "requires_approval": True}},
-            {"function_name": "test.maintenance.verify_fail", "input": {"name": "Spooler"},
-             "kind": "verify", "condition": "after_repair", "depends_on": [2]},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Test dedup verify fail",
+            "target_node_id": node_id,
+            "steps": [
+                {
+                    "function_name": "system.service.status",
+                    "input": {"name": "Spooler"},
+                    "kind": "check",
+                    "condition": "always",
+                    "seq": 1,
+                },
+                {
+                    "function_name": "system.service.ensure_running",
+                    "input": {"name": "Spooler"},
+                    "kind": "repair",
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "requires_approval": True,
+                    "rollback_hint": {
+                        "action": "restore_service_state",
+                        "target_type": "windows_service",
+                        "service_name": "Spooler",
+                        "rollback_function": "system.service.ensure_state",
+                        "requires_approval": True,
+                    },
+                },
+                {
+                    "function_name": "test.maintenance.verify_fail",
+                    "input": {"name": "Spooler"},
+                    "kind": "verify",
+                    "condition": "after_repair",
+                    "depends_on": [2],
+                },
+            ],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/approve")
@@ -1130,6 +1435,7 @@ async def test_verify_failed_rollback_recommended_once(client: AsyncClient, l2c_
 
     async def _completer(stop_event, nid):
         from yequ.db import async_session_factory as _asf
+
         check_done = False
         while not stop_event.is_set():
             try:
@@ -1143,8 +1449,11 @@ async def test_verify_failed_rollback_recommended_once(client: AsyncClient, l2c_
                     for inv in result.scalars().all():
                         if not check_done:
                             inv.status = "succeeded"
-                            inv.result = {"status": "stopped", "found": False,
-                                          "service_name": "Spooler"}
+                            inv.result = {
+                                "status": "stopped",
+                                "found": False,
+                                "service_name": "Spooler",
+                            }
                             inv.finished_at = datetime.now(UTC)
                             job_result = await db.execute(
                                 select(Job).where(Job.invocation_id == inv.invocation_id)

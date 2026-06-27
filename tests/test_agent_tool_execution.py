@@ -29,35 +29,63 @@ async def test_full_agent_tool_e2e(client: AsyncClient, provisioned_node):
     auth = {"Authorization": f"Bearer {node_token}"}
 
     # ── Setup: register system.metrics.snapshot capability ──
-    await client.post("/yqp/", json=make_yqp_envelope("node.hello", node.node_id, {
-        "daemon_version": "0.1.0",
-    }), headers=auth)
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            {
+                "daemon_version": "0.1.0",
+            },
+        ),
+        headers=auth,
+    )
 
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node.node_id,
-        payload={"plugins": [{
-            "plugin_id": "system.metrics",
-            "plugin_version": "1.0.0",
-            "functions": [{
-                "name": "system.metrics.snapshot",
-                "input_schema": {"type": "object", "properties": {}},
-                "output_schema": {"type": "object", "properties": {
-                    "cpu": {"type": "number"},
-                    "memory": {"type": "number"},
-                    "disk": {"type": "number"},
-                }},
-                "risk": "safe", "effect": "read", "timeout_sec": 5,
-                "idempotency": "idempotent",
-            }],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "system.metrics",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.metrics.snapshot",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "cpu": {"type": "number"},
+                                        "memory": {"type": "number"},
+                                        "disk": {"type": "number"},
+                                    },
+                                },
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
 
     # ── Setup: create agent session ──
-    r = await client.post("/agent/sessions", json={
-        "actor_id": "e2e-test", "execution_mode": "auto",
-        "max_total_duration_sec": 30,
-    })
+    r = await client.post(
+        "/agent/sessions",
+        json={
+            "actor_id": "e2e-test",
+            "execution_mode": "auto",
+            "max_total_duration_sec": 30,
+        },
+    )
     assert r.status_code == 201
     session_id = r.json()["session_id"]
 
@@ -67,37 +95,51 @@ async def test_full_agent_tool_e2e(client: AsyncClient, provisioned_node):
     from yequ.api.routes.agent import register_provider
 
     provider = FakeAgentProvider()
-    provider.add_response("metrics", AgentResult(
-        success=True,
-        output={"message": ""},
-        function_calls=[{
-            "name": "system.metrics.snapshot",
-            "input": {},
-            "call_id": "call_e2e_001",
-        }],
-    ))
+    provider.add_response(
+        "metrics",
+        AgentResult(
+            success=True,
+            output={"message": ""},
+            function_calls=[
+                {
+                    "name": "system.metrics.snapshot",
+                    "input": {},
+                    "call_id": "call_e2e_001",
+                }
+            ],
+        ),
+    )
     register_provider(provider)
 
     # ── Invoke agent concurrently with node operations ──
     # The invoke runs _wait_invocation_terminal which polls with asyncio.sleep.
     # We must run the node operations concurrently to unblock the invoke.
     invoke_task = asyncio.create_task(
-        client.post("/agent/invoke", json={
-            "session_id": session_id,
-            "provider_name": "fake",
-            "prompt": "get system metrics please",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 30,
-        })
+        client.post(
+            "/agent/invoke",
+            json={
+                "session_id": session_id,
+                "provider_name": "fake",
+                "prompt": "get system metrics please",
+                "execution_mode": "auto",
+                "max_total_duration_sec": 30,
+            },
+        )
     )
 
     # Give a brief moment for the invoke to create the job
     await asyncio.sleep(0.5)
 
     # ── Node: poll the job ──
-    r = await client.post("/yqp/", json=make_yqp_envelope(
-        "job.poll", node.node_id, {"capacity": 2},
-    ), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.poll",
+            node.node_id,
+            {"capacity": 2},
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Poll failed: {r.text}"
     poll_payload = r.json().get("payload", {})
     jobs = poll_payload.get("jobs", [])
@@ -105,19 +147,31 @@ async def test_full_agent_tool_e2e(client: AsyncClient, provisioned_node):
     job_id = jobs[0]["job_id"]
 
     # ── Node: accept the job ──
-    r = await client.post("/yqp/", json=make_yqp_envelope(
-        "job.accepted", node.node_id, {"job_id": job_id},
-    ), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.accepted",
+            node.node_id,
+            {"job_id": job_id},
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Accept failed: {r.text}"
 
     # ── Node: finish the job with output ──
-    r = await client.post("/yqp/", json=make_yqp_envelope(
-        "job.finished", node.node_id, {
-            "job_id": job_id,
-            "status": "succeeded",
-            "output": {"cpu": 42.5, "memory": 60.2, "disk": 71.0},
-        },
-    ), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.finished",
+            node.node_id,
+            {
+                "job_id": job_id,
+                "status": "succeeded",
+                "output": {"cpu": 42.5, "memory": 60.2, "disk": 71.0},
+            },
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Finish failed: {r.text}"
 
     # ── Now await the invoke response ──
@@ -182,9 +236,7 @@ async def test_full_agent_tool_e2e(client: AsyncClient, provisioned_node):
 
 
 @pytest.mark.asyncio
-async def test_metrics_tool_timeout(
-    client: AsyncClient, provisioned_agent_setup
-):
+async def test_metrics_tool_timeout(client: AsyncClient, provisioned_agent_setup):
     """Provider returns system.metrics.snapshot -> Invocation -> timeout.
 
     Without a daemon to claim/finish the job, the invocation times out.
@@ -196,25 +248,34 @@ async def test_metrics_tool_timeout(
     from yequ.api.routes.agent import register_provider
 
     provider = FakeAgentProvider()
-    provider.add_response("metrics", AgentResult(
-        success=True,
-        output={"message": ""},
-        function_calls=[{
-            "name": "system.metrics.snapshot",
-            "input": {},
-            "call_id": f"call_{_uid()}",
-        }],
-    ))
+    provider.add_response(
+        "metrics",
+        AgentResult(
+            success=True,
+            output={"message": ""},
+            function_calls=[
+                {
+                    "name": "system.metrics.snapshot",
+                    "input": {},
+                    "call_id": f"call_{_uid()}",
+                }
+            ],
+        ),
+    )
     register_provider(provider)
 
-    r = await client.post("/agent/invoke", json={
-        "session_id": setup["session_id"],
-        "provider_name": "fake",
-        "prompt": "get system metrics please",
-        "execution_mode": "auto",
-        "max_steps": 20,
-        "max_total_duration_sec": 10,
-    }, headers=setup["agent_auth"])
+    r = await client.post(
+        "/agent/invoke",
+        json={
+            "session_id": setup["session_id"],
+            "provider_name": "fake",
+            "prompt": "get system metrics please",
+            "execution_mode": "auto",
+            "max_steps": 20,
+            "max_total_duration_sec": 10,
+        },
+        headers=setup["agent_auth"],
+    )
     assert r.status_code == 200, f"Invoke failed: {r.text}"
     data = r.json()
 
@@ -229,9 +290,7 @@ async def test_metrics_tool_timeout(
 
 
 @pytest.mark.asyncio
-async def test_function_not_available(
-    client: AsyncClient, provisioned_agent_setup
-):
+async def test_function_not_available(client: AsyncClient, provisioned_agent_setup):
     """Tool call for a function no node has -> function_not_available."""
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
@@ -239,25 +298,34 @@ async def test_function_not_available(
 
     setup = provisioned_agent_setup
     provider = FakeAgentProvider()
-    provider.add_response("nonexistent", AgentResult(
-        success=True,
-        output={"message": ""},
-        function_calls=[{
-            "name": "system.nonexistent.func",
-            "input": {},
-            "call_id": f"call_{_uid()}",
-        }],
-    ))
+    provider.add_response(
+        "nonexistent",
+        AgentResult(
+            success=True,
+            output={"message": ""},
+            function_calls=[
+                {
+                    "name": "system.nonexistent.func",
+                    "input": {},
+                    "call_id": f"call_{_uid()}",
+                }
+            ],
+        ),
+    )
     register_provider(provider)
 
-    r = await client.post("/agent/invoke", json={
-        "session_id": setup["session_id"],
-        "provider_name": "fake",
-        "prompt": "call nonexistent function",
-        "execution_mode": "auto",
-        "max_steps": 20,
-        "max_total_duration_sec": 10,
-    }, headers=setup["agent_auth"])
+    r = await client.post(
+        "/agent/invoke",
+        json={
+            "session_id": setup["session_id"],
+            "provider_name": "fake",
+            "prompt": "call nonexistent function",
+            "execution_mode": "auto",
+            "max_steps": 20,
+            "max_total_duration_sec": 10,
+        },
+        headers=setup["agent_auth"],
+    )
     assert r.status_code == 200, f"Invoke failed: {r.text}"
     data = r.json()
 
@@ -268,9 +336,7 @@ async def test_function_not_available(
 
 
 @pytest.mark.asyncio
-async def test_policy_denied_readonly(
-    client: AsyncClient, provisioned_agent_setup
-):
+async def test_policy_denied_readonly(client: AsyncClient, provisioned_agent_setup):
     """Destructive function in readonly mode -> policy_denied."""
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
@@ -281,53 +347,78 @@ async def test_policy_denied_readonly(
     # Register a destructive function on the node
     node_id = setup["node_id"]
     auth = setup["auth"]
-    r = await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "system.admin",
-            "plugin_version": "1.0.0",
-            "functions": [{
-                "name": "system.reboot",
-                "input_schema": {"type": "object", "properties": {}},
-                "output_schema": {"type": "object", "properties": {}},
-                "risk": "destructive",
-                "effect": "destructive",
-                "timeout_sec": 30,
-                "idempotency": "non_idempotent",
-            }],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "system.admin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.reboot",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object", "properties": {}},
+                                "risk": "destructive",
+                                "effect": "destructive",
+                                "timeout_sec": 30,
+                                "idempotency": "non_idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Register destructive caps failed: {r.text}"
 
     provider = FakeAgentProvider()
-    provider.add_response("reboot", AgentResult(
-        success=True,
-        output={"message": ""},
-        function_calls=[{
-            "name": "system.reboot",
-            "input": {},
-            "call_id": f"call_{_uid()}",
-        }],
-    ))
+    provider.add_response(
+        "reboot",
+        AgentResult(
+            success=True,
+            output={"message": ""},
+            function_calls=[
+                {
+                    "name": "system.reboot",
+                    "input": {},
+                    "call_id": f"call_{_uid()}",
+                }
+            ],
+        ),
+    )
     register_provider(provider)
 
     # Create a new session with readonly mode
-    r = await client.post("/agent/sessions", json={
-        "actor_id": "test-agent", "execution_mode": "readonly",
-        "max_total_duration_sec": 60,
-    }, headers=setup["agent_auth"])
+    r = await client.post(
+        "/agent/sessions",
+        json={
+            "actor_id": "test-agent",
+            "execution_mode": "readonly",
+            "max_total_duration_sec": 60,
+        },
+        headers=setup["agent_auth"],
+    )
     assert r.status_code == 201
     readonly_session = r.json()["session_id"]
 
-    r = await client.post("/agent/invoke", json={
-        "session_id": readonly_session,
-        "provider_name": "fake",
-        "prompt": "reboot the system",
-        "execution_mode": "readonly",
-        "max_steps": 20,
-        "max_total_duration_sec": 10,
-    }, headers=setup["agent_auth"])
+    r = await client.post(
+        "/agent/invoke",
+        json={
+            "session_id": readonly_session,
+            "provider_name": "fake",
+            "prompt": "reboot the system",
+            "execution_mode": "readonly",
+            "max_steps": 20,
+            "max_total_duration_sec": 10,
+        },
+        headers=setup["agent_auth"],
+    )
     assert r.status_code == 200, f"Invoke failed: {r.text}"
     data = r.json()
 
@@ -346,52 +437,83 @@ async def provisioned_agent_setup(client: AsyncClient) -> dict:
 
     Returns all identifiers needed for agent invoke tests.
     """
-    from yequ.agent.fake_provider import FakeAgentProvider
-    from yequ.api.routes.agent import register_provider
 
     node_id = f"node-{_uid()}"
     node_token = f"tok-{_uid()}"
     auth = {"Authorization": f"Bearer {node_token}"}
 
     # Provision node
-    r = await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": "Agent Test Node", "token": node_token,
-    })
+    r = await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "Agent Test Node",
+            "token": node_token,
+        },
+    )
     assert r.status_code == 201, f"Provision failed: {r.text}"
 
     # Hello
-    r = await client.post("/yqp/", json=make_yqp_envelope("node.hello", node_id, {
-        "daemon_version": "0.1.0",
-    }), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            {
+                "daemon_version": "0.1.0",
+            },
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Hello failed: {r.text}"
 
     # Register capabilities with system.metrics.snapshot
-    r = await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "system.metrics",
-            "plugin_version": "1.0.0",
-            "functions": [{
-                "name": "system.metrics.snapshot",
-                "input_schema": {"type": "object", "properties": {}},
-                "output_schema": {"type": "object", "properties": {
-                    "cpu": {"type": "number"},
-                    "memory": {"type": "number"},
-                    "disk": {"type": "number"},
-                }},
-                "risk": "safe", "effect": "read", "timeout_sec": 5,
-                "idempotency": "idempotent",
-            }],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    r = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "system.metrics",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.metrics.snapshot",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "cpu": {"type": "number"},
+                                        "memory": {"type": "number"},
+                                        "disk": {"type": "number"},
+                                    },
+                                },
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
     assert r.status_code == 200, f"Register caps failed: {r.text}"
 
     # Create agent session
-    r = await client.post("/agent/sessions", json={
-        "actor_id": "test-agent", "execution_mode": "auto",
-        "max_total_duration_sec": 60,
-    })
+    r = await client.post(
+        "/agent/sessions",
+        json={
+            "actor_id": "test-agent",
+            "execution_mode": "auto",
+            "max_total_duration_sec": 60,
+        },
+    )
     assert r.status_code == 201, f"Create session failed: {r.text}"
     session_id = r.json()["session_id"]
 

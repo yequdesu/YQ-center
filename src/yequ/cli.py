@@ -143,9 +143,7 @@ def capabilities_list(node_id):
             click.echo("No capabilities found.")
             return
         for cap in data:
-            risk_color = {"safe": "green", "maintenance": "yellow"}.get(
-                cap.get("risk", ""), "red"
-            )
+            risk_color = {"safe": "green", "maintenance": "yellow"}.get(cap.get("risk", ""), "red")
             click.echo(
                 f"{cap['name']:<35} type={cap['capability_type']:<10} "
                 f"risk={click.style(cap.get('risk', '-'), fg=risk_color):<4} "
@@ -403,8 +401,7 @@ def agent_invoke(session_id, prompt, provider, mode):
             click.secho("Success", fg="green")
         else:
             click.secho(
-                f"Error: {data.get('error_code', 'unknown')} - "
-                f"{data.get('error_message', '')}",
+                f"Error: {data.get('error_code', 'unknown')} - {data.get('error_message', '')}",
                 fg="red",
             )
         if data.get("function_calls"):
@@ -430,9 +427,7 @@ def config_init():
         click.echo(f"Config already exists: {config_path}")
         return
     config_path.write_text(
-        "# YeQu Center CLI config\n"
-        '[center]\n'
-        'base_url = "http://127.0.0.1:9800"\n'
+        '# YeQu Center CLI config\n[center]\nbase_url = "http://127.0.0.1:9800"\n'
     )
     click.secho(f"Created: {config_path}", fg="green")
 

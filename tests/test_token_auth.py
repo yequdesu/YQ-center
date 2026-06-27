@@ -5,9 +5,7 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_admin_endpoints_reject_no_auth_when_enabled(
-    client: AsyncClient, monkeypatch
-):
+async def test_admin_endpoints_reject_no_auth_when_enabled(client: AsyncClient, monkeypatch):
     """When require_admin_auth=True, admin endpoints should reject unauthenticated requests."""
     from yequ.config import Settings
 
@@ -26,9 +24,7 @@ async def test_admin_endpoints_reject_no_auth_when_enabled(
 
 
 @pytest.mark.asyncio
-async def test_agent_endpoints_reject_no_auth_when_enabled(
-    client: AsyncClient, monkeypatch
-):
+async def test_agent_endpoints_reject_no_auth_when_enabled(client: AsyncClient, monkeypatch):
     """When require_admin_auth=True, agent endpoints should reject unauthenticated requests."""
     from yequ.config import Settings
 
@@ -39,9 +35,13 @@ async def test_agent_endpoints_reject_no_auth_when_enabled(
     r = await client.post("/agent/sessions", json={"actor_id": "test"})
     assert r.status_code == 401
 
-    r = await client.post("/agent/invoke", json={
-        "session_id": "sess_test", "prompt": "test",
-    })
+    r = await client.post(
+        "/agent/invoke",
+        json={
+            "session_id": "sess_test",
+            "prompt": "test",
+        },
+    )
     assert r.status_code == 401
 
 
@@ -76,9 +76,7 @@ async def test_admin_token_allows_access(client: AsyncClient, monkeypatch):
     # Clean up the test token
     async with async_session_factory() as db:
         result = await db.execute(
-            __import__("sqlalchemy").select(ApiToken).where(
-                ApiToken.label == "test admin"
-            )
+            __import__("sqlalchemy").select(ApiToken).where(ApiToken.label == "test admin")
         )
         t = result.scalar_one_or_none()
         if t:
@@ -87,10 +85,8 @@ async def test_admin_token_allows_access(client: AsyncClient, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_admin_token_rejected_on_agent_endpoint(
-    client: AsyncClient, monkeypatch
-):
-    """Admin token should be rejected on agent endpoints — returns 401 (token not found for agent scope)."""
+async def test_admin_token_rejected_on_agent_endpoint(client: AsyncClient, monkeypatch):
+    """Admin token should be rejected on agent endpoints."""
     from yequ.config import Settings
 
     settings = Settings(require_admin_auth=True)
@@ -117,9 +113,9 @@ async def test_admin_token_rejected_on_agent_endpoint(
     # Clean up
     async with async_session_factory() as db:
         result = await db.execute(
-            __import__("sqlalchemy").select(ApiToken).where(
-                ApiToken.label == "test admin-scope-rejection"
-            )
+            __import__("sqlalchemy")
+            .select(ApiToken)
+            .where(ApiToken.label == "test admin-scope-rejection")
         )
         t = result.scalar_one_or_none()
         if t:
@@ -170,9 +166,9 @@ async def test_create_token_via_admin_api(client: AsyncClient, monkeypatch):
     # Clean up
     async with async_session_factory() as db:
         result = await db.execute(
-            __import__("sqlalchemy").select(ApiToken).where(
-                ApiToken.label.in_(["super admin", "test agent token"])
-            )
+            __import__("sqlalchemy")
+            .select(ApiToken)
+            .where(ApiToken.label.in_(["super admin", "test agent token"]))
         )
         for t in result.scalars().all():
             await db.delete(t)

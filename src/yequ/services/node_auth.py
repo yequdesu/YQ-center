@@ -59,9 +59,7 @@ async def authenticate_node(
 
     computed_hash = hash_token(token)
 
-    result = await db.execute(
-        select(Node).where(Node.token_hash == computed_hash)
-    )
+    result = await db.execute(select(Node).where(Node.token_hash == computed_hash))
     node = result.scalar_one_or_none()
 
     if node is None:

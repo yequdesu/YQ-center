@@ -15,7 +15,6 @@ from yequ.models.timeline import TimelineEvent
 from yequ.protocol.enums import NodeStatus
 from yequ.services.node_liveness_service import (
     compute_effective_status,
-    get_node_liveness_snapshot,
     is_node_schedulable,
     mark_timed_out_nodes,
 )
@@ -213,8 +212,8 @@ async def test_mark_timed_out_nodes(db_session):
 @pytest.mark.asyncio
 async def test_heartbeat_restores_online(client: AsyncClient, db_session):
     """Heartbeat from an offline node restores it to online + writes node.online."""
-    from yequ.services.node_service import handle_heartbeat
     from yequ.services.node_auth import hash_token
+    from yequ.services.node_service import handle_heartbeat
 
     token = f"tok-{_uid()}"
     node = Node(
@@ -230,11 +229,16 @@ async def test_heartbeat_restores_online(client: AsyncClient, db_session):
 
     # Simulate heartbeat
     settings = get_settings()
-    await handle_heartbeat(db_session, node, {
-        "daemon_uptime_sec": 3600,
-        "running_jobs": 0,
-        "status": "online",
-    }, settings)
+    await handle_heartbeat(
+        db_session,
+        node,
+        {
+            "daemon_uptime_sec": 3600,
+            "running_jobs": 0,
+            "status": "online",
+        },
+        settings,
+    )
 
     await db_session.refresh(node)
     assert node.status == NodeStatus.ONLINE
@@ -258,22 +262,53 @@ async def node_setup(client: AsyncClient):
     token = f"tok-{_uid()}"
     auth = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": f"Liveness-{node_id}", "token": token,
-    })
-    await client.post("/yqp/", json=make_yqp_envelope("node.hello", node_id, {
-        "daemon_version": "0.1.0",
-    }), headers=auth)
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "test.plugin", "plugin_version": "1.0.0",
-            "functions": [
-                {"name": "system.metrics.snapshot", "input_schema": {"type": "object"}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-            ],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": f"Liveness-{node_id}",
+            "token": token,
+        },
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            {
+                "daemon_version": "0.1.0",
+            },
+        ),
+        headers=auth,
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.plugin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.metrics.snapshot",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
 
     return node_id, token, auth
 
@@ -286,6 +321,7 @@ async def test_admin_nodes_api_liveness_fields(client: AsyncClient, node_setup):
 
     # Update the node with a fresh heartbeat so it's online
     from yequ.db import async_session_factory
+
     async with async_session_factory() as db:
         result = await db.execute(select(Node).where(Node.node_id == node_id))
         node = result.scalar_one()
@@ -327,11 +363,14 @@ async def test_invocation_rejects_offline_node(client: AsyncClient, db_session):
     db_session.add(node)
     await db_session.commit()
 
-    r = await client.post("/admin/invocations", json={
-        "function_name": "system.metrics.snapshot",
-        "target_node_id": node.node_id,
-        "input": {},
-    })
+    r = await client.post(
+        "/admin/invocations",
+        json={
+            "function_name": "system.metrics.snapshot",
+            "target_node_id": node.node_id,
+            "input": {},
+        },
+    )
     # Should reject — 409 NODE_UNAVAILABLE
     assert r.status_code == 409, f"Got {r.status_code}: {r.text[:300]}"
     body = r.json()
@@ -349,6 +388,7 @@ async def test_capability_available_false_when_node_offline(client: AsyncClient,
 
     # Set node heartbeat to stale
     from yequ.db import async_session_factory
+
     async with async_session_factory() as db:
         result = await db.execute(select(Node).where(Node.node_id == node_id))
         node = result.scalar_one()

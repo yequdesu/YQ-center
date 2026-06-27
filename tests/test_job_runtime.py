@@ -11,6 +11,7 @@ from yequ.protocol import InvocationStatus, JobStatus
 
 # ── Cancel Flow ────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_cancel_queued_job(db_session: AsyncSession):
     """Cancel a QUEUED job -- should go directly to CANCELLED."""
@@ -62,6 +63,7 @@ async def test_cancel_running_job_goes_to_cancelling(db_session: AsyncSession):
 
 
 # ── Timeout Flow ────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_find_expired_jobs(db_session: AsyncSession):
@@ -116,9 +118,7 @@ async def test_timeout_job_transitions(db_session: AsyncSession):
     await timeout_job(db_session, job, node_id="test")
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(Job).where(Job.job_id == "job_to_timeout")
-    )
+    result = await db_session.execute(select(Job).where(Job.job_id == "job_to_timeout"))
     fetched = result.scalar_one()
     assert fetched.status == JobStatus.TIMEOUT
     assert fetched.finished_at is not None
@@ -126,34 +126,45 @@ async def test_timeout_job_transitions(db_session: AsyncSession):
 
 # ── Recovery ────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_find_incomplete_jobs(db_session: AsyncSession):
     """find_incomplete_jobs should return non-terminal jobs only."""
     from yequ.services.job_service import find_incomplete_jobs
 
     running = Job(
-        job_id="job_inc_1", invocation_id="inv_rec", node_id="test-node",
-        function_name="test.func", status=JobStatus.RUNNING,
+        job_id="job_inc_1",
+        invocation_id="inv_rec",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.RUNNING,
     )
     queued = Job(
-        job_id="job_inc_2", invocation_id="inv_rec", node_id="test-node",
-        function_name="test.func", status=JobStatus.QUEUED,
+        job_id="job_inc_2",
+        invocation_id="inv_rec",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.QUEUED,
     )
     succeeded = Job(
-        job_id="job_inc_3", invocation_id="inv_rec", node_id="test-node",
-        function_name="test.func", status=JobStatus.SUCCEEDED,
+        job_id="job_inc_3",
+        invocation_id="inv_rec",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.SUCCEEDED,
     )
     db_session.add_all([running, queued, succeeded])
     await db_session.commit()
 
     incomplete = await find_incomplete_jobs(db_session)
     incomplete_ids = {j.job_id for j in incomplete}
-    assert "job_inc_1" in incomplete_ids   # running
-    assert "job_inc_2" in incomplete_ids   # queued
+    assert "job_inc_1" in incomplete_ids  # running
+    assert "job_inc_2" in incomplete_ids  # queued
     assert "job_inc_3" not in incomplete_ids  # terminal
 
 
 # ── Invocation Aggregation ──────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_aggregate_all_succeeded(db_session: AsyncSession):
@@ -161,12 +172,24 @@ async def test_aggregate_all_succeeded(db_session: AsyncSession):
     from yequ.services.invocation_service import aggregate_invocation_status
 
     inv_id = "inv_agg_success"
-    db_session.add_all([
-        Job(job_id="j_s1", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.SUCCEEDED),
-        Job(job_id="j_s2", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.SUCCEEDED),
-    ])
+    db_session.add_all(
+        [
+            Job(
+                job_id="j_s1",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.SUCCEEDED,
+            ),
+            Job(
+                job_id="j_s2",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.SUCCEEDED,
+            ),
+        ]
+    )
     await db_session.commit()
 
     status = await aggregate_invocation_status(db_session, inv_id)
@@ -179,12 +202,24 @@ async def test_aggregate_one_failed(db_session: AsyncSession):
     from yequ.services.invocation_service import aggregate_invocation_status
 
     inv_id = "inv_agg_fail"
-    db_session.add_all([
-        Job(job_id="j_f1", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.SUCCEEDED),
-        Job(job_id="j_f2", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.FAILED),
-    ])
+    db_session.add_all(
+        [
+            Job(
+                job_id="j_f1",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.SUCCEEDED,
+            ),
+            Job(
+                job_id="j_f2",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.FAILED,
+            ),
+        ]
+    )
     await db_session.commit()
 
     status = await aggregate_invocation_status(db_session, inv_id)
@@ -197,12 +232,24 @@ async def test_aggregate_some_running(db_session: AsyncSession):
     from yequ.services.invocation_service import aggregate_invocation_status
 
     inv_id = "inv_agg_running"
-    db_session.add_all([
-        Job(job_id="j_r1", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.SUCCEEDED),
-        Job(job_id="j_r2", invocation_id=inv_id, node_id="n1",
-            function_name="f", status=JobStatus.RUNNING),
-    ])
+    db_session.add_all(
+        [
+            Job(
+                job_id="j_r1",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.SUCCEEDED,
+            ),
+            Job(
+                job_id="j_r2",
+                invocation_id=inv_id,
+                node_id="n1",
+                function_name="f",
+                status=JobStatus.RUNNING,
+            ),
+        ]
+    )
     await db_session.commit()
 
     status = await aggregate_invocation_status(db_session, inv_id)
@@ -219,6 +266,7 @@ async def test_aggregate_empty(db_session: AsyncSession):
 
 
 # ── Invocation -> Job Integration ────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_create_invocation_and_job(db_session: AsyncSession):

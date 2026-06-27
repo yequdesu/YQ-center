@@ -41,10 +41,8 @@ def _requires_serialization(
         return True
     if effect in ("write", "destructive"):
         return True
-    if risk in ("maintenance", "destructive", "catastrophic"):
-        return True
     # safe + read + allow_parallel (or unspecified) → no serialization needed
-    return False
+    return risk in ("maintenance", "destructive", "catastrophic")
 
 
 async def create_job(
@@ -109,12 +107,15 @@ async def create_job(
     # Safe reads with allow_parallel must not be blocked by locks.
     if resource_keys and _requires_serialization(effect, risk, approval_id, conflict_policy):
         from yequ.services.resource_lock_service import acquire_lock
+
         for rk in resource_keys:
             await acquire_lock(db, rk, job.job_id, invocation_id, node_id)
 
     # Transition created -> queued
     await transition(
-        db, job, JobStatus.QUEUED,
+        db,
+        job,
+        JobStatus.QUEUED,
         node_id=node_id,
         invocation_id=invocation_id,
     )
@@ -137,13 +138,19 @@ async def cancel_job(
     """
     if job.status == JobStatus.QUEUED:
         await transition(
-            db, job, JobStatus.CANCELLED,
-            node_id=node_id, reason=reason,
+            db,
+            job,
+            JobStatus.CANCELLED,
+            node_id=node_id,
+            reason=reason,
         )
     elif job.status in (JobStatus.CLAIMED, JobStatus.RUNNING):
         await transition(
-            db, job, JobStatus.CANCELLING,
-            node_id=node_id, reason=reason,
+            db,
+            job,
+            JobStatus.CANCELLING,
+            node_id=node_id,
+            reason=reason,
         )
     else:
         raise ValueError(f"Cannot cancel job in status {job.status}")
@@ -163,12 +170,15 @@ async def timeout_job(
         raise ValueError(f"Cannot timeout job in status {job.status}")
 
     await transition(
-        db, job, JobStatus.TIMEOUT,
+        db,
+        job,
+        JobStatus.TIMEOUT,
         node_id=node_id,
         reason="lease_expired",
     )
     # Release any resource locks held by the timed-out job
     from yequ.services.resource_lock_service import release_lock
+
     await release_lock(db, job.job_id)
 
 
@@ -195,7 +205,5 @@ async def find_incomplete_jobs(db: AsyncSession) -> list[Job]:
     Returns jobs in CREATED, QUEUED, CLAIMED, RUNNING, CANCELLING.
     """
     terminal_values = [s.value for s in TERMINAL_STATUSES]
-    result = await db.execute(
-        select(Job).where(Job.status.notin_(terminal_values))
-    )
+    result = await db.execute(select(Job).where(Job.status.notin_(terminal_values)))
     return list(result.scalars().all())

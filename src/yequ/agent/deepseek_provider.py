@@ -79,8 +79,9 @@ class DeepSeekProvider(AgentProvider):
         _t0 = _time.monotonic()
         tools = self._functions_to_tools(functions)
         _t1 = _time.monotonic()
-        _log.info("deepseek provider build tools: elapsed=%.3fs tool_count=%d",
-                  _t1 - _t0, len(tools))
+        _log.info(
+            "deepseek provider build tools: elapsed=%.3fs tool_count=%d", _t1 - _t0, len(tools)
+        )
 
         if messages is not None:
             # Use provided conversation history — inject system prompt at front
@@ -100,15 +101,13 @@ class DeepSeekProvider(AgentProvider):
                 kwargs["tool_choice"] = "auto"
 
             _t_api0 = _time.monotonic()
-            _log.info("deepseek api call starting: model=%s tool_count=%d",
-                     self._model, len(tools))
+            _log.info("deepseek api call starting: model=%s tool_count=%d", self._model, len(tools))
             response = await asyncio.wait_for(
                 self._client.chat.completions.create(**kwargs),
                 timeout=35.0,
             )
             _t_api1 = _time.monotonic()
-            _log.info("deepseek api call completed: elapsed=%.1fs",
-                     _t_api1 - _t_api0)
+            _log.info("deepseek api call completed: elapsed=%.1fs", _t_api1 - _t_api0)
             choice = response.choices[0]
             msg = choice.message
 
@@ -122,16 +121,16 @@ class DeepSeekProvider(AgentProvider):
                         arguments = json.loads(tc.function.arguments)
                     except (json.JSONDecodeError, TypeError):
                         arguments = {}
-                    original_name = self._resolve_name(
-                        tc.function.name, functions
-                    )
+                    original_name = self._resolve_name(tc.function.name, functions)
                     sanitized_name = tc.function.name
-                    tool_calls.append({
-                        "call_id": tc.id or f"call_{uuid.uuid4().hex}",
-                        "name": original_name,
-                        "sanitized_name": sanitized_name,
-                        "input": arguments,
-                    })
+                    tool_calls.append(
+                        {
+                            "call_id": tc.id or f"call_{uuid.uuid4().hex}",
+                            "name": original_name,
+                            "sanitized_name": sanitized_name,
+                            "input": arguments,
+                        }
+                    )
 
             if msg.content:
                 text_output.append(msg.content)
@@ -149,15 +148,9 @@ class DeepSeekProvider(AgentProvider):
             # Extract token usage
             usage_raw = response.usage
             usage: dict[str, object] = {
-                "prompt_tokens": (
-                    usage_raw.prompt_tokens if usage_raw else None
-                ),
-                "completion_tokens": (
-                    usage_raw.completion_tokens if usage_raw else None
-                ),
-                "total_tokens": (
-                    usage_raw.total_tokens if usage_raw else None
-                ),
+                "prompt_tokens": (usage_raw.prompt_tokens if usage_raw else None),
+                "completion_tokens": (usage_raw.completion_tokens if usage_raw else None),
+                "total_tokens": (usage_raw.total_tokens if usage_raw else None),
             }
 
             return ProviderInvokeResult(
@@ -172,8 +165,9 @@ class DeepSeekProvider(AgentProvider):
         except Exception as e:
             _t_exc = _time.monotonic() - _t0
             error_msg = str(e)
-            _log.error("deepseek provider exception: elapsed=%.1fs error=%s",
-                      _t_exc, error_msg[:500])
+            _log.error(
+                "deepseek provider exception: elapsed=%.1fs error=%s", _t_exc, error_msg[:500]
+            )
             retryable = "rate" in error_msg.lower() or "timeout" in error_msg.lower()
             return ProviderInvokeResult(
                 success=False,
@@ -212,7 +206,10 @@ class DeepSeekProvider(AgentProvider):
             oai_messages = self._to_openai_messages(messages, functions)
             # Ensure a system message is present
             if not oai_messages or oai_messages[0].get("role") != "system":
-                oai_messages.insert(0, {"role": "system", "content": self._system_prompt(functions)})
+                oai_messages.insert(
+                    0,
+                    {"role": "system", "content": self._system_prompt(functions)},
+                )
         else:
             oai_messages = [
                 {"role": "system", "content": self._system_prompt(functions)},
@@ -281,7 +278,12 @@ class DeepSeekProvider(AgentProvider):
 
             # Parse accumulated tool calls
             raw_tool_calls: list[dict[str, object]] = []
-            for buf in sorted(tool_call_buffers.values(), key=lambda b: int(b.get("call_id", "0")[-4:], 16) if b.get("call_id", "") else 0):  # type: ignore[arg-type]
+
+            def _call_sort_key(buf: dict[str, Any]) -> int:
+                call_id = str(buf.get("call_id", ""))
+                return int(call_id[-4:], 16) if call_id else 0
+
+            for buf in sorted(tool_call_buffers.values(), key=_call_sort_key):
                 buf_name = str(buf.get("name", ""))
                 try:
                     arguments = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
@@ -289,12 +291,14 @@ class DeepSeekProvider(AgentProvider):
                     arguments = {}
 
                 original_name = self._resolve_name(buf_name, functions)
-                raw_tool_calls.append({
-                    "call_id": str(buf.get("call_id", "")),
-                    "name": original_name,
-                    "sanitized_name": buf_name,
-                    "input": arguments,
-                })
+                raw_tool_calls.append(
+                    {
+                        "call_id": str(buf.get("call_id", "")),
+                        "name": original_name,
+                        "sanitized_name": buf_name,
+                        "input": arguments,
+                    }
+                )
 
             yield {
                 "type": "done",
@@ -316,9 +320,7 @@ class DeepSeekProvider(AgentProvider):
 
     def _system_prompt(self, functions: list[AgentFunction]) -> str:
         """Build the system prompt for multi-turn agent conversations."""
-        func_descriptions = "\n".join(
-            f"- {f.name}: {f.description}" for f in functions
-        )
+        func_descriptions = "\n".join(f"- {f.name}: {f.description}" for f in functions)
         return (
             "You are an infrastructure control agent. You have these tools:\n"
             f"{func_descriptions}\n\n"
@@ -363,7 +365,9 @@ class DeepSeekProvider(AgentProvider):
         for m in messages:
             d: dict[str, object] = {"role": m.role}
             if m.content is not None:
-                d["content"] = _sanitize_tool_observation_content(m.content) if m.role == "tool" else m.content
+                d["content"] = (
+                    _sanitize_tool_observation_content(m.content) if m.role == "tool" else m.content
+                )
             if m.tool_call_id is not None:
                 d["tool_call_id"] = m.tool_call_id
             if m.tool_calls is not None:
@@ -373,7 +377,9 @@ class DeepSeekProvider(AgentProvider):
                         "type": "function",
                         "function": {
                             "name": self._sanitize_name(str(tc.get("name", ""))),
-                            "arguments": json.dumps(sanitize_tool_payload_for_agent(tc.get("input", {}))),
+                            "arguments": json.dumps(
+                                sanitize_tool_payload_for_agent(tc.get("input", {}))
+                            ),
                         },
                     }
                     for tc in m.tool_calls
@@ -386,9 +392,7 @@ class DeepSeekProvider(AgentProvider):
         """Replace dots with underscores for DeepSeek API compatibility."""
         return name.replace(".", "_")
 
-    def _functions_to_tools(
-        self, functions: list[AgentFunction]
-    ) -> list[dict[str, object]]:
+    def _functions_to_tools(self, functions: list[AgentFunction]) -> list[dict[str, object]]:
         """Convert AgentFunction[] to OpenAI tool definitions.
 
         DeepSeek requires function names matching '^[a-zA-Z0-9_-]+$',

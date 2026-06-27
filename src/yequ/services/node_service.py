@@ -1,8 +1,8 @@
 """Node service — business logic for YQP node protocol messages."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from yequ.logconfig import get_logger
 from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
+from yequ.models.signal_state import SignalState
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
 
@@ -27,6 +28,8 @@ async def handle_hello(
     Updates Node status to online, records daemon version and platform info.
     Returns node.accepted payload with protocol negotiation parameters.
     """
+    from yequ.services.timeline_writer import add_timeline_event
+
     node.status = NodeStatus.ONLINE
     node.daemon_version = payload.get("daemon_version")
     node.last_seen_at = datetime.now(UTC)
@@ -41,17 +44,18 @@ async def handle_hello(
     await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=node.last_seen_at)
 
     # Write node.online timeline event
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    db.add(TimelineEvent(
-        global_seq=max_seq + 1,
-        event_type="node.online",
-        actor_type="system",
-        actor_id="node_service",
-        node_id=node.node_id,
-        data={"node_id": node.node_id, "daemon_version": node.daemon_version},
-        timestamp=datetime.now(UTC),
-    ))
+    await add_timeline_event(
+        db,
+        TimelineEvent(
+            global_seq=0,
+            event_type="node.online",
+            actor_type="system",
+            actor_id="node_service",
+            node_id=node.node_id,
+            data={"node_id": node.node_id, "daemon_version": node.daemon_version},
+            timestamp=datetime.now(UTC),
+        ),
+    )
 
     await db.commit()
 
@@ -76,6 +80,8 @@ async def handle_heartbeat(
 
     If node was OFFLINE or REJOINING, brings it back to ONLINE.
     """
+    from yequ.services.timeline_writer import add_timeline_event
+
     now = datetime.now(UTC)
     node.last_seen_at = now
     node.last_heartbeat_at = now
@@ -86,21 +92,22 @@ async def handle_heartbeat(
         node.status = NodeStatus.ONLINE
 
         # Write node.online timeline event on recovery
-        result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-        max_seq = result.scalar() or 0
-        db.add(TimelineEvent(
-            global_seq=max_seq + 1,
-            event_type="node.online",
-            actor_type="system",
-            actor_id="node_service",
-            node_id=node.node_id,
-            data={
-                "node_id": node.node_id,
-                "previous_status": str(node.status),  # will be "online" since we already set it
-                "recovery": True,
-            },
-            timestamp=now,
-        ))
+        await add_timeline_event(
+            db,
+            TimelineEvent(
+                global_seq=0,
+                event_type="node.online",
+                actor_type="system",
+                actor_id="node_service",
+                node_id=node.node_id,
+                data={
+                    "node_id": node.node_id,
+                    "previous_status": str(node.status),  # will be "online" since we already set it
+                    "recovery": True,
+                },
+                timestamp=now,
+            ),
+        )
 
     await db.commit()
 
@@ -314,7 +321,7 @@ async def handle_signal_report(
     """
     import jsonschema
 
-    from yequ.services.timeline_writer import get_timeline_writer
+    from yequ.services.timeline_writer import add_timeline_event, get_timeline_writer
 
     signals = payload.get("signals", [])
     accepted = 0
@@ -329,10 +336,9 @@ async def handle_signal_report(
             Capability.is_active,
         )
     )
-    registered: dict[str, dict] = {}
+    registered: dict[str, Capability] = {}
     for cap in result.scalars().all():
-        if cap.value_schema:
-            registered[cap.name] = cap.value_schema
+        registered[cap.name] = cap
 
     # Get the async timeline writer for accepted events
     tl_writer = get_timeline_writer()
@@ -340,7 +346,8 @@ async def handle_signal_report(
     for sig in signals:
         name = sig["name"]
         value = sig.get("value")
-        value_schema = registered.get(name)
+        cap = registered.get(name)
+        value_schema = cap.value_schema if cap else None
 
         # Validate against value_schema if we have one registered
         if value_schema is not None:
@@ -361,9 +368,41 @@ async def handle_signal_report(
                     },
                     timestamp=now,
                 )
-                db.add(event)
+                await add_timeline_event(db, event)
                 rejected += 1
                 continue
+
+        ttl_sec = sig.get("ttl_sec")
+        if ttl_sec is None and cap is not None:
+            ttl_sec = cap.ttl_sec
+        ttl_int = int(ttl_sec) if ttl_sec is not None else None
+        collected_at = _parse_signal_datetime(sig.get("collected_at"))
+        expires_at = now + timedelta(seconds=ttl_int) if ttl_int else None
+
+        state_result = await db.execute(
+            select(SignalState).where(
+                SignalState.node_id == node.node_id,
+                SignalState.signal_name == name,
+            )
+        )
+        state = state_result.scalar_one_or_none()
+        if state is None:
+            state = SignalState(
+                node_id=node.node_id,
+                signal_name=name,
+                reported_at=now,
+            )
+            db.add(state)
+        state.capability_id = cap.id if cap else None
+        state.value = value
+        state.value_schema = value_schema
+        state.scope = sig.get("scope") or (cap.scope if cap else None)
+        state.ttl_sec = ttl_int
+        state.freshness_status = "fresh"
+        state.quality = "ok"
+        state.collected_at = collected_at
+        state.reported_at = now
+        state.expires_at = expires_at
 
         # Enqueue accepted signal as timeline event (fire-and-forget)
         event = TimelineEvent(
@@ -377,21 +416,33 @@ async def handle_signal_report(
                 "value": value,
                 "scope": sig.get("scope"),
                 "collected_at": sig.get("collected_at"),
-                "ttl_sec": sig.get("ttl_sec"),
+                "ttl_sec": ttl_int,
             },
             timestamp=now,
         )
         tl_writer.enqueue(event)
         accepted += 1
 
-    # Commit any schema_invalid events that were written synchronously
-    if rejected:
+    # Commit state updates and any schema_invalid events written synchronously.
+    if accepted or rejected:
         await db.commit()
 
     return {
         "accepted": accepted,
         "rejected": rejected,
     }
+
+
+def _parse_signal_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 async def handle_job_poll(
@@ -413,6 +464,7 @@ async def handle_job_poll(
 
     from yequ.models.job import Job
     from yequ.protocol import JobStatus
+    from yequ.services.job_state_machine import transition
 
     raw_capacity = int(payload.get("capacity"))
     running_jobs = payload.get("running_jobs", [])
@@ -438,24 +490,30 @@ async def handle_job_poll(
     now = datetime.now(UTC)
     jobs = []
     for job in pending_jobs:
-        job.status = JobStatus.CLAIMED
-        job.claimed_at = now
-        job.lease_expires_at = datetime.fromtimestamp(
-            now.timestamp() + job.lease_sec, tz=UTC
+        await transition(
+            db,
+            job,
+            JobStatus.CLAIMED,
+            node_id=node.node_id,
+            invocation_id=job.invocation_id,
         )
-        jobs.append({
-            "job_id": job.job_id,
-            "invocation_id": job.invocation_id,
-            "function": job.function_name,
-            "input": job.input_payload or {},
-            "runtime_id": job.runtime_id,
-            "execution_requirements": job.execution_requirements_snapshot or {},
-            "timeout_sec": job.timeout_sec,
-            "lease_sec": job.lease_sec,
-            "approval_id": getattr(job, "approval_id", None),
-            "resource_keys": getattr(job, "resource_keys", []),
-            "dry_run": getattr(job, "dry_run", False),
-        })
+        job.claimed_at = now
+        job.lease_expires_at = datetime.fromtimestamp(now.timestamp() + job.lease_sec, tz=UTC)
+        jobs.append(
+            {
+                "job_id": job.job_id,
+                "invocation_id": job.invocation_id,
+                "function": job.function_name,
+                "input": job.input_payload or {},
+                "runtime_id": job.runtime_id,
+                "execution_requirements": job.execution_requirements_snapshot or {},
+                "timeout_sec": job.timeout_sec,
+                "lease_sec": job.lease_sec,
+                "approval_id": getattr(job, "approval_id", None),
+                "resource_keys": getattr(job, "resource_keys", []),
+                "dry_run": getattr(job, "dry_run", False),
+            }
+        )
 
     await db.commit()
     return {"jobs": jobs}
@@ -477,11 +535,10 @@ async def handle_job_accepted(
     from yequ.models.job import Job
     from yequ.protocol import JobStatus
     from yequ.protocol.errors import ErrorCode, YqpError
+    from yequ.services.job_state_machine import transition
 
     job_id = payload["job_id"]
-    result = await db.execute(
-        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
-    )
+    result = await db.execute(select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id))
     job = result.scalar_one_or_none()
 
     if job is None:
@@ -503,7 +560,13 @@ async def handle_job_accepted(
         )
 
     now = datetime.now(UTC)
-    job.status = JobStatus.RUNNING
+    await transition(
+        db,
+        job,
+        JobStatus.RUNNING,
+        node_id=node.node_id,
+        invocation_id=job.invocation_id,
+    )
     job.started_at = now
     await db.commit()
 
@@ -529,11 +592,10 @@ async def handle_job_finished(
     from yequ.models.timeline import TimelineEvent
     from yequ.protocol import JobStatus
     from yequ.protocol.errors import ErrorCode, YqpError
+    from yequ.services.job_state_machine import transition
 
     job_id = payload["job_id"]
-    result = await db.execute(
-        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
-    )
+    result = await db.execute(select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id))
     job = result.scalar_one_or_none()
 
     if job is None:
@@ -547,8 +609,10 @@ async def handle_job_finished(
 
     terminal_status = payload["status"]
     valid_terminals = {
-        JobStatus.SUCCEEDED, JobStatus.FAILED,
-        JobStatus.CANCELLED, JobStatus.TIMEOUT,
+        JobStatus.SUCCEEDED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+        JobStatus.TIMEOUT,
     }
     if terminal_status not in valid_terminals:
         raise HTTPException(
@@ -570,69 +634,67 @@ async def handle_job_finished(
         )
 
     now = datetime.now(UTC)
-    job.status = terminal_status
-    job.finished_at = now
-    job.output = payload.get("output")
 
     # Normalize error payload: node may send flat error_code/error_message
     # OR nested error.code / error.message / error.details.
     raw_error = payload.get("error")
     if isinstance(raw_error, dict):
-        job.error_code = raw_error.get("code") or payload.get("error_code")
-        job.error_message = raw_error.get("message") or payload.get("error_message")
-        job.error_details = raw_error.get("details")
+        error_code = raw_error.get("code") or payload.get("error_code")
+        error_message = raw_error.get("message") or payload.get("error_message")
+        error_details = raw_error.get("details")
     else:
-        job.error_code = payload.get("error_code")
-        job.error_message = payload.get("error_message")
-        job.error_details = None
+        error_code = payload.get("error_code")
+        error_message = payload.get("error_message")
+        error_details = None
 
-    # Compute global_seq for timeline event
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    next_seq = max_seq + 1
+    try:
+        await transition(
+            db,
+            job,
+            terminal_status,
+            node_id=node.node_id,
+            invocation_id=job.invocation_id,
+            output=payload.get("output"),
+            error_code=error_code,
+            error_message=error_message,
+            error_details=error_details,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=YqpError(
+                code=ErrorCode.INVALID_STATE_TRANSITION,
+                message=str(e),
+            ).model_dump(),
+        ) from None
 
-    # Write timeline event
-    event = TimelineEvent(
-        global_seq=next_seq,
-        event_type=f"job.{terminal_status}",
-        actor_type="system",
-        actor_id=node.node_id,
-        node_id=node.node_id,
-        job_id=job_id,
-        invocation_id=job.invocation_id,
-        data={
-            "status": terminal_status,
-            "output": payload.get("output"),
-            "error_code": job.error_code,
-            "error_message": job.error_message,
-            "finished_at": now.isoformat(),
-        },
-        timestamp=now,
-    )
-    db.add(event)
-    await db.commit()
+    job.output = payload.get("output")
+    job.error_code = error_code
+    job.error_message = error_message
+    job.error_details = error_details
 
     # Release resource locks on job completion
     from yequ.services.resource_lock_service import release_lock
+
     await release_lock(db, job_id)
 
     # L2 action timeline: write l2.action.completed or l2.action.failed
     # Skip if this job belongs to a MaintenanceStep (maintenance.step.* covers it)
     from yequ.models.maintenance_plan import MaintenanceStep
-    step_result = await db.execute(
-        select(MaintenanceStep).where(MaintenanceStep.job_id == job_id)
-    )
+    from yequ.services.timeline_writer import add_timeline_event
+
+    step_result = await db.execute(select(MaintenanceStep).where(MaintenanceStep.job_id == job_id))
     is_maintenance_step = step_result.scalar_one_or_none() is not None
 
     if job.approval_id and not is_maintenance_step:
         l2_status = "completed" if terminal_status == "succeeded" else "failed"
-        l2_seq = await db.execute(select(func.max(TimelineEvent.global_seq)))
-        l2_max = l2_seq.scalar() or 0
         l2_event = TimelineEvent(
-            global_seq=l2_max + 1,
+            global_seq=0,
             event_type=f"l2.action.{l2_status}",
-            actor_type="system", actor_id=node.node_id,
-            node_id=node.node_id, job_id=job_id,
+            actor_type="system",
+            actor_id=node.node_id,
+            node_id=node.node_id,
+            job_id=job_id,
             invocation_id=job.invocation_id,
             data={
                 "approval_id": job.approval_id,
@@ -642,8 +704,7 @@ async def handle_job_finished(
             },
             timestamp=now,
         )
-        db.add(l2_event)
-        await db.flush()
+        await add_timeline_event(db, l2_event)
 
     # Aggregate Invocation status — update Invocation when all Jobs terminal
     from yequ.models.invocation import Invocation
@@ -655,9 +716,7 @@ async def handle_job_finished(
     new_status = await aggregate_invocation_status(db, job.invocation_id)
     if new_status in ("succeeded", "failed", "timeout", "cancelled", "partial"):
         inv_result = await db.execute(
-            select(Invocation).where(
-                Invocation.invocation_id == job.invocation_id
-            )
+            select(Invocation).where(Invocation.invocation_id == job.invocation_id)
         )
         inv = inv_result.scalar_one_or_none()
         if inv and inv.status not in ("succeeded", "failed", "timeout", "cancelled", "partial"):
@@ -676,10 +735,8 @@ async def handle_job_finished(
             if job.error_details:
                 inv.error_details = job.error_details
             # Write invocation timeline event
-            iev_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-            iev_max = iev_result.scalar() or 0
             inv_event = TimelineEvent(
-                global_seq=iev_max + 1,
+                global_seq=0,
                 event_type=f"invocation.{new_status}",
                 actor_type="system",
                 actor_id=node.node_id,
@@ -693,8 +750,10 @@ async def handle_job_finished(
                 },
                 timestamp=now,
             )
-            db.add(inv_event)
+            await add_timeline_event(db, inv_event)
             await db.commit()
+
+    await db.commit()
 
     return {"job_id": job_id, "status": terminal_status}
 
@@ -718,9 +777,7 @@ async def handle_job_lease_renew(
     from yequ.protocol.errors import ErrorCode, YqpError
 
     job_id = payload["job_id"]
-    result = await db.execute(
-        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
-    )
+    result = await db.execute(select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id))
     job = result.scalar_one_or_none()
 
     if job is None:
@@ -751,9 +808,7 @@ async def handle_job_lease_renew(
         }
 
     extend_sec = payload.get("lease_extend_sec", settings.default_lease_sec)
-    job.lease_expires_at = datetime.fromtimestamp(
-        now.timestamp() + extend_sec, tz=UTC
-    )
+    job.lease_expires_at = datetime.fromtimestamp(now.timestamp() + extend_sec, tz=UTC)
     await db.commit()
 
     return {
@@ -761,6 +816,43 @@ async def handle_job_lease_renew(
         "status": "accepted",
         "lease_expires_at": job.lease_expires_at.isoformat(),
     }
+
+
+async def _reconcile_to_terminal(
+    db: AsyncSession,
+    job,
+    *,
+    terminal_status: str,
+    node_id: str,
+    output: dict | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Move a daemon-reported terminal reconciliation through legal transitions."""
+    from yequ.protocol import JobStatus
+    from yequ.services.job_state_machine import transition
+
+    if job.status == JobStatus.CREATED:
+        await transition(db, job, JobStatus.QUEUED, node_id=node_id)
+
+    if job.status == JobStatus.QUEUED:
+        await transition(db, job, JobStatus.CLAIMED, node_id=node_id)
+
+    if job.status == JobStatus.CLAIMED and terminal_status != JobStatus.TIMEOUT:
+        await transition(db, job, JobStatus.RUNNING, node_id=node_id)
+
+    if terminal_status == JobStatus.CANCELLED and job.status == JobStatus.RUNNING:
+        await transition(db, job, JobStatus.CANCELLING, node_id=node_id)
+
+    await transition(
+        db,
+        job,
+        terminal_status,
+        node_id=node_id,
+        output=output,
+        error_code=error_code,
+        error_message=error_message,
+    )
 
 
 async def handle_reconcile_jobs(
@@ -784,18 +876,22 @@ async def handle_reconcile_jobs(
 
     from yequ.models.job import Job
     from yequ.protocol import JobStatus, ReconciliationAction
+    from yequ.protocol.errors import ErrorCode, YqpError
 
     known_jobs = payload.get("known_jobs", [])
     actions: list[dict] = []
-    now = datetime.now(UTC)
 
     terminal_statuses = {
-        JobStatus.SUCCEEDED, JobStatus.FAILED,
-        JobStatus.CANCELLED, JobStatus.TIMEOUT,
+        JobStatus.SUCCEEDED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+        JobStatus.TIMEOUT,
     }
     non_terminal_statuses = {
-        JobStatus.CREATED, JobStatus.QUEUED,
-        JobStatus.CLAIMED, JobStatus.RUNNING,
+        JobStatus.CREATED,
+        JobStatus.QUEUED,
+        JobStatus.CLAIMED,
+        JobStatus.RUNNING,
     }
     daemon_terminal = {"succeeded", "failed", "cancelled", "timeout"}
 
@@ -811,80 +907,95 @@ async def handle_reconcile_jobs(
 
         if job is None:
             # Center doesn't know this job - Daemon should stop and clean up
-            actions.append({
-                "job_id": job_id,
-                "action": ReconciliationAction.FORGET,
-            })
+            actions.append(
+                {
+                    "job_id": job_id,
+                    "action": ReconciliationAction.FORGET,
+                }
+            )
             continue
 
         center_status = job.status
 
-        # Rule 1: Center has terminal state, Daemon completed
+        # Rule 1: Center has terminal state, Daemon completed.
+        # Center is authoritative once a Job reaches terminal state; late daemon results are
+        # intentionally discarded to preserve terminal immutability and avoid result drift.
         if center_status in terminal_statuses and local_status in daemon_terminal:
-            if "output" in kj:
-                actions.append({
-                    "job_id": job_id,
-                    "action": ReconciliationAction.ACCEPT_RESULT,
-                    "reconciled": True,
-                })
-            else:
-                actions.append({
+            actions.append(
+                {
                     "job_id": job_id,
                     "action": ReconciliationAction.DISCARD_RESULT,
-                })
+                    "reason": f"center_already_{center_status}",
+                    "center_status": center_status,
+                    "local_status": local_status,
+                }
+            )
             continue
 
         # Rule 2: Center has terminal state, Daemon is still running
         if center_status in terminal_statuses:
-            actions.append({
-                "job_id": job_id,
-                "action": ReconciliationAction.CANCEL,
-                "reason": f"already_{center_status}",
-            })
+            actions.append(
+                {
+                    "job_id": job_id,
+                    "action": ReconciliationAction.CANCEL,
+                    "reason": f"already_{center_status}",
+                }
+            )
             continue
 
         # Rule 3: Center is non-terminal (running/claimed/queued/created),
         # Daemon completed — accept the result and sync Center state
         if center_status in non_terminal_statuses and local_status in daemon_terminal:
-            if local_status == "succeeded":
-                job.status = JobStatus.SUCCEEDED
-                job.finished_at = now
-                job.output = kj.get("output")
-            elif local_status == "failed":
-                job.status = JobStatus.FAILED
-                job.finished_at = now
-                job.error_code = kj.get("error_code")
-                job.error_message = kj.get("error_message")
-            elif local_status == "cancelled":
-                job.status = JobStatus.CANCELLED
-                job.finished_at = now
-            elif local_status == "timeout":
-                job.status = JobStatus.TIMEOUT
-                job.finished_at = now
+            try:
+                await _reconcile_to_terminal(
+                    db,
+                    job,
+                    terminal_status=local_status,
+                    node_id=node.node_id,
+                    output=kj.get("output"),
+                    error_code=kj.get("error_code"),
+                    error_message=kj.get("error_message"),
+                )
+            except ValueError as e:
+                from fastapi import HTTPException, status
+
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=YqpError(
+                        code=ErrorCode.INVALID_STATE_TRANSITION,
+                        message=str(e),
+                    ).model_dump(),
+                ) from None
             await db.commit()
 
-            actions.append({
-                "job_id": job_id,
-                "action": ReconciliationAction.ACCEPT_RESULT,
-                "reconciled": True,
-            })
+            actions.append(
+                {
+                    "job_id": job_id,
+                    "action": ReconciliationAction.ACCEPT_RESULT,
+                    "reconciled": True,
+                }
+            )
             continue
 
         # Rule 4: Both agree job is running — continue with new lease
         if center_status in non_terminal_statuses and local_status == "running":
-            actions.append({
-                "job_id": job_id,
-                "action": ReconciliationAction.CONTINUE,
-                "lease_sec": settings.default_lease_sec,
-            })
+            actions.append(
+                {
+                    "job_id": job_id,
+                    "action": ReconciliationAction.CONTINUE,
+                    "lease_sec": settings.default_lease_sec,
+                }
+            )
             continue
 
         # Default: continue
-        actions.append({
-            "job_id": job_id,
-            "action": ReconciliationAction.CONTINUE,
-            "lease_sec": settings.default_lease_sec,
-        })
+        actions.append(
+            {
+                "job_id": job_id,
+                "action": ReconciliationAction.CONTINUE,
+                "lease_sec": settings.default_lease_sec,
+            }
+        )
 
     return {"actions": actions}
 
@@ -905,9 +1016,10 @@ async def handle_job_event(
     """
     from datetime import UTC, datetime
 
-    from sqlalchemy import func, select
+    from sqlalchemy import select
 
     from yequ.models.timeline import TimelineEvent
+    from yequ.services.timeline_writer import add_timeline_event
 
     job_id = payload["job_id"]
     event_type = payload["event_type"]
@@ -916,19 +1028,15 @@ async def handle_job_event(
 
     # Look up job to get invocation_id for timeline tracing
     from yequ.models.job import Job
+
     j_result = await db.execute(select(Job).where(Job.job_id == job_id))
     job = j_result.scalar_one_or_none()
     invocation_id = job.invocation_id if job else None
 
     now = datetime.now(UTC)
 
-    # Compute next global_seq
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
-    next_seq = max_seq + 1
-
     event = TimelineEvent(
-        global_seq=next_seq,
+        global_seq=0,
         event_type=event_type,
         actor_type="system",
         actor_id=node.node_id,
@@ -943,7 +1051,7 @@ async def handle_job_event(
         sequence=sequence,
         timestamp=now,
     )
-    db.add(event)
+    await add_timeline_event(db, event)
     await db.commit()
 
     return {"job_id": job_id, "event_type": event_type, "sequence": sequence}
@@ -969,17 +1077,13 @@ async def handle_job_cancel(
     from yequ.services.job_service import cancel_job
 
     job_id = payload["job_id"]
-    result = await db.execute(
-        select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id)
-    )
+    result = await db.execute(select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id))
     job = result.scalar_one_or_none()
 
     if job is None:
         # Center might cancel a job the node hasn't seen yet
         # Look up by job_id only
-        result = await db.execute(
-            select(Job).where(Job.job_id == job_id)
-        )
+        result = await db.execute(select(Job).where(Job.job_id == job_id))
         job = result.scalar_one_or_none()
 
         if job is None:

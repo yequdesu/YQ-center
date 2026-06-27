@@ -19,24 +19,74 @@ async def l2b_setup(client: AsyncClient):
     token = f"tok-{_uid()}"
     auth = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/admin/nodes", json={
-        "node_id": node_id, "node_name": f"L2B-{node_id}", "token": token,
-    })
-    await client.post("/yqp/", json=make_yqp_envelope("node.hello", node_id, {
-        "daemon_version": "0.1.0",
-    }), headers=auth)
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.register_capabilities", node_id,
-        payload={"plugins": [{
-            "plugin_id": "test.plugin", "plugin_version": "1.0.0",
-            "functions": [
-                {"name": "system.metrics.snapshot", "input_schema": {"type": "object"}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-                {"name": "system.info", "input_schema": {"type": "object"}, "output_schema": {"type": "object"}, "risk": "safe", "effect": "read", "timeout_sec": 5, "idempotency": "idempotent"},
-                {"name": "system.service.restart", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}}, "output_schema": {"type": "object"}, "risk": "maintenance", "effect": "write", "timeout_sec": 30, "idempotency": "non_idempotent"},
-            ],
-            "signals": [],
-        }]},
-    ), headers=auth)
+    await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": f"L2B-{node_id}",
+            "token": token,
+        },
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            {
+                "daemon_version": "0.1.0",
+            },
+        ),
+        headers=auth,
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.plugin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.metrics.snapshot",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                            {
+                                "name": "system.info",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            },
+                            {
+                                "name": "system.service.restart",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}},
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 30,
+                                "idempotency": "non_idempotent",
+                            },
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
 
     return node_id, token, auth
 
@@ -47,13 +97,17 @@ async def test_l2b_plan_create_and_run_readonly(client: AsyncClient, l2b_setup):
     node_id, token, auth = l2b_setup
 
     # Create plan
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Health check", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.metrics.snapshot", "input": {}},
-            {"function_name": "system.info", "input": {}},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Health check",
+            "target_node_id": node_id,
+            "steps": [
+                {"function_name": "system.metrics.snapshot", "input": {}},
+                {"function_name": "system.info", "input": {}},
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
     assert r.json()["status"] == "draft"
@@ -63,6 +117,7 @@ async def test_l2b_plan_create_and_run_readonly(client: AsyncClient, l2b_setup):
     r = await client.get(f"/admin/maintenance/plans/{plan_id}")
     assert r.status_code == 200
     assert len(r.json()["steps"]) == 2
+    assert [step["timeout_sec"] for step in r.json()["steps"]] == [5, 5]
 
     # Run plan — with no daemon polling jobs, steps will time out
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/run")
@@ -74,15 +129,19 @@ async def test_l2b_plan_create_and_run_readonly(client: AsyncClient, l2b_setup):
 
 @pytest.mark.asyncio
 async def test_l2b_plan_with_write_requires_approval(client: AsyncClient, l2b_setup):
-    """Plan with a write step creates jobs but the step may need approval."""
+    """Plan with a write step waits for approval before creating jobs."""
     node_id, token, auth = l2b_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Service recovery", "target_node_id": node_id,
-        "steps": [
-            {"function_name": "system.service.restart", "input": {"name": "Spooler"}},
-        ],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Service recovery",
+            "target_node_id": node_id,
+            "steps": [
+                {"function_name": "system.service.restart", "input": {"name": "Spooler"}},
+            ],
+        },
+    )
     assert r.status_code == 201
     plan_id = r.json()["plan_id"]
 
@@ -90,7 +149,10 @@ async def test_l2b_plan_with_write_requires_approval(client: AsyncClient, l2b_se
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/run")
     assert r.status_code == 200
     data = r.json()
-    assert "status" in data
+    assert data["status"] == "waiting_approval"
+    steps = data["steps"]
+    assert steps[0]["status"] == "requires_approval"
+    assert not steps[0].get("job_id")
 
 
 @pytest.mark.asyncio
@@ -99,10 +161,14 @@ async def test_l2b_plan_list(client: AsyncClient, l2b_setup):
     node_id, token, auth = l2b_setup
 
     # Create a plan
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Test plan", "target_node_id": node_id,
-        "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Test plan",
+            "target_node_id": node_id,
+            "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
+        },
+    )
     assert r.status_code == 201
 
     # List all
@@ -121,13 +187,16 @@ async def test_l2b_plan_list(client: AsyncClient, l2b_setup):
 async def test_readonly_prompt_does_not_require_approval(client: AsyncClient, l2b_setup):
     """Read-only prompt -> status=ready, no approval required."""
     node_id, token, auth = l2b_setup
-    r = await client.post("/agent/plan", json={
-        "session_id": f"sess_{uuid.uuid4().hex[:8]}",
-        "provider_name": "fake",
-        "prompt": "check print spooler service status",
-        "target_node_id": node_id,
-        "execution_mode": "auto",
-    })
+    r = await client.post(
+        "/agent/plan",
+        json={
+            "session_id": f"sess_{uuid.uuid4().hex[:8]}",
+            "provider_name": "fake",
+            "prompt": "check print spooler service status",
+            "target_node_id": node_id,
+            "execution_mode": "auto",
+        },
+    )
     assert r.status_code == 201 or r.status_code == 200
     data = r.json()
     assert data["approval_required"] is False
@@ -143,10 +212,14 @@ async def test_step_succeeded_event_name(client: AsyncClient, l2b_setup):
     """Step event uses maintenance.step.succeeded, not .completed."""
     node_id, token, auth = l2b_setup
 
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Health check", "target_node_id": node_id,
-        "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Health check",
+            "target_node_id": node_id,
+            "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     r = await client.post(f"/admin/maintenance/plans/{plan_id}/run")
@@ -157,7 +230,9 @@ async def test_step_succeeded_event_name(client: AsyncClient, l2b_setup):
     if r.status_code == 200:
         events = r.json()
         event_types = {e["event_type"] for e in events}
-        assert "maintenance.step.succeeded" in event_types or "maintenance.step.started" in event_types
+        assert (
+            "maintenance.step.succeeded" in event_types or "maintenance.step.started" in event_types
+        )
         # Must NOT use the old name
         assert "maintenance.step.completed" not in event_types
 
@@ -168,10 +243,14 @@ async def test_timeline_approval_id_includes_step_events(client: AsyncClient, l2
     node_id, token, auth = l2b_setup
 
     # Create + approve + run a plan
-    r = await client.post("/admin/maintenance/plans", json={
-        "goal": "Check metrics", "target_node_id": node_id,
-        "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
-    })
+    r = await client.post(
+        "/admin/maintenance/plans",
+        json={
+            "goal": "Check metrics",
+            "target_node_id": node_id,
+            "steps": [{"function_name": "system.metrics.snapshot", "input": {}}],
+        },
+    )
     plan_id = r.json()["plan_id"]
 
     # Approve
@@ -189,6 +268,8 @@ async def test_timeline_approval_id_includes_step_events(client: AsyncClient, l2
         events = r.json()
         event_types = {e["event_type"] for e in events}
         # Should include plan events
-        assert "maintenance.run.started" in event_types or "maintenance.run.succeeded" in event_types
+        assert (
+            "maintenance.run.started" in event_types or "maintenance.run.succeeded" in event_types
+        )
         # Should include approval events
         assert "approval.requested" in event_types or "approval.approved" in event_types

@@ -3,15 +3,18 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.models.capability import Capability
 from yequ.models.maintenance_plan import (
     MaintenancePlan,
     MaintenanceRun,
     MaintenanceStep,
 )
+from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
+from yequ.services.timeline_writer import add_timeline_event
 
 
 def _make_plan_id() -> str:
@@ -41,6 +44,19 @@ async def create_plan(
 ) -> MaintenancePlan:
     """Create a MaintenancePlan with steps."""
     now = datetime.now(UTC)
+    cap_by_name: dict[str, Capability] = {}
+    node_result = await db.execute(select(Node).where(Node.node_id == target_node_id))
+    node = node_result.scalar_one_or_none()
+    if node is not None:
+        cap_result = await db.execute(
+            select(Capability).where(
+                Capability.node_record_id == node.id,
+                Capability.capability_type == "function",
+                Capability.is_active,
+            )
+        )
+        cap_by_name = {cap.name: cap for cap in cap_result.scalars().all()}
+
     plan = MaintenancePlan(
         plan_id=_make_plan_id(),
         goal=goal,
@@ -57,6 +73,21 @@ async def create_plan(
     await db.flush()
 
     for i, step_data in enumerate(steps):
+        capability = cap_by_name.get(step_data["function_name"])
+        step_risk = step_data.get("risk") or (capability.risk if capability else "safe")
+        step_effect = capability.effect if capability else "read"
+        requires_approval = step_data.get("requires_approval")
+        if requires_approval is None:
+            requires_approval = step_effect in ("write", "destructive") or step_risk in (
+                "maintenance",
+                "destructive",
+                "catastrophic",
+            )
+
+        resource_keys = step_data.get("resource_keys")
+        if resource_keys is None and capability and capability.resource_keys:
+            resource_keys = list(capability.resource_keys)
+
         step = MaintenanceStep(
             step_id=_make_step_id(),
             plan_id=plan.plan_id,
@@ -65,14 +96,17 @@ async def create_plan(
             input_data=step_data.get("input", {}),
             depends_on=step_data.get("depends_on"),
             continue_on_failure=step_data.get("continue_on_failure", False),
-            timeout_sec=step_data.get("timeout_sec", 30),
-            resource_keys=step_data.get("resource_keys"),
+            timeout_sec=step_data.get(
+                "timeout_sec",
+                capability.timeout_sec if capability and capability.timeout_sec else 30,
+            ),
+            resource_keys=resource_keys,
             expected_result_schema=step_data.get("expected_result_schema"),
             status="pending",
             kind=step_data.get("kind", "check"),
             condition=step_data.get("condition", "always"),
-            requires_approval=step_data.get("requires_approval", False),
-            risk=step_data.get("risk", "safe"),
+            requires_approval=requires_approval,
+            risk=step_risk,
             rollback_hint=step_data.get("rollback_hint"),
         )
         db.add(step)
@@ -80,10 +114,8 @@ async def create_plan(
     await db.commit()
 
     # Write plan.created timeline event
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     timeline_event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="maintenance.plan.created",
         actor_type="system",
         actor_id=actor_id,
@@ -97,8 +129,7 @@ async def create_plan(
         },
         timestamp=datetime.now(UTC),
     )
-    db.add(timeline_event)
-    await db.flush()
+    await add_timeline_event(db, timeline_event)
 
     return plan
 
@@ -115,10 +146,8 @@ async def approve_plan(
     await db.commit()
 
     # Write plan.approved timeline event
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq = result.scalar() or 0
     timeline_event = TimelineEvent(
-        global_seq=max_seq + 1,
+        global_seq=0,
         event_type="maintenance.plan.approved",
         actor_type="system",
         actor_id=approval_id,
@@ -130,14 +159,11 @@ async def approve_plan(
         },
         timestamp=datetime.now(UTC),
     )
-    db.add(timeline_event)
-    await db.flush()
+    await add_timeline_event(db, timeline_event)
 
     # Also write approval.approved for L2 audit chain
-    result2 = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    max_seq2 = result2.scalar() or 0
     approved_event = TimelineEvent(
-        global_seq=max_seq2 + 1,
+        global_seq=0,
         event_type="approval.approved",
         actor_type="admin",
         actor_id="admin",
@@ -149,7 +175,7 @@ async def approve_plan(
         },
         timestamp=datetime.now(UTC),
     )
-    db.add(approved_event)
+    await add_timeline_event(db, approved_event)
 
     return plan
 
@@ -172,8 +198,9 @@ async def run_plan(
 
     # Consume approval if plan has one
     if plan.approval_id:
-        from yequ.services.approval_service import consume_approval
         from yequ.models.approval import ApprovalRequest
+        from yequ.services.approval_service import consume_approval
+
         apv_result = await db.execute(
             select(ApprovalRequest).where(ApprovalRequest.approval_id == plan.approval_id)
         )

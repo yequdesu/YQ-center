@@ -1,9 +1,18 @@
-"""Message ID deduplication with TTL-based in-memory cache.
+"""YQP message_id deduplication.
 
-Prevents duplicate processing of messages within the dedup window.
+The production path uses the database-backed ``check_and_record_message`` helper so replay
+protection survives process restarts and works across multiple Center workers. ``MessageDedup``
+is kept for lightweight unit tests and compatibility with older imports.
 """
 
 import time
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from yequ.models.yqp_message import YqpMessage
 
 
 class MessageDedup:
@@ -61,3 +70,35 @@ def get_dedup() -> MessageDedup:
 
         _dedup = MessageDedup(ttl_sec=get_settings().message_dedup_ttl_sec)
     return _dedup
+
+
+async def check_and_record_message(
+    db: AsyncSession,
+    *,
+    message_id: str,
+    node_id: str,
+    message_type: str,
+    trace_id: str | None,
+    ttl_sec: int,
+    now: datetime | None = None,
+) -> bool:
+    """Return True when a YQP message is new, False when it is a duplicate."""
+    current = now or datetime.now(UTC)
+    await db.execute(delete(YqpMessage).where(YqpMessage.expires_at <= current))
+
+    db.add(
+        YqpMessage(
+            message_id=message_id,
+            node_id=node_id,
+            message_type=message_type,
+            trace_id=trace_id,
+            received_at=current,
+            expires_at=current + timedelta(seconds=ttl_sec),
+        )
+    )
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        return False
+    return True

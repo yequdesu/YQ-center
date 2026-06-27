@@ -11,9 +11,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import yequ.models.api_token  # noqa: F401
 import yequ.models.agent_message  # noqa: F401
 import yequ.models.agent_turn  # noqa: F401
+import yequ.models.api_token  # noqa: F401
 import yequ.models.approval  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
@@ -25,7 +25,9 @@ import yequ.models.node  # noqa: F401
 import yequ.models.resource_lock  # noqa: F401
 import yequ.models.runtime_instance  # noqa: F401
 import yequ.models.session  # noqa: F401
+import yequ.models.signal_state  # noqa: F401
 import yequ.models.timeline  # noqa: F401
+import yequ.models.yqp_message  # noqa: F401
 from yequ.api.app import create_app
 from yequ.config import Settings
 from yequ.models.base import Base
@@ -49,9 +51,15 @@ def override_settings(monkeypatch, db_engine):
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
     monkeypatch.setattr(yequ.db, "engine", db_engine)
-    monkeypatch.setattr(yequ.db, "async_session_factory", async_sessionmaker(
-        db_engine, class_=AsyncSession, expire_on_commit=False,
-    ))
+    monkeypatch.setattr(
+        yequ.db,
+        "async_session_factory",
+        async_sessionmaker(
+            db_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        ),
+    )
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
     return test_settings
 
@@ -148,7 +156,13 @@ async def node_with_hello(client, provisioned_node):
 
     node, token = provisioned_node
     auth = {"Authorization": f"Bearer {token}"}
-    await client.post("/yqp/", json=make_yqp_envelope(
-        "node.hello", node.node_id, payload={"daemon_version": "0.1.0"},
-    ), headers=auth)
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={"daemon_version": "0.1.0"},
+        ),
+        headers=auth,
+    )
     return node, token

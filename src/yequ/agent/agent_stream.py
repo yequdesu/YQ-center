@@ -15,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.agent_service import _write_timeline
 from yequ.agent.provider import AgentFunction, AgentProvider
+from yequ.application import (
+    ExecuteToolCommand,
+    MaintenancePlanApplicationService,
+    ToolInvocationApplicationService,
+    ToolPreflightApplicationService,
+    ToolPreflightCommand,
+)
 from yequ.logconfig import get_logger
 
 log = get_logger(__name__)
@@ -83,7 +90,6 @@ async def agent_invoke_stream(
 ) -> AsyncGenerator[dict, None]:
     """Async generator yielding SSE event dicts for agent invoke with ReAct loop."""
     from yequ.agent.agent_service import (
-        _fallback_synthesis,
         _load_session_history,
         _save_session_history,
     )
@@ -102,17 +108,38 @@ async def agent_invoke_stream(
     # Constraint checks
     elapsed = (now - started_at).total_seconds()
     if elapsed > max_total_duration_sec:
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "max_duration_exceeded", "message": f"Duration {elapsed:.1f}s exceeds max"})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {
+                "error_code": "max_duration_exceeded",
+                "message": f"Duration {elapsed:.1f}s exceeds max",
+            },
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
     if step_count >= max_steps:
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "max_steps_exceeded", "message": f"Max steps {max_steps} exceeded"})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {"error_code": "max_steps_exceeded", "message": f"Max steps {max_steps} exceeded"},
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
     if len(call_path) >= max_depth:
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "call_depth_exceeded", "message": f"Depth {len(call_path)} exceeds max {max_depth}"})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {
+                "error_code": "call_depth_exceeded",
+                "message": f"Depth {len(call_path)} exceeds max {max_depth}",
+            },
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
@@ -121,12 +148,22 @@ async def agent_invoke_stream(
     result = await db.execute(select(Session).where(Session.session_id == session_id))
     session = result.scalar_one_or_none()
     if session is None:
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "session_not_found", "message": "Session not found"})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {"error_code": "session_not_found", "message": "Session not found"},
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
-    yield _event("agent.session.resolved", session_id, trace_id, {"session_status": session.status, "execution_mode": session.execution_mode})
+    yield _event(
+        "agent.session.resolved",
+        session_id,
+        trace_id,
+        {"session_status": session.status, "execution_mode": session.execution_mode},
+    )
     yield _event(
         "agent.prompt.received",
         session_id,
@@ -159,20 +196,35 @@ async def agent_invoke_stream(
         await _save_session_history(db, session_id, [user_message])
         await db.commit()
 
-    denied_message = _deterministic_denied_approval_message(prompt) if suppress_user_message else None
+    denied_message = (
+        _deterministic_denied_approval_message(prompt) if suppress_user_message else None
+    )
     if denied_message:
         history.append(AgentMessage(role="assistant", content=denied_message))
         history_to_persist = [message for message in history if message is not user_message]
         await _save_session_history(db, session_id, history_to_persist)
-        await _write_timeline(db, "agent.final_response", session_id=session_id, actor=provider.provider_name(), status="denied")
+        await _write_timeline(
+            db,
+            "agent.final_response",
+            session_id=session_id,
+            actor=provider.provider_name(),
+            status="denied",
+        )
         await db.commit()
         yield _event("agent.output.delta", session_id, trace_id, {"content": denied_message})
-        yield _event("agent.completed", session_id, trace_id, {"status": "denied", "message": denied_message})
+        yield _event(
+            "agent.completed", session_id, trace_id, {"status": "denied", "message": denied_message}
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
-    yield _event("agent.loop.started", session_id, trace_id, {"max_steps": max_steps, "max_duration_sec": max_total_duration_sec})
+    yield _event(
+        "agent.loop.started",
+        session_id,
+        trace_id,
+        {"max_steps": max_steps, "max_duration_sec": max_total_duration_sec},
+    )
 
     current_step = step_count
     final_message = ""
@@ -187,8 +239,18 @@ async def agent_invoke_stream(
                 break
 
             current_step += 1
-            yield _event("agent.loop.iteration", session_id, trace_id, {"iteration": current_step, "max_steps": max_steps})
-            yield _event("agent.provider.started", session_id, trace_id, {"provider_name": provider.provider_name()})
+            yield _event(
+                "agent.loop.iteration",
+                session_id,
+                trace_id,
+                {"iteration": current_step, "max_steps": max_steps},
+            )
+            yield _event(
+                "agent.provider.started",
+                session_id,
+                trace_id,
+                {"provider_name": provider.provider_name()},
+            )
 
             # Call provider with streaming — text deltas are yielded in real-time
             assistant_text = ""
@@ -196,13 +258,23 @@ async def agent_invoke_stream(
             provider_error = None
             try:
                 async for chunk in provider.invoke_stream(
-                    "", available_functions=available_functions,
+                    "",
+                    available_functions=available_functions,
                     messages=history,
-                    context={"call_path": list(call_path), "session_id": session_id, "step": current_step},
+                    context={
+                        "call_path": list(call_path),
+                        "session_id": session_id,
+                        "step": current_step,
+                    },
                 ):
                     if chunk["type"] == "delta":
                         assistant_text += chunk["content"]
-                        yield _event("agent.output.delta", session_id, trace_id, {"content": chunk["content"]})
+                        yield _event(
+                            "agent.output.delta",
+                            session_id,
+                            trace_id,
+                            {"content": chunk["content"]},
+                        )
                     elif chunk["type"] == "done":
                         provider_tool_calls = chunk.get("tool_calls", [])
                     elif chunk["type"] == "error":
@@ -215,7 +287,12 @@ async def agent_invoke_stream(
 
             if provider_error:
                 loop_state = "provider_failed"
-                yield _event("agent.provider.failed", session_id, trace_id, {"error_code": "llm_error", "message": provider_error})
+                yield _event(
+                    "agent.provider.failed",
+                    session_id,
+                    trace_id,
+                    {"error_code": "llm_error", "message": provider_error},
+                )
                 break
 
             # Check for task_completed — the explicit loop exit signal
@@ -235,16 +312,27 @@ async def agent_invoke_stream(
                     break
                 # Fall through: task_completed with additional tools — execute them then break
 
-            # No tool calls and no task_completed — LLM protocol violation
+            # Plain-text answers need no tool execution; accept them as complete.
             if not executable_calls and not task_completed:
-                log.warning("provider returned no tool calls and no task_completed — treating as protocol error")
-                final_message = assistant_text or "[系统] Agent 未按协议返回 task_completed 信号。"
-                loop_state = "protocol_error"
+                if assistant_text:
+                    final_message = assistant_text
+                    loop_state = "completed"
+                else:
+                    log.warning(
+                        "provider returned no tool calls and no task_completed "
+                        "treating as protocol error"
+                    )
+                    final_message = "[系统] Agent 未按协议返回 task_completed 信号。"
+                    loop_state = "protocol_error"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
             # Append assistant message with tool_calls
-            history.append(AgentMessage(role="assistant", content=assistant_text, tool_calls=provider_tool_calls))
+            history.append(
+                AgentMessage(
+                    role="assistant", content=assistant_text, tool_calls=provider_tool_calls
+                )
+            )
 
             # Record original provider call order for history ordering
             provider_call_order: dict[str, int] = {}
@@ -257,10 +345,20 @@ async def agent_invoke_stream(
 
             ordered_results: list[dict] = []
             async for ev in _execute_tool_calls_scheduled(
-                db, provider, session, session_id, trace_id,
-                executable_calls, known_functions, available_functions,
-                call_path, execution_mode, max_depth,
-                max_total_duration_sec, started_at, target_node_id,
+                db,
+                provider,
+                session,
+                session_id,
+                trace_id,
+                executable_calls,
+                known_functions,
+                available_functions,
+                call_path,
+                execution_mode,
+                max_depth,
+                max_total_duration_sec,
+                started_at,
+                target_node_id,
             ):
                 yield ev
                 # Collect results from completed/failed/waiting_approval events
@@ -273,25 +371,34 @@ async def agent_invoke_stream(
                     call_id = str(data.get("call_id", ""))
                     name = str(data.get("name", ""))
                     if ev["event_type"] == "agent.tool_call.completed":
-                        ordered_results.append({
-                            "name": name, "call_id": call_id,
-                            "status": "succeeded",
-                            "result": data.get("result"),
-                        })
+                        ordered_results.append(
+                            {
+                                "name": name,
+                                "call_id": call_id,
+                                "status": "succeeded",
+                                "result": data.get("result"),
+                            }
+                        )
                     elif ev["event_type"] == "agent.tool_call.failed":
-                        ordered_results.append({
-                            "name": name, "call_id": call_id,
-                            "status": "failed",
-                            "error": data.get("message"),
-                            "error_code": data.get("error_code"),
-                            "error_details": data.get("details"),
-                        })
+                        ordered_results.append(
+                            {
+                                "name": name,
+                                "call_id": call_id,
+                                "status": "failed",
+                                "error": data.get("message"),
+                                "error_code": data.get("error_code"),
+                                "error_details": data.get("details"),
+                            }
+                        )
                     elif ev["event_type"] == "agent.tool_call.waiting_approval":
-                        ordered_results.append({
-                            "name": name, "call_id": call_id,
-                            "status": "waiting_approval",
-                            "approval_id": data.get("approval_id"),
-                        })
+                        ordered_results.append(
+                            {
+                                "name": name,
+                                "call_id": call_id,
+                                "status": "waiting_approval",
+                                "approval_id": data.get("approval_id"),
+                            }
+                        )
                         loop_state = "waiting_approval"
 
             # Sort results by original provider call order
@@ -299,15 +406,19 @@ async def agent_invoke_stream(
 
             for tc_result in ordered_results:
                 all_tool_results.append(tc_result)
-                history.append(AgentMessage(
-                    role="tool",
-                    tool_call_id=tc_result["call_id"],
-                    content=_json.dumps(tc_result),
-                ))
+                history.append(
+                    AgentMessage(
+                        role="tool",
+                        tool_call_id=tc_result["call_id"],
+                        content=_json.dumps(tc_result),
+                    )
+                )
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = "waiting_approval"
 
-            yield _event("agent.observing", session_id, trace_id, {"tool_count": len(executable_calls)})
+            yield _event(
+                "agent.observing", session_id, trace_id, {"tool_count": len(executable_calls)}
+            )
             if loop_state == "waiting_approval":
                 break
             if task_completed:
@@ -316,7 +427,9 @@ async def agent_invoke_stream(
         # -- Fallback synthesis --
         if not final_message:
             final_message = _fallback_synthesis_from_stream(all_tool_results, loop_state)
-            yield _event("agent.fallback_synthesis", session_id, trace_id, {"message": final_message[:200]})
+            yield _event(
+                "agent.fallback_synthesis", session_id, trace_id, {"message": final_message[:200]}
+            )
 
         # -- Save history --
         history.append(AgentMessage(role="assistant", content=final_message))
@@ -327,25 +440,56 @@ async def agent_invoke_stream(
         )
         await _save_session_history(db, session_id, history_to_persist)
 
-        await _write_timeline(db, "agent.final_response", session_id=session_id, actor=provider.provider_name(), status=loop_state)
+        await _write_timeline(
+            db,
+            "agent.final_response",
+            session_id=session_id,
+            actor=provider.provider_name(),
+            status=loop_state,
+        )
         await db.commit()
-        yield _event("agent.completed", session_id, trace_id, {"status": loop_state, "message": final_message})
+        yield _event(
+            "agent.completed",
+            session_id,
+            trace_id,
+            {"status": loop_state, "message": final_message},
+        )
 
     except TimeoutError:
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "provider_timeout", "message": "Provider timed out"})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {"error_code": "provider_timeout", "message": "Provider timed out"},
+        )
     except Exception as e:
         log.exception("agent stream error: session_id=%s", session_id)
-        yield _event("agent.failed", session_id, trace_id, {"error_code": "internal_error", "message": str(e)[:500]})
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {"error_code": "internal_error", "message": str(e)[:500]},
+        )
 
     _mark_stream_inactive(session_id)
     yield _event("stream.close", session_id, trace_id)
 
 
 async def _stream_tool_calls(
-    db, provider, session, session_id, trace_id,
-    tool_calls, known_functions, available_functions,
-    call_path, execution_mode, max_depth,
-    max_total_duration_sec, started_at, target_node_id=None,
+    db,
+    provider,
+    session,
+    session_id,
+    trace_id,
+    tool_calls,
+    known_functions,
+    available_functions,
+    call_path,
+    execution_mode,
+    max_depth,
+    max_total_duration_sec,
+    started_at,
+    target_node_id=None,
 ) -> AsyncGenerator[dict, None]:
     """Process tool calls and emit events. Sub-generator consumed by the main stream."""
     for raw_tc in tool_calls:
@@ -353,185 +497,232 @@ async def _stream_tool_calls(
 
         # Unknown function
         if tc_name not in known_functions:
-            yield _event("agent.tool_call.created", session_id, trace_id, {
-                "call_id": raw_tc.get("call_id", ""),
-                "name": tc_name,
-                "status": "failed",
-            })
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": raw_tc.get("call_id", ""),
-                "name": tc_name,
-                "error_code": "function_not_available",
-                "message": f"Function {tc_name!r} is not available",
-            })
+            yield _event(
+                "agent.tool_call.created",
+                session_id,
+                trace_id,
+                {
+                    "call_id": raw_tc.get("call_id", ""),
+                    "name": tc_name,
+                    "status": "failed",
+                },
+            )
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": raw_tc.get("call_id", ""),
+                    "name": tc_name,
+                    "error_code": "function_not_available",
+                    "message": f"Function {tc_name!r} is not available",
+                },
+            )
             continue
 
         # Loop detection
         if tc_name in call_path:
-            yield _event("agent.tool_call.created", session_id, trace_id, {
-                "call_id": raw_tc.get("call_id", ""),
-                "name": tc_name,
-                "status": "failed",
-            })
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": raw_tc.get("call_id", ""),
-                "name": tc_name,
-                "error_code": "circular_dependency",
-                "message": f"Circular: {tc_name!r} in call_path",
-            })
+            yield _event(
+                "agent.tool_call.created",
+                session_id,
+                trace_id,
+                {
+                    "call_id": raw_tc.get("call_id", ""),
+                    "name": tc_name,
+                    "status": "failed",
+                },
+            )
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": raw_tc.get("call_id", ""),
+                    "name": tc_name,
+                    "error_code": "circular_dependency",
+                    "message": f"Circular: {tc_name!r} in call_path",
+                },
+            )
             continue
 
         call_id = str(raw_tc.get("call_id", _make_event_id()))
 
-        yield _event("agent.tool_call.created", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
-            "input": raw_tc.get("input", {}),
-        })
+        yield _event(
+            "agent.tool_call.created",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
+                "input": raw_tc.get("input", {}),
+            },
+        )
 
-        yield _event("agent.tool_call.arguments", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "input": raw_tc.get("input", {}),
-        })
+        yield _event(
+            "agent.tool_call.arguments",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "input": raw_tc.get("input", {}),
+            },
+        )
 
         # Execute and stream progress
         async for ev in _execute_and_stream(
-            db, provider, session, session_id, trace_id,
-            call_id, tc_name, raw_tc.get("input", {}),
-            known_functions, available_functions,
-            call_path, execution_mode, max_depth,
-            max_total_duration_sec, started_at, None,
+            db,
+            provider,
+            session,
+            session_id,
+            trace_id,
+            call_id,
+            tc_name,
+            raw_tc.get("input", {}),
+            known_functions,
+            available_functions,
+            call_path,
+            execution_mode,
+            max_depth,
+            max_total_duration_sec,
+            started_at,
+            None,
         ):
             yield ev
 
 
 async def _execute_and_stream(
-    db, provider, session, session_id, trace_id,
-    call_id, tc_name, tc_input,
-    known_functions, available_functions,
-    call_path, execution_mode, max_depth,
-    max_total_duration_sec, started_at, target_node_id=None,
+    db,
+    provider,
+    session,
+    session_id,
+    trace_id,
+    call_id,
+    tc_name,
+    tc_input,
+    known_functions,
+    available_functions,
+    call_path,
+    execution_mode,
+    max_depth,
+    max_total_duration_sec,
+    started_at,
+    target_node_id=None,
 ) -> AsyncGenerator[dict, None]:
     """Execute a single tool call and stream its lifecycle events."""
-    from yequ.services.capability_resolver import resolve_function
-    from yequ.services.invocation_service import create_invocation, start_invocation
-    from yequ.services.job_service import create_job
-    from yequ.services.policy import check_policy
-
-    # Resolve target node
-    from yequ.config import get_settings
-    resolved = await resolve_function(
-        db,
-        tc_name,
-        target_node_id=target_node_id,
-        settings=get_settings(),
-    )
-    if resolved is None or not resolved.available:
-        message = (
-            resolved.unavailable_reason
-            if resolved is not None and resolved.unavailable_reason
-            else f"No online node has {tc_name!r}"
-        )
-        yield _event("agent.tool_call.failed", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "error_code": "function_not_available",
-            "message": message,
-        })
-        return
-
-    # Policy check
     func_meta = next((f for f in available_functions if f.name == tc_name), None)
-    risk = func_meta.risk if func_meta else "safe"
-
-    policy_r = check_policy(
-        execution_mode=execution_mode,
-        risk_level=risk,
-        function_name=tc_name,
-    )
-    if not policy_r.allowed:
-        yield _event("agent.tool_call.failed", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "error_code": "policy_denied",
-            "message": policy_r.reason or "Policy denied",
-        })
-        return
-
-    # Handle L2 write operations — create approval
-    if func_meta and func_meta.effect in ("write", "destructive") and not tc_input.get("approval_id"):
-        from yequ.services.approval_service import create_approval as svc_create_approval
-        approval_input = dict(tc_input)
-        approval_input["dry_run"] = False
-        approval = await svc_create_approval(
-            db,
+    result = await ToolInvocationApplicationService(db).execute(
+        ExecuteToolCommand(
+            actor_type="agent",
             actor_id=session.actor_id,
             session_id=session_id,
             function_name=tc_name,
-            target_node_id=resolved.node_id,
-            input_data=approval_input,
-            risk=resolved.risk,
-            effect=resolved.effect,
+            input_data=tc_input,
+            target_node_id=target_node_id,
+            execution_mode=execution_mode,
+            max_depth=max_depth,
+            call_path=list(call_path) + [tc_name],
+            wait_for_result=False,
+            declared_risk=func_meta.risk if func_meta else None,
+            declared_effect=func_meta.effect if func_meta else None,
         )
-        await db.commit()
-        yield _event("agent.approval.required", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "approval_id": approval.approval_id,
-            "target_node_id": resolved.node_id,
-        })
-        yield _event("agent.tool_call.waiting_approval", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "approval_id": approval.approval_id,
-            "status": "waiting_approval",
-            "message": "Write operation requires approval",
-        })
+    )
+
+    if result.status in {"unavailable", "not_found"}:
+        yield _event(
+            "agent.tool_call.failed",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "error_code": result.error_code or "function_not_available",
+                "message": result.error_message or f"No online node has {tc_name!r}",
+            },
+        )
         return
 
-    # Create invocation
-    inv = await create_invocation(
-        db,
-        actor_type="agent",
-        actor_id=session.actor_id,
-        session_id=session_id,
-        function_name=tc_name,
-        input_payload=tc_input,
-        target_node_id=resolved.node_id,
-        execution_mode=execution_mode,
-        max_depth=max_depth,
-        call_path=list(call_path) + [tc_name],
+    if result.status == "denied":
+        yield _event(
+            "agent.tool_call.failed",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "error_code": result.error_code or "policy_denied",
+                "message": result.error_message or "Policy denied",
+            },
+        )
+        return
+
+    if result.status == "approval_required":
+        yield _event(
+            "agent.approval.required",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "approval_id": result.approval_id,
+                "target_node_id": result.target_node_id,
+            },
+        )
+        yield _event(
+            "agent.tool_call.waiting_approval",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "approval_id": result.approval_id,
+                "status": "waiting_approval",
+                "message": result.error_message or "Write operation requires approval",
+            },
+        )
+        return
+
+    if not result.invocation_id or not result.job_id:
+        yield _event(
+            "agent.tool_call.failed",
+            session_id,
+            trace_id,
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "error_code": result.error_code or "tool_failed",
+                "message": result.error_message or "Tool execution did not create a job",
+            },
+        )
+        return
+
+    invocation_id = result.invocation_id
+    job_id = result.job_id
+
+    yield _event(
+        "agent.invocation.created",
+        session_id,
+        trace_id,
+        {
+            "call_id": call_id,
+            "name": tc_name,
+            "invocation_id": invocation_id,
+            "target_node_id": result.target_node_id,
+        },
     )
-    start_invocation(inv)
 
-    yield _event("agent.invocation.created", session_id, trace_id, {
-        "call_id": call_id,
-        "name": tc_name,
-        "invocation_id": inv.invocation_id,
-        "target_node_id": resolved.node_id,
-    })
-
-    # Create job
-    job = await create_job(
-        db,
-        invocation_id=inv.invocation_id,
-        node_id=resolved.node_id,
-        runtime_id=resolved.runtime_id,
-        function_name=tc_name,
-        input_payload=tc_input,
-        execution_requirements_snapshot=resolved.execution_requirements,
-        timeout_sec=resolved.timeout_sec,
+    yield _event(
+        "agent.job.queued",
+        session_id,
+        trace_id,
+        {
+            "call_id": call_id,
+            "name": tc_name,
+            "invocation_id": invocation_id,
+            "job_id": job_id,
+        },
     )
-    await db.commit()
-
-    yield _event("agent.job.queued", session_id, trace_id, {
-        "call_id": call_id,
-        "name": tc_name,
-        "invocation_id": inv.invocation_id,
-        "job_id": job.job_id,
-    })
 
     # Poll for job completion
     deadline = datetime.fromtimestamp(
@@ -547,18 +738,21 @@ async def _execute_and_stream(
     final_status = "running"
     while datetime.now(UTC) < deadline:
         async with async_session_factory() as poll_db:
-            j_result = await poll_db.execute(
-                select(JobModel).where(JobModel.job_id == job.job_id)
-            )
+            j_result = await poll_db.execute(select(JobModel).where(JobModel.job_id == job_id))
             j = j_result.scalar_one_or_none()
             if j:
                 if poll_count == 0 and j.status == "running":
-                    yield _event("agent.job.running", session_id, trace_id, {
-                        "call_id": call_id,
-                        "name": tc_name,
-                        "job_id": job.job_id,
-                        "status": "running",
-                    })
+                    yield _event(
+                        "agent.job.running",
+                        session_id,
+                        trace_id,
+                        {
+                            "call_id": call_id,
+                            "name": tc_name,
+                            "job_id": job_id,
+                            "status": "running",
+                        },
+                    )
                 if j.status in ("succeeded", "failed", "timeout", "cancelled"):
                     final_status = j.status
                     break
@@ -568,28 +762,36 @@ async def _execute_and_stream(
     # Collect result — read both Invocation and Job to preserve error details
     async with async_session_factory() as result_db:
         inv_result = await result_db.execute(
-            select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+            select(Invocation).where(Invocation.invocation_id == invocation_id)
         )
         inv_final = inv_result.scalar_one_or_none()
 
-        job_result = await result_db.execute(
-            select(JobModel).where(JobModel.job_id == job.job_id)
-        )
+        job_result = await result_db.execute(select(JobModel).where(JobModel.job_id == job_id))
         job_final = job_result.scalar_one_or_none()
 
-        yield _event("agent.job.finished", session_id, trace_id, {
-            "call_id": call_id,
-            "name": tc_name,
-            "job_id": job.job_id,
-            "status": final_status,
-        })
-
-        if final_status == "succeeded":
-            yield _event("agent.tool_call.completed", session_id, trace_id, {
+        yield _event(
+            "agent.job.finished",
+            session_id,
+            trace_id,
+            {
                 "call_id": call_id,
                 "name": tc_name,
-                "result": inv_final.result if inv_final else {},
-            })
+                "job_id": job_id,
+                "status": final_status,
+            },
+        )
+
+        if final_status == "succeeded":
+            yield _event(
+                "agent.tool_call.completed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": call_id,
+                    "name": tc_name,
+                    "result": inv_final.result if inv_final else {},
+                },
+            )
         else:
             # Preserve the original error from the Job/Invocation — never
             # overwrite with a generic "tool_failed".
@@ -603,19 +805,20 @@ async def _execute_and_stream(
                 or (inv_final.error_message if inv_final else None)
                 or f"Tool {tc_name} ended with {final_status}"
             )
-            error_details = (
-                job_final.error_details
-                if job_final
-                else None
+            error_details = job_final.error_details if job_final else None
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": call_id,
+                    "name": tc_name,
+                    "status": final_status,
+                    "error_code": error_code,
+                    "message": error_message,
+                    "details": error_details,
+                },
             )
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": call_id,
-                "name": tc_name,
-                "status": final_status,
-                "error_code": error_code,
-                "message": error_message,
-                "details": error_details,
-            })
 
 
 # ── Concurrency scheduling for tool calls ──
@@ -645,17 +848,11 @@ async def _execute_tool_calls_scheduled(
     then concurrent safe/read tools execute in parallel (max 4),
     then serial tools execute one by one.
     """
-    from yequ.services.capability_resolver import resolve_function
-    from yequ.services.policy import check_policy
-    from yequ.config import get_settings
-    from yequ.models.capability import Capability
-    from sqlalchemy import select as sa_select
     from yequ.db import async_session_factory
 
-    settings = get_settings()
-
-    # ── Phase 1: Pre-flight validation + emit all created events ──
+    # ?? Phase 1: Pre-flight validation + emit all created events ??
     classified: list[dict] = []
+    preflight_service = ToolPreflightApplicationService(db)
 
     for raw_tc in tool_calls:
         tc_name = str(raw_tc.get("name", ""))
@@ -664,126 +861,175 @@ async def _execute_tool_calls_scheduled(
 
         # Unknown function check
         if tc_name not in known_functions:
-            yield _event("agent.tool_call.created", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-            })
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-                "error_code": "function_not_available",
-                "message": f"Function {tc_name!r} is not available",
-            })
-            classified.append({
-                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
-                "status": "failed", "error": "function_not_available",
-            })
+            yield _event(
+                "agent.tool_call.created",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                },
+            )
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "error_code": "function_not_available",
+                    "message": f"Function {tc_name!r} is not available",
+                },
+            )
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": "function_not_available",
+                }
+            )
             continue
 
         # Loop detection
         if tc_name in call_path:
-            yield _event("agent.tool_call.created", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-            })
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-                "error_code": "circular_dependency",
-                "message": f"Circular: {tc_name!r} in call_path",
-            })
-            classified.append({
-                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
-                "status": "failed", "error": "circular_dependency",
-            })
+            yield _event(
+                "agent.tool_call.created",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                },
+            )
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "error_code": "circular_dependency",
+                    "message": f"Circular: {tc_name!r} in call_path",
+                },
+            )
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": "circular_dependency",
+                }
+            )
             continue
-
-        # Resolve target node (pre-flight)
-        resolved = await resolve_function(
-            db, tc_name,
-            target_node_id=target_node_id,
-            settings=settings,
-        )
 
         # Get function metadata
         func_meta = next((f for f in available_functions if f.name == tc_name), None)
         risk = func_meta.risk if func_meta else "safe"
         effect = func_meta.effect if func_meta else "read"
+        preflight = await preflight_service.check(
+            ToolPreflightCommand(
+                function_name=tc_name,
+                execution_mode=execution_mode,
+                target_node_id=target_node_id,
+                declared_risk=risk,
+                declared_effect=effect,
+            )
+        )
 
         # Emit created + arguments events
-        yield _event("agent.tool_call.created", session_id, trace_id, {
-            "call_id": tc_call_id,
-            "name": tc_name,
-            "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
-            "input": tc_input,
-        })
-        yield _event("agent.tool_call.arguments", session_id, trace_id, {
-            "call_id": tc_call_id,
-            "name": tc_name,
-            "input": tc_input,
-        })
+        yield _event(
+            "agent.tool_call.created",
+            session_id,
+            trace_id,
+            {
+                "call_id": tc_call_id,
+                "name": tc_name,
+                "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
+                "input": tc_input,
+            },
+        )
+        yield _event(
+            "agent.tool_call.arguments",
+            session_id,
+            trace_id,
+            {
+                "call_id": tc_call_id,
+                "name": tc_name,
+                "input": tc_input,
+            },
+        )
 
-        # Node not available
-        if resolved is None or not resolved.available:
-            message = (
-                resolved.unavailable_reason
-                if resolved is not None and resolved.unavailable_reason
-                else f"No online node has {tc_name!r}"
+        if preflight.status == "unavailable":
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "error_code": preflight.error_code or "function_not_available",
+                    "message": preflight.error_message or f"No online node has {tc_name!r}",
+                },
             )
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-                "error_code": "function_not_available",
-                "message": message,
-            })
-            classified.append({
-                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
-                "status": "failed", "error": "no_node",
-            })
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": "no_node",
+                }
+            )
             continue
 
-        # Policy check
-        policy_r = check_policy(
-            execution_mode=execution_mode,
-            risk_level=risk,
-            function_name=tc_name,
-        )
-        if not policy_r.allowed:
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": tc_call_id, "name": tc_name,
-                "error_code": "policy_denied",
-                "message": policy_r.reason or "Policy denied",
-            })
-            classified.append({
-                "call_id": tc_call_id, "name": tc_name, "input": tc_input,
-                "status": "failed", "error": "policy_denied",
-            })
+        if preflight.status == "denied":
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "error_code": preflight.error_code or "policy_denied",
+                    "message": preflight.error_message or "Policy denied",
+                },
+            )
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": "policy_denied",
+                }
+            )
             continue
 
-        # Look up resource keys from capability
-        cap_result = await db.execute(
-            sa_select(Capability).where(
-                Capability.capability_type == "function",
-                Capability.name == tc_name,
-                Capability.is_active == True,  # noqa: E712
-            ).limit(1)
+        resource_keys = preflight.resource_keys
+        is_concurrent_safe = preflight.is_concurrent_safe
+
+        classified.append(
+            {
+                "call_id": tc_call_id,
+                "name": tc_name,
+                "input": tc_input,
+                "status": "pending",
+                "func_meta": func_meta,
+                "is_concurrent_safe": is_concurrent_safe,
+                "resource_keys": resource_keys,
+            }
         )
-        capability = cap_result.scalar_one_or_none()
-        resource_keys = list(capability.resource_keys) if (capability and capability.resource_keys) else []
-        conflict_policy = capability.conflict_policy if capability else None
-
-        # Determine if concurrent-safe
-        is_safe_read = (risk == "safe" and effect == "read")
-        has_resource_conflict = bool(resource_keys) and conflict_policy == "serialize"
-        is_concurrent_safe = is_safe_read and not has_resource_conflict
-
-        classified.append({
-            "call_id": tc_call_id, "name": tc_name, "input": tc_input,
-            "status": "pending",
-            "resolved": resolved,
-            "func_meta": func_meta,
-            "is_concurrent_safe": is_concurrent_safe,
-            "resource_keys": resource_keys,
-        })
 
     # ── Phase 2: Split into concurrent vs serial groups ──
-    concurrent_candidates = [t for t in classified if t.get("is_concurrent_safe") and t["status"] == "pending"]
-    serial_tools = [t for t in classified if not t.get("is_concurrent_safe") and t["status"] == "pending"]
+    concurrent_candidates = [
+        t for t in classified if t.get("is_concurrent_safe") and t["status"] == "pending"
+    ]
+    serial_tools = [
+        t for t in classified if not t.get("is_concurrent_safe") and t["status"] == "pending"
+    ]
 
     # Move tools with shared resource_keys from concurrent to serial
     resource_key_owners: dict[str, str] = {}
@@ -811,22 +1057,41 @@ async def _execute_tool_calls_scheduled(
                 try:
                     async with async_session_factory() as exec_db:
                         async for ev in _execute_and_stream(
-                            exec_db, provider, session, session_id, trace_id,
-                            tool_info["call_id"], tool_info["name"], tool_info["input"],
-                            known_functions, available_functions,
-                            call_path, execution_mode, max_depth,
-                            max_total_duration_sec, started_at,
+                            exec_db,
+                            provider,
+                            session,
+                            session_id,
+                            trace_id,
+                            tool_info["call_id"],
+                            tool_info["name"],
+                            tool_info["input"],
+                            known_functions,
+                            available_functions,
+                            call_path,
+                            execution_mode,
+                            max_depth,
+                            max_total_duration_sec,
+                            started_at,
                             target_node_id=target_node_id,
                         ):
                             collected_events.append(ev)
                 except Exception as e:
-                    log.exception("concurrent tool execution failed: call_id=%s", tool_info["call_id"])
-                    collected_events.append(_event("agent.tool_call.failed", session_id, trace_id, {
-                        "call_id": tool_info["call_id"],
-                        "name": tool_info["name"],
-                        "error_code": "internal_error",
-                        "message": str(e)[:500],
-                    }))
+                    log.exception(
+                        "concurrent tool execution failed: call_id=%s", tool_info["call_id"]
+                    )
+                    collected_events.append(
+                        _event(
+                            "agent.tool_call.failed",
+                            session_id,
+                            trace_id,
+                            {
+                                "call_id": tool_info["call_id"],
+                                "name": tool_info["name"],
+                                "error_code": "internal_error",
+                                "message": str(e)[:500],
+                            },
+                        )
+                    )
                 return collected_events
 
         tasks = [asyncio.create_task(_execute_concurrent(t)) for t in actual_concurrent]
@@ -841,22 +1106,37 @@ async def _execute_tool_calls_scheduled(
         try:
             async with async_session_factory() as serial_db:
                 async for ev in _execute_and_stream(
-                    serial_db, provider, session, session_id, trace_id,
-                    tool_info["call_id"], tool_info["name"], tool_info["input"],
-                    known_functions, available_functions,
-                    call_path, execution_mode, max_depth,
-                    max_total_duration_sec, started_at,
+                    serial_db,
+                    provider,
+                    session,
+                    session_id,
+                    trace_id,
+                    tool_info["call_id"],
+                    tool_info["name"],
+                    tool_info["input"],
+                    known_functions,
+                    available_functions,
+                    call_path,
+                    execution_mode,
+                    max_depth,
+                    max_total_duration_sec,
+                    started_at,
                     target_node_id=target_node_id,
                 ):
                     yield ev
         except Exception as e:
             log.exception("serial tool execution failed: call_id=%s", tool_info["call_id"])
-            yield _event("agent.tool_call.failed", session_id, trace_id, {
-                "call_id": tool_info["call_id"],
-                "name": tool_info["name"],
-                "error_code": "internal_error",
-                "message": str(e)[:500],
-            })
+            yield _event(
+                "agent.tool_call.failed",
+                session_id,
+                trace_id,
+                {
+                    "call_id": tool_info["call_id"],
+                    "name": tool_info["name"],
+                    "error_code": "internal_error",
+                    "message": str(e)[:500],
+                },
+            )
 
 
 async def agent_plan_stream(
@@ -878,30 +1158,48 @@ async def agent_plan_stream(
 
     from yequ.models.session import Session
 
-    result = await db.execute(
-        select(Session).where(Session.session_id == session_id)
-    )
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
     session = result.scalar_one_or_none()
     if session is None:
-        yield _event("agent.failed", session_id, trace_id, {
-            "error_code": "session_not_found",
-            "message": "Session not found",
-        })
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {
+                "error_code": "session_not_found",
+                "message": "Session not found",
+            },
+        )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
         return
 
-    yield _event("agent.session.resolved", session_id, trace_id, {
-        "session_status": session.status,
-    })
+    yield _event(
+        "agent.session.resolved",
+        session_id,
+        trace_id,
+        {
+            "session_status": session.status,
+        },
+    )
 
-    yield _event("agent.prompt.received", session_id, trace_id, {
-        "prompt": prompt[:500],
-    })
+    yield _event(
+        "agent.prompt.received",
+        session_id,
+        trace_id,
+        {
+            "prompt": prompt[:500],
+        },
+    )
 
-    yield _event("agent.provider.started", session_id, trace_id, {
-        "provider_name": provider.provider_name(),
-    })
+    yield _event(
+        "agent.provider.started",
+        session_id,
+        trace_id,
+        {
+            "provider_name": provider.provider_name(),
+        },
+    )
 
     from yequ.agent.agent_service import (
         _build_rollback_hint,
@@ -911,7 +1209,6 @@ async def agent_plan_stream(
         _select_check_function,
         _select_repair_function,
     )
-    from yequ.services.maintenance_service import create_plan
 
     func_names = [f.name for f in available_functions]
     classification_prompt = (
@@ -923,9 +1220,14 @@ async def agent_plan_stream(
         "Respond with ONLY the classification word, nothing else."
     )
 
-    yield _event("agent.planning.summary", session_id, trace_id, {
-        "message": "Analyzing request intent...",
-    })
+    yield _event(
+        "agent.planning.summary",
+        session_id,
+        trace_id,
+        {
+            "message": "Analyzing request intent...",
+        },
+    )
 
     intent = "readonly_check"
     try:
@@ -954,13 +1256,18 @@ async def agent_plan_stream(
 
     steps_ir: list[dict] = []
     if intent == "check_and_fix":
-        steps_ir.append({
-            "seq": 1, "kind": "check",
-            "function_name": function_name,
-            "input": plan_input,
-            "condition": "always", "depends_on": [],
-            "risk": "readonly", "requires_approval": False,
-        })
+        steps_ir.append(
+            {
+                "seq": 1,
+                "kind": "check",
+                "function_name": function_name,
+                "input": plan_input,
+                "condition": "always",
+                "depends_on": [],
+                "risk": "readonly",
+                "requires_approval": False,
+            }
+        )
         repair_func = _select_repair_function(function_name, available_functions, seed_calls)
         rollback_hint = _build_rollback_hint(
             function_name=function_name,
@@ -969,68 +1276,94 @@ async def agent_plan_stream(
             available_functions=available_functions,
         )
         if repair_func:
-            steps_ir.append({
-                "seq": 2, "kind": "repair",
-                "function_name": repair_func,
-                "input": _input_for_function(repair_func, plan_input, seed_calls),
-                "condition": "if_previous_unhealthy",
-                "depends_on": [1],
-                "risk": "maintenance_write", "requires_approval": True,
-                "rollback_hint": rollback_hint,
-            })
-        steps_ir.append({
-            "seq": 3, "kind": "verify",
-            "function_name": function_name,
-            "input": plan_input,
-            "condition": "after_repair", "depends_on": [2],
-            "risk": "readonly", "requires_approval": False,
-        })
+            steps_ir.append(
+                {
+                    "seq": 2,
+                    "kind": "repair",
+                    "function_name": repair_func,
+                    "input": _input_for_function(repair_func, plan_input, seed_calls),
+                    "condition": "if_previous_unhealthy",
+                    "depends_on": [1],
+                    "risk": "maintenance_write",
+                    "requires_approval": True,
+                    "rollback_hint": rollback_hint,
+                }
+            )
+        steps_ir.append(
+            {
+                "seq": 3,
+                "kind": "verify",
+                "function_name": function_name,
+                "input": plan_input,
+                "condition": "after_repair",
+                "depends_on": [2],
+                "risk": "readonly",
+                "requires_approval": False,
+            }
+        )
     else:
-        steps_ir.append({
-            "seq": 1, "kind": "check",
-            "function_name": function_name,
-            "input": plan_input,
-            "condition": "always", "depends_on": [],
-            "risk": "readonly", "requires_approval": False,
-        })
+        steps_ir.append(
+            {
+                "seq": 1,
+                "kind": "check",
+                "function_name": function_name,
+                "input": plan_input,
+                "condition": "always",
+                "depends_on": [],
+                "risk": "readonly",
+                "requires_approval": False,
+            }
+        )
 
     for s in steps_ir:
-        yield _event("agent.plan.step.created", session_id, trace_id, {
-            "seq": s["seq"],
-            "kind": s["kind"],
-            "function_name": s["function_name"],
-            "requires_approval": s["requires_approval"],
-        })
+        yield _event(
+            "agent.plan.step.created",
+            session_id,
+            trace_id,
+            {
+                "seq": s["seq"],
+                "kind": s["kind"],
+                "function_name": s["function_name"],
+                "requires_approval": s["requires_approval"],
+            },
+        )
 
     has_write = any(s["requires_approval"] for s in steps_ir)
 
     for s in steps_ir:
         func_exists = any(f.name == s["function_name"] for f in available_functions)
         if not func_exists:
-            yield _event("agent.failed", session_id, trace_id, {
-                "error_code": "function_not_available",
-                "message": f"Function {s['function_name']!r} not registered on node",
-            })
+            yield _event(
+                "agent.failed",
+                session_id,
+                trace_id,
+                {
+                    "error_code": "function_not_available",
+                    "message": f"Function {s['function_name']!r} not registered on node",
+                },
+            )
             _mark_stream_inactive(session_id)
             yield _event("stream.close", session_id, trace_id)
             return
 
-    plan = await create_plan(
-        db,
+    plan = await MaintenancePlanApplicationService(db).create(
         goal=prompt,
         actor_id=provider.provider_name(),
         target_node_id=target_node_id,
-        steps=[{
-            "function_name": s["function_name"],
-            "input": s["input"],
-            "kind": s["kind"],
-            "condition": s["condition"],
-            "depends_on": [str(d) for d in s.get("depends_on", [])],
-            "requires_approval": s["requires_approval"],
-            "risk": s["risk"],
-            "continue_on_failure": False,
-            "rollback_hint": s.get("rollback_hint"),
-        } for s in steps_ir],
+        steps=[
+            {
+                "function_name": s["function_name"],
+                "input": s["input"],
+                "kind": s["kind"],
+                "condition": s["condition"],
+                "depends_on": [str(d) for d in s.get("depends_on", [])],
+                "requires_approval": s["requires_approval"],
+                "risk": s["risk"],
+                "continue_on_failure": False,
+                "rollback_hint": s.get("rollback_hint"),
+            }
+            for s in steps_ir
+        ],
         session_id=session_id,
         risk="maintenance" if has_write else "safe",
         max_total_duration_sec=max_total_duration_sec,
@@ -1041,18 +1374,28 @@ async def agent_plan_stream(
         plan.status = "waiting_approval"
         await db.commit()
 
-    yield _event("agent.plan.created", session_id, trace_id, {
-        "plan_id": plan.plan_id,
-        "goal": plan.goal,
-        "status": plan.status,
-        "step_count": len(steps_ir),
-    })
+    yield _event(
+        "agent.plan.created",
+        session_id,
+        trace_id,
+        {
+            "plan_id": plan.plan_id,
+            "goal": plan.goal,
+            "status": plan.status,
+            "step_count": len(steps_ir),
+        },
+    )
 
     if has_write:
-        yield _event("agent.approval.required", session_id, trace_id, {
-            "plan_id": plan.plan_id,
-            "message": "This plan contains write operations and requires approval",
-        })
+        yield _event(
+            "agent.approval.required",
+            session_id,
+            trace_id,
+            {
+                "plan_id": plan.plan_id,
+                "message": "This plan contains write operations and requires approval",
+            },
+        )
 
     yield _event("agent.completed", session_id, trace_id)
     _mark_stream_inactive(session_id)
@@ -1087,11 +1430,11 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
     succeeded = [r for r in tool_results if r.get("status") == "succeeded"]
     failed = [r for r in tool_results if r.get("status") == "failed"]
     waiting = [r for r in tool_results if r.get("status") == "waiting_approval"]
-    other = [r for r in tool_results if r.get("status") not in ("succeeded", "failed", "waiting_approval")]
 
     # Check for no-node / capability failures
     node_failures = [
-        r for r in failed
+        r
+        for r in failed
         if str(r.get("error", "")).startswith("No online node")
         or "function_not_available" in str(r.get("error", ""))
         or "is not available" in str(r.get("error", ""))
@@ -1136,9 +1479,8 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
     # Waiting approval
     if waiting and not failed:
         names = [r.get("name", "unknown") for r in waiting]
-        return (
-            f"⏳ **等待审批**：以下操作需要审批后才能执行：\n"
-            + "\n".join(f"- {n}" for n in names)
+        return "⏳ **等待审批**：以下操作需要审批后才能执行：\n" + "\n".join(
+            f"- {n}" for n in names
         )
 
     # All succeeded

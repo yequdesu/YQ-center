@@ -44,47 +44,99 @@ def _default_functions() -> list[AgentFunction]:
     return [
         AgentFunction(
             name="system.metrics.snapshot",
-            description="Get current CPU usage (%), memory usage (%), and disk usage (%) for the main drive. Use this when asked about system performance, load, or resource usage.",
+            description=(
+                "Get current CPU usage (%), memory usage (%), and disk usage (%) "
+                "for the main drive. Use this when asked about system performance, "
+                "load, or resource usage."
+            ),
             input_schema={"type": "object", "properties": {}},
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.info",
-            description="Get basic system information: OS name and version, hostname, uptime in seconds, and current user. Use this when asked about what machine this is, its OS, or how long it has been running.",
+            description=(
+                "Get basic system information: OS name and version, hostname, "
+                "uptime in seconds, and current user. Use this when asked about "
+                "what machine this is, its OS, or how long it has been running."
+            ),
             input_schema={"type": "object", "properties": {}},
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.service.status",
-            description="Get the current status, startup mode, and display name of a named service on a node. Requires the exact service identifier in 'name'. Use this when asked about a specific service.",
+            description=(
+                "Get the current status, startup mode, and display name of a named "
+                "service on a node. Requires the exact service identifier in 'name'. "
+                "Use this when asked about a specific service."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Service identifier as registered on the target node",
+                    }
+                },
                 "required": ["name"],
             },
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.processes.list",
-            description="List running processes with name, PID, memory usage, and CPU time. Returns up to 50 processes sorted by memory. Use this when asked about running programs, what processes are active, or checking for specific processes.",
-            input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 50, "maximum": 100}}},
-            risk="safe", effect="read", timeout_sec=5,
+            description=(
+                "List running processes with name, PID, memory usage, and CPU time. "
+                "Returns up to 50 processes sorted by memory. Use this when asked "
+                "about running programs, what processes are active, or checking for "
+                "specific processes."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "default": 50, "maximum": 100}},
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.disk.detail",
-            description="Get detailed disk information for all drives: total capacity (GB), used space (GB), free space (GB), usage percentage, and filesystem type. Use this when asked about disk space, storage capacity, or drive details.",
+            description=(
+                "Get detailed disk information for all drives: total capacity (GB), "
+                "used space (GB), free space (GB), usage percentage, and filesystem "
+                "type. Use this when asked about disk space, storage capacity, or "
+                "drive details."
+            ),
             input_schema={"type": "object", "properties": {}},
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.network.routes",
-            description="Get the node network route table: destination network, netmask, gateway, interface IP, metric, and route type for each entry. Use this when asked about routing table, network routes, next hop, interface routes, or how network traffic is routed.",
+            description=(
+                "Get the node network route table: destination network, netmask, "
+                "gateway, interface IP, metric, and route type for each entry. Use "
+                "this when asked about routing table, network routes, next hop, "
+                "interface routes, or how network traffic is routed."
+            ),
             input_schema={"type": "object", "properties": {}},
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="system.eventlog.query",
-            description="Query recent node event log entries. Returns event count, severity levels, and recent event summaries. Accepts optional source and limit parameters. Use this when asked about system errors, recent warnings, or what happened on the machine.",
+            description=(
+                "Query recent node event log entries. Returns event count, severity "
+                "levels, and recent event summaries. Accepts optional source and "
+                "limit parameters. Use this when asked about system errors, recent "
+                "warnings, or what happened on the machine."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -92,52 +144,94 @@ def _default_functions() -> list[AgentFunction]:
                     "limit": {"type": "integer", "default": 50, "maximum": 100},
                 },
             },
-            risk="safe", effect="read", timeout_sec=10,
+            risk="safe",
+            effect="read",
+            timeout_sec=10,
         ),
         # L2 maintenance write functions — require approval
         AgentFunction(
             name="system.service.ensure_running",
-            description="Ensure a named service is running. If stopped, start it. Requires 'name' parameter. Requires approval for write operations.",
+            description=(
+                "Ensure a named service is running. If stopped, start it. Requires "
+                "'name' parameter. Requires approval for write operations."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Service identifier as registered on the target node",
+                    }
+                },
                 "required": ["name"],
             },
-            risk="maintenance", effect="write", timeout_sec=30,
+            risk="maintenance",
+            effect="write",
+            timeout_sec=30,
         ),
         AgentFunction(
             name="system.service.restart",
             description="Restart a named service. Requires 'name' parameter. Requires approval.",
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Service identifier as registered on the target node"}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Service identifier as registered on the target node",
+                    }
+                },
                 "required": ["name"],
             },
-            risk="maintenance", effect="write", timeout_sec=30,
+            risk="maintenance",
+            effect="write",
+            timeout_sec=30,
         ),
         # Test failure injection functions — for stable L2-C remote verification
         AgentFunction(
             name="test.maintenance.repair_fail",
-            description="TEST ONLY: Simulates a failed repair step. Always fails with error_code=TEST_REPAIR_FAILED. Use to verify rollback_recommended flow.",
+            description=(
+                "TEST ONLY: Simulates a failed repair step. Always fails with "
+                "error_code=TEST_REPAIR_FAILED. Use to verify rollback_recommended "
+                "flow."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Target service name for context"}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Target service name for context",
+                    }
+                },
             },
-            risk="maintenance", effect="write", timeout_sec=5,
+            risk="maintenance",
+            effect="write",
+            timeout_sec=5,
         ),
         AgentFunction(
             name="test.maintenance.verify_fail",
-            description="TEST ONLY: Simulates a failed verify step after a repair. Always fails with error_code=TEST_VERIFY_FAILED. Use to verify rollback_recommended flow.",
+            description=(
+                "TEST ONLY: Simulates a failed verify step after a repair. Always "
+                "fails with error_code=TEST_VERIFY_FAILED. Use to verify "
+                "rollback_recommended flow."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Target service name for context"}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Target service name for context",
+                    }
+                },
             },
-            risk="safe", effect="read", timeout_sec=5,
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
         ),
     ]
 
 
 # -- Request/Response models --
+
 
 class CreateSessionRequest(BaseModel):
     actor_id: str = Field(default="agent")
@@ -171,6 +265,7 @@ class AgentPlanRequest(BaseModel):
 
 
 # -- Endpoints --
+
 
 async def _resolve_provider(provider_name: str) -> AgentProvider:
     provider = get_provider(provider_name)
@@ -238,7 +333,12 @@ async def _default_target_node_id(db: AsyncSession) -> str:
     from yequ.services.node_liveness_service import is_node_schedulable
 
     settings = get_settings()
-    result = await db.execute(select(Node).order_by(Node.last_heartbeat_at.desc().nullslast(), Node.node_id.asc()))
+    result = await db.execute(
+        select(Node).order_by(
+            Node.last_heartbeat_at.desc().nullslast(),
+            Node.node_id.asc(),
+        )
+    )
     for node in result.scalars().all():
         schedulable, _ = is_node_schedulable(node, settings)
         if schedulable:
@@ -284,8 +384,10 @@ def _capability_agent_description(cap: Capability) -> str:
     risk = cap.risk or "safe"
     context = cap.execution_context or "node"
     approval_note = (
-        " This operation changes system state and Center will ask the user for approval before execution."
-        if effect in ("write", "destructive") or risk in ("maintenance", "destructive", "catastrophic")
+        " This operation changes system state and Center will ask the user for "
+        "approval before execution."
+        if effect in ("write", "destructive")
+        or risk in ("maintenance", "destructive", "catastrophic")
         else ""
     )
     return (
@@ -306,15 +408,13 @@ def _strip_internal_input_fields(
     properties = cleaned.get("properties")
     if isinstance(properties, dict):
         cleaned["properties"] = {
-            key: value for key, value in properties.items()
-            if key not in hidden_fields
+            key: value for key, value in properties.items() if key not in hidden_fields
         }
 
     required = cleaned.get("required")
     if isinstance(required, list):
         cleaned["required"] = [
-            key for key in required
-            if not isinstance(key, str) or key not in hidden_fields
+            key for key in required if not isinstance(key, str) or key not in hidden_fields
         ]
 
     return cleaned
@@ -427,31 +527,34 @@ async def invoke_agent_stream_endpoint(
 ):
     provider = await _resolve_provider(body.provider_name)
     available = await _available_functions(db)
-    return _sse_response(agent_invoke_stream(
-        db,
-        provider,
-        session_id=body.session_id,
-        prompt=body.prompt,
-        target_node_id=body.target_node_id,
-        suppress_user_message=body.suppress_user_message,
-        available_functions=available,
-        call_path=body.call_path,
-        max_depth=body.max_depth,
-        max_steps=body.max_steps,
-        max_total_duration_sec=body.max_total_duration_sec,
-        step_count=body.step_count,
-        execution_mode=body.execution_mode,
-    ), turn_context={
-        "session_id": body.session_id,
-        "prompt": body.prompt,
-        "provider_name": provider.provider_name(),
-        "target_node_id": body.target_node_id,
-        "execution_mode": body.execution_mode,
-        "metadata": {
-            "suppress_user_message": body.suppress_user_message,
-            "step_count": body.step_count,
+    return _sse_response(
+        agent_invoke_stream(
+            db,
+            provider,
+            session_id=body.session_id,
+            prompt=body.prompt,
+            target_node_id=body.target_node_id,
+            suppress_user_message=body.suppress_user_message,
+            available_functions=available,
+            call_path=body.call_path,
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+            step_count=body.step_count,
+            execution_mode=body.execution_mode,
+        ),
+        turn_context={
+            "session_id": body.session_id,
+            "prompt": body.prompt,
+            "provider_name": provider.provider_name(),
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "metadata": {
+                "suppress_user_message": body.suppress_user_message,
+                "step_count": body.step_count,
+            },
         },
-    })
+    )
 
 
 @router.post("/plan")
@@ -464,7 +567,8 @@ async def agent_plan_endpoint(
 
     target_node_id = body.target_node_id or await _default_target_node_id(db)
     return await agent_plan(
-        db, provider,
+        db,
+        provider,
         session_id=body.session_id,
         prompt=body.prompt,
         target_node_id=target_node_id,
@@ -482,13 +586,15 @@ async def agent_plan_stream_endpoint(
 ):
     provider = await _resolve_provider(body.provider_name)
     target_node_id = body.target_node_id or await _default_target_node_id(db)
-    return _sse_response(agent_plan_stream(
-        db,
-        provider,
-        session_id=body.session_id,
-        prompt=body.prompt,
-        target_node_id=target_node_id,
-        available_functions=await _available_functions(db),
-        execution_mode=body.execution_mode,
-        max_total_duration_sec=body.max_total_duration_sec,
-    ))
+    return _sse_response(
+        agent_plan_stream(
+            db,
+            provider,
+            session_id=body.session_id,
+            prompt=body.prompt,
+            target_node_id=target_node_id,
+            available_functions=await _available_functions(db),
+            execution_mode=body.execution_mode,
+            max_total_duration_sec=body.max_total_duration_sec,
+        )
+    )

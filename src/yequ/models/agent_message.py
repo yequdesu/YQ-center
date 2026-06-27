@@ -14,11 +14,14 @@ class AgentMessage(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
     message_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     session_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    role: Mapped[str] = mapped_column(String(16), nullable=False)  # "system" | "user" | "assistant" | "tool"
+    # "system" | "user" | "assistant" | "tool"
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool_calls: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
 
     def __repr__(self) -> str:
         return f"<AgentMessage(message_id={self.message_id!r}, role={self.role!r})>"

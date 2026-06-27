@@ -64,8 +64,7 @@ class MaintenanceStep(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<MaintenanceStep(step_id={self.step_id!r}, seq={self.seq}, "
-            f"status={self.status!r})>"
+            f"<MaintenanceStep(step_id={self.step_id!r}, seq={self.seq}, status={self.status!r})>"
         )
 
 
@@ -97,10 +96,14 @@ class MaintenanceArtifact(Base):
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
-    content_type: Mapped[str] = mapped_column(String(64), nullable=False, default="application/json")
+    content_type: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="application/json"
+    )
     data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
 
     def __repr__(self) -> str:
         return f"<MaintenanceArtifact(artifact_id={self.artifact_id!r}, kind={self.kind!r})>"

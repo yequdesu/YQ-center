@@ -47,6 +47,7 @@ async def _register_capability(
     db.add(cap)
     await db.flush()
 
+
 # ── Policy Engine Tests ────────────────────────────────────────────
 
 
@@ -170,6 +171,7 @@ class TestFakeAgentProvider:
 
 # ── Agent Service Tests ────────────────────────────────────────────
 
+
 # Fixture: create a session via create_agent_session so a Session row exists.
 # The fixture itself is async; asyncio_mode=auto handles it.
 @pytest.fixture
@@ -240,12 +242,12 @@ class TestAgentService:
         )
         events = events_result.scalars().all()
         event_types = {e.event_type for e in events}
-        assert (
-            "agent.prompt.received" in event_types
-        ), f"Expected agent.prompt.received in {event_types}"
-        assert (
-            "agent.provider.completed" in event_types
-        ), f"Expected agent.provider.completed in {event_types}"
+        assert "agent.prompt.received" in event_types, (
+            f"Expected agent.prompt.received in {event_types}"
+        )
+        assert "agent.provider.completed" in event_types, (
+            f"Expected agent.provider.completed in {event_types}"
+        )
 
     @pytest.mark.asyncio
     async def test_loop_detection(
@@ -292,9 +294,7 @@ class TestAgentService:
         assert diag_calls[0].error.get("code") == ErrorCode.CIRCULAR_DEPENDENCY
 
     @pytest.mark.asyncio
-    async def test_depth_exceeded(
-        self, db_session: AsyncSession
-    ):
+    async def test_depth_exceeded(self, db_session: AsyncSession):
         """Call depth exceeding max_depth must be rejected."""
         p = FakeAgentProvider()
         funcs = [AgentFunction(name="f", risk="safe")]
@@ -313,9 +313,7 @@ class TestAgentService:
         assert result.error.code == ErrorCode.CALL_DEPTH_EXCEEDED
 
     @pytest.mark.asyncio
-    async def test_steps_exceeded(
-        self, db_session: AsyncSession
-    ):
+    async def test_steps_exceeded(self, db_session: AsyncSession):
         """Step count exceeding max_steps must be rejected."""
         p = FakeAgentProvider()
         funcs = [AgentFunction(name="f", risk="safe")]
@@ -334,9 +332,7 @@ class TestAgentService:
         assert result.error.code == ErrorCode.MAX_STEPS_EXCEEDED
 
     @pytest.mark.asyncio
-    async def test_duration_exceeded(
-        self, db_session: AsyncSession
-    ):
+    async def test_duration_exceeded(self, db_session: AsyncSession):
         """Elapsed duration exceeding max must be rejected."""
         p = FakeAgentProvider()
         funcs = [AgentFunction(name="f", risk="safe")]

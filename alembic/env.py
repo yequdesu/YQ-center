@@ -3,21 +3,21 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from yequ.config import get_settings
-from yequ.models.base import Base
-
-# Import all models so Base.metadata is populated
-import yequ.models.node  # noqa: F401
 import yequ.models.capability  # noqa: F401
 import yequ.models.invocation  # noqa: F401
 import yequ.models.job  # noqa: F401
 import yequ.models.maintenance_plan  # noqa: F401
-import yequ.models.timeline  # noqa: F401
+
+# Import all models so Base.metadata is populated
+import yequ.models.node  # noqa: F401
 import yequ.models.session  # noqa: F401
+import yequ.models.timeline  # noqa: F401
+from alembic import context
+from yequ.config import get_settings
+from yequ.models.base import Base
 
 config = context.config
 settings = get_settings()

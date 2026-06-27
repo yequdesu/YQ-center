@@ -13,15 +13,73 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.db import async_session_factory
 from yequ.logconfig import get_logger
-from yequ.models.timeline import TimelineEvent
+from yequ.models.timeline import TimelineEvent, TimelineSequence
 
 log = get_logger(__name__)
+
+GLOBAL_TIMELINE_SEQUENCE = "global"
+_sequence_lock = asyncio.Lock()
 
 
 async def next_global_seq(db: AsyncSession) -> int:
     """Return the next available global_seq for a new timeline event."""
-    result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-    return (result.scalar() or 0) + 1
+    return await allocate_global_seq(db)
+
+
+async def allocate_global_seq(db: AsyncSession, count: int = 1) -> int:
+    """Reserve one or more timeline global_seq values.
+
+    Returns the first reserved sequence number. PostgreSQL uses a row lock;
+    the process lock keeps SQLite/test execution deterministic.
+    """
+    if count < 1:
+        raise ValueError("count must be >= 1")
+
+    async with _sequence_lock:
+        result = await db.execute(
+            select(TimelineSequence)
+            .where(TimelineSequence.name == GLOBAL_TIMELINE_SEQUENCE)
+            .with_for_update()
+        )
+        sequence = result.scalar_one_or_none()
+        if sequence is None:
+            max_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
+            max_seq = max_result.scalar() or 0
+            sequence = TimelineSequence(
+                name=GLOBAL_TIMELINE_SEQUENCE,
+                value=max_seq,
+            )
+            db.add(sequence)
+            await db.flush()
+
+        start = sequence.value + 1
+        sequence.value += count
+        await db.flush()
+        return start
+
+
+async def add_timeline_event(db: AsyncSession, event: TimelineEvent) -> TimelineEvent:
+    """Assign global_seq and add one TimelineEvent to the current transaction."""
+    event.global_seq = await allocate_global_seq(db)
+    db.add(event)
+    await db.flush()
+    return event
+
+
+async def add_timeline_events(
+    db: AsyncSession,
+    events: list[TimelineEvent],
+) -> list[TimelineEvent]:
+    """Assign contiguous global_seq values and add TimelineEvents."""
+    if not events:
+        return events
+    start = await allocate_global_seq(db, len(events))
+    for offset, event in enumerate(events):
+        event.global_seq = start + offset
+    db.add_all(events)
+    await db.flush()
+    return events
+
 
 # Max batch size for a single DB transaction
 BATCH_SIZE = 50
@@ -100,16 +158,7 @@ class TimelineWriter:
 
         try:
             async with async_session_factory() as db:
-                # Compute global_seq range for this batch
-                from sqlalchemy import func, select
-
-                result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-                max_seq = result.scalar() or 0
-
-                for i, event in enumerate(batch):
-                    event.global_seq = max_seq + i + 1
-
-                db.add_all(batch)
+                await add_timeline_events(db, batch)
                 await db.commit()
                 log.debug("timeline writer flushed", count=len(batch))
         except Exception:

@@ -11,7 +11,7 @@ from yequ.config import Settings
 from yequ.protocol import MessageType
 from yequ.protocol.envelope import YqpEnvelope
 from yequ.protocol.errors import ErrorCode, YqpError
-from yequ.services.message_dedup import get_dedup
+from yequ.services.message_dedup import check_and_record_message
 from yequ.services.node_auth import authenticate_node, verify_node_id_binding
 from yequ.services.node_service import (
     handle_heartbeat,
@@ -30,8 +30,18 @@ from yequ.services.node_service import (
 router = APIRouter(prefix="/yqp", tags=["yqp"])
 
 
-def _response_type(request_type: MessageType) -> str:
+def _response_type(
+    request_type: MessageType,
+    response_payload: dict[str, object] | None = None,
+) -> str:
     """Map request message_type to response message_type."""
+    if (
+        request_type == MessageType.JOB_POLL
+        and response_payload is not None
+        and response_payload.get("jobs") == []
+    ):
+        return MessageType.JOB_EMPTY
+
     response_map: dict[MessageType, str] = {
         MessageType.NODE_HELLO: MessageType.NODE_ACCEPTED,
         MessageType.NODE_REGISTER_CAPABILITIES: MessageType.REGISTRY_ACCEPTED,
@@ -53,7 +63,7 @@ async def yqp_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, object]:
     """Main YQP protocol endpoint.
 
     Accepts a YqpEnvelope, validates auth/dedup/timestamp,
@@ -89,8 +99,14 @@ async def yqp_endpoint(
         )
 
     # 4. Message dedup
-    dedup = get_dedup()
-    if not dedup.check_and_record(envelope.message_id):
+    if not await check_and_record_message(
+        db,
+        message_id=envelope.message_id,
+        node_id=node.node_id,
+        message_type=str(envelope.message_type),
+        trace_id=envelope.trace_id,
+        ttl_sec=settings.message_dedup_ttl_sec,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=YqpError(
@@ -125,41 +141,23 @@ async def yqp_endpoint(
     elif msg_type == MessageType.NODE_HEARTBEAT:
         response_payload = await handle_heartbeat(db, node, envelope.payload, settings)
     elif msg_type == MessageType.NODE_REGISTER_CAPABILITIES:
-        response_payload = await handle_register_capabilities(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_register_capabilities(db, node, envelope.payload, settings)
     elif msg_type == MessageType.SIGNAL_REPORT:
-        response_payload = await handle_signal_report(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_signal_report(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_POLL:
-        response_payload = await handle_job_poll(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_poll(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_ACCEPTED:
-        response_payload = await handle_job_accepted(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_accepted(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_FINISHED:
-        response_payload = await handle_job_finished(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_finished(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_LEASE_RENEW:
-        response_payload = await handle_job_lease_renew(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_lease_renew(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_EVENT:
-        response_payload = await handle_job_event(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_event(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_CANCEL:
-        response_payload = await handle_job_cancel(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_job_cancel(db, node, envelope.payload, settings)
     elif msg_type == MessageType.NODE_RECONCILE_JOBS:
-        response_payload = await handle_reconcile_jobs(
-            db, node, envelope.payload, settings
-        )
+        response_payload = await handle_reconcile_jobs(db, node, envelope.payload, settings)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -173,8 +171,9 @@ async def yqp_endpoint(
     return {
         "yqp_version": "0.1",
         "message_id": envelope.message_id,
-        "message_type": _response_type(msg_type),
+        "message_type": _response_type(msg_type, response_payload),
         "trace_id": envelope.trace_id,
+        "node_id": node.node_id,
         "timestamp": now.isoformat(),
         "payload": response_payload,
     }

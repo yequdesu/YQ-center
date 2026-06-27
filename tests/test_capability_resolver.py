@@ -7,13 +7,13 @@ from httpx import AsyncClient
 @pytest.mark.asyncio
 async def test_resolve_online_node_succeeds(client: AsyncClient):
     """Specified online node with function → success."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
-    from yequ.services.capability_resolver import resolve_function
     from datetime import UTC, datetime
 
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.capability_resolver import resolve_function
+    from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -43,7 +43,8 @@ async def test_resolve_online_node_succeeds(client: AsyncClient):
         await db.commit()
 
         result = await resolve_function(
-            db, "system.resolver.test",
+            db,
+            "system.resolver.test",
             target_node_id="resolver-online-node",
         )
         assert result.available is True
@@ -56,12 +57,11 @@ async def test_resolve_online_node_succeeds(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_resolve_offline_node_fails(client: AsyncClient):
     """Offline node with function → available=False."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
-    from yequ.services.capability_resolver import resolve_function
-
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.capability_resolver import resolve_function
+    from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -90,7 +90,8 @@ async def test_resolve_offline_node_fails(client: AsyncClient):
         await db.commit()
 
         result = await resolve_function(
-            db, "system.resolver.offline_test",
+            db,
+            "system.resolver.offline_test",
             target_node_id="resolver-offline-node",
         )
         assert result.available is False
@@ -102,13 +103,13 @@ async def test_resolve_offline_node_fails(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_resolve_auto_selects_online_node(client: AsyncClient):
     """No target_node_id → picks online node automatically."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
-    from yequ.services.capability_resolver import resolve_function
     from datetime import UTC, datetime
 
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.capability_resolver import resolve_function
+    from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -147,9 +148,8 @@ async def test_resolve_auto_selects_online_node(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_no_online_node_returns_capability_unavailable(client: AsyncClient):
     """No online node has the function → available=False + error message."""
-    from yequ.services.capability_resolver import resolve_function
-
     from yequ.api.deps import get_db
+    from yequ.services.capability_resolver import resolve_function
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -167,13 +167,13 @@ async def test_no_online_node_returns_capability_unavailable(client: AsyncClient
 @pytest.mark.asyncio
 async def test_inactive_capability_not_available(client: AsyncClient):
     """Inactive capability → not selected by resolver."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
-    from yequ.services.capability_resolver import resolve_function
     from datetime import UTC, datetime
 
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.capability_resolver import resolve_function
+    from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -203,7 +203,8 @@ async def test_inactive_capability_not_available(client: AsyncClient):
         await db.commit()
 
         result = await resolve_function(
-            db, "system.inactive.test",
+            db,
+            "system.inactive.test",
             target_node_id="inactive-cap-node",
         )
         assert result.available is False
@@ -214,12 +215,12 @@ async def test_inactive_capability_not_available(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_capability_list_shows_executable_field(client: AsyncClient):
     """GET /admin/capabilities returns executable, inactive_reason fields."""
-    from yequ.services.node_auth import hash_token
-    from yequ.models.node import Node
-    from yequ.models.capability import Capability
     from datetime import UTC, datetime
 
     from yequ.api.deps import get_db
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
@@ -289,17 +290,19 @@ async def _add_resolver_node(
     db.add(node)
     await db.flush()
 
-    db.add(Capability(
-        node_record_id=node.id,
-        plugin_id="test.routing",
-        plugin_version="1.0",
-        capability_type="function",
-        name=function_name,
-        status="loaded",
-        risk=risk,
-        effect=effect,
-        is_active=True,
-    ))
+    db.add(
+        Capability(
+            node_record_id=node.id,
+            plugin_id="test.routing",
+            plugin_version="1.0",
+            capability_type="function",
+            name=function_name,
+            status="loaded",
+            risk=risk,
+            effect=effect,
+            is_active=True,
+        )
+    )
     await db.commit()
     return node
 
@@ -322,16 +325,18 @@ async def _add_running_job(db, *, node_id: str, job_id: str, function_name: str)
     )
     db.add(invocation)
     await db.flush()
-    db.add(Job(
-        job_id=job_id,
-        invocation_id=invocation.invocation_id,
-        node_id=node_id,
-        function_name=function_name,
-        status=JobStatus.RUNNING,
-        input_payload={},
-        timeout_sec=30,
-        lease_sec=30,
-    ))
+    db.add(
+        Job(
+            job_id=job_id,
+            invocation_id=invocation.invocation_id,
+            node_id=node_id,
+            function_name=function_name,
+            status=JobStatus.RUNNING,
+            input_payload={},
+            timeout_sec=30,
+            lease_sec=30,
+        )
+    )
     await db.commit()
 
 

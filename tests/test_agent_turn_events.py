@@ -15,13 +15,15 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
     from yequ.api.routes.agent import register_provider
 
     provider = FakeAgentProvider("turn-events-test")
-    provider.set_sequence([
-        ProviderInvokeResult(
-            message="System check completed.",
-            tool_calls=[],
-            success=True,
-        ),
-    ])
+    provider.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="System check completed.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
     register_provider(provider)
 
     session_resp = await client.post(
@@ -80,9 +82,11 @@ async def test_delete_session_deletes_turn_events(client: AsyncClient):
     from yequ.api.routes.agent import register_provider
 
     provider = FakeAgentProvider("turn-delete-test")
-    provider.set_sequence([
-        ProviderInvokeResult(message="Done.", tool_calls=[], success=True),
-    ])
+    provider.set_sequence(
+        [
+            ProviderInvokeResult(message="Done.", tool_calls=[], success=True),
+        ]
+    )
     register_provider(provider)
 
     session_resp = await client.post(
@@ -113,5 +117,5 @@ def _parse_sse_events(text: str) -> list[dict]:
         line = line.strip()
         if not line.startswith("data: "):
             continue
-        events.append(json.loads(line[len("data: "):]))
+        events.append(json.loads(line[len("data: ") :]))
     return events

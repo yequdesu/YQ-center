@@ -18,7 +18,9 @@ class Job(Base, TimestampMixin):
     node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     runtime_id: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
     function_name: Mapped[str] = mapped_column(String(256), nullable=False)
-    execution_requirements_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    execution_requirements_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
     input_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")
     timeout_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)

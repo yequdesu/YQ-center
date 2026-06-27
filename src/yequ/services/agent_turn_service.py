@@ -44,19 +44,21 @@ async def create_agent_turn(
     now = datetime.now(UTC)
     turn_id = make_turn_id()
     async with yequ_db.async_session_factory() as session:
-        session.add(AgentTurn(
-            turn_id=turn_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            provider_name=provider_name,
-            target_node_id=target_node_id,
-            execution_mode=execution_mode,
-            status="received",
-            prompt=prompt,
-            started_at=now,
-            updated_at=now,
-            metadata_=metadata or {},
-        ))
+        session.add(
+            AgentTurn(
+                turn_id=turn_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                provider_name=provider_name,
+                target_node_id=target_node_id,
+                execution_mode=execution_mode,
+                status="received",
+                prompt=prompt,
+                started_at=now,
+                updated_at=now,
+                metadata_=metadata or {},
+            )
+        )
         await session.commit()
     return turn_id
 
@@ -73,20 +75,20 @@ async def record_agent_turn_event(turn_id: str, event: dict[str, Any]) -> None:
             select(func.max(AgentTurnEvent.seq)).where(AgentTurnEvent.turn_id == turn_id)
         )
         seq = int(seq_result.scalar() or 0) + 1
-        session.add(AgentTurnEvent(
-            event_id=str(event.get("event_id") or f"evt_{uuid.uuid4().hex[:16]}"),
-            turn_id=turn_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            seq=seq,
-            event_type=event_type,
-            data=data,
-            created_at=now,
-        ))
-
-        turn_result = await session.execute(
-            select(AgentTurn).where(AgentTurn.turn_id == turn_id)
+        session.add(
+            AgentTurnEvent(
+                event_id=str(event.get("event_id") or f"evt_{uuid.uuid4().hex[:16]}"),
+                turn_id=turn_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                seq=seq,
+                event_type=event_type,
+                data=data,
+                created_at=now,
+            )
         )
+
+        turn_result = await session.execute(select(AgentTurn).where(AgentTurn.turn_id == turn_id))
         turn = turn_result.scalar_one_or_none()
         if turn is not None:
             status = _status_for_event(event_type, data)

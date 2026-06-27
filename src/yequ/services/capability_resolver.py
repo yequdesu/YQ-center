@@ -34,13 +34,14 @@ class ResolvedCapability:
     approval_required: bool = False
     timeout_sec: int = 30
     lease_sec: int = 30
-    resource_key_template: list[str] = field(default_factory=list)
+    resource_keys: list[str] = field(default_factory=list)
     conflict_policy: str | None = None
     runtime_id: str | None = None
     execution_requirements: dict | None = None
     available: bool = True
     unavailable_code: str | None = None
     unavailable_reason: str | None = None
+
 
 def _requirements_from_context(context: str | None) -> dict | None:
     if context == "system":
@@ -53,7 +54,9 @@ def _requirements_from_context(context: str | None) -> dict | None:
 
 
 def _capability_requirements(capability: Capability) -> dict:
-    raw = capability.execution_requirements or _requirements_from_context(capability.execution_context)
+    raw = capability.execution_requirements or _requirements_from_context(
+        capability.execution_context
+    )
     return dict(raw) if isinstance(raw, dict) else {}
 
 
@@ -161,9 +164,7 @@ async def resolve_function(
             available=False,
             unavailable_code="node_not_found" if target_node_id else "no_nodes_available",
             unavailable_reason=(
-                f"Node '{target_node_id}' not found"
-                if target_node_id
-                else "No nodes available"
+                f"Node '{target_node_id}' not found" if target_node_id else "No nodes available"
             ),
         )
 
@@ -185,8 +186,7 @@ async def resolve_function(
             continue
 
         cap_result = await db.execute(
-            select(Capability)
-            .where(
+            select(Capability).where(
                 Capability.node_record_id == node.id,
                 Capability.capability_type == "function",
                 Capability.name == function_name,
@@ -240,11 +240,13 @@ async def resolve_function(
         select(Job.node_id, func.count(Job.id))
         .where(
             Job.node_id.in_(node_ids),
-            Job.status.in_([
-                JobStatus.CLAIMED,
-                JobStatus.RUNNING,
-                JobStatus.CANCELLING,
-            ]),
+            Job.status.in_(
+                [
+                    JobStatus.CLAIMED,
+                    JobStatus.RUNNING,
+                    JobStatus.CANCELLING,
+                ]
+            ),
         )
         .group_by(Job.node_id)
     )
@@ -277,9 +279,10 @@ async def resolve_function(
     best_node, best_cap, best_runtime_id, best_requirements = viable[0]
 
     # Determine approval_required
-    approval_required = (
-        best_cap.effect in ("write", "destructive")
-        or best_cap.risk in ("maintenance", "destructive", "catastrophic")
+    approval_required = best_cap.effect in ("write", "destructive") or best_cap.risk in (
+        "maintenance",
+        "destructive",
+        "catastrophic",
     )
 
     return ResolvedCapability(
@@ -291,7 +294,7 @@ async def resolve_function(
         approval_required=approval_required,
         timeout_sec=best_cap.timeout_sec or 30,
         lease_sec=30,
-        resource_key_template=list(best_cap.resource_keys) if best_cap.resource_keys else [],
+        resource_keys=list(best_cap.resource_keys) if best_cap.resource_keys else [],
         conflict_policy=best_cap.conflict_policy,
         runtime_id=best_runtime_id,
         execution_requirements=best_requirements,
@@ -299,5 +302,3 @@ async def resolve_function(
         unavailable_code=None,
         unavailable_reason=None,
     )
-
-

@@ -20,7 +20,10 @@ def test_agent_function_uses_capability_description_and_hides_internal_fields():
         name="system.process.terminate_tree",
         status="loaded",
         description="Terminate a process tree by PID after user approval.",
-        agent_description="Terminate a process tree. Use only when the user explicitly asks to close an app or process.",
+        agent_description=(
+            "Terminate a process tree. Use only when the user explicitly asks to "
+            "close an app or process."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -68,29 +71,33 @@ async def test_available_functions_preserve_registered_tool_contract(db_session)
     db_session.add(node)
     await db_session.flush()
 
-    db_session.add(Capability(
-        node_record_id=node.id,
-        plugin_id="contract.plugin",
-        plugin_version="1.0",
-        capability_type="function",
-        name="contract.user.desktop_shortcuts",
-        status="loaded",
-        description="List shortcuts on the active user's desktop.",
-        agent_description="List files and shortcuts from the interactive user's Desktop folder.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "default": 50},
-                "dry_run": {"type": "boolean"},
+    db_session.add(
+        Capability(
+            node_record_id=node.id,
+            plugin_id="contract.plugin",
+            plugin_version="1.0",
+            capability_type="function",
+            name="contract.user.desktop_shortcuts",
+            status="loaded",
+            description="List shortcuts on the active user's desktop.",
+            agent_description=(
+                "List files and shortcuts from the interactive user's Desktop folder."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 50},
+                    "dry_run": {"type": "boolean"},
+                },
             },
-        },
-        output_schema={"type": "object"},
-        risk="safe",
-        effect="read",
-        execution_context="user",
-        hidden_input_fields=["dry_run"],
-        is_active=True,
-    ))
+            output_schema={"type": "object"},
+            risk="safe",
+            effect="read",
+            execution_context="user",
+            hidden_input_fields=["dry_run"],
+            is_active=True,
+        )
+    )
     await db_session.commit()
 
     funcs = await _available_functions(db_session)
