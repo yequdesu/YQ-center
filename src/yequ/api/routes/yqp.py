@@ -84,7 +84,7 @@ async def yqp_endpoint(
     ) -> None:
         nonlocal previous
         now_perf = time.perf_counter()
-        log.info(
+        log.debug(
             "yqp.stage",
             stage=stage,
             path=request.url.path,
