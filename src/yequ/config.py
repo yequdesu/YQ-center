@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://yequ:yequ@127.0.0.1:5432/yequ"
+    database_pool_size: int = 20
+    database_max_overflow: int = 20
+    database_pool_timeout_sec: float = 10.0
+    database_pool_recycle_sec: int = 1800
 
     # Node protocol
     allowed_timestamp_skew_sec: int = 30

@@ -9,7 +9,6 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +47,7 @@ def _as_str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
 
 # ── Active stream tracking ──
 _active_stream_sessions: set[str] = set()
@@ -181,11 +181,15 @@ async def agent_invoke_stream(
         yield _event("stream.close", session_id, trace_id)
         return
 
+    session_actor_id = session.actor_id
+    session_status = session.status
+    session_execution_mode = session.execution_mode
+
     yield _event(
         "agent.session.resolved",
         session_id,
         trace_id,
-        {"session_status": session.status, "execution_mode": session.execution_mode},
+        {"session_status": session_status, "execution_mode": session_execution_mode},
     )
     yield _event(
         "agent.prompt.received",
@@ -213,6 +217,7 @@ async def agent_invoke_stream(
 
     # -- Load history + append user message --
     history = await _load_session_history(db, session_id)
+    await db.rollback()
     user_message = AgentMessage(role="user", content=prompt)
     history.append(user_message)
     if not suppress_user_message:
@@ -331,11 +336,9 @@ async def agent_invoke_stream(
             if task_completed:
                 # LLM's streamed text is the authoritative answer.
                 # task_completed.message is only a fallback when the LLM
-            # produced no streaming text at all (edge case).
+                # produced no streaming text at all (edge case).
                 task_completed_input = _as_object_dict(task_completed.get("input", {}))
-                final_message = assistant_text or _as_str(
-                    task_completed_input.get("message", "")
-                )
+                final_message = assistant_text or _as_str(task_completed_input.get("message", ""))
                 loop_state = "completed"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 if not executable_calls:
@@ -377,7 +380,7 @@ async def agent_invoke_stream(
             async for ev in _execute_tool_calls_scheduled(
                 db,
                 provider,
-                session,
+                session_actor_id,
                 session_id,
                 trace_id,
                 executable_calls,
@@ -508,7 +511,7 @@ async def agent_invoke_stream(
 async def _stream_tool_calls(
     db: AsyncSession,
     provider: AgentProvider,
-    session: Any,
+    actor_id: str,
     session_id: str,
     trace_id: str,
     tool_calls: list[dict[str, object]],
@@ -604,7 +607,7 @@ async def _stream_tool_calls(
         async for ev in _execute_and_stream(
             db,
             provider,
-            session,
+            actor_id,
             session_id,
             trace_id,
             call_id,
@@ -625,7 +628,7 @@ async def _stream_tool_calls(
 async def _execute_and_stream(
     db: AsyncSession,
     provider: AgentProvider,
-    session: Any,
+    actor_id: str,
     session_id: str,
     trace_id: str,
     call_id: str,
@@ -645,7 +648,7 @@ async def _execute_and_stream(
     result = await ToolInvocationApplicationService(db).execute(
         ExecuteToolCommand(
             actor_type="agent",
-            actor_id=session.actor_id,
+            actor_id=actor_id,
             session_id=session_id,
             function_name=tc_name,
             input_data=tc_input,
@@ -859,7 +862,7 @@ CONCURRENCY_MAX = 4  # Configurable later
 async def _execute_tool_calls_scheduled(
     db: AsyncSession,
     provider: AgentProvider,
-    session: Any,
+    actor_id: str,
     session_id: str,
     trace_id: str,
     tool_calls: list[dict[str, object]],
@@ -1054,6 +1057,8 @@ async def _execute_tool_calls_scheduled(
         )
 
     # ── Phase 2: Split into concurrent vs serial groups ──
+    await db.rollback()
+
     concurrent_candidates = [
         t for t in classified if t.get("is_concurrent_safe") and t["status"] == "pending"
     ]
@@ -1089,7 +1094,7 @@ async def _execute_tool_calls_scheduled(
                         async for ev in _execute_and_stream(
                             exec_db,
                             provider,
-                            session,
+                            actor_id,
                             session_id,
                             trace_id,
                             str(tool_info["call_id"]),
@@ -1138,7 +1143,7 @@ async def _execute_tool_calls_scheduled(
                 async for ev in _execute_and_stream(
                     serial_db,
                     provider,
-                    session,
+                    actor_id,
                     session_id,
                     trace_id,
                     str(tool_info["call_id"]),
@@ -1432,9 +1437,7 @@ async def agent_plan_stream(
     yield _event("stream.close", session_id, trace_id)
 
 
-def _fallback_synthesis_from_stream(
-    tool_results: list[dict[str, object]], loop_state: str
-) -> str:
+def _fallback_synthesis_from_stream(tool_results: list[dict[str, object]], loop_state: str) -> str:
     """Produce a human-readable summary from streamed tool results.
 
     Quality rules:

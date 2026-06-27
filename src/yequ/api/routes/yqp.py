@@ -58,6 +58,7 @@ def _response_type(
     return response_map.get(request_type, MessageType.ERROR)
 
 
+@router.post("", include_in_schema=False)
 @router.post("/")
 async def yqp_endpoint(
     request: Request,

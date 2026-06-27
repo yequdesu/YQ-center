@@ -223,6 +223,7 @@ async def agent_invoke(
 
     # SQLite strips timezone; if naive, assume UTC
     started = session.started_at
+    session_actor_id = session.actor_id
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     deadline = datetime.fromtimestamp(started.timestamp() + max_total_duration_sec, tz=UTC)
@@ -247,6 +248,7 @@ async def agent_invoke(
 
     # -- Step 2: Load conversation history --
     history = await _load_session_history(db, session_id)
+    await db.rollback()
 
     # Build the messages array: system prompt is injected by the provider
     # Append the current user message
@@ -286,6 +288,7 @@ async def agent_invoke(
             actor=provider.provider_name(),
             step=current_step,
         )
+        await db.commit()
 
         _t0 = _time.monotonic()
         try:
@@ -455,7 +458,7 @@ async def agent_invoke(
                 db,
                 tc,
                 session_id=session_id,
-                actor_id=session.actor_id,
+                actor_id=session_actor_id,
                 execution_mode=execution_mode,
                 call_path=list(call_path),
                 max_depth=max_depth,
@@ -1500,9 +1503,9 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
 
         elif tc.name == "system.network.routes" and tc.result:
             routes_value = tc.result.get("routes", [tc.result])
-            routes = [
-                item for item in _as_list(routes_value) if isinstance(item, dict)
-            ] or [tc.result]
+            routes = [item for item in _as_list(routes_value) if isinstance(item, dict)] or [
+                tc.result
+            ]
             count = len(routes)
             default_route = None
             interfaces: set[str] = set()
