@@ -31,6 +31,7 @@ async def handle_hello(
     Updates Node status to online, records daemon version and platform info.
     Returns node.accepted payload with protocol negotiation parameters.
     """
+    from yequ.db import async_session_factory
     from yequ.services.timeline_writer import add_timeline_event
 
     node.status = NodeStatus.ONLINE
@@ -46,21 +47,28 @@ async def handle_hello(
     node.job_delivery_mode = JobDeliveryMode.POLL
     await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=node.last_seen_at)
 
-    # Write node.online timeline event
-    await add_timeline_event(
-        db,
-        TimelineEvent(
-            global_seq=0,
-            event_type="node.online",
-            actor_type="system",
-            actor_id="node_service",
-            node_id=node.node_id,
-            data={"node_id": node.node_id, "daemon_version": node.daemon_version},
-            timestamp=datetime.now(UTC),
-        ),
-    )
-
+    # Flush node state update first — this commits everything except the timeline
+    # event, so the FOR UPDATE lock on TimelineSequence is held for the absolute
+    # minimum time.
     await db.commit()
+
+    # Write node.online timeline event in an isolated short-lived session.
+    # This keeps the global timeline sequence lock from blocking other YQP
+    # handlers and background scanners.
+    async with async_session_factory() as timeline_db:
+        await add_timeline_event(
+            timeline_db,
+            TimelineEvent(
+                global_seq=0,
+                event_type="node.online",
+                actor_type="system",
+                actor_id="node_service",
+                node_id=node.node_id,
+                data={"node_id": node.node_id, "daemon_version": node.daemon_version},
+                timestamp=datetime.now(UTC),
+            ),
+        )
+        await timeline_db.commit()
 
     return {
         "heartbeat_interval_sec": settings.default_heartbeat_interval_sec,
@@ -83,36 +91,43 @@ async def handle_heartbeat(
 
     If node was OFFLINE or REJOINING, brings it back to ONLINE.
     """
+    from yequ.db import async_session_factory
     from yequ.services.timeline_writer import add_timeline_event
 
     now = datetime.now(UTC)
+    previous_status = node.status
     node.last_seen_at = now
     node.last_heartbeat_at = now
     await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=now)
 
-    # If node was offline or rejoining, bring back to online
-    if node.status in (NodeStatus.OFFLINE, NodeStatus.REJOINING):
+    recovering = node.status in (NodeStatus.OFFLINE, NodeStatus.REJOINING)
+    if recovering:
         node.status = NodeStatus.ONLINE
 
-        # Write node.online timeline event on recovery
-        await add_timeline_event(
-            db,
-            TimelineEvent(
-                global_seq=0,
-                event_type="node.online",
-                actor_type="system",
-                actor_id="node_service",
-                node_id=node.node_id,
-                data={
-                    "node_id": node.node_id,
-                    "previous_status": str(node.status),  # will be "online" since we already set it
-                    "recovery": True,
-                },
-                timestamp=now,
-            ),
-        )
-
+    # Commit node state update first so the timeline sequence FOR UPDATE lock
+    # is only held inside the isolated session below.
     await db.commit()
+
+    # Write recovery timeline event in an isolated short-lived session
+    if recovering:
+        async with async_session_factory() as timeline_db:
+            await add_timeline_event(
+                timeline_db,
+                TimelineEvent(
+                    global_seq=0,
+                    event_type="node.online",
+                    actor_type="system",
+                    actor_id="node_service",
+                    node_id=node.node_id,
+                    data={
+                        "node_id": node.node_id,
+                        "previous_status": previous_status,
+                        "recovery": True,
+                    },
+                    timestamp=now,
+                ),
+            )
+            await timeline_db.commit()
 
     return {}  # No meaningful response payload for heartbeat
 
