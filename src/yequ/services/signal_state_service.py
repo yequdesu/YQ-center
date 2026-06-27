@@ -38,9 +38,20 @@ async def refresh_signal_freshness(
     *,
     node_id: str | None = None,
     now: datetime | None = None,
+    write_timeline: bool = False,
 ) -> int:
-    """Persist stale freshness for expired signal states."""
-    stale_signals = await mark_stale_signals(db, node_id=node_id, now=now)
+    """Persist stale freshness for expired signal states.
+
+    Admin read endpoints call this in request path, so timeline writes default
+    off to keep UI reads from contending on the global timeline sequence.
+    Background scanners use mark_stale_signals() directly for audited writes.
+    """
+    stale_signals = await mark_stale_signals(
+        db,
+        node_id=node_id,
+        now=now,
+        write_timeline=write_timeline,
+    )
     changed = len(stale_signals)
 
     current = now or datetime.now(UTC)
