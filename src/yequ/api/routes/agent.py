@@ -529,9 +529,12 @@ async def invoke_agent_stream_endpoint(
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     available = await _available_functions(db)
+    # Release the route-level session before entering the long-lived SSE stream.
+    # The stream creates its own short-lived sessions internally so no single
+    # connection is held across LLM calls or job polling.
+    await db.close()
     return _sse_response(
         agent_invoke_stream(
-            db,
             provider,
             session_id=body.session_id,
             prompt=body.prompt,
@@ -588,14 +591,16 @@ async def agent_plan_stream_endpoint(
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     target_node_id = body.target_node_id or await _default_target_node_id(db)
+    available = await _available_functions(db)
+    # Release route-level session before SSE stream (same pattern as invoke/stream)
+    await db.close()
     return _sse_response(
         agent_plan_stream(
-            db,
             provider,
             session_id=body.session_id,
             prompt=body.prompt,
             target_node_id=target_node_id,
-            available_functions=await _available_functions(db),
+            available_functions=available,
             execution_mode=body.execution_mode,
             max_total_duration_sec=body.max_total_duration_sec,
         )

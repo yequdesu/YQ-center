@@ -95,7 +95,6 @@ def _event(
 
 
 async def agent_invoke_stream(
-    db: AsyncSession,
     provider: AgentProvider,
     *,
     session_id: str,
@@ -111,12 +110,19 @@ async def agent_invoke_stream(
     started_at: datetime | None = None,
     execution_mode: str = "auto",
 ) -> AsyncGenerator[StreamEvent, None]:
-    """Async generator yielding SSE event dicts for agent invoke with ReAct loop."""
+    """Async generator yielding SSE event dicts for agent invoke with ReAct loop.
+
+    DB sessions are created internally and held only for the duration of each
+    logical operation block — never across long async waits (LLM calls, job
+    polling).  This keeps PostgreSQL connections from accumulating as idle-
+    in-transaction when the client disconnects or uvicorn reloads.
+    """
     from yequ.agent.agent_service import (
         _load_session_history,
         _save_session_history,
     )
     from yequ.agent.provider import AgentMessage
+    from yequ.db import async_session_factory
     from yequ.models.session import Session
 
     call_path = call_path or []
@@ -167,23 +173,34 @@ async def agent_invoke_stream(
         yield _event("stream.close", session_id, trace_id)
         return
 
-    # Session validation
-    result = await db.execute(select(Session).where(Session.session_id == session_id))
-    session = result.scalar_one_or_none()
-    if session is None:
-        yield _event(
-            "agent.failed",
-            session_id,
-            trace_id,
-            {"error_code": "session_not_found", "message": "Session not found"},
-        )
-        _mark_stream_inactive(session_id)
-        yield _event("stream.close", session_id, trace_id)
-        return
+    # ── Block 1: session validation + timeline (short-lived session) ──
+    async with async_session_factory() as db:
+        result = await db.execute(select(Session).where(Session.session_id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            yield _event(
+                "agent.failed",
+                session_id,
+                trace_id,
+                {"error_code": "session_not_found", "message": "Session not found"},
+            )
+            _mark_stream_inactive(session_id)
+            yield _event("stream.close", session_id, trace_id)
+            return
 
-    session_actor_id = session.actor_id
-    session_status = session.status
-    session_execution_mode = session.execution_mode
+        session_actor_id = session.actor_id
+        session_status = session.status
+        session_execution_mode = session.execution_mode
+
+        await _write_timeline(
+            db,
+            "agent.prompt.received",
+            session_id=session_id,
+            actor=provider.provider_name(),
+            prompt=prompt,
+            step=step_count + 1,
+        )
+        await db.commit()
 
     yield _event(
         "agent.session.resolved",
@@ -198,16 +215,6 @@ async def agent_invoke_stream(
         {"prompt": prompt[:500], "step": step_count + 1, "internal": suppress_user_message},
     )
 
-    await _write_timeline(
-        db,
-        "agent.prompt.received",
-        session_id=session_id,
-        actor=provider.provider_name(),
-        prompt=prompt,
-        step=step_count + 1,
-    )
-    await db.commit()
-
     from yequ.agent.provider import TASK_COMPLETED_FUNCTION
 
     # Ensure task_completed is always available so the LLM can signal completion
@@ -215,14 +222,14 @@ async def agent_invoke_stream(
         available_functions = list(available_functions) + [TASK_COMPLETED_FUNCTION]
     known_functions = {f.name for f in available_functions}
 
-    # -- Load history + append user message --
-    history = await _load_session_history(db, session_id)
-    await db.rollback()
-    user_message = AgentMessage(role="user", content=prompt)
-    history.append(user_message)
-    if not suppress_user_message:
-        await _save_session_history(db, session_id, [user_message])
-        await db.commit()
+    # ── Block 2: load history + save user message (short-lived session) ──
+    async with async_session_factory() as db:
+        history = await _load_session_history(db, session_id)
+        user_message = AgentMessage(role="user", content=prompt)
+        history.append(user_message)
+        if not suppress_user_message:
+            await _save_session_history(db, session_id, [user_message])
+            await db.commit()
 
     denied_message = (
         _deterministic_denied_approval_message(prompt) if suppress_user_message else None
@@ -230,15 +237,16 @@ async def agent_invoke_stream(
     if denied_message:
         history.append(AgentMessage(role="assistant", content=denied_message))
         history_to_persist = [message for message in history if message is not user_message]
-        await _save_session_history(db, session_id, history_to_persist)
-        await _write_timeline(
-            db,
-            "agent.final_response",
-            session_id=session_id,
-            actor=provider.provider_name(),
-            status="denied",
-        )
-        await db.commit()
+        async with async_session_factory() as db:
+            await _save_session_history(db, session_id, history_to_persist)
+            await _write_timeline(
+                db,
+                "agent.final_response",
+                session_id=session_id,
+                actor=provider.provider_name(),
+                status="denied",
+            )
+            await db.commit()
         yield _event("agent.output.delta", session_id, trace_id, {"content": denied_message})
         yield _event(
             "agent.completed", session_id, trace_id, {"status": "denied", "message": denied_message}
@@ -377,62 +385,65 @@ async def agent_invoke_stream(
             import json as _json
 
             ordered_results: list[dict[str, object]] = []
-            async for ev in _execute_tool_calls_scheduled(
-                db,
-                provider,
-                session_actor_id,
-                session_id,
-                trace_id,
-                executable_calls,
-                known_functions,
-                available_functions,
-                call_path,
-                execution_mode,
-                max_depth,
-                max_total_duration_sec,
-                started_at,
-                target_node_id,
-            ):
-                yield ev
-                # Collect results from completed/failed/waiting_approval events
-                if ev["event_type"] in (
-                    "agent.tool_call.completed",
-                    "agent.tool_call.failed",
-                    "agent.tool_call.waiting_approval",
+            # Use a short-lived session for the preflight + execution block so
+            # the DB connection is released before the next LLM round-trip.
+            async with async_session_factory() as exec_block_db:
+                async for ev in _execute_tool_calls_scheduled(
+                    exec_block_db,
+                    provider,
+                    session_actor_id,
+                    session_id,
+                    trace_id,
+                    executable_calls,
+                    known_functions,
+                    available_functions,
+                    call_path,
+                    execution_mode,
+                    max_depth,
+                    max_total_duration_sec,
+                    started_at,
+                    target_node_id,
                 ):
-                    data = _as_object_dict(ev.get("data", {}))
-                    call_id = str(data.get("call_id", ""))
-                    name = str(data.get("name", ""))
-                    if ev["event_type"] == "agent.tool_call.completed":
-                        ordered_results.append(
-                            {
-                                "name": name,
-                                "call_id": call_id,
-                                "status": "succeeded",
-                                "result": data.get("result"),
-                            }
-                        )
-                    elif ev["event_type"] == "agent.tool_call.failed":
-                        ordered_results.append(
-                            {
-                                "name": name,
-                                "call_id": call_id,
-                                "status": "failed",
-                                "error": data.get("message"),
-                                "error_code": data.get("error_code"),
-                                "error_details": data.get("details"),
-                            }
-                        )
-                    elif ev["event_type"] == "agent.tool_call.waiting_approval":
-                        ordered_results.append(
-                            {
-                                "name": name,
-                                "call_id": call_id,
-                                "status": "waiting_approval",
-                                "approval_id": data.get("approval_id"),
-                            }
-                        )
-                        loop_state = "waiting_approval"
+                    yield ev
+                    # Collect results from completed/failed/waiting_approval events
+                    if ev["event_type"] in (
+                        "agent.tool_call.completed",
+                        "agent.tool_call.failed",
+                        "agent.tool_call.waiting_approval",
+                    ):
+                        data = _as_object_dict(ev.get("data", {}))
+                        call_id = str(data.get("call_id", ""))
+                        name = str(data.get("name", ""))
+                        if ev["event_type"] == "agent.tool_call.completed":
+                            ordered_results.append(
+                                {
+                                    "name": name,
+                                    "call_id": call_id,
+                                    "status": "succeeded",
+                                    "result": data.get("result"),
+                                }
+                            )
+                        elif ev["event_type"] == "agent.tool_call.failed":
+                            ordered_results.append(
+                                {
+                                    "name": name,
+                                    "call_id": call_id,
+                                    "status": "failed",
+                                    "error": data.get("message"),
+                                    "error_code": data.get("error_code"),
+                                    "error_details": data.get("details"),
+                                }
+                            )
+                        elif ev["event_type"] == "agent.tool_call.waiting_approval":
+                            ordered_results.append(
+                                {
+                                    "name": name,
+                                    "call_id": call_id,
+                                    "status": "waiting_approval",
+                                    "approval_id": data.get("approval_id"),
+                                }
+                            )
+                            loop_state = "waiting_approval"
 
             # Sort results by original provider call order
             ordered_results.sort(key=lambda r: provider_call_order.get(str(r["call_id"]), 999))
@@ -464,23 +475,23 @@ async def agent_invoke_stream(
                 "agent.fallback_synthesis", session_id, trace_id, {"message": final_message[:200]}
             )
 
-        # -- Save history --
+        # -- Save history (short-lived session) --
         history.append(AgentMessage(role="assistant", content=final_message))
         history_to_persist = (
             [message for message in history if message is not user_message]
             if suppress_user_message
             else history
         )
-        await _save_session_history(db, session_id, history_to_persist)
-
-        await _write_timeline(
-            db,
-            "agent.final_response",
-            session_id=session_id,
-            actor=provider.provider_name(),
-            status=loop_state,
-        )
-        await db.commit()
+        async with async_session_factory() as final_db:
+            await _save_session_history(final_db, session_id, history_to_persist)
+            await _write_timeline(
+                final_db,
+                "agent.final_response",
+                session_id=session_id,
+                actor=provider.provider_name(),
+                status=loop_state,
+            )
+            await final_db.commit()
         yield _event(
             "agent.completed",
             session_id,
@@ -1175,7 +1186,6 @@ async def _execute_tool_calls_scheduled(
 
 
 async def agent_plan_stream(
-    db: AsyncSession,
     provider: AgentProvider,
     *,
     session_id: str,
@@ -1186,6 +1196,8 @@ async def agent_plan_stream(
     max_total_duration_sec: int = 300,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Async generator yielding SSE event dicts for agent plan stream."""
+    from yequ.db import async_session_factory
+
     trace_id = _make_trace_id()
 
     yield _event("stream.open", session_id, trace_id)
@@ -1193,17 +1205,19 @@ async def agent_plan_stream(
 
     from yequ.models.session import Session
 
-    result = await db.execute(select(Session).where(Session.session_id == session_id))
-    session = result.scalar_one_or_none()
-    if session is None:
-        yield _event(
-            "agent.failed",
-            session_id,
-            trace_id,
-            {
-                "error_code": "session_not_found",
-                "message": "Session not found",
-            },
+    # ── Session lookup (short-lived session) ──
+    async with async_session_factory() as db:
+        result = await db.execute(select(Session).where(Session.session_id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            yield _event(
+                "agent.failed",
+                session_id,
+                trace_id,
+                {
+                    "error_code": "session_not_found",
+                    "message": "Session not found",
+                },
         )
         _mark_stream_inactive(session_id)
         yield _event("stream.close", session_id, trace_id)
@@ -1381,33 +1395,35 @@ async def agent_plan_stream(
             yield _event("stream.close", session_id, trace_id)
             return
 
-    plan = await MaintenancePlanApplicationService(db).create(
-        goal=prompt,
-        actor_id=provider.provider_name(),
-        target_node_id=target_node_id,
-        steps=[
-            {
-                "function_name": s["function_name"],
-                "input": s["input"],
-                "kind": s["kind"],
-                "condition": s["condition"],
-                "depends_on": [str(d) for d in _as_str_list(s.get("depends_on", []))],
-                "requires_approval": s["requires_approval"],
-                "risk": s["risk"],
-                "continue_on_failure": False,
-                "rollback_hint": s.get("rollback_hint"),
-            }
-            for s in steps_ir
-        ],
-        session_id=session_id,
-        risk="maintenance" if has_write else "safe",
-        max_total_duration_sec=max_total_duration_sec,
-        execution_mode=execution_mode,
-    )
+    # ── Create plan (short-lived session) ──
+    async with async_session_factory() as plan_db:
+        plan = await MaintenancePlanApplicationService(plan_db).create(
+            goal=prompt,
+            actor_id=provider.provider_name(),
+            target_node_id=target_node_id,
+            steps=[
+                {
+                    "function_name": s["function_name"],
+                    "input": s["input"],
+                    "kind": s["kind"],
+                    "condition": s["condition"],
+                    "depends_on": [str(d) for d in _as_str_list(s.get("depends_on", []))],
+                    "requires_approval": s["requires_approval"],
+                    "risk": s["risk"],
+                    "continue_on_failure": False,
+                    "rollback_hint": s.get("rollback_hint"),
+                }
+                for s in steps_ir
+            ],
+            session_id=session_id,
+            risk="maintenance" if has_write else "safe",
+            max_total_duration_sec=max_total_duration_sec,
+            execution_mode=execution_mode,
+        )
 
-    if has_write:
-        plan.status = "waiting_approval"
-        await db.commit()
+        if has_write:
+            plan.status = "waiting_approval"
+            await plan_db.commit()
 
     yield _event(
         "agent.plan.created",
