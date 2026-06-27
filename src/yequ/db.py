@@ -20,6 +20,9 @@ _sqlite_connect_args = {
 engine = create_async_engine(
     _settings.database_url,
     echo=_settings.debug,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=600,  # recycle connections after 10 min to avoid stale connections
     connect_args=_sqlite_connect_args if "sqlite" in _settings.database_url else {},
 )
 
