@@ -39,13 +39,17 @@ class DeepSeekProvider(AgentProvider):
         import httpx
 
         settings = get_settings()
+        read_timeout = float(settings.deepseek_read_timeout)
         self._client = AsyncOpenAI(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            timeout=httpx.Timeout(30.0, connect=10.0, read=30.0, write=30.0, pool=5.0),
-            max_retries=0,  # no retry — fail fast, let caller decide
+            timeout=httpx.Timeout(read_timeout, connect=10.0, read=read_timeout, write=30.0, pool=5.0),
+            max_retries=0,  # no SDK-level retry — we control retry ourselves
         )
         self._model = settings.deepseek_model
+        self._max_retries = int(settings.deepseek_max_retries)
+        self._retry_backoff_base = float(settings.deepseek_retry_backoff_base)
+        self._read_timeout = read_timeout
         self._functions: list[AgentFunction] = []
 
     def provider_name(self) -> str:
@@ -84,97 +88,115 @@ class DeepSeekProvider(AgentProvider):
         )
 
         if messages is not None:
-            # Use provided conversation history — inject system prompt at front
             api_messages = self._to_openai_messages(messages, functions)
         else:
-            # Build fresh system + user message pair
             api_messages = self._build_fresh_messages(prompt, functions)
 
-        try:
-            kwargs: dict = {
-                "model": self._model,
-                "messages": api_messages,
-                "max_tokens": 2048,
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+        kwargs: dict = {
+            "model": self._model,
+            "messages": api_messages,
+            "max_tokens": 2048,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
 
-            _t_api0 = _time.monotonic()
-            _log.info("deepseek api call starting: model=%s tool_count=%d", self._model, len(tools))
-            response = await asyncio.wait_for(
-                self._client.chat.completions.create(**kwargs),
-                timeout=35.0,
-            )
-            _t_api1 = _time.monotonic()
-            _log.info("deepseek api call completed: elapsed=%.1fs", _t_api1 - _t_api0)
-            choice = response.choices[0]
-            msg = choice.message
+        last_error: Exception | None = None
+        last_error_msg: str = ""
+        for attempt in range(self._max_retries + 1):
+            try:
+                _t_api0 = _time.monotonic()
+                _log.info(
+                    "deepseek api call starting: model=%s tool_count=%d attempt=%d/%d",
+                    self._model, len(tools), attempt + 1, self._max_retries + 1,
+                )
+                response = await asyncio.wait_for(
+                    self._client.chat.completions.create(**kwargs),
+                    timeout=self._read_timeout + 5.0,
+                )
+                _t_api1 = _time.monotonic()
+                _log.info("deepseek api call completed: elapsed=%.1fs", _t_api1 - _t_api0)
+                choice = response.choices[0]
+                msg = choice.message
 
-            # Build tool_calls from tool_calls in the response
-            tool_calls: list[dict[str, object]] = []
-            text_output: list[str] = []
+                # Build tool_calls from tool_calls in the response
+                tool_calls: list[dict[str, object]] = []
+                text_output: list[str] = []
 
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    try:
-                        arguments = json.loads(tc.function.arguments)
-                    except (json.JSONDecodeError, TypeError):
-                        arguments = {}
-                    original_name = self._resolve_name(tc.function.name, functions)
-                    sanitized_name = tc.function.name
-                    tool_calls.append(
-                        {
-                            "call_id": tc.id or f"call_{uuid.uuid4().hex}",
-                            "name": original_name,
-                            "sanitized_name": sanitized_name,
-                            "input": arguments,
-                        }
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        try:
+                            arguments = json.loads(tc.function.arguments)
+                        except (json.JSONDecodeError, TypeError):
+                            arguments = {}
+                        original_name = self._resolve_name(tc.function.name, functions)
+                        sanitized_name = tc.function.name
+                        tool_calls.append(
+                            {
+                                "call_id": tc.id or f"call_{uuid.uuid4().hex}",
+                                "name": original_name,
+                                "sanitized_name": sanitized_name,
+                                "input": arguments,
+                            }
+                        )
+
+                if msg.content:
+                    text_output.append(msg.content)
+
+                # Check finish_reason
+                finish = choice.finish_reason
+                if finish == "length":
+                    return ProviderInvokeResult(
+                        success=False,
+                        error_code="max_tokens",
+                        error_message="Response exceeded max tokens",
+                        retryable=False,
                     )
 
-            if msg.content:
-                text_output.append(msg.content)
+                # Extract token usage
+                usage_raw = response.usage
+                usage: dict[str, object] = {
+                    "prompt_tokens": (usage_raw.prompt_tokens if usage_raw else None),
+                    "completion_tokens": (usage_raw.completion_tokens if usage_raw else None),
+                    "total_tokens": (usage_raw.total_tokens if usage_raw else None),
+                }
 
-            # Check finish_reason
-            finish = choice.finish_reason
-            if finish == "length":
                 return ProviderInvokeResult(
-                    success=False,
-                    error_code="max_tokens",
-                    error_message="Response exceeded max tokens",
-                    retryable=False,
+                    message="\n".join(text_output) if text_output else "Completed",
+                    tool_calls=tool_calls,
+                    usage=usage,
+                    finish_reason=finish or "stop",
+                    model=self._model,
+                    success=True,
                 )
 
-            # Extract token usage
-            usage_raw = response.usage
-            usage: dict[str, object] = {
-                "prompt_tokens": (usage_raw.prompt_tokens if usage_raw else None),
-                "completion_tokens": (usage_raw.completion_tokens if usage_raw else None),
-                "total_tokens": (usage_raw.total_tokens if usage_raw else None),
-            }
+            except Exception as e:
+                last_error = e
+                last_error_msg = str(e)
+                retryable = self._is_retryable_error(e)
 
-            return ProviderInvokeResult(
-                message="\n".join(text_output) if text_output else "Completed",
-                tool_calls=tool_calls,
-                usage=usage,
-                finish_reason=finish or "stop",
-                model=self._model,
-                success=True,
-            )
+                if not retryable or attempt >= self._max_retries:
+                    break
 
-        except Exception as e:
-            _t_exc = _time.monotonic() - _t0
-            error_msg = str(e)
-            _log.error(
-                "deepseek provider exception: elapsed=%.1fs error=%s", _t_exc, error_msg[:500]
-            )
-            retryable = "rate" in error_msg.lower() or "timeout" in error_msg.lower()
-            return ProviderInvokeResult(
-                success=False,
-                error_code="llm_error",
-                error_message=error_msg,
-                retryable=retryable,
-            )
+                backoff = self._retry_backoff_base * (2 ** attempt)
+                _log.warning(
+                    "deepseek provider retry attempt=%d/%d backoff=%.1fs error=%s",
+                    attempt + 1, self._max_retries, backoff, last_error_msg[:200],
+                )
+                await asyncio.sleep(backoff)
+
+        # All retries exhausted or non-retryable error
+        _t_exc = _time.monotonic() - _t0
+        _log.error(
+            "deepseek provider exception: elapsed=%.1fs retries=%d error=%s",
+            _t_exc, self._max_retries, last_error_msg[:500],
+        )
+        return ProviderInvokeResult(
+            success=False,
+            error_code="llm_error",
+            error_message=last_error_msg,
+            retryable=self._is_retryable_error(last_error) if last_error else False,
+        )
 
     async def invoke_stream(
         self,
@@ -202,9 +224,7 @@ class DeepSeekProvider(AgentProvider):
         tools = self._functions_to_tools(functions)
 
         if messages:
-            # Build conversation from history, prepend system prompt
             oai_messages = self._to_openai_messages(messages, functions)
-            # Ensure a system message is present
             if not oai_messages or oai_messages[0].get("role") != "system":
                 oai_messages.insert(
                     0,
@@ -216,107 +236,135 @@ class DeepSeekProvider(AgentProvider):
                 {"role": "user", "content": prompt},
             ]
 
-        try:
-            kwargs: dict = {
-                "model": self._model,
-                "messages": oai_messages,
-                "max_tokens": 2048,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+        last_error: Exception | None = None
+        last_error_msg: str = ""
+        for attempt in range(self._max_retries + 1):
+            try:
+                async for chunk in self._stream_one_attempt(oai_messages, tools, functions):
+                    yield chunk
+                return  # success — stream completed without error
+            except Exception as e:
+                last_error = e
+                last_error_msg = str(e)
+                retryable = self._is_retryable_error(e)
 
-            stream = await self._client.chat.completions.create(**kwargs)
+                if not retryable or attempt >= self._max_retries:
+                    break
 
-            # Accumulate streaming content and tool calls
-            text_buffer: list[str] = []
-            tool_call_buffers: dict[int, dict[str, Any]] = {}
-            usage_info: dict[str, object] = {}
-            finish_reason = "stop"
-
-            async for chunk in stream:
-                if chunk.usage:
-                    usage_info = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    }
-
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta is None:
-                    continue
-
-                # Text content delta
-                if delta.content:
-                    text_buffer.append(delta.content)
-                    yield {"type": "delta", "content": delta.content}
-
-                # Tool call deltas
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_call_buffers:
-                            tool_call_buffers[idx] = {
-                                "call_id": tc_delta.id or f"call_{uuid.uuid4().hex}",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        buf = tool_call_buffers[idx]
-                        if tc_delta.id:
-                            buf["call_id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                buf["name"] += tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                buf["arguments"] += tc_delta.function.arguments
-
-                # Finish reason
-                if chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
-
-            # Parse accumulated tool calls
-            raw_tool_calls: list[dict[str, object]] = []
-
-            def _call_sort_key(buf: dict[str, Any]) -> int:
-                call_id = str(buf.get("call_id", ""))
-                return int(call_id[-4:], 16) if call_id else 0
-
-            for buf in sorted(tool_call_buffers.values(), key=_call_sort_key):
-                buf_name = str(buf.get("name", ""))
-                try:
-                    arguments = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
-                except (json.JSONDecodeError, TypeError):
-                    arguments = {}
-
-                original_name = self._resolve_name(buf_name, functions)
-                raw_tool_calls.append(
-                    {
-                        "call_id": str(buf.get("call_id", "")),
-                        "name": original_name,
-                        "sanitized_name": buf_name,
-                        "input": arguments,
-                    }
+                backoff = self._retry_backoff_base * (2 ** attempt)
+                _log.warning(
+                    "deepseek stream retry attempt=%d/%d backoff=%.1fs error=%s",
+                    attempt + 1, self._max_retries, backoff, last_error_msg[:200],
                 )
+                await asyncio.sleep(backoff)
 
-            yield {
-                "type": "done",
-                "message": "".join(text_buffer) if text_buffer else "Completed",
-                "tool_calls": raw_tool_calls,
-                "usage": usage_info,
-                "finish_reason": finish_reason,
-                "success": finish_reason != "length",
-            }
+        # All retries exhausted or non-retryable error
+        _log.error("deepseek stream error: %s", last_error_msg[:500])
+        yield {
+            "type": "error",
+            "error_code": "llm_error",
+            "error_message": last_error_msg,
+            "retryable": self._is_retryable_error(last_error) if last_error else False,
+        }
 
-        except Exception as e:
-            _log.error("deepseek stream error: %s", str(e)[:500])
-            yield {
-                "type": "error",
-                "error_code": "llm_error",
-                "error_message": str(e),
-                "retryable": "rate" in str(e).lower() or "timeout" in str(e).lower(),
-            }
+    async def _stream_one_attempt(
+        self,
+        oai_messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        functions: list[AgentFunction],
+    ) -> AsyncGenerator[dict[str, object], None]:
+        """Execute one streaming API call attempt. Yields delta/done chunks or raises."""
+        kwargs: dict = {
+            "model": self._model,
+            "messages": oai_messages,
+            "max_tokens": 2048,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        stream = await self._client.chat.completions.create(**kwargs)
+
+        # Accumulate streaming content and tool calls
+        text_buffer: list[str] = []
+        tool_call_buffers: dict[int, dict[str, Any]] = {}
+        usage_info: dict[str, object] = {}
+        finish_reason = "stop"
+
+        async for chunk in stream:
+            if chunk.usage:
+                usage_info = {
+                    "prompt_tokens": chunk.usage.prompt_tokens,
+                    "completion_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+
+            # Text content delta
+            if delta.content:
+                text_buffer.append(delta.content)
+                yield {"type": "delta", "content": delta.content}
+
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_call_buffers:
+                        tool_call_buffers[idx] = {
+                            "call_id": tc_delta.id or f"call_{uuid.uuid4().hex}",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    buf = tool_call_buffers[idx]
+                    if tc_delta.id:
+                        buf["call_id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            buf["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            buf["arguments"] += tc_delta.function.arguments
+
+            # Finish reason
+            if chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
+
+        # Parse accumulated tool calls
+        raw_tool_calls: list[dict[str, object]] = []
+
+        def _call_sort_key(buf: dict[str, Any]) -> int:
+            call_id = str(buf.get("call_id", ""))
+            return int(call_id[-4:], 16) if call_id else 0
+
+        for buf in sorted(tool_call_buffers.values(), key=_call_sort_key):
+            buf_name = str(buf.get("name", ""))
+            try:
+                arguments = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+
+            original_name = self._resolve_name(buf_name, functions)
+            raw_tool_calls.append(
+                {
+                    "call_id": str(buf.get("call_id", "")),
+                    "name": original_name,
+                    "sanitized_name": buf_name,
+                    "input": arguments,
+                }
+            )
+
+        yield {
+            "type": "done",
+            "message": "".join(text_buffer) if text_buffer else "Completed",
+            "tool_calls": raw_tool_calls,
+            "usage": usage_info,
+            "finish_reason": finish_reason,
+            "success": finish_reason != "length",
+        }
 
     def _system_prompt(self, functions: list[AgentFunction]) -> str:
         """Build the system prompt for multi-turn agent conversations."""
@@ -391,6 +439,12 @@ class DeepSeekProvider(AgentProvider):
     def _sanitize_name(self, name: str) -> str:
         """Replace dots with underscores for DeepSeek API compatibility."""
         return name.replace(".", "_")
+
+    @staticmethod
+    def _is_retryable_error(error: Exception) -> bool:
+        """Return True if the error is a transient failure worth retrying."""
+        error_msg = str(error).lower()
+        return "timeout" in error_msg or "rate" in error_msg
 
     def _functions_to_tools(self, functions: list[AgentFunction]) -> list[dict[str, object]]:
         """Convert AgentFunction[] to OpenAI tool definitions.

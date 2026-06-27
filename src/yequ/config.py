@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    deepseek_max_retries: int = 2  # Max retry attempts on timeout/rate-limit
+    deepseek_retry_backoff_base: float = 1.0  # Backoff base in seconds (1s, 2s, 4s...)
+    deepseek_read_timeout: float = 30.0  # Read timeout in seconds
 
     @property
     def heartbeat_timeout_sec(self) -> int:
