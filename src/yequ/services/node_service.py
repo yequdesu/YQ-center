@@ -31,8 +31,7 @@ async def handle_hello(
     Updates Node status to online, records daemon version and platform info.
     Returns node.accepted payload with protocol negotiation parameters.
     """
-    from yequ.db import async_session_factory
-    from yequ.services.timeline_writer import add_timeline_event
+    from yequ.services.timeline_writer import get_timeline_writer
 
     node.status = NodeStatus.ONLINE
     node.daemon_version = payload.get("daemon_version")
@@ -52,23 +51,20 @@ async def handle_hello(
     # minimum time.
     await db.commit()
 
-    # Write node.online timeline event in an isolated short-lived session.
-    # This keeps the global timeline sequence lock from blocking other YQP
-    # handlers and background scanners.
-    async with async_session_factory() as timeline_db:
-        await add_timeline_event(
-            timeline_db,
-            TimelineEvent(
-                global_seq=0,
-                event_type="node.online",
-                actor_type="system",
-                actor_id="node_service",
-                node_id=node.node_id,
-                data={"node_id": node.node_id, "daemon_version": node.daemon_version},
-                timestamp=datetime.now(UTC),
-            ),
+    # Do not block node bootstrap on timeline sequence allocation. If the
+    # timeline writer is delayed by DB contention, the node should still get
+    # node.accepted promptly and continue into register/heartbeat.
+    get_timeline_writer().enqueue(
+        TimelineEvent(
+            global_seq=0,
+            event_type="node.online",
+            actor_type="system",
+            actor_id="node_service",
+            node_id=node.node_id,
+            data={"node_id": node.node_id, "daemon_version": node.daemon_version},
+            timestamp=datetime.now(UTC),
         )
-        await timeline_db.commit()
+    )
 
     return {
         "heartbeat_interval_sec": settings.default_heartbeat_interval_sec,

@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_db
+from yequ.config import get_settings
 
 router = APIRouter(tags=["health"])
 
@@ -25,5 +26,6 @@ async def healthz(db: AsyncSession = Depends(get_db)) -> dict[str, str]:  # noqa
         "status": "ok" if db_ok else "degraded",
         "version": "0.1.0",
         "database": "connected" if db_ok else "disconnected",
+        "database_dialect": get_settings().database_url.split(":", 1)[0],
         "timestamp": datetime.now(UTC).isoformat(),
     }

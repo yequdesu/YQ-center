@@ -1,5 +1,6 @@
 """YQP Node Protocol — single POST /yqp/ endpoint dispatching on message_type."""
 
+import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_db, get_settings
 from yequ.config import Settings
+from yequ.logconfig import get_logger
 from yequ.protocol import MessageType
 from yequ.protocol.envelope import YqpEnvelope
 from yequ.protocol.errors import ErrorCode, YqpError
@@ -28,6 +30,7 @@ from yequ.services.node_service import (
 )
 
 router = APIRouter(prefix="/yqp", tags=["yqp"])
+log = get_logger(__name__)
 
 
 def _response_type(
@@ -70,10 +73,36 @@ async def yqp_endpoint(
     Accepts a YqpEnvelope, validates auth/dedup/timestamp,
     dispatches to the appropriate handler based on message_type.
     """
+    started = time.perf_counter()
+    previous = started
+
+    def log_stage(
+        stage: str,
+        *,
+        envelope: YqpEnvelope | None = None,
+        node_id: str | None = None,
+    ) -> None:
+        nonlocal previous
+        now_perf = time.perf_counter()
+        log.info(
+            "yqp.stage",
+            stage=stage,
+            path=request.url.path,
+            message_type=str(envelope.message_type) if envelope else None,
+            message_id=envelope.message_id if envelope else None,
+            trace_id=envelope.trace_id if envelope else None,
+            envelope_node_id=envelope.node_id if envelope else None,
+            node_id=node_id,
+            elapsed_ms=round((now_perf - started) * 1000, 2),
+            stage_ms=round((now_perf - previous) * 1000, 2),
+        )
+        previous = now_perf
+
     # 1. Parse envelope
     try:
         body = await request.json()
         envelope = YqpEnvelope.model_validate(body)
+        log_stage("parsed", envelope=envelope)
     except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -86,10 +115,13 @@ async def yqp_endpoint(
     # 2. Authenticate node from Authorization header
     auth_header = request.headers.get("Authorization")
     node = await authenticate_node(db, auth_header)
+    authenticated_node_id = node.node_id
+    log_stage("authenticated", envelope=envelope, node_id=authenticated_node_id)
 
     # 3. Verify node_id binding
     if envelope.node_id:
         await verify_node_id_binding(node, envelope.node_id)
+        log_stage("node_binding_verified", envelope=envelope, node_id=authenticated_node_id)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -103,11 +135,12 @@ async def yqp_endpoint(
     if not await check_and_record_message(
         db,
         message_id=envelope.message_id,
-        node_id=node.node_id,
+        node_id=authenticated_node_id,
         message_type=str(envelope.message_type),
         trace_id=envelope.trace_id,
         ttl_sec=settings.message_dedup_ttl_sec,
     ):
+        log_stage("dedup_duplicate", envelope=envelope, node_id=authenticated_node_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=YqpError(
@@ -115,6 +148,7 @@ async def yqp_endpoint(
                 message=f"Duplicate message_id: {envelope.message_id}",
             ).model_dump(),
         )
+    log_stage("dedup_recorded", envelope=envelope, node_id=authenticated_node_id)
 
     # 5. Timestamp validation
     now = datetime.now(UTC)
@@ -134,6 +168,7 @@ async def yqp_endpoint(
                 ),
             ).model_dump(),
         )
+    log_stage("timestamp_validated", envelope=envelope, node_id=authenticated_node_id)
 
     # 6. Dispatch to handler based on message_type
     msg_type = envelope.message_type
@@ -167,14 +202,17 @@ async def yqp_endpoint(
                 message=f"Unsupported message_type: {msg_type}",
             ).model_dump(),
         )
+    log_stage("handler_complete", envelope=envelope, node_id=authenticated_node_id)
 
     # 7. Return response envelope
-    return {
+    response: dict[str, object] = {
         "yqp_version": "0.1",
         "message_id": envelope.message_id,
         "message_type": _response_type(msg_type, response_payload),
         "trace_id": envelope.trace_id,
-        "node_id": node.node_id,
+        "node_id": authenticated_node_id,
         "timestamp": now.isoformat(),
         "payload": response_payload,
     }
+    log_stage("response_ready", envelope=envelope, node_id=authenticated_node_id)
+    return response
