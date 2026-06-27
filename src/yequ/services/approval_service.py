@@ -13,7 +13,7 @@ from yequ.models.approval import ApprovalRequest
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import ApprovalStatus
 from yequ.services.timeline_writer import add_timeline_event
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 def _make_approval_id() -> str:

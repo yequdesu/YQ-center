@@ -28,7 +28,7 @@ from yequ.services.maintenance_service import (
     get_steps,
     run_plan,
 )
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/admin/maintenance", tags=["maintenance"])
 

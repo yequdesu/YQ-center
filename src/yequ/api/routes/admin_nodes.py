@@ -26,7 +26,7 @@ from yequ.services.signal_state_service import (
     refresh_signal_freshness,
     signal_state_to_dict,
 )
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 

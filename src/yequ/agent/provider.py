@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 # Fields that must be hidden from LLM context (internal execution flags).
 # The DB and API retain these for audit; the LLM must not see them.

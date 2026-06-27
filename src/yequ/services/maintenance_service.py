@@ -15,7 +15,7 @@ from yequ.models.maintenance_plan import (
 from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.services.timeline_writer import add_timeline_event
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 def _make_plan_id() -> str:

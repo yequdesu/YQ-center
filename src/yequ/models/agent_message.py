@@ -6,7 +6,7 @@ from sqlalchemy import JSON, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 class AgentMessage(Base):

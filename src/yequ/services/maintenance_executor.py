@@ -20,7 +20,7 @@ from yequ.models.timeline import TimelineEvent
 from yequ.services.invocation_service import create_invocation, start_invocation
 from yequ.services.job_service import create_job
 from yequ.services.timeline_writer import add_timeline_event
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 def _make_artifact_id() -> str:

@@ -16,7 +16,7 @@ from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.protocol import JobStatus, NodeStatus
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 @dataclass

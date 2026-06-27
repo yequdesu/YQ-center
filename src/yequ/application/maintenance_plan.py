@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.maintenance_plan import MaintenancePlan
 from yequ.services.maintenance_service import create_plan
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 class MaintenancePlanApplicationService:

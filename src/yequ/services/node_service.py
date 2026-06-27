@@ -15,7 +15,7 @@ from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.signal_state import SignalState
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 log = get_logger(__name__)
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.job import Job
 from yequ.protocol import JobStatus
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 # Valid transitions from each source state
 VALID_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {

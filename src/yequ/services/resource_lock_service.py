@@ -10,7 +10,7 @@ from yequ.models.resource_lock import ResourceLock
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import LockStatus
 from yequ.services.timeline_writer import add_timeline_event
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 
 def _make_lock_id() -> str:

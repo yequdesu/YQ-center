@@ -18,7 +18,7 @@ from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token, get_db
 from yequ.models.capability import Capability
 from yequ.models.node import Node
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 

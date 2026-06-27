@@ -12,7 +12,7 @@ from yequ.models.approval import ApprovalRequest
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.services.token_auth import hash_token as hash_api_token
-from yequ.types import JsonObject
+from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
