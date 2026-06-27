@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,7 @@ from yequ.models.maintenance_plan import (
     MaintenanceStep,
 )
 from yequ.models.node import Node
+from yequ.models.timeline import TimelineEvent
 from yequ.services.maintenance_executor import execute_plan_run, finalize_run
 from yequ.services.maintenance_service import (
     approve_plan,
@@ -26,6 +28,7 @@ from yequ.services.maintenance_service import (
     get_steps,
     run_plan,
 )
+from yequ.types import JsonObject
 
 router = APIRouter(prefix="/admin/maintenance", tags=["maintenance"])
 
@@ -33,7 +36,7 @@ router = APIRouter(prefix="/admin/maintenance", tags=["maintenance"])
 class CreatePlanRequest(BaseModel):
     goal: str = Field(..., min_length=1)
     target_node_id: str = Field(..., min_length=1)
-    steps: list[dict] = Field(..., min_length=1)
+    steps: list[JsonObject] = Field(..., min_length=1)
     actor_id: str = Field(default="admin")
     session_id: str | None = None
     risk: str = Field(default="maintenance")
@@ -55,8 +58,8 @@ class RejectRunRequest(BaseModel):
 async def create_plan_endpoint(
     body: CreatePlanRequest,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     plan = await create_plan(db, **body.model_dump())
     steps = await get_steps(db, plan.plan_id)
     return {
@@ -82,8 +85,8 @@ async def list_plans(
     plan_status: str | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> list[dict]:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[JsonObject]:
     stmt = select(MaintenancePlan)
     if plan_status:
         stmt = stmt.where(MaintenancePlan.status == plan_status)
@@ -96,8 +99,8 @@ async def list_plans(
 async def get_plan(
     plan_id: str,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -113,8 +116,8 @@ async def approve_plan_endpoint(
     plan_id: str,
     approval_id: str = "",
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -132,7 +135,7 @@ async def approve_plan_endpoint(
             session_id=plan.session_id,
             function_name=repair_steps[0].function_name if repair_steps else plan.goal,
             target_node_id=plan.target_node_id,
-            input_data=repair_steps[0].input_data if repair_steps else {},
+            input_data=(repair_steps[0].input_data or {}) if repair_steps else {},
             risk=plan.risk,
             effect="write",
             resource_keys=plan.resource_keys or [],
@@ -150,8 +153,8 @@ async def run_plan_endpoint(
     approval_id: str = "",
     dry_run: bool = False,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenancePlan).where(MaintenancePlan.plan_id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -207,8 +210,8 @@ async def resume_run_endpoint(
     run_id: str,
     body: ResumeRunRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
     run = result.scalar_one_or_none()
     if run is None:
@@ -225,7 +228,7 @@ async def resume_run_endpoint(
 
     approval_id = (body.approval_id if body else None) or plan.approval_id
     if not approval_id and isinstance(run.summary, dict):
-        approval_id = run.summary.get("approval_id")  # type: ignore[assignment]
+        approval_id = run.summary.get("approval_id")
     if not approval_id:
         raise HTTPException(409, "Run is waiting for approval but no approval_id is linked")
 
@@ -274,8 +277,8 @@ async def reject_run_endpoint(
     run_id: str,
     body: RejectRunRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
     run = result.scalar_one_or_none()
     if run is None:
@@ -292,7 +295,7 @@ async def reject_run_endpoint(
 
     approval_id = (body.approval_id if body else None) or plan.approval_id
     if not approval_id and isinstance(run.summary, dict):
-        approval_id = run.summary.get("approval_id")  # type: ignore[assignment]
+        approval_id = run.summary.get("approval_id")
     reason = (body.reason if body else None) or "maintenance_run_rejected"
 
     if approval_id:
@@ -354,8 +357,8 @@ async def reject_run_endpoint(
 async def get_run(
     run_id: str,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(select(MaintenanceRun).where(MaintenanceRun.run_id == run_id))
     run = result.scalar_one_or_none()
     if run is None:
@@ -398,8 +401,8 @@ async def list_artifacts(
     kind: str | None = None,
     step_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     stmt = select(MaintenanceArtifact).where(MaintenanceArtifact.run_id == run_id)
     if kind:
         stmt = stmt.where(MaintenanceArtifact.kind == kind)
@@ -421,8 +424,8 @@ async def list_artifacts(
 async def run_events_stream(
     run_id: str,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-):
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> StreamingResponse:
     """Stream maintenance run timeline events as SSE.
 
     Sends all existing events for the run, then polls for new events
@@ -434,9 +437,8 @@ async def run_events_stream(
     if r is None:
         raise HTTPException(404, f"Run {run_id!r} not found")
 
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[str]:
         from yequ.db import async_session_factory
-        from yequ.models.timeline import TimelineEvent
 
         last_seq = 0
         terminal_statuses = {"succeeded", "failed", "rollback_recommended", "cancelled"}
@@ -498,7 +500,7 @@ async def run_events_stream(
     )
 
 
-def _tl_event(e) -> dict:
+def _tl_event(e: TimelineEvent) -> JsonObject:
     """Convert TimelineEvent to a dict suitable for SSE."""
     return {
         "event_type": e.event_type,
@@ -514,7 +516,7 @@ def _tl_event(e) -> dict:
     }
 
 
-def _plan_dict(p: MaintenancePlan) -> dict:
+def _plan_dict(p: MaintenancePlan) -> JsonObject:
     return {
         "plan_id": p.plan_id,
         "goal": p.goal,
@@ -533,7 +535,7 @@ def _plan_dict(p: MaintenancePlan) -> dict:
     }
 
 
-def _step_dict(s: MaintenanceStep) -> dict:
+def _step_dict(s: MaintenanceStep) -> JsonObject:
     return {
         "step_id": s.step_id,
         "plan_id": s.plan_id,
@@ -560,7 +562,7 @@ def _step_dict(s: MaintenanceStep) -> dict:
     }
 
 
-def _run_dict(r: MaintenanceRun) -> dict:
+def _run_dict(r: MaintenanceRun) -> JsonObject:
     return {
         "run_id": r.run_id,
         "plan_id": r.plan_id,
@@ -573,7 +575,7 @@ def _run_dict(r: MaintenanceRun) -> dict:
     }
 
 
-def _artifact_dict(a: MaintenanceArtifact) -> dict:
+def _artifact_dict(a: MaintenanceArtifact) -> JsonObject:
     return {
         "artifact_id": a.artifact_id,
         "run_id": a.run_id,

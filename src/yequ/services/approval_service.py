@@ -4,21 +4,23 @@ import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.approval import ApprovalRequest
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import ApprovalStatus
 from yequ.services.timeline_writer import add_timeline_event
+from yequ.types import JsonObject
 
 
 def _make_approval_id() -> str:
     return f"apv_{uuid.uuid4().hex[:16]}"
 
 
-def _hash_input(input_data: dict) -> str:
+def _hash_input(input_data: JsonObject) -> str:
     filtered = {k: v for k, v in input_data.items() if k != "approval_id"}
     raw = json.dumps(filtered, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
@@ -38,7 +40,7 @@ async def create_approval(
     session_id: str | None,
     function_name: str,
     target_node_id: str,
-    input_data: dict,
+    input_data: JsonObject,
     risk: str,
     effect: str,
     resource_keys: list[str] | None = None,
@@ -111,7 +113,7 @@ async def approve_approval(
     if approval.status != ApprovalStatus.PENDING:
         raise ValueError(f"Cannot approve approval in status {approval.status}")
     expires = _ensure_aware(approval.expires_at)
-    if expires < datetime.now(UTC):
+    if expires is None or expires < datetime.now(UTC):
         approval.status = ApprovalStatus.EXPIRED
         await db.commit()
         raise ValueError("Approval has expired")
@@ -216,7 +218,7 @@ async def verify_approval(
     session_id: str | None,
     function_name: str,
     target_node_id: str,
-    input_data: dict,
+    input_data: JsonObject,
 ) -> ApprovalRequest:
     """Verify an approval is valid for execution.
 
@@ -233,7 +235,7 @@ async def verify_approval(
     if approval.status != ApprovalStatus.APPROVED:
         raise ValueError(f"Approval {approval_id!r} is not approved (status: {approval.status})")
     expires = _ensure_aware(approval.expires_at)
-    if expires < datetime.now(UTC):
+    if expires is None or expires < datetime.now(UTC):
         raise ValueError(f"Approval {approval_id!r} has expired")
     if approval.actor_id != actor_id:
         raise ValueError(f"Actor mismatch: {actor_id} != {approval.actor_id}")
@@ -262,13 +264,16 @@ async def _scan_expired_approvals() -> None:
             await asyncio.sleep(60)
             async with async_session_factory() as db:
                 now = datetime.now(UTC)
-                result = await db.execute(
-                    sa_update(ApprovalRequest)
-                    .where(
-                        ApprovalRequest.status == "pending",
-                        ApprovalRequest.expires_at < now,
-                    )
-                    .values(status="expired")
+                result = cast(
+                    CursorResult[object],
+                    await db.execute(
+                        sa_update(ApprovalRequest)
+                        .where(
+                            ApprovalRequest.status == "pending",
+                            ApprovalRequest.expires_at < now,
+                        )
+                        .values(status="expired")
+                    ),
                 )
                 if result.rowcount:
                     await db.commit()

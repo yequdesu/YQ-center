@@ -5,6 +5,7 @@ the Agent->Center pipeline without external dependencies.
 """
 
 import uuid
+from collections.abc import AsyncGenerator
 
 from yequ.agent.provider import (
     AgentFunction,
@@ -13,6 +14,13 @@ from yequ.agent.provider import (
     AgentResult,
     ProviderInvokeResult,
 )
+
+
+def _message_from_output(output: dict[str, object] | None) -> str:
+    if not output:
+        return ""
+    value = output.get("message", "")
+    return value if isinstance(value, str) else str(value)
 
 
 class FakeAgentProvider(AgentProvider):
@@ -97,20 +105,16 @@ class FakeAgentProvider(AgentProvider):
 
         # 1. Sequence mode
         if self._seq_index < len(self._sequence):
-            result = self._sequence[self._seq_index]
+            sequence_result = self._sequence[self._seq_index]
             self._seq_index += 1
-            return result
+            return sequence_result
 
         # 2. Pattern match — look in messages or prompt
         if messages:
             last_non_system = next((m for m in reversed(messages) if m.role != "system"), None)
             if last_non_system and last_non_system.role == "tool":
                 return ProviderInvokeResult(
-                    message=(
-                        self._default_result.output.get("message", "")
-                        if self._default_result.output
-                        else ""
-                    ),
+                    message=_message_from_output(self._default_result.output),
                     success=self._default_result.success,
                     tool_calls=list(self._default_result.function_calls),
                 )
@@ -125,7 +129,7 @@ class FakeAgentProvider(AgentProvider):
         for pattern, result in self._responses.items():
             if pattern in search_text:
                 return ProviderInvokeResult(
-                    message=str(result.output.get("message", "")) if result.output else "",
+                    message=_message_from_output(result.output),
                     tool_calls=result.function_calls,
                     success=result.success,
                     error_code=result.error_code,
@@ -136,11 +140,7 @@ class FakeAgentProvider(AgentProvider):
         # 3. Default — ensure task_completed is always present
         default_calls = list(self._default_result.function_calls)
         if not any(c.get("name") == "task_completed" for c in default_calls):
-            default_message = (
-                self._default_result.output.get("message", "")
-                if self._default_result.output
-                else ""
-            )
+            default_message = _message_from_output(self._default_result.output)
             default_calls.append(
                 {
                     "name": "task_completed",
@@ -149,11 +149,7 @@ class FakeAgentProvider(AgentProvider):
                 }
             )
         return ProviderInvokeResult(
-            message=(
-                self._default_result.output.get("message", "")
-                if self._default_result.output
-                else ""
-            ),
+            message=_message_from_output(self._default_result.output),
             success=self._default_result.success,
             tool_calls=default_calls,
         )
@@ -165,7 +161,7 @@ class FakeAgentProvider(AgentProvider):
         available_functions: list[AgentFunction] | None = None,
         messages: list[AgentMessage] | None = None,
         context: dict[str, object] | None = None,
-    ):
+    ) -> AsyncGenerator[dict[str, object], None]:
         """Simulate streaming — calls invoke() and yields delta + done events."""
         result = await self.invoke(
             prompt,

@@ -7,18 +7,15 @@ Config: ~/.config/yequ/config.toml
 
 import json
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # Python < 3.11
 
-
-def _load_config() -> dict:
+def _load_config() -> dict[str, Any]:
     """Load config from ~/.config/yequ/config.toml."""
     config_path = Path.home() / ".config" / "yequ" / "config.toml"
     if config_path.exists():
@@ -34,7 +31,7 @@ def _get_client() -> httpx.Client:
     return httpx.Client(base_url=base_url.rstrip("/"), timeout=30)
 
 
-def _print_json(data):
+def _print_json(data: object) -> None:
     """Pretty print JSON."""
     click.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
@@ -43,7 +40,7 @@ def _print_json(data):
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """YeQu Center — infrastructure control CLI."""
     pass
 
@@ -52,7 +49,7 @@ def cli():
 
 
 @cli.command()
-def health():
+def health() -> None:
     """Check Center health."""
     try:
         with _get_client() as c:
@@ -74,13 +71,13 @@ def health():
 
 
 @cli.group()
-def nodes():
+def nodes() -> None:
     """Manage nodes."""
     pass
 
 
 @nodes.command("list")
-def nodes_list():
+def nodes_list() -> None:
     """List all nodes."""
     try:
         with _get_client() as c:
@@ -106,7 +103,7 @@ def nodes_list():
 
 @nodes.command("show")
 @click.argument("node_id")
-def nodes_show(node_id):
+def nodes_show(node_id: str) -> None:
     """Show node details."""
     try:
         with _get_client() as c:
@@ -122,14 +119,14 @@ def nodes_show(node_id):
 
 
 @cli.group()
-def capabilities():
+def capabilities() -> None:
     """Query capabilities."""
     pass
 
 
 @capabilities.command("list")
 @click.option("--node", "-n", "node_id", default=None, help="Filter by node_id")
-def capabilities_list(node_id):
+def capabilities_list(node_id: str | None) -> None:
     """List capabilities."""
     try:
         with _get_client() as c:
@@ -163,7 +160,13 @@ def capabilities_list(node_id):
 @click.option("--input", "-i", "input_json", default="{}", help="Input payload (JSON)")
 @click.option("--timeout", "-t", default=30, help="Job timeout in seconds")
 @click.option("--wait/--no-wait", default=True, help="Wait for job completion")
-def invoke(function_name, node_id, input_json, timeout, wait):
+def invoke(
+    function_name: str,
+    node_id: str,
+    input_json: str,
+    timeout: int,
+    wait: bool,
+) -> None:
     """Create an Invocation on a target node."""
     try:
         payload = json.loads(input_json)
@@ -214,7 +217,7 @@ def invoke(function_name, node_id, input_json, timeout, wait):
 
 
 @cli.group()
-def jobs():
+def jobs() -> None:
     """Query jobs."""
     pass
 
@@ -223,11 +226,11 @@ def jobs():
 @click.option("--node", "-n", "node_id", default=None)
 @click.option("--status", "-s", default=None)
 @click.option("--limit", "-l", default=20)
-def jobs_list(node_id, status, limit):
+def jobs_list(node_id: str | None, status: str | None, limit: int) -> None:
     """List jobs."""
     try:
         with _get_client() as c:
-            params = {"limit": limit}
+            params: dict[str, int | str] = {"limit": limit}
             if node_id:
                 params["node_id"] = node_id
             if status:
@@ -257,7 +260,7 @@ def jobs_list(node_id, status, limit):
 
 @jobs.command("show")
 @click.argument("job_id")
-def jobs_show(job_id):
+def jobs_show(job_id: str) -> None:
     """Show job details."""
     try:
         with _get_client() as c:
@@ -273,14 +276,14 @@ def jobs_show(job_id):
 
 
 @cli.group()
-def invocations():
+def invocations() -> None:
     """Query invocations."""
     pass
 
 
 @invocations.command("show")
 @click.argument("invocation_id")
-def invocations_show(invocation_id):
+def invocations_show(invocation_id: str) -> None:
     """Show invocation details with associated jobs."""
     try:
         with _get_client() as c:
@@ -305,7 +308,7 @@ def invocations_show(invocation_id):
 
 
 @cli.group()
-def timeline():
+def timeline() -> None:
     """Query timeline events."""
     pass
 
@@ -314,11 +317,11 @@ def timeline():
 @click.option("--node", "-n", "node_id", default=None)
 @click.option("--job", "-j", "job_id", default=None)
 @click.option("--limit", "-l", default=20)
-def timeline_tail(node_id, job_id, limit):
+def timeline_tail(node_id: str | None, job_id: str | None, limit: int) -> None:
     """Show recent timeline events."""
     try:
         with _get_client() as c:
-            params = {"limit": limit}
+            params: dict[str, int | str] = {"limit": limit}
             if node_id:
                 params["node_id"] = node_id
             if job_id:
@@ -344,7 +347,7 @@ def timeline_tail(node_id, job_id, limit):
 
 
 @cli.group()
-def agent():
+def agent() -> None:
     """Agent operations."""
     pass
 
@@ -353,7 +356,7 @@ def agent():
 @click.option("--create/--no-create", default=True, help="Create a new session")
 @click.option("--mode", default="auto", help="Execution mode")
 @click.option("--actor", default="cli", help="Actor ID")
-def agent_session(create, mode, actor):
+def agent_session(create: bool, mode: str, actor: str) -> None:
     """Create an Agent Session."""
     try:
         with _get_client() as c:
@@ -382,7 +385,7 @@ def agent_session(create, mode, actor):
 @click.argument("prompt")
 @click.option("--provider", "-p", default="fake", help="Provider name")
 @click.option("--mode", default="auto", help="Execution mode")
-def agent_invoke(session_id, prompt, provider, mode):
+def agent_invoke(session_id: str, prompt: str, provider: str, mode: str) -> None:
     """Invoke an Agent Provider."""
     try:
         with _get_client() as c:
@@ -418,7 +421,7 @@ def agent_invoke(session_id, prompt, provider, mode):
 
 
 @cli.command("config-init")
-def config_init():
+def config_init() -> None:
     """Create a default config file."""
     config_dir = Path.home() / ".config" / "yequ"
     config_dir.mkdir(parents=True, exist_ok=True)

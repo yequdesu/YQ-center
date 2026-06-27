@@ -1,7 +1,9 @@
 """Admin endpoints for Nodes, runtimes, and capabilities."""
 
+from typing import cast
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
@@ -24,6 +26,7 @@ from yequ.services.signal_state_service import (
     refresh_signal_freshness,
     signal_state_to_dict,
 )
+from yequ.types import JsonObject
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -168,7 +171,7 @@ async def refresh_node_capability_state(
     node_id: str,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
-) -> dict:
+) -> JsonObject:
     """Recompute executable state for all capabilities on this node."""
     result = await db.execute(select(Node).where(Node.node_id == node_id))
     node = result.scalar_one_or_none()
@@ -204,7 +207,7 @@ async def mark_node_offline(
     node_id: str,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
-) -> dict:
+) -> JsonObject:
     """Manually set a node's status to offline."""
     from yequ.protocol import NodeStatus
 
@@ -223,7 +226,7 @@ async def delete_stale_capabilities(
     node_id: str,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
-) -> dict:
+) -> JsonObject:
     """Delete inactive capabilities for a node."""
     result = await db.execute(select(Node).where(Node.node_id == node_id))
     node = result.scalar_one_or_none()
@@ -232,11 +235,14 @@ async def delete_stale_capabilities(
 
     from sqlalchemy import delete as sa_delete
 
-    del_result = await db.execute(
-        sa_delete(Capability).where(
-            Capability.node_record_id == node.id,
-            Capability.is_active == False,  # noqa: E712
-        )
+    del_result = cast(
+        CursorResult[object],
+        await db.execute(
+            sa_delete(Capability).where(
+                Capability.node_record_id == node.id,
+                Capability.is_active == False,  # noqa: E712
+            )
+        ),
     )
     await db.commit()
     return {

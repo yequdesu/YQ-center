@@ -6,13 +6,16 @@ from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.config import Settings
 from yequ.logconfig import get_logger
 from yequ.models.capability import Capability
+from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.signal_state import SignalState
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
+from yequ.types import JsonObject
 
 log = get_logger(__name__)
 
@@ -20,9 +23,9 @@ log = get_logger(__name__)
 async def handle_hello(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process node.hello — accept a Node connection.
 
     Updates Node status to online, records daemon version and platform info.
@@ -73,9 +76,9 @@ async def handle_hello(
 async def handle_heartbeat(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process node.heartbeat — update last_seen and heartbeat times.
 
     If node was OFFLINE or REJOINING, brings it back to ONLINE.
@@ -117,9 +120,9 @@ async def handle_heartbeat(
 async def handle_register_capabilities(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process node.register_capabilities — full snapshot semantics.
 
     For each plugin in the payload:
@@ -234,7 +237,7 @@ async def handle_register_capabilities(
     }
 
 
-def _execution_requirements_from_context(context: str | None) -> dict | None:
+def _execution_requirements_from_context(context: str | None) -> JsonObject | None:
     """Map execution_context to platform-neutral requirements."""
     if context == "system":
         return {"runtime_kind": "privileged"}
@@ -251,7 +254,7 @@ def _execution_requirements_from_context(context: str | None) -> dict | None:
 async def _sync_runtime_instances(
     db: AsyncSession,
     node: Node,
-    runtimes: list[dict],
+    runtimes: list[JsonObject],
     *,
     now: datetime,
 ) -> None:
@@ -309,9 +312,9 @@ async def _sync_runtime_instances(
 async def handle_signal_report(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process signal.report — validate and record signal values.
 
     Each signal value is validated against its registered value_schema
@@ -346,8 +349,8 @@ async def handle_signal_report(
     for sig in signals:
         name = sig["name"]
         value = sig.get("value")
-        cap = registered.get(name)
-        value_schema = cap.value_schema if cap else None
+        signal_cap = registered.get(name)
+        value_schema = signal_cap.value_schema if signal_cap else None
 
         # Validate against value_schema if we have one registered
         if value_schema is not None:
@@ -373,8 +376,8 @@ async def handle_signal_report(
                 continue
 
         ttl_sec = sig.get("ttl_sec")
-        if ttl_sec is None and cap is not None:
-            ttl_sec = cap.ttl_sec
+        if ttl_sec is None and signal_cap is not None:
+            ttl_sec = signal_cap.ttl_sec
         ttl_int = int(ttl_sec) if ttl_sec is not None else None
         collected_at = _parse_signal_datetime(sig.get("collected_at"))
         expires_at = now + timedelta(seconds=ttl_int) if ttl_int else None
@@ -393,10 +396,10 @@ async def handle_signal_report(
                 reported_at=now,
             )
             db.add(state)
-        state.capability_id = cap.id if cap else None
+        state.capability_id = signal_cap.id if signal_cap else None
         state.value = value
         state.value_schema = value_schema
-        state.scope = sig.get("scope") or (cap.scope if cap else None)
+        state.scope = sig.get("scope") or (signal_cap.scope if signal_cap else None)
         state.ttl_sec = ttl_int
         state.freshness_status = "fresh"
         state.quality = "ok"
@@ -448,9 +451,9 @@ def _parse_signal_datetime(value: object) -> datetime | None:
 async def handle_job_poll(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.poll — return available jobs for this node.
 
     Returns up to `capacity` jobs that are queued for this node,
@@ -466,7 +469,7 @@ async def handle_job_poll(
     from yequ.protocol import JobStatus
     from yequ.services.job_state_machine import transition
 
-    raw_capacity = int(payload.get("capacity"))
+    raw_capacity = int(payload.get("capacity", 1))
     running_jobs = payload.get("running_jobs", [])
     available_slots = max(raw_capacity - len(running_jobs), 0)
 
@@ -488,7 +491,7 @@ async def handle_job_poll(
         return {"jobs": []}
 
     now = datetime.now(UTC)
-    jobs = []
+    jobs: list[JsonObject] = []
     for job in pending_jobs:
         await transition(
             db,
@@ -522,9 +525,9 @@ async def handle_job_poll(
 async def handle_job_accepted(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.accepted — Node confirms it will execute the job.
 
     Job transitions: claimed -> running.
@@ -576,9 +579,9 @@ async def handle_job_accepted(
 async def handle_job_finished(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.finished — Node reports job completion.
 
     Accepts terminal states: succeeded, failed, cancelled, timeout.
@@ -761,9 +764,9 @@ async def handle_job_finished(
 async def handle_job_lease_renew(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.lease_renew — extend a running job's lease.
 
     Only running jobs can renew their lease. Expired leases are denied.
@@ -820,11 +823,11 @@ async def handle_job_lease_renew(
 
 async def _reconcile_to_terminal(
     db: AsyncSession,
-    job,
+    job: Job,
     *,
     terminal_status: str,
     node_id: str,
-    output: dict | None = None,
+    output: JsonObject | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> None:
@@ -858,9 +861,9 @@ async def _reconcile_to_terminal(
 async def handle_reconcile_jobs(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process node.reconcile_jobs — reconcile after reconnection.
 
     Compares Daemon's local job states with Center's authoritative state
@@ -879,7 +882,7 @@ async def handle_reconcile_jobs(
     from yequ.protocol.errors import ErrorCode, YqpError
 
     known_jobs = payload.get("known_jobs", [])
-    actions: list[dict] = []
+    actions: list[JsonObject] = []
 
     terminal_statuses = {
         JobStatus.SUCCEEDED,
@@ -1003,9 +1006,9 @@ async def handle_reconcile_jobs(
 async def handle_job_event(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.event — Daemon reports a progress/log/cancelling event.
 
     Standard event types: job.started, job.progress, job.log,
@@ -1060,9 +1063,9 @@ async def handle_job_event(
 async def handle_job_cancel(
     db: AsyncSession,
     node: Node,
-    payload: dict,
-    settings,
-) -> dict:
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
     """Process job.cancel — Center requests the Node to cancel a running job.
 
     Center initiates a cancel. The Node should:

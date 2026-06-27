@@ -15,6 +15,7 @@ from yequ.models.maintenance_plan import (
 from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.services.timeline_writer import add_timeline_event
+from yequ.types import JsonObject
 
 
 def _make_plan_id() -> str:
@@ -35,7 +36,7 @@ async def create_plan(
     goal: str,
     actor_id: str,
     target_node_id: str,
-    steps: list[dict],
+    steps: list[JsonObject],
     session_id: str | None = None,
     risk: str = "maintenance",
     max_total_duration_sec: int | None = None,

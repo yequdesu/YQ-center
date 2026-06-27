@@ -1,6 +1,7 @@
 """Agent API endpoints — session management and provider invocation."""
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,6 +18,7 @@ from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token, get_db
 from yequ.models.capability import Capability
 from yequ.models.node import Node
+from yequ.types import JsonObject
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -421,10 +423,10 @@ def _strip_internal_input_fields(
 
 
 def _sse_response(
-    event_source,
+    event_source: AsyncIterator[JsonObject],
     turn_context: dict[str, Any] | None = None,
-):
-    async def event_generator():
+) -> StreamingResponse:
+    async def event_generator() -> AsyncIterator[str]:
         turn_id: str | None = None
         async for event in event_source:
             if turn_context is not None:
@@ -524,7 +526,7 @@ async def invoke_agent_stream_endpoint(
     body: InvokeAgentRequest,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
-):
+) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     available = await _available_functions(db)
     return _sse_response(
@@ -562,7 +564,7 @@ async def agent_plan_endpoint(
     body: AgentPlanRequest,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
-) -> dict:
+) -> JsonObject:
     provider = await _resolve_provider(body.provider_name)
 
     target_node_id = body.target_node_id or await _default_target_node_id(db)
@@ -583,7 +585,7 @@ async def agent_plan_stream_endpoint(
     body: AgentPlanRequest,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
-):
+) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     target_node_id = body.target_node_id or await _default_target_node_id(db)
     return _sse_response(

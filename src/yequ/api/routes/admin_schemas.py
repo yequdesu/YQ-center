@@ -1,5 +1,7 @@
 """Shared Admin route DTOs and response converters."""
 
+from typing import TypedDict
+
 from pydantic import BaseModel, Field
 
 from yequ.models.capability import Capability
@@ -146,19 +148,30 @@ class TimelineSummary(BaseModel):
 # Helper converters
 
 
-def _node_liveness_fields(n: Node) -> dict:
+class NodeLivenessFields(TypedDict):
+    stored_status: str
+    effective_status: str
+    heartbeat_age_sec: float | None
+    heartbeat_stale: bool
+    schedulable: bool
+    status: str
+
+
+def _node_liveness_fields(n: Node) -> NodeLivenessFields:
     """Add liveness snapshot fields for node API responses."""
     from yequ.config import get_settings
     from yequ.services.node_liveness_service import get_node_liveness_snapshot
 
     snap = get_node_liveness_snapshot(n, get_settings())
+    effective_status = str(snap["effective_status"])
+    heartbeat_age = snap["heartbeat_age_sec"]
     return {
         "stored_status": n.status,
-        "effective_status": snap["effective_status"],
-        "heartbeat_age_sec": snap["heartbeat_age_sec"],
-        "heartbeat_stale": snap["heartbeat_stale"],
-        "schedulable": snap["schedulable"],
-        "status": snap["effective_status"],  # override: API shows effective status as primary
+        "effective_status": effective_status,
+        "heartbeat_age_sec": heartbeat_age if isinstance(heartbeat_age, float) else None,
+        "heartbeat_stale": bool(snap["heartbeat_stale"]),
+        "schedulable": bool(snap["schedulable"]),
+        "status": effective_status,  # override: API shows effective status as primary
     }
 
 

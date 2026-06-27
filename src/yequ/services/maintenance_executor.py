@@ -20,6 +20,7 @@ from yequ.models.timeline import TimelineEvent
 from yequ.services.invocation_service import create_invocation, start_invocation
 from yequ.services.job_service import create_job
 from yequ.services.timeline_writer import add_timeline_event
+from yequ.types import JsonObject
 
 
 def _make_artifact_id() -> str:
@@ -62,8 +63,8 @@ async def _write_artifact(
     job_id: str | None,
     kind: str,
     name: str,
-    data: dict | None = None,
-    summary: dict | None = None,
+    data: JsonObject | None = None,
+    summary: JsonObject | None = None,
     content_type: str = "application/json",
     plan_id: str = "",
     target_node_id: str = "",
@@ -196,9 +197,9 @@ async def execute_plan_run(
             for dep_seq in [int(d) for d in deps]:
                 dep_step = next((s for s in steps if s.seq == dep_seq), None)
                 if dep_step:
-                    result = dep_step.result or {}
-                    found = result.get("found", True)
-                    state = result.get("state", result.get("status", ""))
+                    dep_result = dep_step.result or {}
+                    found = dep_result.get("found", True)
+                    state = dep_result.get("state", dep_result.get("status", ""))
                     if not found or str(state).lower() != "running":
                         unhealthy = True
             if not unhealthy:
@@ -908,7 +909,7 @@ async def add_rollback_hint(
     reason: str,
     recommended_action: str,
     function_name: str | None = None,
-    input_data: dict | None = None,
+    input_data: JsonObject | None = None,
     risk: str = "maintenance",
 ) -> RollbackHint:
     """Add a rollback hint for a failed step."""
@@ -932,7 +933,7 @@ async def update_step_result(
     db: AsyncSession,
     step: MaintenanceStep,
     status: str,
-    result: dict | None = None,
+    result: JsonObject | None = None,
     error: str | None = None,
 ) -> MaintenanceStep:
     """Update a step with its final result."""
@@ -944,7 +945,7 @@ async def update_step_result(
     return step
 
 
-def _build_before_data(steps: list[MaintenanceStep], current_step: MaintenanceStep) -> dict:
+def _build_before_data(steps: list[MaintenanceStep], current_step: MaintenanceStep) -> JsonObject:
     """Build 'before' data from the previous check step's result."""
     # Find the check step that this step depends on
     if current_step.depends_on:
@@ -975,7 +976,7 @@ def _build_before_data(steps: list[MaintenanceStep], current_step: MaintenanceSt
     return {"available": False, "reason": "no_previous_check_result"}
 
 
-def _build_check_summary(step: MaintenanceStep) -> dict:
+def _build_check_summary(step: MaintenanceStep) -> JsonObject:
     """Build a short summary from a check/verify step result."""
     result = step.result or {}
     return {

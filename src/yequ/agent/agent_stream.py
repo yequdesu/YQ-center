@@ -9,6 +9,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,28 @@ from yequ.application import (
 from yequ.logconfig import get_logger
 
 log = get_logger(__name__)
+
+StreamEvent = dict[str, object]
+
+
+def _as_str(value: object, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _as_object_dict_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _as_object_dict(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _as_str_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 # ── Active stream tracking ──
 _active_stream_sessions: set[str] = set()
@@ -59,8 +82,8 @@ def _event(
     event_type: str,
     session_id: str,
     trace_id: str,
-    data: dict | None = None,
-) -> dict:
+    data: dict[str, object] | None = None,
+) -> StreamEvent:
     return {
         "event_id": _make_event_id(),
         "event_type": event_type,
@@ -87,7 +110,7 @@ async def agent_invoke_stream(
     step_count: int = 0,
     started_at: datetime | None = None,
     execution_mode: str = "auto",
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[StreamEvent, None]:
     """Async generator yielding SSE event dicts for agent invoke with ReAct loop."""
     from yequ.agent.agent_service import (
         _load_session_history,
@@ -229,7 +252,7 @@ async def agent_invoke_stream(
     current_step = step_count
     final_message = ""
     loop_state = "running"
-    all_tool_results: list[dict] = []
+    all_tool_results: list[dict[str, object]] = []
 
     try:
         while current_step < max_steps:
@@ -254,8 +277,8 @@ async def agent_invoke_stream(
 
             # Call provider with streaming — text deltas are yielded in real-time
             assistant_text = ""
-            provider_tool_calls: list[dict] = []
-            provider_error = None
+            provider_tool_calls: list[dict[str, object]] = []
+            provider_error: str | None = None
             try:
                 async for chunk in provider.invoke_stream(
                     "",
@@ -267,18 +290,22 @@ async def agent_invoke_stream(
                         "step": current_step,
                     },
                 ):
-                    if chunk["type"] == "delta":
-                        assistant_text += chunk["content"]
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "delta":
+                        content = _as_str(chunk.get("content", ""))
+                        assistant_text += content
                         yield _event(
                             "agent.output.delta",
                             session_id,
                             trace_id,
-                            {"content": chunk["content"]},
+                            {"content": content},
                         )
-                    elif chunk["type"] == "done":
-                        provider_tool_calls = chunk.get("tool_calls", [])
-                    elif chunk["type"] == "error":
-                        provider_error = chunk.get("message", "Provider error")
+                    elif chunk_type == "done":
+                        provider_tool_calls = _as_object_dict_list(chunk.get("tool_calls", []))
+                    elif chunk_type == "error":
+                        provider_error = _as_str(
+                            chunk.get("message", chunk.get("error_message", "Provider error"))
+                        )
             except TimeoutError:
                 provider_error = "provider_timeout"
             except Exception as e:
@@ -304,8 +331,11 @@ async def agent_invoke_stream(
             if task_completed:
                 # LLM's streamed text is the authoritative answer.
                 # task_completed.message is only a fallback when the LLM
-                # produced no streaming text at all (edge case).
-                final_message = assistant_text or task_completed.get("input", {}).get("message", "")
+            # produced no streaming text at all (edge case).
+                task_completed_input = _as_object_dict(task_completed.get("input", {}))
+                final_message = assistant_text or _as_str(
+                    task_completed_input.get("message", "")
+                )
                 loop_state = "completed"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 if not executable_calls:
@@ -343,7 +373,7 @@ async def agent_invoke_stream(
             # Execute tool calls with concurrency scheduling
             import json as _json
 
-            ordered_results: list[dict] = []
+            ordered_results: list[dict[str, object]] = []
             async for ev in _execute_tool_calls_scheduled(
                 db,
                 provider,
@@ -367,7 +397,7 @@ async def agent_invoke_stream(
                     "agent.tool_call.failed",
                     "agent.tool_call.waiting_approval",
                 ):
-                    data = ev["data"]
+                    data = _as_object_dict(ev.get("data", {}))
                     call_id = str(data.get("call_id", ""))
                     name = str(data.get("name", ""))
                     if ev["event_type"] == "agent.tool_call.completed":
@@ -402,14 +432,14 @@ async def agent_invoke_stream(
                         loop_state = "waiting_approval"
 
             # Sort results by original provider call order
-            ordered_results.sort(key=lambda r: provider_call_order.get(r["call_id"], 999))
+            ordered_results.sort(key=lambda r: provider_call_order.get(str(r["call_id"]), 999))
 
             for tc_result in ordered_results:
                 all_tool_results.append(tc_result)
                 history.append(
                     AgentMessage(
                         role="tool",
-                        tool_call_id=tc_result["call_id"],
+                        tool_call_id=str(tc_result["call_id"]),
                         content=_json.dumps(tc_result),
                     )
                 )
@@ -476,21 +506,21 @@ async def agent_invoke_stream(
 
 
 async def _stream_tool_calls(
-    db,
-    provider,
-    session,
-    session_id,
-    trace_id,
-    tool_calls,
-    known_functions,
-    available_functions,
-    call_path,
-    execution_mode,
-    max_depth,
-    max_total_duration_sec,
-    started_at,
-    target_node_id=None,
-) -> AsyncGenerator[dict, None]:
+    db: AsyncSession,
+    provider: AgentProvider,
+    session: Any,
+    session_id: str,
+    trace_id: str,
+    tool_calls: list[dict[str, object]],
+    known_functions: set[str],
+    available_functions: list[AgentFunction],
+    call_path: list[str],
+    execution_mode: str,
+    max_depth: int,
+    max_total_duration_sec: int,
+    started_at: datetime,
+    target_node_id: str | None = None,
+) -> AsyncGenerator[StreamEvent, None]:
     """Process tool calls and emit events. Sub-generator consumed by the main stream."""
     for raw_tc in tool_calls:
         tc_name = str(raw_tc.get("name", ""))
@@ -579,7 +609,7 @@ async def _stream_tool_calls(
             trace_id,
             call_id,
             tc_name,
-            raw_tc.get("input", {}),
+            _as_object_dict(raw_tc.get("input", {})),
             known_functions,
             available_functions,
             call_path,
@@ -593,23 +623,23 @@ async def _stream_tool_calls(
 
 
 async def _execute_and_stream(
-    db,
-    provider,
-    session,
-    session_id,
-    trace_id,
-    call_id,
-    tc_name,
-    tc_input,
-    known_functions,
-    available_functions,
-    call_path,
-    execution_mode,
-    max_depth,
-    max_total_duration_sec,
-    started_at,
-    target_node_id=None,
-) -> AsyncGenerator[dict, None]:
+    db: AsyncSession,
+    provider: AgentProvider,
+    session: Any,
+    session_id: str,
+    trace_id: str,
+    call_id: str,
+    tc_name: str,
+    tc_input: dict[str, object],
+    known_functions: set[str],
+    available_functions: list[AgentFunction],
+    call_path: list[str],
+    execution_mode: str,
+    max_depth: int,
+    max_total_duration_sec: int,
+    started_at: datetime,
+    target_node_id: str | None = None,
+) -> AsyncGenerator[StreamEvent, None]:
     """Execute a single tool call and stream its lifecycle events."""
     func_meta = next((f for f in available_functions if f.name == tc_name), None)
     result = await ToolInvocationApplicationService(db).execute(
@@ -796,12 +826,12 @@ async def _execute_and_stream(
             # Preserve the original error from the Job/Invocation — never
             # overwrite with a generic "tool_failed".
             error_code = (
-                job_final.error_code
+                (job_final.error_code if job_final else None)
                 or (inv_final.error_code if inv_final else None)
                 or "tool_failed"
             )
             error_message = (
-                job_final.error_message
+                (job_final.error_message if job_final else None)
                 or (inv_final.error_message if inv_final else None)
                 or f"Tool {tc_name} ended with {final_status}"
             )
@@ -828,20 +858,20 @@ CONCURRENCY_MAX = 4  # Configurable later
 
 async def _execute_tool_calls_scheduled(
     db: AsyncSession,
-    provider,
-    session,
+    provider: AgentProvider,
+    session: Any,
     session_id: str,
     trace_id: str,
-    tool_calls: list[dict],
+    tool_calls: list[dict[str, object]],
     known_functions: set[str],
-    available_functions: list,
+    available_functions: list[AgentFunction],
     call_path: list[str],
     execution_mode: str,
     max_depth: int,
     max_total_duration_sec: int,
-    started_at,
+    started_at: datetime,
     target_node_id: str | None = None,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[StreamEvent, None]:
     """Async generator that executes tool calls with concurrency scheduling.
 
     Yields SSE events in real-time. All created events are emitted first,
@@ -851,7 +881,7 @@ async def _execute_tool_calls_scheduled(
     from yequ.db import async_session_factory
 
     # ?? Phase 1: Pre-flight validation + emit all created events ??
-    classified: list[dict] = []
+    classified: list[dict[str, object]] = []
     preflight_service = ToolPreflightApplicationService(db)
 
     for raw_tc in tool_calls:
@@ -1033,15 +1063,15 @@ async def _execute_tool_calls_scheduled(
 
     # Move tools with shared resource_keys from concurrent to serial
     resource_key_owners: dict[str, str] = {}
-    actual_concurrent: list[dict] = []
+    actual_concurrent: list[dict[str, object]] = []
     for t in concurrent_candidates:
-        keys = t.get("resource_keys", [])
+        keys = _as_str_list(t.get("resource_keys", []))
         conflicts = [k for k in keys if k in resource_key_owners]
         if conflicts:
             serial_tools.append(t)
         else:
             for k in keys:
-                resource_key_owners[k] = t["call_id"]
+                resource_key_owners[k] = str(t["call_id"])
             actual_concurrent.append(t)
 
     # ── Phase 3: Execute ──
@@ -1050,10 +1080,10 @@ async def _execute_tool_calls_scheduled(
     if actual_concurrent:
         semaphore = asyncio.Semaphore(CONCURRENCY_MAX)
 
-        async def _execute_concurrent(tool_info: dict) -> list[dict]:
+        async def _execute_concurrent(tool_info: dict[str, object]) -> list[StreamEvent]:
             """Execute a single tool call using a fresh DB session."""
             async with semaphore:
-                collected_events: list[dict] = []
+                collected_events: list[StreamEvent] = []
                 try:
                     async with async_session_factory() as exec_db:
                         async for ev in _execute_and_stream(
@@ -1062,9 +1092,9 @@ async def _execute_tool_calls_scheduled(
                             session,
                             session_id,
                             trace_id,
-                            tool_info["call_id"],
-                            tool_info["name"],
-                            tool_info["input"],
+                            str(tool_info["call_id"]),
+                            str(tool_info["name"]),
+                            _as_object_dict(tool_info["input"]),
                             known_functions,
                             available_functions,
                             call_path,
@@ -1111,9 +1141,9 @@ async def _execute_tool_calls_scheduled(
                     session,
                     session_id,
                     trace_id,
-                    tool_info["call_id"],
-                    tool_info["name"],
-                    tool_info["input"],
+                    str(tool_info["call_id"]),
+                    str(tool_info["name"]),
+                    _as_object_dict(tool_info["input"]),
                     known_functions,
                     available_functions,
                     call_path,
@@ -1149,7 +1179,7 @@ async def agent_plan_stream(
     available_functions: list[AgentFunction],
     execution_mode: str = "auto",
     max_total_duration_sec: int = 300,
-) -> AsyncGenerator[dict, None]:
+) -> AsyncGenerator[StreamEvent, None]:
     """Async generator yielding SSE event dicts for agent plan stream."""
     trace_id = _make_trace_id()
 
@@ -1254,7 +1284,7 @@ async def agent_plan_stream(
     function_name = _select_check_function(available_functions, seed_calls)
     plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
 
-    steps_ir: list[dict] = []
+    steps_ir: list[dict[str, object]] = []
     if intent == "check_and_fix":
         steps_ir.append(
             {
@@ -1356,7 +1386,7 @@ async def agent_plan_stream(
                 "input": s["input"],
                 "kind": s["kind"],
                 "condition": s["condition"],
-                "depends_on": [str(d) for d in s.get("depends_on", [])],
+                "depends_on": [str(d) for d in _as_str_list(s.get("depends_on", []))],
                 "requires_approval": s["requires_approval"],
                 "risk": s["risk"],
                 "continue_on_failure": False,
@@ -1402,7 +1432,9 @@ async def agent_plan_stream(
     yield _event("stream.close", session_id, trace_id)
 
 
-def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -> str:
+def _fallback_synthesis_from_stream(
+    tool_results: list[dict[str, object]], loop_state: str
+) -> str:
     """Produce a human-readable summary from streamed tool results.
 
     Quality rules:
@@ -1441,7 +1473,7 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
         or "not available" in str(r.get("error", ""))
     ]
     if node_failures and not succeeded:
-        names = [r.get("name", "unknown") for r in node_failures]
+        names = [str(r.get("name", "unknown")) for r in node_failures]
         return (
             f"无法执行检查：没有在线节点提供所需的能力。\n"
             f"缺失的能力：{', '.join(names)}\n"
@@ -1478,7 +1510,7 @@ def _fallback_synthesis_from_stream(tool_results: list[dict], loop_state: str) -
 
     # Waiting approval
     if waiting and not failed:
-        names = [r.get("name", "unknown") for r in waiting]
+        names = [str(r.get("name", "unknown")) for r in waiting]
         return "⏳ **等待审批**：以下操作需要审批后才能执行：\n" + "\n".join(
             f"- {n}" for n in names
         )

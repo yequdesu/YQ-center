@@ -10,6 +10,7 @@ from yequ.models.resource_lock import ResourceLock
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import LockStatus
 from yequ.services.timeline_writer import add_timeline_event
+from yequ.types import JsonObject
 
 
 def _make_lock_id() -> str:
@@ -97,7 +98,7 @@ async def release_lock(
             ResourceLock.status == LockStatus.HELD,
         )
     )
-    locks = result.scalars().all()
+    locks = list(result.scalars().all())
     now = datetime.now(UTC)
     for lock in locks:
         lock.status = LockStatus.RELEASED
@@ -120,7 +121,7 @@ async def release_lock(
 def compute_resource_keys(
     function_name: str,
     node_id: str,
-    input_data: dict,
+    input_data: JsonObject,
     resource_key_template: str | None = None,
 ) -> list[str]:
     """Compute resource keys for a function call.

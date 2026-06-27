@@ -474,10 +474,11 @@ def _string_or_none(value: object) -> str | None:
 def _resource_keys(
     command: ExecuteToolCommand,
     resolved: ResolvedCapability,
-    approval,
+    approval: object,
 ) -> list[str]:
-    if approval is not None and approval.resource_keys:
-        return list(approval.resource_keys)
+    approval_keys = getattr(approval, "resource_keys", None)
+    if approval_keys:
+        return list(approval_keys)
     if command.resource_keys is not None:
         return list(command.resource_keys)
     return list(resolved.resource_keys or [])

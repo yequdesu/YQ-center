@@ -12,6 +12,7 @@ from yequ.models.approval import ApprovalRequest
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.services.token_auth import hash_token as hash_api_token
+from yequ.types import JsonObject
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -32,7 +33,7 @@ class CreateTokenResponse(BaseModel):
 class CreateApprovalRequest(BaseModel):
     function_name: str = Field(..., min_length=1)
     target_node_id: str = Field(..., min_length=1)
-    input_data: dict[str, object] = Field(default_factory=dict)
+    input_data: JsonObject = Field(default_factory=dict)
     risk: str = Field(default="maintenance")
     effect: str = Field(default="write")
     resource_keys: list[str] = Field(default_factory=list)
@@ -93,7 +94,7 @@ async def create_token(
 async def create_approval_endpoint(
     body: CreateApprovalRequest,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
+    _token: dict[str, str] = Depends(get_admin_token),
 ) -> ApprovalResponse:
     from yequ.services.approval_service import create_approval
 
@@ -114,8 +115,8 @@ async def list_approvals(
     approval_status: str | None = Query(default=None, alias="status"),
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> list[dict]:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[JsonObject]:
     stmt = select(ApprovalRequest)
     if approval_status:
         stmt = stmt.where(ApprovalRequest.status == approval_status)
@@ -128,8 +129,8 @@ async def list_approvals(
 async def get_approval(
     approval_id: str,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(
         select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
     )
@@ -182,10 +183,10 @@ async def get_approval(
 @router.post("/approvals/{approval_id}/approve")
 async def approve_endpoint(
     approval_id: str,
-    body: dict | None = None,
+    body: JsonObject | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(
         select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
     )
@@ -205,10 +206,10 @@ async def approve_endpoint(
 @router.post("/approvals/{approval_id}/deny")
 async def deny_endpoint(
     approval_id: str,
-    body: dict | None = None,
+    body: JsonObject | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     result = await db.execute(
         select(ApprovalRequest).where(ApprovalRequest.approval_id == approval_id)
     )
@@ -228,10 +229,10 @@ async def deny_endpoint(
 @router.post("/approvals/{approval_id}/approve-and-run")
 async def approve_and_run_endpoint(
     approval_id: str,
-    body: dict | None = None,
+    body: JsonObject | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> dict:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
     """Approve a pending approval and immediately execute the tool.
 
     1. Verify approval is pending
@@ -293,7 +294,7 @@ async def approve_and_run_endpoint(
     }
 
 
-def _approval_dict(a: ApprovalRequest) -> dict:
+def _approval_dict(a: ApprovalRequest) -> JsonObject:
     return {
         "approval_id": a.approval_id,
         "status": a.status,

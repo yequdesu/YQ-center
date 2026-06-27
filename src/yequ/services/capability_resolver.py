@@ -10,11 +10,13 @@ from datetime import UTC
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.config import Settings
 from yequ.models.capability import Capability
 from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.protocol import JobStatus, NodeStatus
+from yequ.types import JsonObject
 
 
 @dataclass
@@ -37,13 +39,13 @@ class ResolvedCapability:
     resource_keys: list[str] = field(default_factory=list)
     conflict_policy: str | None = None
     runtime_id: str | None = None
-    execution_requirements: dict | None = None
+    execution_requirements: JsonObject | None = None
     available: bool = True
     unavailable_code: str | None = None
     unavailable_reason: str | None = None
 
 
-def _requirements_from_context(context: str | None) -> dict | None:
+def _requirements_from_context(context: str | None) -> JsonObject | None:
     if context == "system":
         return {"runtime_kind": "privileged"}
     if context == "user":
@@ -53,14 +55,14 @@ def _requirements_from_context(context: str | None) -> dict | None:
     return None
 
 
-def _capability_requirements(capability: Capability) -> dict:
+def _capability_requirements(capability: Capability) -> JsonObject:
     raw = capability.execution_requirements or _requirements_from_context(
         capability.execution_context
     )
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _runtime_matches(runtime: RuntimeInstance, requirements: dict) -> bool:
+def _runtime_matches(runtime: RuntimeInstance, requirements: JsonObject) -> bool:
     if runtime.status not in ("online", "degraded"):
         return False
 
@@ -91,7 +93,7 @@ async def _select_runtime(
     db: AsyncSession,
     node: Node,
     capability: Capability,
-) -> tuple[str | None, dict, str | None]:
+) -> tuple[str | None, JsonObject, str | None]:
     """Select a platform-neutral runtime for a capability.
 
     Returns (runtime_id, requirements, unavailable_reason). A None reason means
@@ -127,7 +129,7 @@ async def resolve_function(
     target_node_id: str | None = None,
     required_effect: str | None = None,
     required_risk: str | None = None,
-    settings=None,
+    settings: Settings | None = None,
 ) -> ResolvedCapability:
     """Resolve which Node should execute a Function.
 
@@ -169,7 +171,7 @@ async def resolve_function(
         )
 
     # Filter: node must be schedulable and have the active function registered
-    viable: list[tuple[Node, Capability, str | None, dict]] = []
+    viable: list[tuple[Node, Capability, str | None, JsonObject]] = []
     offline_reasons: list[str] = []
 
     for node in candidates:
@@ -260,7 +262,9 @@ async def resolve_function(
             heartbeat = heartbeat.replace(tzinfo=UTC)
         return -heartbeat.timestamp()
 
-    def _sort_key(item: tuple[Node, Capability, str | None, dict]) -> tuple:
+    def _sort_key(
+        item: tuple[Node, Capability, str | None, JsonObject],
+    ) -> tuple[int, int, int, float, str]:
         node, _cap, _runtime_id, _requirements = item
         status_rank = 0 if node.status == NodeStatus.ONLINE else 1
         locality_rank = {"local": 0, "lan": 1}.get((node.locality or "").lower(), 2)

@@ -7,7 +7,11 @@ Terminal states are immutable — they can only be written once.
 
 from datetime import UTC, datetime
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from yequ.models.job import Job
 from yequ.protocol import JobStatus
+from yequ.types import JsonObject
 
 # Valid transitions from each source state
 VALID_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
@@ -57,17 +61,17 @@ def is_terminal(status: str) -> bool:
 
 
 async def transition(
-    db,
-    job,
+    db: AsyncSession,
+    job: Job,
     target_status: str,
     *,
     node_id: str | None = None,
     invocation_id: str | None = None,
     reason: str | None = None,
-    output: dict | None = None,
+    output: JsonObject | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
-    error_details: dict | None = None,
+    error_details: JsonObject | None = None,
 ) -> None:
     """Execute a job state transition.
 
@@ -148,7 +152,7 @@ async def transition(
             job.error_message = reason
 
     # Write success audit event
-    event_data: dict = {
+    event_data: JsonObject = {
         "from_status": old_status,
         "to_status": target.value,
     }

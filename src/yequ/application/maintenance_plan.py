@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.maintenance_plan import MaintenancePlan
 from yequ.services.maintenance_service import create_plan
+from yequ.types import JsonObject
 
 
 class MaintenancePlanApplicationService:
@@ -21,7 +22,7 @@ class MaintenancePlanApplicationService:
         session_id: str | None,
         goal: str,
         target_node_id: str,
-        steps: list[dict],
+        steps: list[JsonObject],
         risk: str = "maintenance",
         max_total_duration_sec: int | None = None,
         rollback_strategy: str | None = None,

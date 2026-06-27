@@ -11,6 +11,7 @@ import json as _json
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +51,22 @@ def _make_session_id() -> str:
 
 def _iso(ts: datetime | None) -> str | None:
     return ts.isoformat() if ts else None
+
+
+def _as_object_dict(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _as_str(value: object, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _as_int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) else None
 
 
 async def create_agent_session(
@@ -322,10 +339,11 @@ async def agent_invoke(
 
         # Accumulate usage
         if provider_result.usage:
-            total_usage = provider_result.usage
-            total_usage["tool_calls"] = total_usage.get("tool_calls", 0) + len(
-                provider_result.tool_calls
-            )
+            total_usage = dict(provider_result.usage)
+            existing_tool_calls = total_usage.get("tool_calls", 0)
+            total_usage["tool_calls"] = (
+                existing_tool_calls if isinstance(existing_tool_calls, int) else 0
+            ) + len(provider_result.tool_calls)
 
         # -- Check for task_completed: the explicit loop exit signal --
         task_completed_call = next(
@@ -334,9 +352,10 @@ async def agent_invoke(
         executable_calls = [tc for tc in provider_result.tool_calls if not is_task_completed(tc)]
 
         if task_completed_call:
-            final_provider_message = provider_result.message or task_completed_call.get(
-                "input", {}
-            ).get("message", "")
+            task_completed_input = _as_object_dict(task_completed_call.get("input", {}))
+            final_provider_message = provider_result.message or _as_str(
+                task_completed_input.get("message", "")
+            )
             loop_state = "completed"
             await _write_timeline(
                 db,
@@ -374,7 +393,7 @@ async def agent_invoke(
         for raw_tc in executable_calls:
             tc_name = str(raw_tc.get("name", ""))
             tc_call_id = str(raw_tc.get("call_id", _make_call_id()))
-            tc_input = raw_tc.get("input", {})
+            tc_input = _as_object_dict(raw_tc.get("input", {}))
 
             # L1 check + loop detection + policy check (same as before)
             if tc_name not in known_functions:
@@ -566,7 +585,7 @@ async def agent_plan(
     available_functions: list[AgentFunction],
     execution_mode: str = "auto",
     max_total_duration_sec: int = 300,
-) -> dict:
+) -> dict[str, object]:
     """Generate a structured MaintenancePlan IR from a maintenance prompt.
 
     Strategy:
@@ -619,7 +638,7 @@ async def agent_plan(
     plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
 
     # ── Step 3: Build IR steps based on intent ──
-    steps_ir = []
+    steps_ir: list[dict[str, object]] = []
 
     if intent == "check_and_fix":
         # Check
@@ -688,15 +707,19 @@ async def agent_plan(
     # ── Step 4: Validate ──
     has_write = any(s["requires_approval"] for s in steps_ir)
     for s in steps_ir:
-        if s["requires_approval"] and s["kind"] not in ("repair", "rollback"):
+        requires_approval = bool(s.get("requires_approval"))
+        kind = str(s.get("kind", ""))
+        function_name_value = str(s.get("function_name", ""))
+        if requires_approval and kind not in ("repair", "rollback"):
             s["requires_approval"] = False  # fix incorrect metadata
-        func_exists = any(f.name == s["function_name"] for f in available_functions)
+            requires_approval = False
+        func_exists = any(f.name == function_name_value for f in available_functions)
         if not func_exists:
             return {
                 "status": "failed",
                 "error": {
                     "code": "function_not_available",
-                    "message": f"Function {s['function_name']!r} not registered on node",
+                    "message": f"Function {function_name_value!r} not registered on node",
                 },
             }
 
@@ -707,13 +730,13 @@ async def agent_plan(
         target_node_id=target_node_id,
         steps=[
             {
-                "function_name": s["function_name"],
-                "input": s["input"],
-                "kind": s["kind"],
-                "condition": s["condition"],
-                "depends_on": [str(d) for d in s.get("depends_on", [])],
-                "requires_approval": s["requires_approval"],
-                "risk": s["risk"],
+                "function_name": str(s.get("function_name", "")),
+                "input": _as_object_dict(s.get("input", {})),
+                "kind": str(s.get("kind", "")),
+                "condition": str(s.get("condition", "")),
+                "depends_on": [str(d) for d in _as_list(s.get("depends_on", []))],
+                "requires_approval": bool(s.get("requires_approval")),
+                "risk": str(s.get("risk", "safe")),
                 "continue_on_failure": False,
                 "rollback_hint": s.get("rollback_hint"),
             }
@@ -774,7 +797,7 @@ def _build_rollback_hint(
     repair_function_name: str | None,
     input_data: dict[str, object],
     available_functions: list[AgentFunction],
-) -> dict:
+) -> dict[str, object]:
     """Build a platform-neutral rollback hint for a repair/write step."""
     rollback_function = _select_rollback_function(function_name, available_functions)
     if rollback_function:
@@ -882,7 +905,11 @@ def _infer_plan_input(
     required: list[str] = []
     if func and isinstance(func.input_schema, dict):
         raw_required = func.input_schema.get("required")
-        required = list(raw_required) if isinstance(raw_required, list) else []
+        required = (
+            [item for item in raw_required if isinstance(item, str)]
+            if isinstance(raw_required, list)
+            else []
+        )
     if required == ["name"]:
         target = _quoted_or_named_target(prompt)
         return {"name": target} if target else {}
@@ -897,7 +924,7 @@ def _input_for_function(
     if function_name:
         for call in seed_calls:
             if call.get("name") == function_name and isinstance(call.get("input"), dict):
-                return dict(call["input"])  # type: ignore[arg-type]
+                return _as_object_dict(call["input"])
     return dict(fallback)
 
 
@@ -1041,7 +1068,7 @@ async def _execute_tool_call_v2(
             actor=provider_name,
             call_id=tc.call_id,
             function_name=tc.name,
-            error_code=tc.error["code"],
+            error_code=_as_str(tc.error["code"]),
             target_node_id=result.target_node_id,
         )
         return tc
@@ -1059,8 +1086,8 @@ async def _execute_tool_call_v2(
             actor=provider_name,
             call_id=tc.call_id,
             function_name=tc.name,
-            error_code=tc.error["code"],
-            reason=tc.error["message"],
+            error_code=_as_str(tc.error["code"]),
+            reason=_as_str(tc.error["message"]),
         )
         return tc
 
@@ -1117,8 +1144,8 @@ async def _execute_tool_call_v2(
         function_name=tc.name,
         status=result.status,
         invocation_id=result.invocation_id,
-        error_code=tc.error["code"],
-        error=tc.error["message"],
+        error_code=_as_str(tc.error["code"]),
+        error=_as_str(tc.error["message"]),
     )
     if result.effect in ("write", "destructive"):
         await _write_timeline(
@@ -1132,7 +1159,7 @@ async def _execute_tool_call_v2(
             invocation_id=result.invocation_id,
             job_id=result.job_id,
             target_node_id=result.target_node_id,
-            error=tc.error["code"],
+            error=_as_str(tc.error["code"]),
         )
     return tc
 
@@ -1182,7 +1209,7 @@ async def _load_session_history(db: AsyncSession, session_id: str) -> list[Agent
             role=m.role,
             content=m.content,
             tool_call_id=m.tool_call_id,
-            tool_calls=m.tool_calls,
+            tool_calls=cast(list[dict[str, object]] | None, m.tool_calls),
             message_id=m.message_id,
         )
         for m in rows
@@ -1329,7 +1356,12 @@ def _build_loop_response(
     if error is None and status not in ("succeeded", "waiting_approval"):
         first_failed = next((tc for tc in tool_calls if tc.status != "succeeded"), None)
         if first_failed and first_failed.error:
-            error = AgentInvokeError(**first_failed.error)
+            error = AgentInvokeError(
+                code=_as_str(first_failed.error.get("code", "")),
+                message=_as_str(first_failed.error.get("message", "")),
+                retryable=bool(first_failed.error.get("retryable", False)),
+                details=_as_object_dict(first_failed.error.get("details", {})),
+            )
 
     return AgentInvokeResponse(
         success=(status in ("succeeded", "waiting_approval")),
@@ -1340,9 +1372,9 @@ def _build_loop_response(
         error=error,
         tool_calls=tool_calls,
         usage=AgentInvokeUsage(
-            prompt_tokens=usage.get("prompt_tokens"),
-            completion_tokens=usage.get("completion_tokens"),
-            total_tokens=usage.get("total_tokens"),
+            prompt_tokens=_as_int_or_none(usage.get("prompt_tokens")),
+            completion_tokens=_as_int_or_none(usage.get("completion_tokens")),
+            total_tokens=_as_int_or_none(usage.get("total_tokens")),
             tool_calls=len(tool_calls),
         ),
         trace=AgentInvokeTrace(
@@ -1416,7 +1448,9 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
 
         elif tc.name == "system.processes.list" and tc.result:
             count = tc.result.get("count", 0)
-            top = tc.result.get("processes", [])[:5]
+            top = [
+                item for item in _as_list(tc.result.get("processes", [])) if isinstance(item, dict)
+            ][:5]
             parts.append(f"{count} processes running")
             if top:
                 names = [p.get("name", "?") for p in top]
@@ -1430,7 +1464,7 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
             highlights.append(f"Event log: {count} events, highest level: {highest}")
 
         elif tc.name == "system.disk.detail" and tc.result:
-            drives = tc.result if isinstance(tc.result, list) else [tc.result]
+            drives = [tc.result]
             for d in drives:
                 # Support multiple field naming conventions from Windows Node
                 total = (
@@ -1465,9 +1499,10 @@ def _generate_output(provider_message: str, tool_calls: list[AgentToolCall]) -> 
                 highlights.append(f"Disk {drive}: {free} free of {total}")
 
         elif tc.name == "system.network.routes" and tc.result:
-            routes = (
-                tc.result if isinstance(tc.result, list) else tc.result.get("routes", [tc.result])
-            )
+            routes_value = tc.result.get("routes", [tc.result])
+            routes = [
+                item for item in _as_list(routes_value) if isinstance(item, dict)
+            ] or [tc.result]
             count = len(routes)
             default_route = None
             interfaces: set[str] = set()

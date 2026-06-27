@@ -7,6 +7,7 @@ from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid
+from yequ.types import JsonObject
 
 
 class MaintenancePlan(Base):
@@ -42,16 +43,16 @@ class MaintenanceStep(Base):
     plan_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     seq: Mapped[int] = mapped_column("order_", Integer, nullable=False)
     function_name: Mapped[str] = mapped_column(String(256), nullable=False)
-    input_data: Mapped[dict | None] = mapped_column("input_", JSON, nullable=True)
+    input_data: Mapped[JsonObject | None] = mapped_column("input_", JSON, nullable=True)
     depends_on: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     continue_on_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     timeout_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     resource_keys: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    expected_result_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    expected_result_schema: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     invocation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -60,7 +61,7 @@ class MaintenanceStep(Base):
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk: Mapped[str] = mapped_column(String(32), nullable=False, default="safe")
-    rollback_hint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rollback_hint: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return (
@@ -78,7 +79,7 @@ class MaintenanceRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_step_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    summary: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
     rollback_recommended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     def __repr__(self) -> str:
@@ -99,8 +100,8 @@ class MaintenanceArtifact(Base):
     content_type: Mapped[str] = mapped_column(
         String(64), nullable=False, default="application/json"
     )
-    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    data: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
+    summary: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
@@ -119,7 +120,7 @@ class RollbackHint(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     recommended_action: Mapped[str] = mapped_column(Text, nullable=False)
     function_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    input_data: Mapped[dict | None] = mapped_column("input_", JSON, nullable=True)
+    input_data: Mapped[JsonObject | None] = mapped_column("input_", JSON, nullable=True)
     risk: Mapped[str] = mapped_column(String(16), nullable=False, default="maintenance")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

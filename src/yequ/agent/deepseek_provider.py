@@ -9,7 +9,7 @@ import json
 import time as _time
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 from openai import AsyncOpenAI
 
@@ -43,7 +43,13 @@ class DeepSeekProvider(AgentProvider):
         self._client = AsyncOpenAI(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            timeout=httpx.Timeout(read_timeout, connect=10.0, read=read_timeout, write=30.0, pool=5.0),
+            timeout=httpx.Timeout(
+                read_timeout,
+                connect=10.0,
+                read=read_timeout,
+                write=30.0,
+                pool=5.0,
+            ),
             max_retries=0,  # no SDK-level retry — we control retry ourselves
         )
         self._model = settings.deepseek_model
@@ -92,15 +98,6 @@ class DeepSeekProvider(AgentProvider):
         else:
             api_messages = self._build_fresh_messages(prompt, functions)
 
-        kwargs: dict = {
-            "model": self._model,
-            "messages": api_messages,
-            "max_tokens": 2048,
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-
         last_error: Exception | None = None
         last_error_msg: str = ""
         for attempt in range(self._max_retries + 1):
@@ -110,10 +107,26 @@ class DeepSeekProvider(AgentProvider):
                     "deepseek api call starting: model=%s tool_count=%d attempt=%d/%d",
                     self._model, len(tools), attempt + 1, self._max_retries + 1,
                 )
-                response = await asyncio.wait_for(
-                    self._client.chat.completions.create(**kwargs),
-                    timeout=self._read_timeout + 5.0,
-                )
+                if tools:
+                    response = await asyncio.wait_for(
+                        self._client.chat.completions.create(
+                            model=self._model,
+                            messages=cast(Any, api_messages),
+                            max_tokens=2048,
+                            tools=cast(Any, tools),
+                            tool_choice="auto",
+                        ),
+                        timeout=self._read_timeout + 5.0,
+                    )
+                else:
+                    response = await asyncio.wait_for(
+                        self._client.chat.completions.create(
+                            model=self._model,
+                            messages=cast(Any, api_messages),
+                            max_tokens=2048,
+                        ),
+                        timeout=self._read_timeout + 5.0,
+                    )
                 _t_api1 = _time.monotonic()
                 _log.info("deepseek api call completed: elapsed=%.1fs", _t_api1 - _t_api0)
                 choice = response.choices[0]
@@ -125,12 +138,15 @@ class DeepSeekProvider(AgentProvider):
 
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
+                        function_call = getattr(tc, "function", None)
+                        if function_call is None:
+                            continue
                         try:
-                            arguments = json.loads(tc.function.arguments)
+                            arguments = json.loads(function_call.arguments)
                         except (json.JSONDecodeError, TypeError):
                             arguments = {}
-                        original_name = self._resolve_name(tc.function.name, functions)
-                        sanitized_name = tc.function.name
+                        original_name = self._resolve_name(function_call.name, functions)
+                        sanitized_name = function_call.name
                         tool_calls.append(
                             {
                                 "call_id": tc.id or f"call_{uuid.uuid4().hex}",
@@ -274,18 +290,24 @@ class DeepSeekProvider(AgentProvider):
         functions: list[AgentFunction],
     ) -> AsyncGenerator[dict[str, object], None]:
         """Execute one streaming API call attempt. Yields delta/done chunks or raises."""
-        kwargs: dict = {
-            "model": self._model,
-            "messages": oai_messages,
-            "max_tokens": 2048,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
         if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-
-        stream = await self._client.chat.completions.create(**kwargs)
+            stream = await self._client.chat.completions.create(
+                model=self._model,
+                messages=cast(Any, oai_messages),
+                max_tokens=2048,
+                stream=True,
+                stream_options={"include_usage": True},
+                tools=cast(Any, tools),
+                tool_choice="auto",
+            )
+        else:
+            stream = await self._client.chat.completions.create(
+                model=self._model,
+                messages=cast(Any, oai_messages),
+                max_tokens=2048,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
 
         # Accumulate streaming content and tool calls
         text_buffer: list[str] = []
@@ -455,7 +477,7 @@ class DeepSeekProvider(AgentProvider):
         """
         tools: list[dict[str, object]] = []
         for func in functions:
-            tool = {
+            tool: dict[str, object] = {
                 "type": "function",
                 "function": {
                     "name": self._sanitize_name(func.name),

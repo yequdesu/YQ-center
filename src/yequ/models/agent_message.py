@@ -6,6 +6,7 @@ from sqlalchemy import JSON, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid
+from yequ.types import JsonObject
 
 
 class AgentMessage(Base):
@@ -18,7 +19,7 @@ class AgentMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    tool_calls: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    tool_calls: Mapped[list[JsonObject] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )

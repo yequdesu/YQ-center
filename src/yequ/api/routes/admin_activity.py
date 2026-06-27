@@ -20,6 +20,7 @@ from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.timeline import TimelineEvent
+from yequ.types import JsonObject
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -77,7 +78,7 @@ async def get_invocation(
     jresult = await db.execute(
         select(Job).where(Job.invocation_id == invocation_id).order_by(Job.created_at)
     )
-    jobs = jresult.scalars().all()
+    jobs = list(jresult.scalars().all())
     return _inv_detail(inv, jobs)
 
 
@@ -104,7 +105,7 @@ async def list_invocations(
     out = []
     for inv in invs:
         jresult = await db.execute(select(Job).where(Job.invocation_id == inv.invocation_id))
-        jobs = jresult.scalars().all()
+        jobs = list(jresult.scalars().all())
         out.append(_inv_detail(inv, jobs))
     return out
 
@@ -176,8 +177,8 @@ async def list_locks(
     node_id: str | None = None,
     job_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: dict = Depends(get_admin_token),
-) -> list[dict]:
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[JsonObject]:
     """List resource locks with optional filters."""
     stmt = select(ResourceLock)
     if status:

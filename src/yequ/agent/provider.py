@@ -6,7 +6,10 @@ directly — all execution goes through the Center's standard path.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+
+from yequ.types import JsonObject
 
 # Fields that must be hidden from LLM context (internal execution flags).
 # The DB and API retain these for audit; the LLM must not see them.
@@ -31,7 +34,7 @@ def sanitize_tool_payload_for_agent(value: object) -> object:
     return value
 
 
-def is_task_completed(tool_call: dict) -> bool:
+def is_task_completed(tool_call: dict[str, object]) -> bool:
     """Return True if this tool call is the task_completed signal."""
     return tool_call.get("name") == "task_completed"
 
@@ -59,8 +62,8 @@ class AgentFunction:
 
     name: str
     description: str = ""
-    input_schema: dict[str, object] | None = None
-    output_schema: dict[str, object] | None = None
+    input_schema: JsonObject | None = None
+    output_schema: JsonObject | None = None
     risk: str = "safe"
     effect: str = "read"
     timeout_sec: int = 30
@@ -156,6 +159,22 @@ class AgentProvider(ABC):
         should build messages from the prompt and available functions.
         """
         ...
+
+    def invoke_stream(
+        self,
+        prompt: str = "",
+        *,
+        available_functions: list[AgentFunction] | None = None,
+        messages: list[AgentMessage] | None = None,
+        context: dict[str, object] | None = None,
+    ) -> AsyncGenerator[dict[str, object], None]:
+        """Optionally stream provider output as delta/done/error events."""
+
+        async def _raise() -> AsyncGenerator[dict[str, object], None]:
+            raise NotImplementedError(f"{self.provider_name()} does not support streaming")
+            yield {}
+
+        return _raise()
 
     @abstractmethod
     def list_functions(self) -> list[AgentFunction]:

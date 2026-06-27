@@ -12,15 +12,17 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.config import Settings
 from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol.enums import NodeStatus
 from yequ.services.timeline_writer import add_timeline_event
+from yequ.types import JsonObject
 
 # ── Effective status computation ──
 
 
-def compute_effective_status(node: Node, settings) -> str:
+def compute_effective_status(node: Node, settings: Settings) -> str:
     """Return the effective (runtime) status of a Node.
 
     Rules:
@@ -69,7 +71,7 @@ def compute_effective_status(node: Node, settings) -> str:
 # ── Schedulability ──
 
 
-def is_node_schedulable(node: Node, settings) -> tuple[bool, str | None]:
+def is_node_schedulable(node: Node, settings: Settings) -> tuple[bool, str | None]:
     """Return (True, None) if the node can accept new jobs, or (False, reason)."""
     effective = compute_effective_status(node, settings)
     if effective == NodeStatus.ONLINE:
@@ -88,10 +90,10 @@ async def _write_node_timeline(
     event_type: str,
     node: Node,
     *,
-    data: dict | None = None,
+    data: JsonObject | None = None,
 ) -> None:
     """Write a node lifecycle timeline event synchronously."""
-    event_data: dict = {
+    event_data: JsonObject = {
         "node_id": node.node_id,
         "stored_status": node.status,
         "effective_status": node.status,
@@ -116,7 +118,7 @@ async def _write_node_timeline(
 
 async def mark_timed_out_nodes(
     db: AsyncSession,
-    settings,
+    settings: Settings,
 ) -> list[Node]:
     """Scan for nodes with stale heartbeats and transition them to offline.
 
@@ -178,7 +180,7 @@ async def mark_timed_out_nodes(
 async def _timeout_queued_jobs_for_node(
     db: AsyncSession,
     node_id: str,
-    settings,
+    settings: Settings,
 ) -> int:
     """Cancel queued jobs for a node that just went offline.
 
@@ -216,7 +218,7 @@ async def _timeout_queued_jobs_for_node(
 # ── Liveness snapshot for API ──
 
 
-def get_node_liveness_snapshot(node: Node, settings) -> dict:
+def get_node_liveness_snapshot(node: Node, settings: Settings) -> JsonObject:
     """Return a dict suitable for JSON API response with liveness details."""
     effective = compute_effective_status(node, settings)
     now = datetime.now(UTC)

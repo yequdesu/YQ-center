@@ -7,6 +7,7 @@ from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from yequ.models.base import Base, generate_uuid
+from yequ.types import JsonObject
 
 
 class ApprovalRequest(Base):
@@ -20,7 +21,7 @@ class ApprovalRequest(Base):
     function_name: Mapped[str] = mapped_column(String(256), nullable=False)
     target_node_id: Mapped[str] = mapped_column(String(128), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
-    input_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_snapshot: Mapped[JsonObject | None] = mapped_column(JSON, nullable=True)
     risk: Mapped[str] = mapped_column(String(16), nullable=False)
     effect: Mapped[str] = mapped_column(String(16), nullable=False)
     resource_keys: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

@@ -1,13 +1,14 @@
 """FastAPI application factory."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.admin_activity import router as admin_activity_router
@@ -146,7 +147,10 @@ def create_app() -> FastAPI:
 
     # ── Debug: log raw request body for encoding diagnostics ──
     @app.middleware("http")
-    async def log_raw_body(request, call_next):
+    async def log_raw_body(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         from yequ.config import get_settings
 
         settings = get_settings()
@@ -202,17 +206,17 @@ def create_app() -> FastAPI:
         if _favicon.exists():
 
             @app.get("/console/favicon.svg", include_in_schema=False)
-            async def _console_favicon():
+            async def _console_favicon() -> FileResponse:
                 return FileResponse(_favicon)
 
         # SPA fallback: all /console/* routes serve index.html for client-side routing
         @app.get("/console/{full_path:path}", include_in_schema=False)
-        async def _console_spa(full_path: str):
+        async def _console_spa(full_path: str) -> FileResponse:
             # Actual files at root level (favicon, etc.) are handled by explicit routes above
             return FileResponse(_console_dir / "index.html")
 
         @app.get("/console", include_in_schema=False)
-        async def _console_index():
+        async def _console_index() -> FileResponse:
             return FileResponse(_console_dir / "index.html")
 
     return app
