@@ -1,4 +1,4 @@
-"""DeepSeek LLM Provider -- OpenAI-compatible API.
+﻿"""DeepSeek LLM Provider -- OpenAI-compatible API.
 
 Uses the openai SDK pointed at DeepSeek's base URL.
 Converts AgentFunction[] to OpenAI tool definitions.
@@ -392,23 +392,8 @@ class DeepSeekProvider(AgentProvider):
 
     def _system_prompt(self, functions: list[AgentFunction]) -> str:
         """Build the system prompt for multi-turn agent conversations."""
-        func_descriptions = "\n".join(f"- {f.name}: {f.description}" for f in functions)
-        return (
-            "You are an infrastructure control agent. You have these tools:\n"
-            f"{func_descriptions}\n\n"
-            "Rules:\n"
-            "1. Analyze the user's request and choose appropriate tools.\n"
-            "2. You may call multiple tools in one response.\n"
-            "3. After receiving tool results, either call more tools or respond "
-            "with the final answer as normal assistant text.\n"
-            "4. Never invent tool names.\n"
-            "5. If a tool fails or is denied, explain the situation to the user.\n"
-            "6. Never mention internal implementation fields such as dry_run "
-            "or approval_id. If an operation is previewed before execution, "
-            "describe it to the user as a preflight check or 棰勬紨.\n"
-            "7. Do not retry a denied write operation by changing internal "
-            "parameters. Ask the user for a new instruction when approval is denied.\n"
-        )
+        func_descriptions = "\n".join(_function_prompt_line(f) for f in functions)
+        return _system_prompt_text(func_descriptions)
 
     def debug_system_prompt(self, functions: list[AgentFunction]) -> str:
         """Return the exact system prompt used for provider calls."""
@@ -480,11 +465,16 @@ class DeepSeekProvider(AgentProvider):
         """
         tools: list[dict[str, object]] = []
         for func in functions:
+            description = func.description or func.name
+            if func.source_nodes:
+                description = (
+                    f"{description}\nAvailable on nodes: {', '.join(func.source_nodes)}."
+                )
             tool: dict[str, object] = {
                 "type": "function",
                 "function": {
                     "name": self._sanitize_name(func.name),
-                    "description": func.description or func.name,
+                    "description": description,
                     "parameters": func.input_schema or {"type": "object", "properties": {}},
                 },
             }
@@ -511,3 +501,30 @@ def _sanitize_tool_observation_content(content: str) -> str:
         return content
     sanitized = sanitize_tool_payload_for_agent(parsed)
     return json.dumps(sanitized, ensure_ascii=False)
+
+
+def _function_prompt_line(func: AgentFunction) -> str:
+    source = f" [nodes: {', '.join(func.source_nodes)}]" if func.source_nodes else ""
+    return f"- {func.name}{source}: {func.description}"
+
+
+def _system_prompt_text(func_descriptions: str) -> str:
+    return (
+        "You are an infrastructure control agent. You have these tools:\n"
+        f"{func_descriptions}\n\n"
+        "Rules:\n"
+        "1. Analyze the user's request and choose appropriate tools.\n"
+        "2. You may call multiple tools in one response.\n"
+        "3. After receiving tool results, either call more tools or respond "
+        "with the final answer as normal assistant text.\n"
+        "4. Never invent tool names.\n"
+        "5. If a tool fails or is denied, explain the situation to the user.\n"
+        "6. Never mention internal implementation fields such as dry_run "
+        "or approval_id. If an operation is previewed before execution, "
+        "describe it to the user as a preflight check.\n"
+        "7. Do not retry a denied write operation by changing internal "
+        "parameters. Ask the user for a new instruction when approval is denied.\n"
+        "8. Respect tool source nodes. If the listed tools for the current "
+        "request are linux.* tools, use linux.* tools. If they are system.* "
+        "tools, use system.* tools. Do not call a tool that is not listed above.\n"
+    )

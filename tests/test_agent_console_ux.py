@@ -666,6 +666,66 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
     assert set(duplicate["source_nodes"]) == {"source-node-a", "source-node-b"}
 
 
+@pytest.mark.asyncio
+async def test_available_functions_filters_to_pinned_node_in_production_mode(
+    client: AsyncClient,
+):
+    """Pinned production requests expose only the selected node's capabilities."""
+    from datetime import UTC, datetime
+
+    from yequ.api.deps import get_db
+    from yequ.api.routes.agent import _available_functions
+    from yequ.config import get_settings
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
+
+    db_gen = get_db()
+    db = await db_gen.__anext__()
+    try:
+        for node_id, function_name in (
+            ("winClient", "system.info"),
+            ("linux-node-01", "linux.system.info"),
+        ):
+            node = Node(
+                node_id=node_id,
+                node_name=node_id,
+                token_hash=hash_token(f"{node_id}-token"),
+                status="online",
+                last_heartbeat_at=datetime.now(UTC),
+            )
+            db.add(node)
+            await db.flush()
+            db.add(
+                Capability(
+                    node_record_id=node.id,
+                    plugin_id="test.pinned",
+                    plugin_version="1.0",
+                    capability_type="function",
+                    name=function_name,
+                    status="loaded",
+                    risk="safe",
+                    effect="read",
+                    is_active=True,
+                )
+            )
+        await db.commit()
+
+        settings = get_settings()
+        old_test_mode = settings.test_mode
+        settings.test_mode = False
+        try:
+            funcs = await _available_functions(db, target_node_id="linux-node-01")
+        finally:
+            settings.test_mode = old_test_mode
+    finally:
+        await db_gen.aclose()
+
+    names = {func.name for func in funcs}
+    assert "linux.system.info" in names
+    assert "system.info" not in names
+
+
 # -- Helpers --
 
 

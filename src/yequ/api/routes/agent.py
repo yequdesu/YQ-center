@@ -291,7 +291,11 @@ async def _resolve_provider(provider_name: str) -> AgentProvider:
     )
 
 
-async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
+async def _available_functions(
+    db: AsyncSession,
+    *,
+    target_node_id: str | None = None,
+) -> list[AgentFunction]:
     """Build the agent function list from DB capabilities on schedulable nodes.
 
     In production, Agent tools must reflect actual Node registrations. Test
@@ -318,6 +322,8 @@ async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
     for cap in cap_result.unique().scalars().all():
         # Skip capabilities on non-schedulable nodes
         if cap.node is None:
+            continue
+        if target_node_id and not settings.test_mode and cap.node.node_id != target_node_id:
             continue
         schedulable, _ = is_node_schedulable(cap.node, settings)
         if not schedulable:
@@ -540,7 +546,7 @@ async def invoke_agent_endpoint(
     Provider "fake" is auto-created if not registered.
     """
     provider = await _resolve_provider(body.provider_name)
-    available = await _available_functions(db)
+    available = await _available_functions(db, target_node_id=body.target_node_id)
 
     resp = await agent_invoke(
         db,
@@ -567,7 +573,7 @@ async def invoke_agent_stream_endpoint(
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
-    available = await _available_functions(db)
+    available = await _available_functions(db, target_node_id=body.target_node_id)
     # Release the route-level session before entering the long-lived SSE stream.
     # The stream creates its own short-lived sessions internally so no single
     # connection is held across LLM calls or job polling.
@@ -622,7 +628,7 @@ async def agent_plan_endpoint(
         session_id=body.session_id,
         prompt=body.prompt,
         target_node_id=target_node_id,
-        available_functions=await _available_functions(db),
+        available_functions=await _available_functions(db, target_node_id=target_node_id),
         execution_mode=body.execution_mode,
         max_total_duration_sec=body.max_total_duration_sec,
     )
@@ -636,7 +642,7 @@ async def agent_plan_stream_endpoint(
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     target_node_id = body.target_node_id or await _default_target_node_id(db)
-    available = await _available_functions(db)
+    available = await _available_functions(db, target_node_id=target_node_id)
     # Release route-level session before SSE stream (same pattern as invoke/stream)
     await db.close()
     return _sse_response(
