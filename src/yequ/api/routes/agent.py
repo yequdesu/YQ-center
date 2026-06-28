@@ -544,15 +544,13 @@ async def create_session_endpoint(
     Returns session metadata including constraint parameters
     that will be enforced during agent invocation.
     """
-    async with yequ_db.async_session_factory() as db:
-        return await create_agent_session(
-            db,
-            actor_id=body.actor_id,
-            execution_mode=body.execution_mode,
-            max_depth=body.max_depth,
-            max_steps=body.max_steps,
-            max_total_duration_sec=body.max_total_duration_sec,
-        )
+    return await create_agent_session(
+        actor_id=body.actor_id,
+        execution_mode=body.execution_mode,
+        max_depth=body.max_depth,
+        max_steps=body.max_steps,
+        max_total_duration_sec=body.max_total_duration_sec,
+    )
 
 
 @router.post("/invoke", response_model=AgentInvokeResponse)
