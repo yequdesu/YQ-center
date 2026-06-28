@@ -1,5 +1,15 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { Bot, ClipboardList, Gauge, GitBranch, History, Network, ShieldCheck, Wrench } from "lucide-react";
+import {
+  Bot,
+  ClipboardList,
+  Files,
+  Gauge,
+  GitBranch,
+  History,
+  Network,
+  ShieldCheck,
+  Wrench,
+} from "lucide-react";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: Gauge },
@@ -9,6 +19,7 @@ const navItems = [
   { to: "/maintenance", label: "Maintenance", icon: Wrench },
   { to: "/invocations", label: "Invocations", icon: GitBranch },
   { to: "/jobs", label: "Jobs", icon: ClipboardList },
+  { to: "/artifacts", label: "Artifacts", icon: Files },
   { to: "/timeline", label: "Timeline", icon: History },
 ];
 

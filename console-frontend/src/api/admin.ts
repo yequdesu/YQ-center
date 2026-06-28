@@ -4,6 +4,7 @@ import type {
   AgentSessionDetail,
   AgentSessionSummary,
   CapabilitySummary,
+  CenterArtifactDetail,
   InvocationDetail,
   JobSummary,
   MaintenanceArtifactDetail,
@@ -276,4 +277,24 @@ export function listMaintenanceRunArtifacts(
       step_id: params?.stepId,
     },
   );
+}
+
+// Center Artifacts
+
+export function listArtifacts(params?: {
+  nodeId?: string;
+  sessionId?: string;
+  invocationId?: string;
+  jobId?: string;
+  artifactType?: string;
+  limit?: number;
+}) {
+  return api.get<{ artifacts: CenterArtifactDetail[] }>("/admin/artifacts", {
+    node_id: params?.nodeId,
+    session_id: params?.sessionId,
+    invocation_id: params?.invocationId,
+    job_id: params?.jobId,
+    artifact_type: params?.artifactType,
+    limit: params?.limit ?? 100,
+  });
 }

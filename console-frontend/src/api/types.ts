@@ -300,6 +300,26 @@ export interface MaintenanceArtifactDetail {
   created_at: string;
 }
 
+export interface CenterArtifactDetail {
+  artifact_id: string;
+  artifact_type: string;
+  title: string | null;
+  summary: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+  session_id: string | null;
+  invocation_id: string | null;
+  job_id: string | null;
+  node_id: string | null;
+  capability_source_id: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+  status: string;
+  created_at: string | null;
+  blob_id: string | null;
+  download_url: string;
+}
+
 export interface AgentSessionMessage {
   message_id: string;
   session_id: string;

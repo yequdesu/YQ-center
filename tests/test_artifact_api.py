@@ -111,3 +111,32 @@ async def test_yqp_artifact_upload_rejects_invalid_base64(
     )
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_yqp_artifact_upload_rejects_overlong_job_id(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+
+    response = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "artifact.upload",
+            node.node_id,
+            payload={
+                "artifact_type": "file",
+                "content_type": "text/plain",
+                "title": "bad-job-id.txt",
+                "data_base64": base64.b64encode(b"bad job id").decode("ascii"),
+                "job_id": "job_" + "x" * 40,
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "schema_invalid"
+    assert "job_id exceeds max length" in detail["message"]

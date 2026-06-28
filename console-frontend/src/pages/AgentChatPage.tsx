@@ -21,6 +21,7 @@ import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type 
 import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
+import { ArtifactList, artifactsFromResult } from "@/components/ArtifactCards";
 import { Button } from "@/components/Button";
 import { EmptyState } from "@/components/EmptyState";
 import {
@@ -1074,6 +1075,7 @@ function ThinkingIndicator() {
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   const [expanded, setExpanded] = useState(false);
+  const artifacts = artifactsFromResult(toolCall.result);
 
   const hasDetails = Boolean(
     toolCall.result ||
@@ -1170,6 +1172,11 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
           {toolCall.result && (
             <div>
               <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Result</p>
+              {artifacts.length > 0 && (
+                <div className="mb-2">
+                  <ArtifactList artifacts={artifacts} />
+                </div>
+              )}
               <JsonView data={toolCall.result} />
             </div>
           )}

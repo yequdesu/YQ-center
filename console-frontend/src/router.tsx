@@ -10,6 +10,7 @@ import { MaintenanceRunPage } from "@/pages/MaintenanceRunPage";
 import { InvocationsPage } from "@/pages/InvocationsPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { TimelinePage } from "@/pages/TimelinePage";
+import { ArtifactsPage } from "@/pages/ArtifactsPage";
 
 const rootRoute = createRootRoute({
   component: () => <AppShell />,
@@ -69,6 +70,12 @@ const jobsRoute = createRoute({
   component: JobsPage,
 });
 
+const artifactsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/artifacts",
+  component: ArtifactsPage,
+});
+
 const timelineRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/timeline",
@@ -85,6 +92,7 @@ const routeTree = rootRoute.addChildren([
   maintenanceRunRoute,
   invocationsRoute,
   jobsRoute,
+  artifactsRoute,
   timelineRoute,
 ]);
 

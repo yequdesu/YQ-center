@@ -80,6 +80,48 @@ async def _register_linux_system_info(client: AsyncClient, node_id: str, token: 
     assert resp.status_code == 200, resp.text
 
 
+async def _register_artifact_output_capability(
+    client: AsyncClient,
+    node_id: str,
+    token: str,
+) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "windows.artifacts",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "windows.screen.capture",
+                                "description": "Capture screen as Center artifact.",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "artifacts": {"type": "array"},
+                                    },
+                                },
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "user",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 @pytest.mark.asyncio
 async def test_register_capabilities_writes_definition_and_source(
     client: AsyncClient,
@@ -141,6 +183,31 @@ async def test_meta_capability_search_and_describe_api(
     node_detail = node_resp.json()
     assert node_detail["capability_source_count"] == 1
     assert node_detail["capability_sources"][0]["canonical_name"] == "system.info"
+
+
+@pytest.mark.asyncio
+async def test_capability_describe_infers_artifact_outputs_from_schema(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_artifact_output_capability(client, node.node_id, token)
+
+    describe_resp = await client.get("/admin/meta/capabilities/windows.screen.capture")
+    assert describe_resp.status_code == 200, describe_resp.text
+    detail = describe_resp.json()
+    assert detail["artifact_outputs"] == [
+        {
+            "field": "artifacts",
+            "kind": "center_artifact_reference",
+            "description": (
+                "Tool output may contain Center artifact references with "
+                "artifact_id, content_type, size_bytes, and download_url."
+            ),
+            "producer": "windows.screen.capture",
+        }
+    ]
 
 
 @pytest.mark.asyncio

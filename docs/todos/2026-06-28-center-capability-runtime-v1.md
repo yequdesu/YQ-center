@@ -58,6 +58,19 @@ Implemented in the current slice:
     returns `artifact.accepted` with the stored artifact metadata;
   - storage root is configurable through `YEQU_ARTIFACT_STORAGE_DIR`;
   - upload size is bounded by `YEQU_ARTIFACT_MAX_UPLOAD_BYTES`.
+- Phase 3 normal-use integration is now at a stable validation point:
+  - artifact creation validates Center schema limits before hitting database
+    constraints, so invalid Node uploads fail as protocol errors instead of
+    surfacing as database 500s;
+  - capability descriptions infer `artifact_outputs` from an `artifacts`
+    result schema when the Node manifest does not declare the artifact contract
+    explicitly;
+  - Agent prompt context now tells the model how to treat Center artifact
+    references without inventing binary/media contents;
+  - Console has an Artifact Browser route for listing, filtering, previewing,
+    opening, and downloading Center artifacts;
+  - Agent tool-call cards render artifact previews/links inline when a tool
+    result contains `artifacts`.
 
 Not implemented in this slice:
 

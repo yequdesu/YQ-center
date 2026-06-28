@@ -450,7 +450,11 @@ def _merge_definition_manifest(
             _json_object_or_none(manifest.get("value_schema")) or definition.value_schema
         )
     definition.artifact_inputs = _list_of_dicts(manifest.get("artifact_inputs"))
-    definition.artifact_outputs = _list_of_dicts(manifest.get("artifact_outputs"))
+    artifact_outputs = _list_of_dicts(manifest.get("artifact_outputs"))
+    definition.artifact_outputs = artifact_outputs or _infer_artifact_outputs(
+        definition.output_schema,
+        registered_name=registered_name,
+    )
     definition.examples = _list_of_dicts(manifest.get("examples"))
     definition.tags = sorted(
         {
@@ -540,6 +544,29 @@ def _definition_detail(
         }
     )
     return data
+
+
+def _infer_artifact_outputs(
+    output_schema: JsonObject | None,
+    *,
+    registered_name: str,
+) -> list[JsonObject]:
+    if not isinstance(output_schema, dict):
+        return []
+    properties = output_schema.get("properties")
+    if not isinstance(properties, dict) or "artifacts" not in properties:
+        return []
+    return [
+        {
+            "field": "artifacts",
+            "kind": "center_artifact_reference",
+            "description": (
+                "Tool output may contain Center artifact references with "
+                "artifact_id, content_type, size_bytes, and download_url."
+            ),
+            "producer": registered_name,
+        }
+    ]
 
 
 def _source_summary(
