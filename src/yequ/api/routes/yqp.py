@@ -131,26 +131,7 @@ async def yqp_endpoint(
             ).model_dump(),
         )
 
-    # 4. Message dedup
-    if not await check_and_record_message(
-        db,
-        message_id=envelope.message_id,
-        node_id=authenticated_node_id,
-        message_type=str(envelope.message_type),
-        trace_id=envelope.trace_id,
-        ttl_sec=settings.message_dedup_ttl_sec,
-    ):
-        log_stage("dedup_duplicate", envelope=envelope, node_id=authenticated_node_id)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=YqpError(
-                code=ErrorCode.DUPLICATE_MESSAGE,
-                message=f"Duplicate message_id: {envelope.message_id}",
-            ).model_dump(),
-        )
-    log_stage("dedup_recorded", envelope=envelope, node_id=authenticated_node_id)
-
-    # 5. Timestamp validation
+    # 4. Timestamp validation
     now = datetime.now(UTC)
     msg_time = envelope.timestamp
     # Handle both aware and naive datetimes
@@ -169,6 +150,27 @@ async def yqp_endpoint(
             ).model_dump(),
         )
     log_stage("timestamp_validated", envelope=envelope, node_id=authenticated_node_id)
+
+    # 5. Message dedup. Commit immediately so dedup INSERT/cleanup DELETE locks
+    # are not held while the YQP handler performs node/job work.
+    if not await check_and_record_message(
+        db,
+        message_id=envelope.message_id,
+        node_id=authenticated_node_id,
+        message_type=str(envelope.message_type),
+        trace_id=envelope.trace_id,
+        ttl_sec=settings.message_dedup_ttl_sec,
+    ):
+        log_stage("dedup_duplicate", envelope=envelope, node_id=authenticated_node_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=YqpError(
+                code=ErrorCode.DUPLICATE_MESSAGE,
+                message=f"Duplicate message_id: {envelope.message_id}",
+            ).model_dump(),
+        )
+    await db.commit()
+    log_stage("dedup_recorded", envelope=envelope, node_id=authenticated_node_id)
 
     # 6. Dispatch to handler based on message_type
     msg_type = envelope.message_type

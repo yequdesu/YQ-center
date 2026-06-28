@@ -115,6 +115,44 @@ async def test_message_id_dedup_is_persisted(client: AsyncClient, provisioned_no
 
 
 @pytest.mark.asyncio
+async def test_expired_yqp_message_cleanup_is_background_callable(db_session):
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from yequ.models.yqp_message import YqpMessage
+    from yequ.services.message_dedup import cleanup_expired_messages_once
+
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            YqpMessage(
+                message_id="expired-yqp-message",
+                node_id="node-a",
+                message_type="node.heartbeat",
+                received_at=now - timedelta(minutes=10),
+                expires_at=now - timedelta(minutes=1),
+            ),
+            YqpMessage(
+                message_id="live-yqp-message",
+                node_id="node-a",
+                message_type="node.heartbeat",
+                received_at=now,
+                expires_at=now + timedelta(minutes=5),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    deleted = await cleanup_expired_messages_once(now)
+
+    assert deleted == 1
+    await db_session.rollback()
+    result = await db_session.execute(select(YqpMessage.message_id))
+    assert set(result.scalars().all()) == {"live-yqp-message"}
+
+
+@pytest.mark.asyncio
 async def test_timestamp_skew_returns_400(client: AsyncClient, provisioned_node):
     """Timestamp outside allowed skew must return 400."""
     node, token = provisioned_node

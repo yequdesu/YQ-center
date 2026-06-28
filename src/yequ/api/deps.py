@@ -2,9 +2,10 @@
 
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ import db as yequ_db
 from yequ.config import Settings
 from yequ.config import get_settings as _get_settings
 from yequ.db import get_db as _get_db
@@ -39,7 +40,6 @@ async def get_current_node(
 
 async def get_admin_token(
     authorization: str | None = Header(default=None, alias="Authorization"),
-    db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Dependency: requires admin-scoped token.
 
@@ -48,12 +48,11 @@ async def get_admin_token(
     """
     if not get_settings().require_admin_auth:
         return {"scope": "admin", "label": "test"}
-    return await authenticate_scoped_token(db, authorization, "admin")
+    return await _authenticate_scoped_token_short_session(authorization, "admin")
 
 
 async def get_agent_token(
     authorization: str | None = Header(default=None, alias="Authorization"),
-    db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     """Dependency: requires agent-scoped token.
 
@@ -62,4 +61,21 @@ async def get_agent_token(
     """
     if not get_settings().require_admin_auth:
         return {"scope": "agent", "label": "test"}
-    return await authenticate_scoped_token(db, authorization, "agent")
+    return await _authenticate_scoped_token_short_session(authorization, "agent")
+
+
+async def _authenticate_scoped_token_short_session(
+    authorization: str | None,
+    required_scope: str,
+) -> dict[str, str]:
+    async with yequ_db.async_session_factory() as db:
+        try:
+            token = await authenticate_scoped_token(db, authorization, required_scope)
+        except HTTPException:
+            await db.commit()
+            raise
+        except Exception:
+            await db.rollback()
+            raise
+        await db.rollback()
+        return token
