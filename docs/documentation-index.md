@@ -28,20 +28,20 @@
 
 | 文档 | 状态 |
 |---|---|
-| `docs/current-project-diagnosis.md` | 历史诊断，部分内容已经被后续 refactor 修复。阅读时需结合最新代码。 |
 | `docs/architecture-handoff-2026-06-27.md` | 交接记录，部分任务已经完成，不能作为唯一计划来源。 |
 | `docs/refactor-completion-report-2026-06-25.md` | 历史完成报告。 |
 | `docs/mypy-debt-plan-2026-06-27.md` | 历史 mypy 债务计划。当前 `mypy src/` 已通过时，该文档只作背景参考。 |
 
 ## 已归档文档
 
-以下目录已经归档，不再作为当前开发约束：
+以下目录和文件已经归档，不再作为当前开发约束：
 
 ```text
 docs/archive/superpowers/
+docs/archive/current-project-diagnosis.md
 ```
 
-归档内容主要是早期分阶段实现计划和旧 UX spec。它们可以解释项目演化，但不能覆盖当前协议、代码和测试。
+归档内容主要是早期分阶段实现计划、旧 UX spec、以及已过时的架构诊断。它们可以解释项目演化，但不能覆盖当前协议、代码和测试。
 
 ## 文档一致性规则
 

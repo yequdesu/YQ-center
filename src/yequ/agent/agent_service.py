@@ -593,14 +593,13 @@ async def agent_plan(
     3. Validate, store, return plan
     """
     # -- Step 1: Intent classification via provider --
-    func_names = [f.name for f in available_functions]
     classification_prompt = (
         f"User request: {prompt}\n"
-        f"Available functions: {', '.join(func_names)}\n"
         "Classify this request as EXACTLY ONE of:\n"
         "- readonly_check: just check status, no repair needed\n"
         "- check_and_fix: check status AND repair/fix if unhealthy\n"
-        "Respond with ONLY the classification word, nothing else."
+        "Output ONLY the classification word. No punctuation, no quotes, "
+        "no explanation."
     )
 
     log.info(
@@ -788,10 +787,10 @@ async def _infer_plan_seed_calls(
         result = await asyncio.wait_for(
             provider.invoke(
                 (
-                    "Select the tool calls that best describe this maintenance "
-                    "plan. Do not execute anything; return tool calls only when "
-                    "the available tool schema is sufficient.\n"
-                    f"User request: {prompt}"
+                    "Return the tool calls you would use to handle this "
+                    "maintenance request. If no tool fits, return zero tool "
+                    "calls. Do not execute anything, do not explain.\n\n"
+                    f"Request: {prompt}"
                 ),
                 available_functions=available_functions,
                 context={"session_id": session_id, "purpose": "maintenance_plan_seed"},

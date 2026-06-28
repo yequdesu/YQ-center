@@ -62,6 +62,7 @@ export function AgentChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const creatingSessionRef = useRef(false);
   const reconciledApprovalIdsRef = useRef(new Set<string>());
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
@@ -101,6 +102,8 @@ export function AgentChatPage() {
   const {
     blocks,
     isStreaming,
+    promptContext,
+    planSteps,
     sendInvoke,
     sendPlan,
     cancel,
@@ -712,6 +715,38 @@ export function AgentChatPage() {
       {/* Conversation area */}
       <div className="flex flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-6">
+          {/* Prompt context debug panel */}
+          {promptContext && (
+            <details className="mx-auto mb-4 max-w-3xl rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-[12px]">
+              <summary className="cursor-pointer font-medium text-[var(--text-muted)]">
+                Context — {promptContext.provider_name} / {promptContext.execution_mode}
+                {promptContext.target_node_id && ` @ ${promptContext.target_node_id}`}
+                <span className="ml-2 text-[var(--text-subtle)]">({promptContext.available_functions.length} tools)</span>
+              </summary>
+              <div className="mt-2 space-y-2">
+                <div>
+                  <span className="font-semibold text-[var(--text-subtle)]">System Prompt</span>
+                  <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-2 text-[11px] leading-relaxed text-[var(--text)]">
+                    {promptContext.system_prompt}
+                  </pre>
+                </div>
+                <div>
+                  <span className="font-semibold text-[var(--text-subtle)]">
+                    Tools ({promptContext.available_functions.length})
+                  </span>
+                  <div className="mt-1 max-h-48 overflow-y-auto space-y-0.5">
+                    {promptContext.available_functions.map((f) => (
+                      <div key={f.name} className="flex items-center gap-1.5">
+                        <span className="font-mono text-[var(--text)]">{f.name}</span>
+                        <span className="text-[var(--text-subtle)]">— {f.description}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </details>
+          )}
+
           {blocks.length === 0 ? (
             <EmptyState
               icon={<Bot size={36} />}
@@ -765,18 +800,6 @@ export function AgentChatPage() {
             )}
             <div className="flex items-center gap-2">
               <select
-                value={targetNodeId}
-                onChange={(e) => setTargetNodeId(e.target.value)}
-                className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
-              >
-                <option value="">Auto routing</option>
-                {(nodesQuery.data ?? []).map((node) => (
-                  <option key={node.node_id} value={node.node_id}>
-                    {node.node_id}
-                  </option>
-                ))}
-              </select>
-              <select
                 value={executionMode}
                 onChange={(e) => setExecutionMode(e.target.value)}
                 className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
@@ -793,6 +816,33 @@ export function AgentChatPage() {
                 <option value="deepseek">deepseek</option>
                 <option value="fake">fake</option>
               </select>
+
+              <button
+                onClick={() => setShowAdvanced((v) => !v)}
+                className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] ${
+                  showAdvanced
+                    ? "bg-[var(--accent-muted)] text-[var(--accent)]"
+                    : "text-[var(--text-subtle)] hover:text-[var(--text)]"
+                }`}
+                title="Toggle advanced options"
+              >
+                {showAdvanced ? "Hide" : "Adv"}
+              </button>
+
+              {showAdvanced && (
+                <select
+                  value={targetNodeId}
+                  onChange={(e) => setTargetNodeId(e.target.value)}
+                  className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
+                >
+                  <option value="">Auto routing</option>
+                  {(nodesQuery.data ?? []).map((node) => (
+                    <option key={node.node_id} value={node.node_id}>
+                      {node.node_id}
+                    </option>
+                  ))}
+                </select>
+              )}
 
               <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
                 <input

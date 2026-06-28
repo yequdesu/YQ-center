@@ -392,8 +392,10 @@ class DeepSeekProvider(AgentProvider):
 
     def _system_prompt(self, functions: list[AgentFunction]) -> str:
         """Build the system prompt for multi-turn agent conversations."""
-        func_descriptions = "\n".join(_function_prompt_line(f) for f in functions)
-        return _system_prompt_text(func_descriptions)
+        func_descriptions = "\n".join(
+            _function_prompt_line_with_effect(f) for f in functions
+        )
+        return _system_prompt_text_enhanced(func_descriptions)
 
     def debug_system_prompt(self, functions: list[AgentFunction]) -> str:
         """Return the exact system prompt used for provider calls."""
@@ -503,14 +505,37 @@ def _sanitize_tool_observation_content(content: str) -> str:
     return json.dumps(sanitized, ensure_ascii=False)
 
 
-def _function_prompt_line(func: AgentFunction) -> str:
+def _function_prompt_line_with_effect(func: AgentFunction) -> str:
+    """Format a tool description line with source node info and effect tag.
+
+    If the Plugin-provided description is empty, derive one from the
+    function name. If very short, append the effect so the LLM can
+    distinguish safe from risky tools at a glance.
+    """
+    desc = (func.description or "").strip()
+    if not desc:
+        desc = func.name.rsplit(".", 1)[-1].replace("_", " ")
+    if len(desc) < 12:
+        tag = (
+            "(may modify state)"
+            if func.effect in ("write", "destructive")
+            else "(read only)"
+        )
+        desc = f"{desc} {tag}"
     source = f" [nodes: {', '.join(func.source_nodes)}]" if func.source_nodes else ""
-    return f"- {func.name}{source}: {func.description}"
+    return f"- {func.name}{source}: {desc}"
 
 
-def _system_prompt_text(func_descriptions: str) -> str:
+def _system_prompt_text_enhanced(func_descriptions: str) -> str:
     return (
-        "You are an infrastructure control agent. You have these tools:\n"
+        "You are an infrastructure control agent. Communicate in the "
+        "user's language throughout.\n\n"
+        "Context:\n"
+        "- A Node registers a set of capabilities (these tools).\n"
+        "- Center routes tool calls to the Node that registered the capability.\n"
+        "- A tool call fails with \"no online node\" when the target Node is "
+        "offline or has not registered that capability.\n\n"
+        "Tools:\n"
         f"{func_descriptions}\n\n"
         "Rules:\n"
         "1. Analyze the user's request and choose appropriate tools.\n"
@@ -518,13 +543,24 @@ def _system_prompt_text(func_descriptions: str) -> str:
         "3. After receiving tool results, either call more tools or respond "
         "with the final answer as normal assistant text.\n"
         "4. Never invent tool names.\n"
-        "5. If a tool fails or is denied, explain the situation to the user.\n"
+        "5. If a tool fails or is denied, explain the situation to the user. "
+        "Distinguish between: Node offline, capability not registered, "
+        "policy denied, or tool execution error.\n"
         "6. Never mention internal implementation fields such as dry_run "
         "or approval_id. If an operation is previewed before execution, "
-        "describe it to the user as a preflight check.\n"
+        "describe it to the user as a preflight check or 预演.\n"
         "7. Do not retry a denied write operation by changing internal "
         "parameters. Ask the user for a new instruction when approval is denied.\n"
-        "8. Respect tool source nodes. If the listed tools for the current "
+        "8. Respect tool source nodes. If the tools listed for the current "
         "request are linux.* tools, use linux.* tools. If they are system.* "
         "tools, use system.* tools. Do not call a tool that is not listed above.\n"
+        "9. When uncertain between a read-only and a write operation, "
+        "default to read-only and report what you found.\n"
+        "10. Never fabricate tool results. If a tool did not execute, "
+        "do not pretend it succeeded.\n\n"
+        "Output style:\n"
+        "- No emoji or decorative symbols.\n"
+        "- Concise and technically precise. Cut filler and hedging.\n"
+        "- State facts directly. Do not cheer, congratulate, or over-explain.\n"
+        "- Prefer structured output: status first, then details, then recommendations if any.\n"
     )

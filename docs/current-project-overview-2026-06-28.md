@@ -13,7 +13,7 @@ mypy src/
 
 ```text
 ruff check .: passed
-mypy src/: passed
+mypy src/: 1 error (missing jsonschema stubs, non-blocking)
 ```
 
 ## 1. 结论摘要
@@ -32,7 +32,7 @@ YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具�
 
 但项目还不能称为完全成熟的生产平台。主要不足集中在：
 
-- 生产入口仍硬编码 `reload=True`，这不适合线上运行。
+- 生产入口 `reload` 已修复为 `False`。
 - 数据库层面的 `idle_in_transaction_session_timeout`、`statement_timeout`、`lock_timeout` 尚未在代码或部署规范中固化。
 - Agent 仍会一次性接收 `available_functions`，未来多 Node、多 capability 后存在上下文爆炸风险。
 - 多 Node fan-out/fan-in、跨节点聚合执行、调度策略仍是基础阶段。
@@ -349,8 +349,7 @@ sequenceDiagram
 
 仍存在的生产风险：
 
-1. `src/yequ/main.py` 仍硬编码 `reload=True`
-   这适合开发，不适合生产。生产 reload 可能中断 in-flight request，引发孤儿连接或未完成事务。
+1. ~~`src/yequ/main.py` 仍硬编码 `reload=True`~~ 已修复：`reload=False`。
 
 2. PostgreSQL 层面的安全网未固化
    建议在数据库或部署脚本中明确：
@@ -389,7 +388,7 @@ sequenceDiagram
 
 ### P0：生产可靠性
 
-- 生产关闭 `reload=True`。
+- ~~生产关闭 `reload=True`。~~ 已修复。
 - 固化 PostgreSQL timeout 安全网。
 - 对所有长生命周期请求检查 DB session 边界。
 - 审查同步 timeline 写入路径。

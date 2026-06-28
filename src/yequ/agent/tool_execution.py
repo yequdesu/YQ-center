@@ -89,3 +89,4 @@ class AgentInvokeResponse(BaseModel):
     tool_calls: list[AgentToolCall] = Field(default_factory=list)
     usage: AgentInvokeUsage = Field(default_factory=AgentInvokeUsage)
     trace: AgentInvokeTrace = Field(default_factory=AgentInvokeTrace)
+    metadata: dict[str, object] = Field(default_factory=dict)

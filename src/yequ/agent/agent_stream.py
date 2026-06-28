@@ -1321,14 +1321,13 @@ async def agent_plan_stream(
         _select_repair_function,
     )
 
-    func_names = [f.name for f in available_functions]
     classification_prompt = (
         f"User request: {prompt}\n"
-        f"Available functions: {', '.join(func_names)}\n"
         "Classify this request as EXACTLY ONE of:\n"
         "- readonly_check: just check status, no repair needed\n"
         "- check_and_fix: check status AND repair/fix if unhealthy\n"
-        "Respond with ONLY the classification word, nothing else."
+        "Output ONLY the classification word. No punctuation, no quotes, "
+        "no explanation."
     )
 
     yield _event(

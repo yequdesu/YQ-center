@@ -81,6 +81,91 @@ Linux node 至少上报一个 runtime：
 
 不要把 OS 细节写进 Center 的调度逻辑。OS 细节只能出现在 Node manifest、runtime labels、capability name 或 metadata 中。
 
+## Linux 权限模型
+
+第一版 Linux node 默认以普通用户运行，不要求 root。
+
+Node 启动时必须对 capability 做 permission probe。未通过 probe 的能力不得注册为可用能力。Center 只根据 Node 上报的 runtime 和 capability 做调度，不替 Node 解决本地权限问题。
+
+第一版策略：
+
+| capability | 权限策略 |
+|---|---|
+| `linux.system.info` | 普通用户可执行。 |
+| `linux.metrics.snapshot` | 普通用户可执行。 |
+| `linux.process.list` | 普通用户可执行，但输出可能因权限受限而不完整，必须在 output 中标明 partial/limited。 |
+| `linux.filesystem.stat` | 仅允许白名单路径，且必须当前用户可访问。不可访问时返回 `permission_denied`。 |
+
+普通用户 runtime 示例：
+
+```json
+{
+  "runtime_id": "user",
+  "kind": "privileged",
+  "status": "online",
+  "interactive": false,
+  "privilege": "user",
+  "labels": ["linux", "filesystem:limited"],
+  "metadata": {
+    "uid": 1000,
+    "user": "yequ",
+    "visible_roots": ["/home/yequ", "/tmp"],
+    "namespace": "host"
+  }
+}
+```
+
+后续如果需要 sudo/root 能力，必须新增独立 runtime 和独立 capability，不得混入普通 capability。
+
+sudo/root runtime 示例：
+
+```json
+{
+  "runtime_id": "sudo-limited",
+  "kind": "privileged",
+  "status": "online",
+  "interactive": false,
+  "privilege": "root",
+  "labels": ["linux", "sudoers:yequnode", "filesystem:host"],
+  "metadata": {
+    "sudoers_file": "/etc/sudoers.d/yequnode",
+    "allowed_commands": ["stat", "journalctl"]
+  }
+}
+```
+
+高权限 capability 示例：
+
+```json
+{
+  "name": "linux.filesystem.stat.privileged",
+  "risk": "maintenance",
+  "effect": "read",
+  "execution_requirements": {
+    "runtime_kind": "privileged",
+    "privilege": "root",
+    "labels": ["filesystem:host"]
+  }
+}
+```
+
+执行时权限不足必须显式失败：
+
+```json
+{
+  "job_id": "job_...",
+  "status": "failed",
+  "error": {
+    "code": "permission_denied",
+    "message": "current runtime cannot access /var/log/auth.log",
+    "details": {
+      "runtime_id": "user",
+      "path": "/var/log/auth.log"
+    }
+  }
+}
+```
+
 ## 5. 第一版 Capabilities
 
 建议第一版只注册安全读能力：

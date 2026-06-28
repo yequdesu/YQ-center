@@ -10,7 +10,7 @@ def main() -> None:
         host="0.0.0.0",
         port=9800,
         factory=True,
-        reload=True,
+        reload=False,
         log_level="info",
     )
 

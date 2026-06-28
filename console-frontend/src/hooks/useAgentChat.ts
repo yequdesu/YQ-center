@@ -74,6 +74,19 @@ export interface PlanStepState {
   requiresApproval: boolean;
 }
 
+export interface PromptContextData {
+  provider_name: string;
+  system_prompt: string;
+  target_node_id: string | null;
+  execution_mode: string;
+  available_functions: Array<{
+    name: string;
+    description: string;
+    risk: string;
+    effect: string;
+  }>;
+}
+
 interface UseAgentChatOptions {
   sessionId: string;
   onPlanCreated?: (planId: string) => void;
@@ -104,6 +117,8 @@ export function useAgentChat({
 }: UseAgentChatOptions) {
   const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [promptContext, setPromptContext] = useState<PromptContextData | null>(null);
+  const [planSteps, setPlanSteps] = useState<PlanStepState[]>([]);
   const abortRef = useRef<(() => void) | null>(null);
 
   const clearBlocks = useCallback(() => {
@@ -220,6 +235,24 @@ export function useAgentChat({
       const data = event.data as Record<string, unknown>;
 
       switch (event.event_type) {
+        case "agent.prompt_context": {
+          setPromptContext({
+            provider_name: String(data.provider_name ?? ""),
+            system_prompt: String(data.system_prompt ?? ""),
+            target_node_id: optionalString(data.target_node_id) ?? null,
+            execution_mode: String(data.execution_mode ?? ""),
+            available_functions: Array.isArray(data.available_functions)
+              ? (data.available_functions as Array<Record<string, unknown>>).map((f) => ({
+                  name: String(f.name ?? ""),
+                  description: String(f.description ?? ""),
+                  risk: String(f.risk ?? "safe"),
+                  effect: String(f.effect ?? "read"),
+                }))
+              : [],
+          });
+          break;
+        }
+
         case "agent.provider.started": {
           // Optionally start an assistant_text block — but we don't create one yet.
           // We wait for the first real delta or tool_call to determine what comes first.
@@ -309,6 +342,14 @@ export function useAgentChat({
           patchToolInLastGroup(data, (tool) => ({
             ...tool,
             status: "running" as const,
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
+          }));
+          break;
+        }
+
+        case "agent.job.finished": {
+          patchToolInLastGroup(data, (tool) => ({
+            ...tool,
             targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
@@ -550,6 +591,19 @@ export function useAgentChat({
       const data = event.data as Record<string, unknown>;
 
       switch (event.event_type) {
+        case "agent.plan.step.created": {
+          setPlanSteps((prev) => [
+            ...prev,
+            {
+              seq: Number(data.seq ?? 0),
+              kind: String(data.kind ?? ""),
+              functionName: String(data.function_name ?? ""),
+              requiresApproval: Boolean(data.requires_approval),
+            },
+          ]);
+          break;
+        }
+
         case "agent.planning.summary": {
           upsertLastBlock(
             (b): b is AssistantTextBlock => b.type === "assistant_text",
@@ -632,6 +686,8 @@ export function useAgentChat({
   return {
     blocks,
     isStreaming,
+    promptContext,
+    planSteps,
     sendInvoke,
     sendPlan,
     cancel,

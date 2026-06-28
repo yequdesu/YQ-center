@@ -15,7 +15,8 @@ from yequ.agent.agent_stream import agent_invoke_stream, agent_plan_stream
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
-from yequ.api.deps import get_agent_token, get_db
+from yequ.api.deps import get_agent_token
+from yequ.db import async_session_factory
 from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.shared_types import JsonObject
@@ -512,7 +513,6 @@ def _sse_response(
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session_endpoint(
     body: CreateSessionRequest,
-    db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> dict[str, object]:
     """Create an Agent Session.
@@ -521,7 +521,6 @@ async def create_session_endpoint(
     that will be enforced during agent invocation.
     """
     return await create_agent_session(
-        db,
         actor_id=body.actor_id,
         execution_mode=body.execution_mode,
         max_depth=body.max_depth,
@@ -533,7 +532,6 @@ async def create_session_endpoint(
 @router.post("/invoke", response_model=AgentInvokeResponse)
 async def invoke_agent_endpoint(
     body: InvokeAgentRequest,
-    db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> AgentInvokeResponse:
     """Invoke an Agent Provider with a prompt.
@@ -546,10 +544,10 @@ async def invoke_agent_endpoint(
     Provider "fake" is auto-created if not registered.
     """
     provider = await _resolve_provider(body.provider_name)
-    available = await _available_functions(db, target_node_id=body.target_node_id)
+    async with async_session_factory() as db:
+        available = await _available_functions(db, target_node_id=body.target_node_id)
 
     resp = await agent_invoke(
-        db,
         provider,
         session_id=body.session_id,
         prompt=body.prompt,
@@ -563,21 +561,24 @@ async def invoke_agent_endpoint(
         target_node_id=body.target_node_id,
     )
 
+    resp.metadata["prompt_context"] = _agent_debug_metadata(
+        provider,
+        available_functions=available,
+        target_node_id=body.target_node_id,
+        execution_mode=body.execution_mode,
+    )
+
     return resp
 
 
 @router.post("/invoke/stream")
 async def invoke_agent_stream_endpoint(
     body: InvokeAgentRequest,
-    db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
-    available = await _available_functions(db, target_node_id=body.target_node_id)
-    # Release the route-level session before entering the long-lived SSE stream.
-    # The stream creates its own short-lived sessions internally so no single
-    # connection is held across LLM calls or job polling.
-    await db.close()
+    async with async_session_factory() as db:
+        available = await _available_functions(db, target_node_id=body.target_node_id)
     return _sse_response(
         agent_invoke_stream(
             provider,
@@ -616,35 +617,34 @@ async def invoke_agent_stream_endpoint(
 @router.post("/plan")
 async def agent_plan_endpoint(
     body: AgentPlanRequest,
-    db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> JsonObject:
     provider = await _resolve_provider(body.provider_name)
 
-    target_node_id = body.target_node_id or await _default_target_node_id(db)
-    return await agent_plan(
-        db,
-        provider,
-        session_id=body.session_id,
-        prompt=body.prompt,
-        target_node_id=target_node_id,
-        available_functions=await _available_functions(db, target_node_id=target_node_id),
-        execution_mode=body.execution_mode,
-        max_total_duration_sec=body.max_total_duration_sec,
-    )
+    async with async_session_factory() as db:
+        target_node_id = body.target_node_id or await _default_target_node_id(db)
+        available = await _available_functions(db, target_node_id=target_node_id)
+        plan = await agent_plan(
+            provider,
+            session_id=body.session_id,
+            prompt=body.prompt,
+            target_node_id=target_node_id,
+            available_functions=available,
+            execution_mode=body.execution_mode,
+            max_total_duration_sec=body.max_total_duration_sec,
+        )
+        return plan
 
 
 @router.post("/plan/stream")
 async def agent_plan_stream_endpoint(
     body: AgentPlanRequest,
-    db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
-    target_node_id = body.target_node_id or await _default_target_node_id(db)
-    available = await _available_functions(db, target_node_id=target_node_id)
-    # Release route-level session before SSE stream (same pattern as invoke/stream)
-    await db.close()
+    async with async_session_factory() as db:
+        target_node_id = body.target_node_id or await _default_target_node_id(db)
+        available = await _available_functions(db, target_node_id=target_node_id)
     return _sse_response(
         agent_plan_stream(
             provider,

@@ -197,6 +197,19 @@ Runtime 字段：
 
 如果不携带 `runtimes`，Center 当前不会删除旧 runtime，只会记录 warning。新 Node 开发应始终上报至少一个 runtime。
 
+### 7.1 Runtime 权限声明原则
+
+`runtime.privilege`、`runtime.labels` 和 `runtime.metadata` 是调度合同的一部分，不只是展示信息。Center 会根据 capability 的 `execution_requirements` 匹配 runtime，但 Center 不验证 Linux/Windows 本地 OS 权限。
+
+Node 是 runtime 权限声明的事实来源。Node 只能上报自己已经本地验证过的 runtime 权限，不能声明实际不可执行的权限能力。
+
+如果某个 capability 依赖特定 OS 权限，Node 必须在注册 capability 前完成本地 permission probe：
+- probe 通过：注册 capability，并声明对应 `execution_requirements`。
+- probe 不通过：不要注册该 capability，或将所属 plugin/capability 标记为 error。
+- 执行时仍遇到权限问题：必须返回 `job.finished(status="failed")`，错误码使用 `permission_denied`，不得返回空结果或伪成功。
+
+高权限能力必须与普通能力分开建模。不要让普通 read capability 在内部偷偷提权。需要 sudo/root 的能力应注册为独立 capability，并匹配独立 runtime。
+
 ## 8. Capability Registration
 
 `node.register_capabilities` 是当前 Node 能力的全量快照。Center 当前按 `(node, plugin_id)` 先停用旧能力，再插入本次 manifest 中的 function/signal。
