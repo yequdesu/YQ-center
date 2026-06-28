@@ -138,8 +138,8 @@ async def handle_register_capabilities(
 ) -> JsonObject:
     """Process node.register_capabilities — full snapshot semantics.
 
-    For each plugin in the payload:
-    - Deactivate all existing capabilities for this (node, plugin_id)
+    For the reporting node:
+    - Deactivate all existing capabilities for this node
     - Insert the new set of functions and signals as active
     - Plugins with status "error" are recorded but no functions/signals
     """
@@ -154,20 +154,16 @@ async def handle_register_capabilities(
 
     await sync_capability_runtime_snapshot(db, node, plugins, now=now)
 
+    await db.execute(
+        sql_update(Capability)
+        .where(Capability.node_record_id == node.id)
+        .values(is_active=False)
+    )
+
     for plugin in plugins:
         plugin_id = plugin["plugin_id"]
         plugin_version = plugin.get("plugin_version", "0.0.0")
         plugin_status = plugin.get("status", "loaded")
-
-        # Deactivate ALL existing capabilities for this (node, plugin_id)
-        await db.execute(
-            sql_update(Capability)
-            .where(
-                Capability.node_record_id == node.id,
-                Capability.plugin_id == plugin_id,
-            )
-            .values(is_active=False)
-        )
 
         if plugin_status == "error":
             # Record the failed plugin but don't register its functions/signals

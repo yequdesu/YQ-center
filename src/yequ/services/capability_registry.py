@@ -48,30 +48,29 @@ async def sync_capability_runtime_snapshot(
 ) -> None:
     """Synchronize Node capability snapshot into the v2 registry.
 
-    Snapshot semantics are scoped to a Node/plugin pair. Existing sources for
-    that pair are marked inactive, then the reported functions and signals are
-    written as active sources linked to semantic definitions.
+    Snapshot semantics are scoped to the reporting Node. Existing active sources
+    for that node are marked inactive first, then the reported functions and
+    signals are written as active sources linked to semantic definitions.
     """
 
     touched_definition_ids: set[str] = set()
+
+    existing_sources = await db.execute(
+        select(CapabilitySource).where(
+            CapabilitySource.node_record_id == node.id,
+            CapabilitySource.is_active == True,  # noqa: E712
+        )
+    )
+    for source in existing_sources.scalars().all():
+        source.is_active = False
+        source.status = "inactive"
+        source.unavailable_reason = "replaced_by_snapshot"
+        touched_definition_ids.add(source.definition_id)
 
     for plugin in plugins:
         plugin_id = str(plugin["plugin_id"])
         plugin_version = str(plugin.get("plugin_version") or "0.0.0")
         plugin_status = str(plugin.get("status") or "loaded")
-
-        existing_sources = await db.execute(
-            select(CapabilitySource).where(
-                CapabilitySource.node_record_id == node.id,
-                CapabilitySource.plugin_id == plugin_id,
-                CapabilitySource.is_active == True,  # noqa: E712
-            )
-        )
-        for source in existing_sources.scalars().all():
-            source.is_active = False
-            source.status = "inactive"
-            source.unavailable_reason = "replaced_by_snapshot"
-            touched_definition_ids.add(source.definition_id)
 
         if plugin_status == "error":
             continue
