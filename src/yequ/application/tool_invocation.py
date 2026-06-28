@@ -37,6 +37,9 @@ CENTER_META_TOOLS = {
     "node.status",
     "capability.search",
     "capability.describe",
+    "artifact.list",
+    "artifact.get",
+    "artifact.present",
 }
 
 
@@ -312,6 +315,11 @@ class ToolInvocationApplicationService:
         self,
         command: ExecuteToolCommand,
     ) -> ExecuteToolResult:
+        from yequ.services.artifact_service import (
+            artifact_to_dict,
+            get_artifact,
+            list_artifacts,
+        )
         from yequ.services.capability_registry import (
             capability_describe,
             capability_search,
@@ -364,6 +372,57 @@ class ToolInvocationApplicationService:
                         node_id=_string_or_none(input_data.get("node_id")),
                         include_inactive=bool(input_data.get("include_inactive", False)),
                     )
+                }
+            elif command.function_name == "artifact.list":
+                artifacts = await list_artifacts(
+                    self.db,
+                    session_id=_string_or_none(input_data.get("session_id"))
+                    or command.session_id,
+                    invocation_id=_string_or_none(input_data.get("invocation_id")),
+                    job_id=_string_or_none(input_data.get("job_id")),
+                    node_id=_string_or_none(input_data.get("node_id")),
+                    artifact_type=_string_or_none(input_data.get("artifact_type")),
+                    limit=_int_or_default(input_data.get("limit"), 20),
+                )
+                output = {"artifacts": [artifact_to_dict(artifact) for artifact in artifacts]}
+            elif command.function_name == "artifact.get":
+                artifact_id = _string_or_none(input_data.get("artifact_id"))
+                if not artifact_id:
+                    return _meta_tool_error(
+                        command,
+                        "invalid_input",
+                        "artifact_id is required",
+                    )
+                artifact = await get_artifact(self.db, artifact_id)
+                output = {"artifact": artifact_to_dict(artifact)}
+            elif command.function_name == "artifact.present":
+                artifact_ids = _string_list(input_data.get("artifact_ids"))
+                artifact_id = _string_or_none(input_data.get("artifact_id"))
+                if artifact_id:
+                    artifact_ids = [artifact_id, *artifact_ids]
+                artifact_ids = _dedupe_strings(artifact_ids)
+                if not artifact_ids:
+                    return _meta_tool_error(
+                        command,
+                        "invalid_input",
+                        "artifact_id or artifact_ids is required",
+                    )
+                if len(artifact_ids) > 10:
+                    return _meta_tool_error(
+                        command,
+                        "invalid_input",
+                        "artifact.present can show at most 10 artifacts",
+                    )
+                artifacts = [
+                    artifact_to_dict(await get_artifact(self.db, artifact_id))
+                    for artifact_id in artifact_ids
+                ]
+                output = {
+                    "artifacts": artifacts,
+                    "presentation": {
+                        "kind": "artifact_gallery",
+                        "count": len(artifacts),
+                    },
                 }
             else:
                 return _meta_tool_error(command, "unknown_meta_tool", command.function_name)
@@ -621,6 +680,23 @@ def _int_or_default(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
 
 
 def _meta_tool_error(

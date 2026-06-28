@@ -134,6 +134,62 @@ def _center_meta_functions() -> list[AgentFunction]:
             effect="read",
             timeout_sec=5,
         ),
+        AgentFunction(
+            name="artifact.list",
+            description=(
+                "List Center-managed artifacts such as images, screenshots, files, "
+                "reports, and exports. Use this to find existing media before "
+                "presenting it."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "invocation_id": {"type": "string"},
+                    "job_id": {"type": "string"},
+                    "node_id": {"type": "string"},
+                    "artifact_type": {"type": "string"},
+                    "limit": {"type": "integer", "default": 20, "maximum": 50},
+                },
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="artifact.get",
+            description="Inspect one Center-managed artifact by artifact_id.",
+            input_schema={
+                "type": "object",
+                "properties": {"artifact_id": {"type": "string"}},
+                "required": ["artifact_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="artifact.present",
+            description=(
+                "Present one or more existing Center artifacts in the Console chat UI. "
+                "Use this when the user asks to show, display, preview, or open an "
+                "image/media/file artifact. This does not visually understand images."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "artifact_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 10,
+                    },
+                },
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
     ]
 
 

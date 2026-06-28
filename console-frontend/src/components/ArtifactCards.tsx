@@ -132,8 +132,10 @@ function ArtifactImage({ artifact, alt }: { artifact: ArtifactLike; alt: string 
 }
 
 export function artifactsFromResult(result: Record<string, unknown> | undefined) {
-  const value = result?.artifacts;
-  return Array.isArray(value) ? (value as ArtifactLike[]) : [];
+  if (!result) return [];
+  const found: ArtifactLike[] = [];
+  collectArtifacts(result, found, 0);
+  return dedupeArtifacts(found);
 }
 
 function artifactUrl(artifact: ArtifactLike) {
@@ -178,6 +180,58 @@ async function openArtifact(artifact: ArtifactLike) {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function collectArtifacts(value: unknown, found: ArtifactLike[], depth: number) {
+  if (depth > 5 || value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifacts(item, found, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+
+  const record: Record<string, unknown> = value as Record<string, unknown>;
+  if (isArtifactLike(value)) {
+    found.push(value);
+  }
+
+  const artifact = record["artifact"];
+  if (isArtifactLike(artifact)) {
+    found.push(artifact);
+  }
+
+  const artifacts = record["artifacts"];
+  if (Array.isArray(artifacts)) {
+    for (const item of artifacts) {
+      if (isArtifactLike(item)) found.push(item);
+      else collectArtifacts(item, found, depth + 1);
+    }
+  }
+
+  for (const key of ["result", "output", "data"]) {
+    collectArtifacts(record[key], found, depth + 1);
+  }
+}
+
+function isArtifactLike(value: unknown): value is ArtifactLike {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.artifact_id === "string" &&
+    (typeof record.download_url === "string" || typeof record.content_type === "string")
+  );
+}
+
+function dedupeArtifacts(artifacts: ArtifactLike[]) {
+  const seen = new Set<string>();
+  const unique: ArtifactLike[] = [];
+  for (const artifact of artifacts) {
+    const key = String(artifact.artifact_id ?? artifact.download_url ?? "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(artifact);
+  }
+  return unique;
 }
 
 function formatBytes(value: number) {

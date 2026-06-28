@@ -140,3 +140,68 @@ async def test_yqp_artifact_upload_rejects_overlong_job_id(
     detail = response.json()["detail"]
     assert detail["code"] == "schema_invalid"
     assert "job_id exceeds max length" in detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.application.tool_invocation import ToolInvocationApplicationService
+    from yequ.config import get_settings
+    from yequ.services.artifact_service import ArtifactPayload, create_artifact
+
+    artifact = await create_artifact(
+        db_session,
+        ArtifactPayload(
+            data=b"fake png bytes",
+            artifact_type="image",
+            content_type="image/png",
+            title="sample.png",
+            session_id="sess_artifact_meta",
+            node_id="winClient",
+        ),
+        settings=get_settings(),
+    )
+    await db_session.commit()
+
+    service = ToolInvocationApplicationService(db_session)
+    listed = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.list",
+            input_data={"artifact_type": "image"},
+            session_id="sess_artifact_meta",
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert listed.status == "succeeded"
+    assert listed.invocation_id is None
+    assert listed.job_id is None
+    assert listed.output_data is not None
+    listed_artifacts = listed.output_data["artifacts"]
+    assert isinstance(listed_artifacts, list)
+    assert listed_artifacts[0]["artifact_id"] == artifact.artifact_id
+
+    presented = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.present",
+            input_data={"artifact_id": artifact.artifact_id},
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert presented.status == "succeeded"
+    assert presented.invocation_id is None
+    assert presented.job_id is None
+    assert presented.output_data is not None
+    assert presented.output_data["presentation"] == {
+        "kind": "artifact_gallery",
+        "count": 1,
+    }
+    presented_artifacts = presented.output_data["artifacts"]
+    assert isinstance(presented_artifacts, list)
+    assert presented_artifacts[0]["content_type"] == "image/png"
+    assert presented_artifacts[0]["download_url"] == (
+        f"/admin/artifacts/{artifact.artifact_id}/download"
+    )
