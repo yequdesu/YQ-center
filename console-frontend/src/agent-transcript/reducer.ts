@@ -28,6 +28,12 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
       if (data.internal === true) return state;
       const content = String(data.prompt ?? "");
       if (!content) return state;
+      // Skip if a user block with the same content was already added locally
+      // (for instant UI feedback before the SSE stream starts).
+      if (
+        state.blocks.length > 0
+        && state.blocks[state.blocks.length - 1].type === "user"
+      ) return state;
       return appendBlockOnce(state, {
         type: "user",
         id: `user:${event.event_id}`,

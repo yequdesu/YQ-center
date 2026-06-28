@@ -191,6 +191,34 @@ export function useAgentChat({
       executionMode: string,
       options: SendInvokeOptions = {},
     ) => {
+      const suppressUserMessage =
+        options.suppressUserMessage ?? (options.visible === false);
+
+      // Add user message and thinking indicator locally before SSE stream
+      // so the UI updates instantly instead of waiting for the first SSE event.
+      if (!suppressUserMessage) {
+        setTranscript((prev) =>
+          reduceSseEvent(prev, {
+            event_id: crypto.randomUUID(),
+            event_type: "agent.prompt.received",
+            session_id: sessionId,
+            trace_id: "",
+            timestamp: new Date().toISOString(),
+            data: { prompt, internal: false },
+          }),
+        );
+      }
+      setTranscript((prev) =>
+        reduceSseEvent(prev, {
+          event_id: crypto.randomUUID(),
+          event_type: "agent.provider.started",
+          session_id: sessionId,
+          trace_id: "",
+          timestamp: new Date().toISOString(),
+          data: {},
+        }),
+      );
+
       startStream(
         "/agent/invoke/stream",
         {
@@ -199,8 +227,7 @@ export function useAgentChat({
           prompt,
           target_node_id: targetNodeId || undefined,
           execution_mode: executionMode,
-          suppress_user_message:
-            options.suppressUserMessage ?? (options.visible === false),
+          suppress_user_message: suppressUserMessage,
         },
         handleInvokeEvent,
       );
@@ -210,6 +237,28 @@ export function useAgentChat({
 
   const sendPlan = useCallback(
     (prompt: string, targetNodeId: string, providerName: string) => {
+      // Add user message and thinking indicator locally before SSE stream.
+      setTranscript((prev) =>
+        reduceSseEvent(prev, {
+          event_id: crypto.randomUUID(),
+          event_type: "agent.prompt.received",
+          session_id: sessionId,
+          trace_id: "",
+          timestamp: new Date().toISOString(),
+          data: { prompt, internal: false },
+        }),
+      );
+      setTranscript((prev) =>
+        reduceSseEvent(prev, {
+          event_id: crypto.randomUUID(),
+          event_type: "agent.provider.started",
+          session_id: sessionId,
+          trace_id: "",
+          timestamp: new Date().toISOString(),
+          data: {},
+        }),
+      );
+
       startStream(
         "/agent/plan/stream",
         {
