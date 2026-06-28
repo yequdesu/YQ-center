@@ -2,12 +2,14 @@
 
 日期：2026-06-25
 
+> 历史说明：本文是 2026-06-25 的诊断快照，不再作为当前协议或实现合同。Node/YQP 开发以根目录 `YQP-Node-Protocol.md` 为准；文中引用的早期 `docs/superpowers/*` 计划已归档到 `docs/archive/superpowers/*`。
+
 本文档基于当前仓库代码、测试、迁移、前端产物，以及以下原始设计资料：
 
 - `YeQu-Architecture-Design.md`
 - `YQP-Node-Protocol.md`
 - `docs/agent-sse-contract.md`
-- `docs/superpowers/plans/*`
+- `docs/archive/superpowers/plans/*`（历史计划，已归档）
 
 ## 结论摘要
 
@@ -127,9 +129,9 @@ Maintenance 当前通过自己的 executor 编排 check/repair/verify，并直�
 
 ### 4. 内存状态影响生产一致性
 
-当前存在多处内存状态：
+当时存在多处内存状态：
 
-- YQP message dedup 是进程内 TTL cache。
+- YQP message dedup 当时是进程内 TTL cache；当前已迁移为数据库持久化记录。
 - Agent provider registry 是进程内注册。
 - SSE active session 状态是进程内状态。
 
@@ -228,11 +230,11 @@ Maintenance 当前通过自己的 executor 编排 check/repair/verify，并直�
 | 协议预期 | 当前实现状态 | 风险 |
 |---|---|---|
 | REST 必须，WebSocket 推荐/未来支持 | 当前只有 REST | 不能主动 push `job.dispatch` |
-| 空 poll 可返回 `job.empty` 或 HTTP 204 | 当前返回 `job.available` 且 jobs 为空 | Node SDK 兼容性需要明确 |
-| response envelope 包含 node 相关上下文 | 当前 response envelope 不带 `node_id` | 排障和协议一致性弱 |
-| dedup/replay 至少 5 分钟，最好可跨进程 | 当前为进程内 TTL cache | 多 worker/重启后重复请求不可可靠去重 |
-| Signal 进入 State Store 并支持 TTL | 当前缺少完整 State Store | Agent/Console 读取实时状态能力不足 |
-| Reconcile 有明确冲突仲裁 | 当前实现偏简化 | Node 重连和 Center 状态冲突时可能行为不一致 |
+| 空 poll 可返回 `job.empty` 或 HTTP 204 | 历史问题；当前 YQP 合同规定返回 `job.empty` 且 `jobs=[]` | 以当前 `YQP-Node-Protocol.md` 为准 |
+| response envelope 包含 node 相关上下文 | 历史问题；当前 response envelope 已包含认证后的 `node_id` | 以当前 `YQP-Node-Protocol.md` 为准 |
+| dedup/replay 至少 5 分钟，最好可跨进程 | 历史问题；当前已持久化到数据库 | 以 `tests/test_yqp_protocol.py` 为准 |
+| Signal 进入 State Store 并支持 TTL | 历史问题；当前已有 `SignalState` 与 freshness 计算 | Signal 对 Node degraded 的影响仍偏基础 |
+| Reconcile 有明确冲突仲裁 | 当前已有基础仲裁，Center terminal state 保持权威 | 复杂副作用仲裁仍可增强 |
 | 能力注册包含完整 schema、TTL、资源语义 | 主体支持，但部分语义未强约束 | Policy、资源锁、信号 freshness 可能不一致 |
 
 ## 业务逻辑完整性评估
@@ -340,10 +342,10 @@ Maintenance plan 中任何 L2 write/destructive repair step，如果需要审批
 
 ### P1：增强 YQP 生产可靠性
 
-1. 将 message dedup 从进程内 cache 迁移到 DB/Redis 等共享存储，至少保证多 worker 一致。
-2. 明确空 poll 响应兼容策略：保留 `job.available` 还是补充 `job.empty`。
-3. response envelope 补充 node 上下文或在协议文档中明确不返回。
-4. 完善 reconcile 终态仲裁测试。
+1. message dedup 已迁移到 DB，后续只需继续观察多 worker 部署行为。
+2. 空 poll 响应已明确为 `job.empty` 且 `jobs=[]`。
+3. response envelope 已包含认证后的 `node_id`。
+4. 继续完善复杂 reconcile 终态仲裁测试。
 
 ### P2：整理质量门禁
 
