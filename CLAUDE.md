@@ -20,6 +20,8 @@ These are project-level constraints. Every code change must respect them.
 
 5. **资源在获得处释放** — 锁、事务、连接——在同一个函数调用栈中获得和释放。不跨越 await，不传递给下游，不依赖外层的 finally 来兜底。
 
+6. **热路径零清理** — 不在请求路径上执行 DELETE/UPDATE 清理操作。`SELECT ... FOR UPDATE` 获取的行锁在 commit 前不释放，请求路径上任何清理类 DML 都会在多 Node 并发下产生 tuple 锁竞争。过期清理统一走后台定时任务。
+
 ## Build & Development Commands
 
 ```bash
