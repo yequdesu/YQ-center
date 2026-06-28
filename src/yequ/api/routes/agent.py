@@ -39,6 +39,104 @@ def get_provider(name: str) -> AgentProvider | None:
 
 
 # -- Default available functions for testing only --
+def _center_meta_functions() -> list[AgentFunction]:
+    """Stable Center meta tools for capability discovery."""
+    return [
+        AgentFunction(
+            name="node.list",
+            description="List known nodes, current status, platform, and capability counts.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="node.status",
+            description="Inspect one node and its registered capability sources.",
+            input_schema={
+                "type": "object",
+                "properties": {"node_id": {"type": "string"}},
+                "required": ["node_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="capability.search",
+            description=(
+                "Search Center capability definitions by task, platform, node, risk, "
+                "or effect. Returns compact candidates and source IDs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "node_id": {"type": "string"},
+                    "platform_os": {"type": "string"},
+                    "effect": {"type": "string"},
+                    "risk": {"type": "string"},
+                    "capability_type": {"type": "string", "default": "function"},
+                    "limit": {"type": "integer", "default": 20, "maximum": 50},
+                },
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="capability.describe",
+            description=(
+                "Describe one Center capability definition, including schemas, "
+                "constraints, and concrete node sources."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capability_ref": {"type": "string"},
+                    "node_id": {"type": "string"},
+                },
+                "required": ["capability_ref"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="capability.invoke",
+            description=(
+                "Invoke one concrete Center capability source. Use source_id from "
+                "capability.search or capability.describe when more than one source "
+                "exists. Put the real capability arguments in input."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capability_ref": {
+                        "type": "string",
+                        "description": "Capability ID, canonical name, alias, or registered name",
+                    },
+                    "source_id": {
+                        "type": "string",
+                        "description": "Concrete capability source ID",
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "description": "Optional node filter when using capability_ref",
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Arguments passed to the concrete Node capability",
+                    },
+                },
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+    ]
+
+
 def _default_functions() -> list[AgentFunction]:
     """L1 + L2 functions available to the Agent.
 
@@ -310,7 +408,9 @@ async def _available_functions(
     from yequ.services.node_liveness_service import is_node_schedulable
 
     settings = get_settings()
-    available = _default_functions() if settings.test_mode else []
+    available = _center_meta_functions()
+    if settings.test_mode:
+        available.extend(_default_functions())
     existing = {f.name: f for f in available}
 
     cap_result = await db.execute(

@@ -405,6 +405,18 @@ async def _execute_and_stream(
         )
         return
 
+    if result.status == "succeeded" and not result.job_id:
+        yield make_event(
+            "agent.tool_call.completed",
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "result": result.output_data or {},
+                "target_node_id": result.target_node_id,
+            },
+        )
+        return
+
     if not result.invocation_id or not result.job_id:
         yield make_event(
             "agent.tool_call.failed",

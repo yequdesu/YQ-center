@@ -1,15 +1,36 @@
 # Agent Tool RAG And Meta Tool Roadmap
 
-Status: future architecture TODO
-Scope: after Agent Runtime And Multi-Node UX phase
+Status: future sub-plan
+Scope: subordinate to `2026-06-28-center-capability-runtime-v1.md`
+
+## Relationship To Capability Runtime v1
+
+This document is no longer an independent architecture track. It is the
+retrieval and prompt-compression subset of Center Capability Runtime v1.
+
+Tool RAG must not introduce a second capability registry, a second routing
+model, or a separate execution contract. It must read from the rebuilt Center
+runtime model:
+
+- `CapabilityDefinition` for semantic identity, examples, schemas, effects,
+  risks, artifact contracts, and tags;
+- `CapabilitySource` for concrete Node/runtime implementations;
+- `RuntimeInstance` for platform, permission, filesystem, display, camera, and
+  other execution constraints;
+- Artifact/blob metadata for media and large-output affordances;
+- policy, approval, resource locks, Invocation, Job, and Timeline for actual
+  execution.
+
+The first implementation can use deterministic database search. Vector search
+or embeddings are an optimization after the runtime model is correct.
 
 ## Purpose
 
-The current multi-node phase should make Agent context structured and
-debuggable, but it will still expose raw node capabilities to the model.
+The validated multi-node baseline made Agent context structured and debuggable,
+but it still relies too much on raw Node capabilities reaching the model.
 
-That is acceptable for Win Node + Linux Node today. It will not scale when the
-project adds:
+That is acceptable only as a short-lived baseline for Win Node + Linux Node. It
+must not become the future architecture when the project adds:
 
 - screenshots;
 - camera access;
@@ -20,9 +41,9 @@ project adds:
 - device-specific runtime constraints;
 - more risky write/destructive capabilities.
 
-This roadmap describes the next architecture step: stop injecting every raw
-node tool into the prompt and move capability discovery behind Center-level
-meta tools.
+This roadmap describes one part of the next architecture step: stop injecting
+every raw node tool into the prompt and move capability discovery behind
+Center-level meta tools backed by Capability Runtime v1.
 
 ## Design Goal
 

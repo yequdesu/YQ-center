@@ -148,6 +148,10 @@ async def handle_register_capabilities(
     now = datetime.now(UTC)
     await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=now)
 
+    from yequ.services.capability_registry import sync_capability_runtime_snapshot
+
+    await sync_capability_runtime_snapshot(db, node, plugins, now=now)
+
     for plugin in plugins:
         plugin_id = plugin["plugin_id"]
         plugin_version = plugin.get("plugin_version", "0.0.0")

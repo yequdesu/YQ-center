@@ -27,7 +27,6 @@ from yequ.agent.runtime_state import (
     AgentRuntimeFailure,
     AgentRuntimeLimits,
 )
-from yequ.db import async_session_factory
 from yequ.agent.tool_execution import (
     AgentInvokeError,
     AgentInvokeOutput,
@@ -42,6 +41,7 @@ from yequ.application import (
     MaintenancePlanApplicationService,
     ToolInvocationApplicationService,
 )
+from yequ.db import async_session_factory
 from yequ.protocol import ErrorCode
 
 log = logging.getLogger(__name__)
@@ -1036,11 +1036,13 @@ async def _execute_tool_call_v2(
         await app_db.commit()
 
     # If the job was created, poll for terminal status using short sessions.
-    if result.status == "running" and result.job_id:
+    if result.status in {"created", "running"} and result.job_id:
         final_status = await _wait_invocation_terminal(
             result.invocation_id or "", deadline
         )
         result.status = final_status
+        if final_status == "succeeded" and result.invocation_id:
+            result.output_data = await _load_invocation_result(result.invocation_id)
 
     tc.target_node_id = result.target_node_id or ""
     tc.invocation_id = result.invocation_id or ""
@@ -1191,7 +1193,7 @@ async def _execute_tool_call_v2(
             tc.error["details"] = result.error_details
 
     await _write_timeline(
-        db,
+        None,
         "agent.tool.failed",
         session_id=session_id,
         actor=provider_name,
@@ -1243,6 +1245,18 @@ async def _wait_invocation_terminal(
         await asyncio.sleep(poll_interval)
 
     return "timeout"
+
+
+async def _load_invocation_result(invocation_id: str) -> dict[str, object]:
+    from yequ.db import async_session_factory
+    from yequ.models.invocation import Invocation
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Invocation).where(Invocation.invocation_id == invocation_id)
+        )
+        inv = result.scalar_one_or_none()
+        return dict(inv.result) if inv and isinstance(inv.result, dict) else {}
 
 
 # -- Session history management --

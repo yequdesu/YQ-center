@@ -22,6 +22,12 @@ from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.signal_state import SignalState
+from yequ.services.capability_registry import (
+    capability_describe,
+    capability_search,
+    node_list,
+    node_status,
+)
 from yequ.services.signal_state_service import (
     compute_signal_freshness,
     list_signal_states,
@@ -251,6 +257,75 @@ async def delete_stale_capabilities(
         "node_id": node_id,
         "deleted_count": del_result.rowcount,
     }
+
+
+@router.get("/meta/nodes")
+async def list_meta_nodes(
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[JsonObject]:
+    """List nodes through the Center capability runtime view."""
+    return await node_list(db)
+
+
+@router.get("/meta/nodes/{node_id}")
+async def get_meta_node(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
+    """Get one node through the Center capability runtime view."""
+    try:
+        return await node_status(db, node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/meta/capabilities/search")
+async def search_meta_capabilities(
+    q: str | None = None,
+    node_id: str | None = None,
+    platform_os: str | None = None,
+    effect: str | None = None,
+    risk: str | None = None,
+    capability_type: str = "function",
+    include_inactive: bool = False,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> list[JsonObject]:
+    """Search Center capability definitions and concrete sources."""
+    return await capability_search(
+        db,
+        query=q,
+        node_id=node_id,
+        platform_os=platform_os,
+        effect=effect,
+        risk=risk,
+        capability_type=capability_type,
+        include_inactive=include_inactive,
+        limit=limit,
+    )
+
+
+@router.get("/meta/capabilities/{capability_ref}")
+async def describe_meta_capability(
+    capability_ref: str,
+    node_id: str | None = None,
+    include_inactive: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> JsonObject:
+    """Describe one Center capability definition and its sources."""
+    try:
+        return await capability_describe(
+            db,
+            capability_ref,
+            node_id=node_id,
+            include_inactive=include_inactive,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/capabilities", response_model=list[CapabilitySummary])

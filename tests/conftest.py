@@ -12,10 +12,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import yequ.models.agent_message  # noqa: F401
+import yequ.models.agent_run  # noqa: F401
 import yequ.models.agent_turn  # noqa: F401
 import yequ.models.api_token  # noqa: F401
 import yequ.models.approval  # noqa: F401
+import yequ.models.artifact  # noqa: F401
 import yequ.models.capability  # noqa: F401
+import yequ.models.capability_runtime  # noqa: F401
 import yequ.models.invocation  # noqa: F401
 import yequ.models.job  # noqa: F401
 import yequ.models.maintenance_plan  # noqa: F401

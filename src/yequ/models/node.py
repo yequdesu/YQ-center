@@ -13,6 +13,7 @@ from yequ.protocol import NodeStatus
 
 if TYPE_CHECKING:
     from yequ.models.capability import Capability
+    from yequ.models.capability_runtime import CapabilitySource
     from yequ.models.runtime_instance import RuntimeInstance
 
 
@@ -38,6 +39,9 @@ class Node(Base, TimestampMixin):
 
     capabilities: Mapped[list[Capability]] = relationship(
         "Capability", back_populates="node", cascade="all, delete-orphan"
+    )
+    capability_sources: Mapped[list[CapabilitySource]] = relationship(
+        "CapabilitySource", back_populates="node", cascade="all, delete-orphan"
     )
     runtime_instances: Mapped[list[RuntimeInstance]] = relationship(
         "RuntimeInstance", back_populates="node", cascade="all, delete-orphan"

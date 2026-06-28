@@ -14,10 +14,16 @@ Use this directory for:
 
 | Document | Scope |
 |---|---|
-| `2026-06-28-agent-multinode-routing.md` | Current Agent runtime rebuild, multi-node UX, checkpointing, state-machine execution, transcript projection, prompt diagnostics, and ReAct session restoration phase. |
+| `2026-06-28-center-capability-runtime-v1.md` | Next major destructive rebuild phase: Center capability identity, definition/source schema, meta tools, artifact/blob layer, runtime permission model, cross-node transfer, Agent graph/resume, and MCP adapter boundary. |
+
+## Validated Baselines
+
+| Document | Scope |
+|---|---|
+| `2026-06-28-agent-multinode-routing.md` | Validated Agent runtime rebuild and Win/Linux multi-node UX baseline. |
 
 ## Future Architecture TODOs
 
 | Document | Scope |
 |---|---|
-| `2026-06-28-agent-tool-rag-roadmap.md` | Future Center meta tools and Tool RAG path for avoiding raw capability prompt injection. |
+| `2026-06-28-agent-tool-rag-roadmap.md` | Tool RAG and meta-tool subset of the larger Center Capability Runtime v1 plan. |

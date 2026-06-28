@@ -32,6 +32,13 @@ from yequ.services.job_service import create_job
 from yequ.services.policy import check_policy_l2
 from yequ.services.timeline_writer import add_timeline_event
 
+CENTER_META_TOOLS = {
+    "node.list",
+    "node.status",
+    "capability.search",
+    "capability.describe",
+}
+
 
 class ToolInvocationApplicationService:
     """Use-case boundary for all Center function execution requests."""
@@ -41,6 +48,11 @@ class ToolInvocationApplicationService:
 
     async def execute(self, command: ExecuteToolCommand) -> ExecuteToolResult:
         """Execute or stage a function invocation through the Center pipeline."""
+        if command.function_name in CENTER_META_TOOLS:
+            return await self._execute_center_meta_tool(command)
+        if command.function_name == "capability.invoke":
+            return await self._execute_capability_invoke(command)
+
         input_data = dict(command.input_data)
         approval_id = command.approval_id or _string_or_none(input_data.get("approval_id"))
 
@@ -235,6 +247,137 @@ class ToolInvocationApplicationService:
         """Execute a command and expose a minimal structured event stream."""
         initial = await self.execute(command)
         yield ToolExecutionEvent("tool.execution.result", initial)
+
+    async def _execute_capability_invoke(
+        self,
+        command: ExecuteToolCommand,
+    ) -> ExecuteToolResult:
+        from yequ.services.capability_registry import resolve_capability_invoke_target
+
+        input_data = dict(command.input_data)
+        capability_ref = _string_or_none(input_data.get("capability_ref")) or _string_or_none(
+            input_data.get("capability_id")
+        )
+        source_id = _string_or_none(input_data.get("source_id"))
+        node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
+        tool_input = input_data.get("input")
+        if tool_input is None:
+            tool_input = input_data.get("arguments")
+        if tool_input is None:
+            tool_input = {}
+        if not isinstance(tool_input, dict):
+            return _meta_tool_error(
+                command,
+                "invalid_input",
+                "capability.invoke input must be an object",
+            )
+
+        try:
+            target = await resolve_capability_invoke_target(
+                self.db,
+                capability_ref=capability_ref,
+                source_id=source_id,
+                node_id=node_id,
+            )
+        except ValueError as exc:
+            return _meta_tool_error(command, "capability_source_unresolved", str(exc))
+
+        delegated = ExecuteToolCommand(
+            function_name=target.registered_name,
+            input_data=dict(tool_input),
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+            target_node_id=target.node_id,
+            execution_mode=command.execution_mode,
+            max_depth=command.max_depth,
+            max_steps=command.max_steps,
+            max_total_duration_sec=command.max_total_duration_sec,
+            call_path=list(command.call_path or []) + ["capability.invoke"],
+            approval_id=command.approval_id,
+            dry_run=command.dry_run,
+            wait_for_result=command.wait_for_result,
+            deadline=command.deadline,
+            resource_keys=command.resource_keys,
+            timeout_sec=command.timeout_sec or target.timeout_sec,
+            lease_sec=command.lease_sec,
+            declared_risk=target.risk,
+            declared_effect=target.effect,
+            allow_unregistered_function=False,
+        )
+        result = await self.execute(delegated)
+        return result
+
+    async def _execute_center_meta_tool(
+        self,
+        command: ExecuteToolCommand,
+    ) -> ExecuteToolResult:
+        from yequ.services.capability_registry import (
+            capability_describe,
+            capability_search,
+            node_list,
+            node_status,
+        )
+
+        input_data = dict(command.input_data)
+        try:
+            if command.function_name == "node.list":
+                output = {"nodes": await node_list(self.db)}
+            elif command.function_name == "node.status":
+                node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
+                if not node_id:
+                    return _meta_tool_error(command, "invalid_input", "node_id is required")
+                output = {"node": await node_status(self.db, node_id)}
+            elif command.function_name == "capability.search":
+                output = {
+                    "capabilities": await capability_search(
+                        self.db,
+                        query=_string_or_none(input_data.get("query"))
+                        or _string_or_none(input_data.get("q")),
+                        node_id=_string_or_none(input_data.get("node_id")),
+                        platform_os=_string_or_none(input_data.get("platform_os")),
+                        effect=_string_or_none(input_data.get("effect")),
+                        risk=_string_or_none(input_data.get("risk")),
+                        capability_type=(
+                            _string_or_none(input_data.get("capability_type")) or "function"
+                        ),
+                        include_inactive=bool(input_data.get("include_inactive", False)),
+                        limit=_int_or_default(input_data.get("limit"), 20),
+                    )
+                }
+            elif command.function_name == "capability.describe":
+                capability_ref = _string_or_none(
+                    input_data.get("capability_ref")
+                ) or _string_or_none(
+                    input_data.get("capability_id"),
+                )
+                if not capability_ref:
+                    return _meta_tool_error(
+                        command,
+                        "invalid_input",
+                        "capability_ref is required",
+                    )
+                output = {
+                    "capability": await capability_describe(
+                        self.db,
+                        capability_ref,
+                        node_id=_string_or_none(input_data.get("node_id")),
+                        include_inactive=bool(input_data.get("include_inactive", False)),
+                    )
+                }
+            else:
+                return _meta_tool_error(command, "unknown_meta_tool", command.function_name)
+        except ValueError as exc:
+            return _meta_tool_error(command, "not_found", str(exc))
+
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name=command.function_name,
+            target_node_id=command.target_node_id,
+            risk="safe",
+            effect="read",
+            output_data=output,
+        )
 
     async def _resolve_unregistered_admin_function(
         self,
@@ -469,6 +612,31 @@ class ToolInvocationApplicationService:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _int_or_default(value: object, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _meta_tool_error(
+    command: ExecuteToolCommand,
+    error_code: str,
+    error_message: str,
+) -> ExecuteToolResult:
+    return ExecuteToolResult(
+        status="failed",
+        function_name=command.function_name,
+        target_node_id=command.target_node_id,
+        risk="safe",
+        effect="read",
+        error_code=error_code,
+        error_message=error_message,
+    )
 
 
 def _resource_keys(

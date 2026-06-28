@@ -1,12 +1,20 @@
 # Agent Runtime Rebuild And Multi-Node UX TODO
 
-Status: implemented, pending manual Win+Linux demo
-Scope: current engineering phase
+Status: validated
+Scope: completed Agent runtime / multi-node UX baseline
 Owner: Center / Agent / Console
 
 ## Implementation Checkpoint
 
 Updated: 2026-06-28
+
+Manual validation:
+
+- Win Node and Linux Node were connected together and ran stably.
+- Multi-node Agent routing, prompt diagnostics, tool node identity, transcript
+  ordering, and session restoration were accepted as the current baseline.
+- Follow-up architecture should now start from the Tool RAG / Center meta-tool
+  roadmap instead of continuing broad runtime refactors in this phase.
 
 Completed in the current engineering pass:
 
