@@ -12,7 +12,6 @@ import {
   listSessions,
   renameSession,
   deleteSession,
-  listNodes,
   getApproval,
   getJob,
   denyApproval,
@@ -51,7 +50,6 @@ export function AgentChatPage() {
     return sessionStorage.getItem(SESSION_STORAGE_KEY) ?? "";
   });
   const [prompt, setPrompt] = useState("");
-  const [targetNodeId, setTargetNodeId] = useState("");
   const [executionMode, setExecutionMode] = useState("auto");
   const [providerName, setProviderName] = useState("deepseek");
   const [autoPlan, setAutoPlan] = useState(false);
@@ -62,7 +60,6 @@ export function AgentChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const creatingSessionRef = useRef(false);
   const reconciledApprovalIdsRef = useRef(new Set<string>());
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
@@ -79,12 +76,6 @@ export function AgentChatPage() {
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
     queryFn: listSessions,
-    refetchInterval: 30_000,
-  });
-
-  const nodesQuery = useQuery({
-    queryKey: ["nodes"],
-    queryFn: listNodes,
     refetchInterval: 30_000,
   });
 
@@ -147,14 +138,6 @@ export function AgentChatPage() {
       loadPersistedMessages(sessionQuery.data.messages);
     }
   }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
-
-  useEffect(() => {
-    if (!targetNodeId) return;
-    const nodes = nodesQuery.data ?? [];
-    if (nodes.length > 0 && !nodes.some((node) => node.node_id === targetNodeId)) {
-      setTargetNodeId("");
-    }
-  }, [nodesQuery.data, targetNodeId]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -252,9 +235,9 @@ export function AgentChatPage() {
   const handleSend = () => {
     if (!sessionId || !prompt.trim() || isStreaming) return;
     if (autoPlan) {
-      sendPlan(prompt.trim(), targetNodeId, providerName);
+      sendPlan(prompt.trim(), "", providerName);
     } else {
-      sendInvoke(prompt.trim(), targetNodeId, providerName, executionMode);
+      sendInvoke(prompt.trim(), "", providerName, executionMode);
     }
     setPrompt("");
   };
@@ -312,14 +295,14 @@ export function AgentChatPage() {
       if (outcomes.length === 0) {
         return;
       }
-      sendInvoke(buildApprovalContinuationPromptV2(outcomes), targetNodeId, providerName, executionMode, {
+      sendInvoke(buildApprovalContinuationPromptV2(outcomes), "", providerName, executionMode, {
         visible: false,
         suppressUserMessage: true,
       });
     } finally {
       setAutoContinuing(false);
     }
-  }, [autoContinuing, executionMode, providerName, sendInvoke, sessionId, targetNodeId]);
+  }, [autoContinuing, executionMode, providerName, sendInvoke, sessionId]);
 
   const pendingApprovals = useMemo(
     () =>
@@ -816,33 +799,6 @@ export function AgentChatPage() {
                 <option value="deepseek">deepseek</option>
                 <option value="fake">fake</option>
               </select>
-
-              <button
-                onClick={() => setShowAdvanced((v) => !v)}
-                className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] ${
-                  showAdvanced
-                    ? "bg-[var(--accent-muted)] text-[var(--accent)]"
-                    : "text-[var(--text-subtle)] hover:text-[var(--text)]"
-                }`}
-                title="Toggle advanced options"
-              >
-                {showAdvanced ? "Hide" : "Adv"}
-              </button>
-
-              {showAdvanced && (
-                <select
-                  value={targetNodeId}
-                  onChange={(e) => setTargetNodeId(e.target.value)}
-                  className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
-                >
-                  <option value="">Auto routing</option>
-                  {(nodesQuery.data ?? []).map((node) => (
-                    <option key={node.node_id} value={node.node_id}>
-                      {node.node_id}
-                    </option>
-                  ))}
-                </select>
-              )}
 
               <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
                 <input
