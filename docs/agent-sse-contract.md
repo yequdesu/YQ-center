@@ -115,6 +115,7 @@ stream.close
 | `agent.prompt_context` | diagnostics/debug panel | Store for inspection; do not render as assistant text |
 | `agent.tool_call.created` | `tool_group` | Append to current tool_group or create new |
 | `agent.tool_call.completed` | (update tool_group) | Update tool status → succeeded |
+| `agent.tool_call.completed` where `name == "artifact.present"` | `artifact_presentation` + update tool_group | Update tool status and render returned artifacts as a first-class media block outside the tool-call card |
 | `agent.tool_call.failed` | (update tool_group) | Update tool status → failed |
 | `agent.tool_call.waiting_approval` | (update tool_group) + `system_event` (approval) | Update tool status → waiting_approval. Also render ApprovalCard |
 | `agent.approval.required` | `system_event` | Subtle banner. Frontend also shows ApprovalCard from waiting_approval |
@@ -131,3 +132,10 @@ stream.close
 5. Tool call observations MUST be written back to LLM history in the original provider call order, regardless of concurrent execution order.
 6. Approval text ("确认", "批准", "可以执行") MUST NOT auto-approve. User MUST click the ApprovalCard buttons.
 7. The stream MUST NOT synthesize fallback assistant text when the provider gives no final answer. Surface `agent.failed` with `agent_protocol_error`.
+8. Frontend MAY optimistically render the outgoing user prompt before the SSE
+   stream emits `agent.prompt.received`, but it MUST reconcile the optimistic
+   block with the server event instead of rendering a duplicate user bubble.
+9. `artifact.present` is a presentation meta tool. Its artifacts SHOULD render
+   as standalone chat media/content blocks. The tool-call card remains an
+   execution/debug record and MUST NOT be the only place where presented media
+   appears.

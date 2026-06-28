@@ -6,7 +6,7 @@ Owner: Center / Agent / Console / Node runtimes
 
 ## Implementation Checkpoint
 
-Updated: 2026-06-28
+Updated: 2026-06-29
 
 Implemented in the current slice:
 
@@ -29,6 +29,10 @@ Implemented in the current slice:
   - `node.status`;
   - `capability.search`;
   - `capability.describe`.
+- Artifact presentation meta-tool services were added:
+  - `artifact.list`;
+  - `artifact.get`;
+  - `artifact.present`.
 - Admin verification APIs were added under `/admin/meta/*`.
 - Agent-visible meta tools are now available and execute inside Center without
   creating Node Jobs.
@@ -48,6 +52,8 @@ Implemented in the current slice:
   - production Agent tool lists now expose only Center meta tools by default;
   - raw Node capabilities stay in the registry and must be reached through
     `capability.search`, `capability.describe`, and `capability.invoke`;
+  - media/artifact display is reached through `artifact.list`, `artifact.get`,
+    and `artifact.present`;
   - test mode still keeps legacy/default raw tools for isolated compatibility
     tests during the transition.
 - Phase 3 Artifact baseline was started:
@@ -71,11 +77,22 @@ Implemented in the current slice:
     opening, and downloading Center artifacts;
   - Agent tool-call cards render artifact previews/links inline when a tool
     result contains `artifacts`.
+- Agent can now actively present existing media artifacts through
+  `artifact.present`; Console renders these as independent chat artifact blocks
+  instead of burying the media inside a tool-call result.
+- Frontend user prompts are rendered optimistically and reconciled with the
+  server `agent.prompt.received` event, preventing duplicate user bubbles.
+- `node.register_capabilities` now treats a registration as the reporting
+  Node's complete capability snapshot. Active sources/capabilities from old
+  plugin IDs or old name prefixes are deactivated when the Node reports a new
+  snapshot.
+- Startup now includes a cleanup path for orphaned DB sessions, and the
+  DeepSeek provider retry cadence has been changed to fixed 5x5s intervals.
 
 Not implemented in this slice:
 
-- automatic conversion of Node tool outputs into artifact records;
 - cross-node file transfer;
+- automatic artifact lifecycle/TTL cleanup;
 - durable Agent graph/resume integration beyond schema.
 
 ## Stage Objective
@@ -614,12 +631,17 @@ Non-goal:
 - Add Node artifact reporting/upload path.
 - Add Console artifact listing and download.
 - Implement screenshot/file output as artifacts.
+- Add Agent-visible artifact presentation meta tools.
+- Render presented artifacts as first-class Console chat blocks.
 
 ### Phase 4: Remove Raw Tool Injection From Default Agent Runtime
 
 - Default Agent prompt contains only meta tools.
 - Raw Node tools are not part of normal Agent execution.
 - Add tests with many fake capabilities to prove context stays small.
+- Current production default already exposes Center meta tools instead of raw
+  Node capabilities; remaining work is stress-testing the prompt size and
+  moving toward semantic retrieval when capability counts grow.
 
 ### Phase 5: Cross-Node File Transfer
 
@@ -650,6 +672,7 @@ Non-goal:
 6. Screenshots or command outputs can be returned as artifacts, not giant chat
    payloads.
 7. Center can list artifacts for a session/invocation/job.
+7a. Agent can actively present an existing artifact through `artifact.present`.
 8. A file can move from one Node to another through Center artifact storage.
 9. Runtime permission limitations are visible and do not become silent
    fallback behavior.

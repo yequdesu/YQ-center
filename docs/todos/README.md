@@ -14,13 +14,14 @@ Use this directory for:
 
 | Document | Scope |
 |---|---|
-| `2026-06-28-center-capability-runtime-v1.md` | Next major destructive rebuild phase: Center capability identity, definition/source schema, meta tools, artifact/blob layer, runtime permission model, cross-node transfer, Agent graph/resume, and MCP adapter boundary. |
+| `2026-06-28-center-capability-runtime-v1.md` | Active runtime roadmap. Completed portions include capability Definition/Source registry, Center meta tools, artifact/blob baseline, artifact presentation, and raw-tool prompt reduction. Remaining work centers on cross-node transfer, lifecycle cleanup, Agent graph/resume, Tool RAG, and MCP adapter boundary. |
 
 ## Validated Baselines
 
 | Document | Scope |
 |---|---|
 | `2026-06-28-agent-multinode-routing.md` | Validated Agent runtime rebuild and Win/Linux multi-node UX baseline. |
+| `2026-06-28-center-capability-runtime-v1.md` | Partially validated baseline for capability identity, meta-tool execution, artifact upload/list/download/present, and node-scoped capability snapshot registration. |
 
 ## Future Architecture TODOs
 

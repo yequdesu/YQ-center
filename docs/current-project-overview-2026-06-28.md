@@ -1,7 +1,7 @@
 # YeQu Center 当前项目全貌与架构诊断
 
-日期：2026-06-28
-基于提交：`bc81047 fix: release DB sessions before long-lived SSE streams to prevent idle-in-transaction`
+日期：2026-06-29
+基于提交：`d46b244 fix: switch LLM retry from exponential backoff to 5x5s fixed intervals`
 验证命令：
 
 ```bash
@@ -12,8 +12,9 @@ mypy src/
 当前结果：
 
 ```text
-ruff check .: passed
-mypy src/: 1 error (missing jsonschema stubs, non-blocking)
+历史记录：2026-06-28 时 `ruff check .` 已通过，`mypy src/` 仅剩
+`jsonschema` stubs 相关非阻塞问题。本文档本次只做架构状态更新，未重新跑全量
+`ruff` / `mypy`。
 ```
 
 ## 1. 结论摘要
@@ -25,6 +26,11 @@ YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具�
 - Node 预配置、认证、hello、heartbeat、capability 注册、signal 上报、job poll/accept/finish/renew/cancel/reconcile 主链路。
 - Center 侧的 Invocation/Job 生命周期、Policy、Approval、Resource Lock、Timeline、SignalState、RuntimeInstance 等核心模型。
 - Agent 通过 application 层执行工具调用，而不是直接绕过 Center 调度 Node。
+- Agent 生产默认工具面已经收敛为 Center meta tools：`node.*`、
+  `capability.*`、`artifact.*`，真实 Node 能力通过 Center registry 发现和调用。
+- Artifact / Media / Blob 基础层已经进入日常使用路径：Node 可上传 artifact，
+  Console 可浏览/下载/预览，Agent 可用 `artifact.present` 主动把媒体 artifact
+  作为独立聊天内容呈现。
 - Admin route 已从早期巨型文件拆分成多个领域路由。
 - YQP message dedup 已持久化到数据库，支持跨进程和重启后的重复检测。
 - `ruff check .` 与 `mypy src/` 当前均可作为有效质量门禁。
@@ -34,7 +40,8 @@ YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具�
 
 - 生产入口 `reload` 已修复为 `False`。
 - 数据库层面的 `idle_in_transaction_session_timeout`、`statement_timeout`、`lock_timeout` 尚未在代码或部署规范中固化。
-- Agent 仍会一次性接收 `available_functions`，未来多 Node、多 capability 后存在上下文爆炸风险。
+- Agent 默认不再一次性接收所有 raw Node capabilities，但未来能力数量继续增长后
+  仍需要 Tool RAG / semantic retrieval 来治理候选工具集合。
 - 多 Node fan-out/fan-in、跨节点聚合执行、调度策略仍是基础阶段。
 - `agent_service.py`、`agent_stream.py`、`node_service.py`、`maintenance_executor.py` 仍是大模块，结构风险未完全消除。
 - Maintenance executor 仍直接创建 Invocation/Job，和统一 application 执行入口的理想边界仍有差距。
@@ -108,6 +115,8 @@ agent/*
 | YqpMessage | YQP message_id 持久化去重记录。 |
 | MaintenancePlan | 多步骤 check/repair/verify 维护计划。 |
 | AgentTurn / AgentTurnEvent | Agent SSE 交互过程的持久化事件流。 |
+| CapabilityDefinition / CapabilitySource | v2 能力注册表。Definition 表示语义能力，Source 表示某个 Node/plugin 的具体注册来源。 |
+| Artifact / ArtifactBlob | Center 托管的文件、图片、报告、日志等二进制/媒体资产及其物理存储记录。 |
 
 ## 4. 能力边界
 
@@ -281,18 +290,33 @@ sequenceDiagram
 - ToolPreflightApplicationService 做执行前能力/策略检查。
 - ToolInvocationApplicationService 做真实执行。
 - AgentTurn / AgentTurnEvent 持久化 SSE 事件。
-- provider timeout/retry/backoff 基础能力。
+- provider timeout/retry 基础能力。DeepSeek 当前使用固定 5 次、每次间隔 5 秒的
+  retry 策略，避免指数退避导致用户等待过长。
+- Center meta tools：
+  - `node.list`
+  - `node.status`
+  - `capability.search`
+  - `capability.describe`
+  - `capability.invoke`
+  - `artifact.list`
+  - `artifact.get`
+  - `artifact.present`
 
 最新修复：
 
 - Agent SSE 不再持有 route-level DB session。
 - Agent stream 内部 DB 操作被拆成短事务块，避免跨 LLM 调用、job polling、审批等待持有连接。
 - `task_completed` 元工具与 fallback synthesis 已移除。
+- 用户消息在 Console 中会先以 optimistic user block 显示，再由服务端
+  `agent.prompt.received` 事件确认并替换，避免重复气泡。
+- `artifact.present` 会渲染为独立 artifact presentation block，而不是被埋在
+  tool call 的 Result 面板里。
 
 不足：
 
-- Agent 仍会接收当前 `available_functions` 列表。多 Node、多 capability 后会出现上下文膨胀。
-- 尚未实现 `capability.search / capability.describe / capability.invoke` 这类 Tool RAG / dynamic tool discovery 机制。
+- 当前已具备 Center meta-tool discovery/invoke，但尚未实现真正的 Tool RAG /
+  semantic retrieval。能力数量继续增长后，需要从“固定 meta tools + registry
+  search”升级为检索式候选能力上下文。
 - `agent_service.py` 与 `agent_stream.py` 仍然非常大，非流式与流式路径仍有逻辑重复。
 - Agent 仍直接读取部分 models，边界可继续收敛为 application query service。
 
@@ -343,7 +367,10 @@ sequenceDiagram
 - node.hello 的 timeline 写入已通过 TimelineWriter 异步队列处理，避免阻塞 bootstrap。
 - YQP handler 增加阶段耗时日志。
 - Agent SSE 长 session 持有 DB session 的问题已修复。
-- `ruff` 与 `mypy` 当前均通过。
+- Center startup 增加孤儿 DB session 清理路径，用于降低重启后锁级联风险。
+- YQP message cleanup 已从请求热路径迁出，降低多 Node 高频 poll/heartbeat 下的
+  DELETE 锁竞争。
+- 质量门禁已经大幅收敛；具体全量 `ruff` / `mypy` 结果以最新 CI 或本地验证为准。
 
 ### 6.2 仍未闭环
 
@@ -351,7 +378,7 @@ sequenceDiagram
 
 1. ~~`src/yequ/main.py` 仍硬编码 `reload=True`~~ 已修复：`reload=False`。
 
-2. PostgreSQL 层面的安全网未固化
+2. PostgreSQL 层面的安全网仍应作为部署要求固化
    建议在数据库或部署脚本中明确：
 
    ```sql
@@ -362,7 +389,7 @@ sequenceDiagram
 
    具体值需要结合实际任务耗时再调优。
 
-3. Timeline 全局序列仍是高竞争资源
+3. Timeline 全局序列仍是潜在高竞争资源
    TimelineWriter 已缓解一部分，但所有同步 `add_timeline_event` 调用仍需要继续审查，尤其是 YQP handler、scanner、token auth、liveness 等路径。
 
 4. 默认 token bootstrap 存在生产安全风险
@@ -382,7 +409,7 @@ sequenceDiagram
 | 完整 reconnect/reconcile | 部分实现 | 仍需增强 |
 | WebSocket push | 未实现 | 后续能力 |
 | MCP adapter | 未实现 | 后续能力 |
-| 大规模 capability 上下文管理 | 未实现 | 需要尽快设计 |
+| 大规模 capability 上下文管理 | 部分实现 | 已通过 Center meta tools 降低 prompt 暴露面，Tool RAG 尚未实现 |
 
 ## 8. 主要不足清单
 
@@ -396,12 +423,13 @@ sequenceDiagram
 
 ### P1：规模化能力
 
-- 设计并实现 capability dynamic discovery：
-  - `capability.search`
-  - `capability.describe`
-  - `capability.invoke`
-- Center 维护 capability index，支持按 node、platform、risk、effect、tags、semantic query 筛选。
-- Agent 默认只看到少量元工具，不再一次性注入全部 Node capabilities。（目标状态；当前尚未完成。）
+- `capability.search` / `capability.describe` / `capability.invoke` 已进入正常路径。
+- `artifact.list` / `artifact.get` / `artifact.present` 已让 Agent 能主动呈现 Center
+  托管媒体。
+- Center 已维护 Definition/Source capability index，支持按 node、platform、risk、
+  effect 等结构化条件筛选。
+- 下一步是 Tool RAG / semantic retrieval：当 capability 数量继续增长时，从
+  registry 中检索少量候选能力，而不是把大量能力描述塞进 prompt。
 
 ### P1：多 Node 调度
 
@@ -439,9 +467,10 @@ sequenceDiagram
    - 默认 token bootstrap 改为显式安全初始化。
 
 2. Capability 上下文治理：
-   - 新增 CapabilitySearchService。
-   - 新增 `capability.search/describe/invoke` 元工具。
-   - Agent prompt 默认只注入元工具和少量候选 capability。
+   - 保持当前 Center meta tools 作为默认 Agent 工具面。
+   - 为 `capability.search` 增加 semantic retrieval / Tool RAG。
+   - 为 capability manifest 补齐 tags、examples、artifact input/output、
+     runtime constraints 等检索字段。
 
 3. YQP/Node service 拆分：
    - 保持 URL 和协议不变。

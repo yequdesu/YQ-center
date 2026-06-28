@@ -1,8 +1,25 @@
 # Artifact / Media / Blob Layer Proposal
 
-状态：proposal
+状态：partially implemented proposal
 日期：2026-06-28
 目标：为文件传输、截图、摄像头、多模态 Agent、日志包、审计附件等能力设计统一基础层。
+
+更新：2026-06-29
+
+已落地：
+
+- Center `Artifact` / `ArtifactBlob` 基础表与本地存储。
+- Admin artifact upload/list/detail/download API。
+- YQP `artifact.upload`，Node 可上传文件/图片类产物。
+- Console Artifact Browser 和 Agent chat artifact preview。
+- Agent meta tools：`artifact.list`、`artifact.get`、`artifact.present`。
+
+仍未落地：
+
+- 跨 Node 文件传输。
+- artifact TTL / GC。
+- 多模态 LLM 对图片/音频/视频内容的理解。
+- 统一 Access Grant / signed URL 模型。
 
 ## 1. 背景
 

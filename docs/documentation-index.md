@@ -1,7 +1,7 @@
 # Documentation Index
 
 状态：当前文档入口
-更新时间：2026-06-28
+更新时间：2026-06-29
 
 本文说明当前哪些文档是权威依据，哪些文档已经归档，避免后续开发引用过期计划。
 
@@ -24,13 +24,14 @@
 | `docs/proposals/README.md` | 设想/提案/路线文档目录说明。 |
 | `docs/proposals/artifact-media-blob-layer.md` | Artifact / Media / Blob 基础层提案，覆盖文件传输、截图、摄像头和多模态资产。 |
 
-## 当前诊断与交接类文档
+## 历史诊断与交接类文档
 
 | 文档 | 状态 |
 |---|---|
-| `docs/architecture-handoff-2026-06-27.md` | 交接记录，部分任务已经完成，不能作为唯一计划来源。 |
-| `docs/refactor-completion-report-2026-06-25.md` | 历史完成报告。 |
-| `docs/mypy-debt-plan-2026-06-27.md` | 历史 mypy 债务计划。当前 `mypy src/` 已通过时，该文档只作背景参考。 |
+| `docs/archive/refactor/architecture-handoff-2026-06-27.md` | 历史交接记录，不能作为当前计划来源。 |
+| `docs/archive/refactor/refactor-completion-report-2026-06-25.md` | 历史完成报告。 |
+| `docs/archive/refactor/center-agent-refactor-execution-plan.md` | 已执行过的 Center/Agent 解耦计划，当前只作背景。 |
+| `docs/archive/refactor/mypy-debt-plan-2026-06-27.md` | 历史 mypy 债务计划。 |
 
 ## 已归档文档
 
@@ -38,7 +39,7 @@
 
 ```text
 docs/archive/superpowers/
-docs/archive/current-project-diagnosis.md
+docs/archive/refactor/
 ```
 
 归档内容主要是早期分阶段实现计划、旧 UX spec、以及已过时的架构诊断。它们可以解释项目演化，但不能覆盖当前协议、代码和测试。
