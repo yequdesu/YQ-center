@@ -1162,7 +1162,7 @@ async def _execute_tool_call_v2(
         )
         if result.effect in ("write", "destructive"):
             await _write_timeline(
-                db,
+                None,
                 "l2.action.completed",
                 session_id=session_id,
                 actor=provider_name,
