@@ -1341,19 +1341,52 @@ async def _save_session_history(
 
 
 async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) -> None:
-    """Keep only the most recent N messages for a session."""
+    """Keep only the most recent N messages for a session.
+
+    Never orphan tool messages — if the cutoff would leave a tool message
+    whose parent assistant(tool_calls) was deleted, also delete the orphaned
+    tool messages.  This prevents invalid history where a tool role message
+    has no preceding assistant with matching tool_calls, which causes
+    DeepSeek API 400 errors.
+    """
     from yequ.models.agent_message import AgentMessage as AgentMessageModel
 
+    # Fetch all messages ordered by created_at (oldest first)
     result = await db.execute(
         select(AgentMessageModel)
         .where(AgentMessageModel.session_id == session_id)
-        .order_by(AgentMessageModel.created_at.desc())
-        .offset(keep_last)
+        .order_by(AgentMessageModel.created_at.asc())
     )
-    old_messages = result.scalars().all()
-    for old in old_messages:
+    all_messages = list(result.scalars().all())
+
+    if len(all_messages) <= keep_last:
+        return
+
+    # Collect tool_call_ids from the assistant messages that will be deleted
+    cutoff_index = len(all_messages) - keep_last
+    to_delete = all_messages[:cutoff_index]
+    to_keep = all_messages[cutoff_index:]
+
+    orphaned_call_ids: set[str] = set()
+    for msg in to_delete:
+        if msg.role == "assistant" and msg.tool_calls:
+            for tc in msg.tool_calls:
+                call_id = tc.get("call_id")
+                if isinstance(call_id, str):
+                    orphaned_call_ids.add(call_id)
+
+    # Also delete tool messages in the kept set whose parent was deleted
+    for msg in to_keep:
+        if (
+            msg.role == "tool"
+            and msg.tool_call_id
+            and msg.tool_call_id in orphaned_call_ids
+        ):
+            to_delete.append(msg)
+
+    for old in to_delete:
         await db.delete(old)
-    if old_messages:
+    if to_delete:
         await db.flush()
 
 # -- Loop response builder --
