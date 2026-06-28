@@ -670,7 +670,7 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
 async def test_available_functions_filters_to_pinned_node_in_production_mode(
     client: AsyncClient,
 ):
-    """Pinned production requests expose only the selected node's capabilities."""
+    """Production requests expose Center meta tools, not raw Node capabilities."""
     from datetime import UTC, datetime
 
     from yequ.api.deps import get_db
@@ -722,7 +722,12 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
         await db_gen.aclose()
 
     names = {func.name for func in funcs}
-    assert "linux.system.info" in names
+    assert "node.list" in names
+    assert "node.status" in names
+    assert "capability.search" in names
+    assert "capability.describe" in names
+    assert "capability.invoke" in names
+    assert "linux.system.info" not in names
     assert "system.info" not in names
 
 

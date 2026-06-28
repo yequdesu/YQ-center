@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.application.schemas import ToolPreflightCommand, ToolPreflightResult
+from yequ.application.tool_invocation import CENTER_META_TOOLS
 from yequ.config import get_settings
 from yequ.models.capability import Capability
 from yequ.services.capability_resolver import resolve_function
@@ -36,6 +37,18 @@ class ToolPreflightApplicationService:
                 effect=effect,
                 error_code="policy_denied",
                 error_message=policy.reason or "Policy denied",
+            )
+
+        if (
+            command.function_name in CENTER_META_TOOLS
+            or command.function_name == "capability.invoke"
+        ):
+            return ToolPreflightResult(
+                function_name=command.function_name,
+                status="ok",
+                target_node_id=command.target_node_id,
+                risk=risk,
+                effect=effect,
             )
 
         resolved = await resolve_function(

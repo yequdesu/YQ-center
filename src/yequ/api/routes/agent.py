@@ -396,11 +396,14 @@ async def _available_functions(
     *,
     target_node_id: str | None = None,
 ) -> list[AgentFunction]:
-    """Build the agent function list from DB capabilities on schedulable nodes.
+    """Build the Agent tool list.
 
-    In production, Agent tools must reflect actual Node registrations. Test
-    mode keeps the built-in defaults so isolated provider tests can exercise
-    planning/streaming without provisioning a node fixture.
+    Production exposes only stable Center meta tools. Raw Node capabilities
+    remain in Center's registry and are reached through capability.search,
+    capability.describe, and capability.invoke.
+
+    Test mode keeps legacy/default tools so older isolated provider tests can
+    exercise planning/streaming without provisioning a Node fixture.
     """
     from sqlalchemy.orm import joinedload
 
@@ -409,6 +412,9 @@ async def _available_functions(
 
     settings = get_settings()
     available = _center_meta_functions()
+    if not settings.test_mode:
+        return available
+
     if settings.test_mode:
         available.extend(_default_functions())
     existing = {f.name: f for f in available}

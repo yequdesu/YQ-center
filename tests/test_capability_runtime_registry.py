@@ -173,6 +173,24 @@ async def test_center_meta_tool_executes_without_node_job(
 
 
 @pytest.mark.asyncio
+async def test_center_meta_tool_preflight_does_not_resolve_node_capability(
+    db_session,
+) -> None:
+    from yequ.application.schemas import ToolPreflightCommand
+    from yequ.application.tool_preflight import ToolPreflightApplicationService
+
+    result = await ToolPreflightApplicationService(db_session).check(
+        ToolPreflightCommand(function_name="node.list", execution_mode="auto")
+    )
+
+    assert result.status == "ok"
+    assert result.function_name == "node.list"
+    assert result.target_node_id is None
+    assert result.risk == "safe"
+    assert result.effect == "read"
+
+
+@pytest.mark.asyncio
 async def test_capability_invoke_by_source_id_creates_real_node_job(
     client: AsyncClient,
     db_session,

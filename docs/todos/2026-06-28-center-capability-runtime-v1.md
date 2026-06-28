@@ -42,10 +42,17 @@ Implemented in the current slice:
   - does not call Nodes directly and does not add silent alias fallback.
 - Non-streaming Agent execution now waits for `created` Jobs as well as
   `running` Jobs, so meta-tool delegated invocations are not misclassified.
+- Agent tool preflight now treats Center meta tools as local Center tools
+  instead of resolving them as Node capabilities.
+- Phase 4 production default was started:
+  - production Agent tool lists now expose only Center meta tools by default;
+  - raw Node capabilities stay in the registry and must be reached through
+    `capability.search`, `capability.describe`, and `capability.invoke`;
+  - test mode still keeps legacy/default raw tools for isolated compatibility
+    tests during the transition.
 
 Not implemented in this slice:
 
-- default removal of raw Node tool injection;
 - artifact upload/download storage APIs;
 - cross-node file transfer;
 - durable Agent graph/resume integration beyond schema.
