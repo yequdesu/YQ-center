@@ -146,9 +146,10 @@ export function AgentChatPage() {
   }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
 
   useEffect(() => {
+    if (!targetNodeId) return;
     const nodes = nodesQuery.data ?? [];
     if (nodes.length > 0 && !nodes.some((node) => node.node_id === targetNodeId)) {
-      setTargetNodeId(nodes[0].node_id);
+      setTargetNodeId("");
     }
   }, [nodesQuery.data, targetNodeId]);
 
@@ -768,6 +769,7 @@ export function AgentChatPage() {
                 onChange={(e) => setTargetNodeId(e.target.value)}
                 className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2.5 py-1.5 text-[12px] text-[var(--text)] outline-none"
               >
+                <option value="">Auto routing</option>
                 {(nodesQuery.data ?? []).map((node) => (
                   <option key={node.node_id} value={node.node_id}>
                     {node.node_id}
@@ -899,6 +901,11 @@ function ApprovalQueueBar({
             <span className="truncate font-mono text-[12px] text-[var(--text-muted)]">
               {toolCall.name}
             </span>
+            {toolCall.targetNodeId && (
+              <span className="max-w-[120px] truncate rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-subtle)]">
+                @ {toolCall.targetNodeId}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]">
             {toolCall.approvalId} · choose one, then the next approval will appear automatically
@@ -1050,6 +1057,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
       toolCall.errorMessage ||
       toolCall.invocationId ||
       toolCall.jobId ||
+      toolCall.targetNodeId ||
       Object.keys(toolCall.input).length > 0 ||
       toolCall.status === "waiting_approval",
   );
@@ -1083,6 +1091,11 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
         <span className="text-[13px] font-mono font-medium text-[var(--text)]">
           {toolCall.name}
         </span>
+        {toolCall.targetNodeId && (
+          <span className="max-w-[140px] truncate rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-muted)]">
+            @ {toolCall.targetNodeId}
+          </span>
+        )}
         <span className="flex-1" />
         {statusIcon}
         <StatusBadge status={toolCall.status} />
@@ -1095,6 +1108,11 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
           {toolCall.invocationId && (
             <p className="text-[11px] font-mono text-[var(--text-subtle)]">
               invocation: {toolCall.invocationId}
+            </p>
+          )}
+          {toolCall.targetNodeId && (
+            <p className="text-[11px] font-mono text-[var(--text-subtle)]">
+              node: {toolCall.targetNodeId}
             </p>
           )}
           {toolCall.jobId && (

@@ -62,6 +62,7 @@ class AgentFunction:
     risk: str = "safe"
     effect: str = "read"
     timeout_sec: int = 30
+    source_nodes: list[str] = field(default_factory=list)
 
 
 @dataclass

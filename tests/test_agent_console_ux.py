@@ -522,6 +522,150 @@ async def test_no_online_node_produces_explicit_diagnostic(
     assert [e for e in events if e["event_type"] == "agent.fallback_synthesis"] == []
 
 
+@pytest.mark.asyncio
+async def test_tool_lifecycle_events_include_target_node_id(client: AsyncClient):
+    """Pinned-node Agent streams expose node identity on visible tool events."""
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentFunction, ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
+
+    fake = FakeAgentProvider("tool-node-event-test")
+    fake.add_function(
+        AgentFunction(name="system.info", description="Get system info", risk="safe", effect="read")
+    )
+    fake.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="",
+                tool_calls=[{"call_id": "node_evt_1", "name": "system.info", "input": {}}],
+                success=True,
+            ),
+            ProviderInvokeResult(message="Done.", tool_calls=[], success=True),
+        ]
+    )
+    register_provider(fake)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "tool-node-event-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/invoke/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "tool-node-event-test",
+            "prompt": "check node",
+            "execution_mode": "auto",
+            "target_node_id": "winClient",
+        },
+    )
+    assert stream_resp.status_code == 200
+
+    events = _parse_sse_events(stream_resp.text)
+    visible_tool_events = [
+        event
+        for event in events
+        if event["event_type"]
+        in {
+            "agent.tool_call.created",
+            "agent.tool_call.arguments",
+            "agent.invocation.created",
+            "agent.job.queued",
+            "agent.job.finished",
+            "agent.tool_call.completed",
+        }
+    ]
+    assert visible_tool_events
+    for event in visible_tool_events:
+        assert event["data"]["target_node_id"] == "winClient"
+
+    detail_resp = await client.get(f"/admin/sessions/{session_id}")
+    assert detail_resp.status_code == 200
+    tool_messages = [m for m in detail_resp.json()["messages"] if m["role"] == "tool"]
+    assert tool_messages
+    persisted_tool = json.loads(tool_messages[0]["content"])
+    assert persisted_tool["target_node_id"] == "winClient"
+
+
+@pytest.mark.asyncio
+async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
+    client: AsyncClient,
+):
+    """Prompt context keeps same-name capability sources transparent."""
+    from datetime import UTC, datetime
+
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.deps import get_db
+    from yequ.api.routes.agent import register_provider
+    from yequ.models.capability import Capability
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
+
+    db_gen = get_db()
+    db = await db_gen.__anext__()
+    try:
+        for node_id in ("source-node-a", "source-node-b"):
+            node = Node(
+                node_id=node_id,
+                node_name=node_id,
+                token_hash=hash_token(f"{node_id}-token"),
+                status="online",
+                last_heartbeat_at=datetime.now(UTC),
+            )
+            db.add(node)
+            await db.flush()
+            db.add(
+                Capability(
+                    node_record_id=node.id,
+                    plugin_id="test.source",
+                    plugin_version="1.0",
+                    capability_type="function",
+                    name="test.duplicate.capability",
+                    status="loaded",
+                    risk="safe",
+                    effect="read",
+                    is_active=True,
+                )
+            )
+        await db.commit()
+    finally:
+        await db_gen.aclose()
+
+    fake = FakeAgentProvider("source-node-context-test")
+    fake.set_sequence(
+        [ProviderInvokeResult(message="No tool needed.", tool_calls=[], success=True)]
+    )
+    register_provider(fake)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "source-node-context-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/invoke/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "source-node-context-test",
+            "prompt": "hello",
+            "execution_mode": "auto",
+        },
+    )
+    assert stream_resp.status_code == 200
+
+    events = _parse_sse_events(stream_resp.text)
+    prompt_context = next(e for e in events if e["event_type"] == "agent.prompt_context")
+    functions = prompt_context["data"]["available_functions"]
+    duplicate = next(f for f in functions if f["name"] == "test.duplicate.capability")
+    assert set(duplicate["source_nodes"]) == {"source-node-a", "source-node-b"}
+
+
 # -- Helpers --
 
 

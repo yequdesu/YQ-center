@@ -305,7 +305,7 @@ async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
 
     settings = get_settings()
     available = _default_functions() if settings.test_mode else []
-    existing = {f.name for f in available}
+    existing = {f.name: f for f in available}
 
     cap_result = await db.execute(
         select(Capability)
@@ -316,16 +316,18 @@ async def _available_functions(db: AsyncSession) -> list[AgentFunction]:
         .options(joinedload(Capability.node))
     )
     for cap in cap_result.unique().scalars().all():
-        if cap.name in existing:
-            continue
         # Skip capabilities on non-schedulable nodes
         if cap.node is None:
             continue
         schedulable, _ = is_node_schedulable(cap.node, settings)
         if not schedulable:
             continue
+        if cap.name in existing:
+            if cap.node.node_id not in existing[cap.name].source_nodes:
+                existing[cap.name].source_nodes.append(cap.node.node_id)
+            continue
         available.append(_agent_function_from_capability(cap))
-        existing.add(cap.name)
+        existing[cap.name] = available[-1]
     return available
 
 
@@ -374,6 +376,7 @@ def _agent_function_from_capability(cap: Capability) -> AgentFunction:
         effect=cap.effect or "read",
         timeout_sec=cap.timeout_sec or 30,
         output_schema=cap.output_schema,
+        source_nodes=[cap.node.node_id] if cap.node else [],
     )
 
 
@@ -429,6 +432,7 @@ def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
         "risk": func.risk,
         "effect": func.effect,
         "timeout_sec": func.timeout_sec,
+        "source_nodes": list(func.source_nodes),
         "input_schema": func.input_schema or {},
         "output_schema": func.output_schema or {},
     }

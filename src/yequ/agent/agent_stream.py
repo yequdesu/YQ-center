@@ -100,6 +100,7 @@ def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
         "risk": func.risk,
         "effect": func.effect,
         "timeout_sec": func.timeout_sec,
+        "source_nodes": list(func.source_nodes),
         "input_schema": func.input_schema or {},
         "output_schema": func.output_schema or {},
     }
@@ -425,6 +426,7 @@ async def agent_invoke_stream(
                                     "call_id": call_id,
                                     "status": "succeeded",
                                     "result": data.get("result"),
+                                    "target_node_id": data.get("target_node_id"),
                                 }
                             )
                         elif ev["event_type"] == "agent.tool_call.failed":
@@ -436,6 +438,7 @@ async def agent_invoke_stream(
                                     "error": data.get("message"),
                                     "error_code": data.get("error_code"),
                                     "error_details": data.get("details"),
+                                    "target_node_id": data.get("target_node_id"),
                                 }
                             )
                         elif ev["event_type"] == "agent.tool_call.waiting_approval":
@@ -445,6 +448,7 @@ async def agent_invoke_stream(
                                     "call_id": call_id,
                                     "status": "waiting_approval",
                                     "approval_id": data.get("approval_id"),
+                                    "target_node_id": data.get("target_node_id"),
                                 }
                             )
                             loop_state = "waiting_approval"
@@ -571,6 +575,7 @@ async def _stream_tool_calls(
                     "call_id": raw_tc.get("call_id", ""),
                     "name": tc_name,
                     "status": "failed",
+                    "target_node_id": target_node_id,
                 },
             )
             yield _event(
@@ -582,6 +587,7 @@ async def _stream_tool_calls(
                     "name": tc_name,
                     "error_code": "function_not_available",
                     "message": f"Function {tc_name!r} is not available",
+                    "target_node_id": target_node_id,
                 },
             )
             continue
@@ -596,6 +602,7 @@ async def _stream_tool_calls(
                     "call_id": raw_tc.get("call_id", ""),
                     "name": tc_name,
                     "status": "failed",
+                    "target_node_id": target_node_id,
                 },
             )
             yield _event(
@@ -607,6 +614,7 @@ async def _stream_tool_calls(
                     "name": tc_name,
                     "error_code": "circular_dependency",
                     "message": f"Circular: {tc_name!r} in call_path",
+                    "target_node_id": target_node_id,
                 },
             )
             continue
@@ -622,6 +630,7 @@ async def _stream_tool_calls(
                 "name": tc_name,
                 "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
                 "input": raw_tc.get("input", {}),
+                "target_node_id": target_node_id,
             },
         )
 
@@ -633,6 +642,7 @@ async def _stream_tool_calls(
                 "call_id": call_id,
                 "name": tc_name,
                 "input": raw_tc.get("input", {}),
+                "target_node_id": target_node_id,
             },
         )
 
@@ -705,6 +715,7 @@ async def _execute_and_stream(
                 "name": tc_name,
                 "error_code": result.error_code or "function_not_available",
                 "message": result.error_message or f"No online node has {tc_name!r}",
+                "target_node_id": result.target_node_id,
             },
         )
         return
@@ -719,6 +730,7 @@ async def _execute_and_stream(
                 "name": tc_name,
                 "error_code": result.error_code or "policy_denied",
                 "message": result.error_message or "Policy denied",
+                "target_node_id": result.target_node_id,
             },
         )
         return
@@ -745,6 +757,7 @@ async def _execute_and_stream(
                 "approval_id": result.approval_id,
                 "status": "waiting_approval",
                 "message": result.error_message or "Write operation requires approval",
+                "target_node_id": result.target_node_id,
             },
         )
         return
@@ -759,6 +772,7 @@ async def _execute_and_stream(
                 "name": tc_name,
                 "error_code": result.error_code or "tool_failed",
                 "message": result.error_message or "Tool execution did not create a job",
+                "target_node_id": result.target_node_id,
             },
         )
         return
@@ -787,6 +801,7 @@ async def _execute_and_stream(
             "name": tc_name,
             "invocation_id": invocation_id,
             "job_id": job_id,
+            "target_node_id": result.target_node_id,
         },
     )
 
@@ -817,6 +832,7 @@ async def _execute_and_stream(
                             "name": tc_name,
                             "job_id": job_id,
                             "status": "running",
+                            "target_node_id": result.target_node_id,
                         },
                     )
                 if j.status in ("succeeded", "failed", "timeout", "cancelled"):
@@ -844,6 +860,7 @@ async def _execute_and_stream(
                 "name": tc_name,
                 "job_id": job_id,
                 "status": final_status,
+                "target_node_id": result.target_node_id,
             },
         )
 
@@ -856,6 +873,7 @@ async def _execute_and_stream(
                     "call_id": call_id,
                     "name": tc_name,
                     "result": inv_final.result if inv_final else {},
+                    "target_node_id": result.target_node_id,
                 },
             )
         else:
@@ -883,6 +901,7 @@ async def _execute_and_stream(
                     "error_code": error_code,
                     "message": error_message,
                     "details": error_details,
+                    "target_node_id": result.target_node_id,
                 },
             )
 
@@ -934,6 +953,7 @@ async def _execute_tool_calls_scheduled(
                 {
                     "call_id": tc_call_id,
                     "name": tc_name,
+                    "target_node_id": target_node_id,
                 },
             )
             yield _event(
@@ -945,6 +965,7 @@ async def _execute_tool_calls_scheduled(
                     "name": tc_name,
                     "error_code": "function_not_available",
                     "message": f"Function {tc_name!r} is not available",
+                    "target_node_id": target_node_id,
                 },
             )
             classified.append(
@@ -967,6 +988,7 @@ async def _execute_tool_calls_scheduled(
                 {
                     "call_id": tc_call_id,
                     "name": tc_name,
+                    "target_node_id": target_node_id,
                 },
             )
             yield _event(
@@ -978,6 +1000,7 @@ async def _execute_tool_calls_scheduled(
                     "name": tc_name,
                     "error_code": "circular_dependency",
                     "message": f"Circular: {tc_name!r} in call_path",
+                    "target_node_id": target_node_id,
                 },
             )
             classified.append(
@@ -1015,6 +1038,7 @@ async def _execute_tool_calls_scheduled(
                 "name": tc_name,
                 "sanitized_name": str(raw_tc.get("sanitized_name", tc_name)),
                 "input": tc_input,
+                "target_node_id": preflight.target_node_id,
             },
         )
         yield _event(
@@ -1025,6 +1049,7 @@ async def _execute_tool_calls_scheduled(
                 "call_id": tc_call_id,
                 "name": tc_name,
                 "input": tc_input,
+                "target_node_id": preflight.target_node_id,
             },
         )
 
@@ -1038,6 +1063,7 @@ async def _execute_tool_calls_scheduled(
                     "name": tc_name,
                     "error_code": preflight.error_code or "function_not_available",
                     "message": preflight.error_message or f"No online node has {tc_name!r}",
+                    "target_node_id": preflight.target_node_id,
                 },
             )
             classified.append(
@@ -1061,6 +1087,7 @@ async def _execute_tool_calls_scheduled(
                     "name": tc_name,
                     "error_code": preflight.error_code or "policy_denied",
                     "message": preflight.error_message or "Policy denied",
+                    "target_node_id": preflight.target_node_id,
                 },
             )
             classified.append(
@@ -1157,6 +1184,7 @@ async def _execute_tool_calls_scheduled(
                                 "name": tool_info["name"],
                                 "error_code": "internal_error",
                                 "message": str(e)[:500],
+                                "target_node_id": target_node_id,
                             },
                         )
                     )
@@ -1203,6 +1231,7 @@ async def _execute_tool_calls_scheduled(
                     "name": tool_info["name"],
                     "error_code": "internal_error",
                     "message": str(e)[:500],
+                    "target_node_id": target_node_id,
                 },
             )
 

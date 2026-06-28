@@ -46,6 +46,7 @@ export interface ToolCallState {
   name: string;
   input: Record<string, unknown>;
   status: "pending" | "running" | "succeeded" | "failed" | "waiting_approval" | "denied";
+  targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
   approvalId?: string;
@@ -58,6 +59,7 @@ export interface ToolCallPatch {
   callId?: string;
   approvalId?: string;
   status?: ToolCallState["status"];
+  targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
   result?: Record<string, unknown>;
@@ -157,6 +159,7 @@ export function useAgentChat({
           return {
             ...tool,
             ...(patch.status ? { status: patch.status } : {}),
+            ...(patch.targetNodeId !== undefined ? { targetNodeId: patch.targetNodeId } : {}),
             ...(patch.invocationId !== undefined ? { invocationId: patch.invocationId } : {}),
             ...(patch.jobId !== undefined ? { jobId: patch.jobId } : {}),
             ...(patch.result !== undefined ? { result: patch.result } : {}),
@@ -236,8 +239,6 @@ export function useAgentChat({
         }
 
         case "agent.tool_call.created": {
-          // task_completed is a protocol signal — never render it
-          if (String(data.name ?? "") === "task_completed") break;
           removeTrailingEmptyThinkingBlock();
           const callId = String(data.call_id ?? "");
           const toolCall: ToolCallState = {
@@ -245,6 +246,7 @@ export function useAgentChat({
             name: String(data.name ?? ""),
             input: asRecord(data.input),
             status: "pending",
+            targetNodeId: optionalString(data.target_node_id),
           };
 
           upsertLastBlock(
@@ -279,6 +281,7 @@ export function useAgentChat({
           patchToolInLastGroup(data, (tool) => ({
             ...tool,
             input: asRecord(data.input),
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -287,6 +290,7 @@ export function useAgentChat({
           patchToolInLastGroup(data, (tool) => ({
             ...tool,
             invocationId: String(data.invocation_id ?? ""),
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -296,6 +300,7 @@ export function useAgentChat({
             ...tool,
             jobId: String(data.job_id ?? ""),
             status: "running" as const,
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -304,6 +309,7 @@ export function useAgentChat({
           patchToolInLastGroup(data, (tool) => ({
             ...tool,
             status: "running" as const,
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -313,6 +319,7 @@ export function useAgentChat({
             ...tool,
             status: "succeeded" as const,
             result: asRecord(data.result),
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -323,6 +330,7 @@ export function useAgentChat({
             status: "waiting_approval" as const,
             approvalId: String(data.approval_id ?? ""),
             errorMessage: String(data.message ?? "Approval required"),
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -333,6 +341,7 @@ export function useAgentChat({
             status: "failed" as const,
             errorCode: String(data.error_code ?? ""),
             errorMessage: String(data.message ?? "Tool failed"),
+            targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
           }));
           break;
         }
@@ -352,28 +361,6 @@ export function useAgentChat({
               ...prev,
               content: prev.content + deltaContent,
               streaming: true,
-            }),
-          );
-          break;
-        }
-
-        case "agent.fallback_synthesis": {
-          const msg = String(data.message ?? "");
-          upsertLastBlock(
-            (b): b is AssistantTextBlock => b.type === "assistant_text",
-            () => ({
-              type: "assistant_text",
-              id: genId(),
-              content: msg,
-              streaming: false,
-              created_at: nowISO(),
-            }),
-            (prev) => ({
-              ...prev,
-              content: prev.content
-                ? `${prev.content}\n\n${msg}`
-                : msg,
-              streaming: false,
             }),
           );
           break;
@@ -530,7 +517,7 @@ export function useAgentChat({
           session_id: sessionId,
           provider_name: providerName,
           prompt,
-          target_node_id: targetNodeId,
+          target_node_id: targetNodeId || undefined,
         },
         {
           onEvent: (event) => handlePlanEvent(event),
@@ -695,6 +682,8 @@ function blocksFromPersisted(persisted: AgentSessionMessage[]): ChatBlock[] {
               approvalId: parsed.approval_id
                 ? String(parsed.approval_id)
                 : updated[toolIdx].approvalId,
+              targetNodeId: optionalString(parsed.target_node_id)
+                ?? updated[toolIdx].targetNodeId,
             };
             blocks[i] = { ...tg, tool_calls: updated } as ToolGroupBlock;
           }
@@ -706,10 +695,7 @@ function blocksFromPersisted(persisted: AgentSessionMessage[]): ChatBlock[] {
 
     // Assistant message
     if (message.role === "assistant") {
-      // Filter out task_completed — it's a protocol signal, not a visible tool
-      const visibleToolCalls = (message.tool_calls || []).filter(
-        (tc: Record<string, unknown>) => tc.name !== "task_completed",
-      );
+      const visibleToolCalls = message.tool_calls || [];
       const hasToolCalls = visibleToolCalls.length > 0;
       const hasContent = Boolean(message.content);
 
@@ -778,6 +764,7 @@ function toolCallsFromPersisted(
     name: String(item.name ?? ""),
     input: asRecord(item.input),
     status: parseToolStatus(item.status),
+    targetNodeId: optionalString(item.target_node_id),
     invocationId: item.invocation_id
       ? String(item.invocation_id)
       : undefined,
@@ -788,4 +775,9 @@ function toolCallsFromPersisted(
       ? String(item.error_message)
       : undefined,
   }));
+}
+
+function optionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.trim() ? value : undefined;
 }
