@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
+from yequ.agent.context_engine import render_capability_context_prompt
 from yequ.agent.provider import (
     AgentFunction,
     AgentMessage,
@@ -94,9 +95,9 @@ class DeepSeekProvider(AgentProvider):
         )
 
         if messages is not None:
-            api_messages = self._to_openai_messages(messages, functions)
+            api_messages = self._to_openai_messages(messages, functions, context=context)
         else:
-            api_messages = self._build_fresh_messages(prompt, functions)
+            api_messages = self._build_fresh_messages(prompt, functions, context=context)
 
         last_error: Exception | None = None
         last_error_msg: str = ""
@@ -242,15 +243,15 @@ class DeepSeekProvider(AgentProvider):
         tools = self._functions_to_tools(functions)
 
         if messages:
-            oai_messages = self._to_openai_messages(messages, functions)
+            oai_messages = self._to_openai_messages(messages, functions, context=context)
             if not oai_messages or oai_messages[0].get("role") != "system":
                 oai_messages.insert(
                     0,
-                    {"role": "system", "content": self._system_prompt(functions)},
+                    {"role": "system", "content": self._system_prompt(functions, context=context)},
                 )
         else:
             oai_messages = [
-                {"role": "system", "content": self._system_prompt(functions)},
+                {"role": "system", "content": self._system_prompt(functions, context=context)},
                 {"role": "user", "content": prompt},
             ]
 
@@ -390,28 +391,51 @@ class DeepSeekProvider(AgentProvider):
             "success": finish_reason != "length",
         }
 
-    def _system_prompt(self, functions: list[AgentFunction]) -> str:
+    def _system_prompt(
+        self,
+        functions: list[AgentFunction],
+        *,
+        context: dict[str, object] | None = None,
+    ) -> str:
         """Build the system prompt for multi-turn agent conversations."""
-        func_descriptions = "\n".join(
-            _function_prompt_line_with_effect(f) for f in functions
+        capability_context = (
+            context.get("capability_context")
+            if isinstance(context, dict)
+            else None
         )
-        return _system_prompt_text_enhanced(func_descriptions)
+        grouped_context = render_capability_context_prompt(
+            capability_context if isinstance(capability_context, dict) else None,
+            functions,
+        )
+        return _system_prompt_text_enhanced(grouped_context)
 
-    def debug_system_prompt(self, functions: list[AgentFunction]) -> str:
+    def debug_system_prompt(
+        self,
+        functions: list[AgentFunction],
+        context: dict[str, object] | None = None,
+    ) -> str:
         """Return the exact system prompt used for provider calls."""
-        return self._system_prompt(functions)
+        return self._system_prompt(functions, context=context)
 
     def _build_fresh_messages(
-        self, prompt: str, functions: list[AgentFunction]
+        self,
+        prompt: str,
+        functions: list[AgentFunction],
+        *,
+        context: dict[str, object] | None = None,
     ) -> list[dict[str, object]]:
         """Build a fresh system + user message pair."""
         return [
-            {"role": "system", "content": self._system_prompt(functions)},
+            {"role": "system", "content": self._system_prompt(functions, context=context)},
             {"role": "user", "content": prompt},
         ]
 
     def _to_openai_messages(
-        self, messages: list[AgentMessage], functions: list[AgentFunction]
+        self,
+        messages: list[AgentMessage],
+        functions: list[AgentFunction],
+        *,
+        context: dict[str, object] | None = None,
     ) -> list[dict[str, object]]:
         """Convert AgentMessage list to OpenAI-compatible message dicts.
 
@@ -419,7 +443,7 @@ class DeepSeekProvider(AgentProvider):
         AgentMessage content/tool_calls are mapped to the OpenAI format.
         """
         result: list[dict[str, object]] = [
-            {"role": "system", "content": self._system_prompt(functions)},
+            {"role": "system", "content": self._system_prompt(functions, context=context)},
         ]
 
         for m in messages:
@@ -505,38 +529,18 @@ def _sanitize_tool_observation_content(content: str) -> str:
     return json.dumps(sanitized, ensure_ascii=False)
 
 
-def _function_prompt_line_with_effect(func: AgentFunction) -> str:
-    """Format a tool description line with source node info and effect tag.
-
-    If the Plugin-provided description is empty, derive one from the
-    function name. If very short, append the effect so the LLM can
-    distinguish safe from risky tools at a glance.
-    """
-    desc = (func.description or "").strip()
-    if not desc:
-        desc = func.name.rsplit(".", 1)[-1].replace("_", " ")
-    if len(desc) < 12:
-        tag = (
-            "(may modify state)"
-            if func.effect in ("write", "destructive")
-            else "(read only)"
-        )
-        desc = f"{desc} {tag}"
-    source = f" [nodes: {', '.join(func.source_nodes)}]" if func.source_nodes else ""
-    return f"- {func.name}{source}: {desc}"
-
-
-def _system_prompt_text_enhanced(func_descriptions: str) -> str:
+def _system_prompt_text_enhanced(capability_context_text: str) -> str:
     return (
         "You are an infrastructure control agent. Communicate in the "
         "user's language throughout.\n\n"
         "Context:\n"
-        "- A Node registers a set of capabilities (these tools).\n"
+        "- A Node registers a set of capabilities.\n"
         "- Center routes tool calls to the Node that registered the capability.\n"
+        "- Routing truth is node/runtime metadata, not function name prefix.\n"
         "- A tool call fails with \"no online node\" when the target Node is "
         "offline or has not registered that capability.\n\n"
-        "Tools:\n"
-        f"{func_descriptions}\n\n"
+        "Current Center state:\n"
+        f"{capability_context_text}\n\n"
         "Rules:\n"
         "1. Analyze the user's request and choose appropriate tools.\n"
         "2. You may call multiple tools in one response.\n"
@@ -551,9 +555,10 @@ def _system_prompt_text_enhanced(func_descriptions: str) -> str:
         "describe it to the user as a preflight check or 预演.\n"
         "7. Do not retry a denied write operation by changing internal "
         "parameters. Ask the user for a new instruction when approval is denied.\n"
-        "8. Respect tool source nodes. If the tools listed for the current "
-        "request are linux.* tools, use linux.* tools. If they are system.* "
-        "tools, use system.* tools. Do not call a tool that is not listed above.\n"
+        "8. Respect the grouped node capability context. If a user asks for "
+        "Linux state, choose an executable Linux node capability. If a user "
+        "asks for Windows state, choose an executable Windows node capability. "
+        "Do not call a tool that is not listed in the provider tool set.\n"
         "9. When uncertain between a read-only and a write operation, "
         "default to read-only and report what you found.\n"
         "10. Never fabricate tool results. If a tool did not execute, "

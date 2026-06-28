@@ -10,13 +10,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import yequ.db as yequ_db
 from yequ.agent.agent_service import agent_invoke, agent_plan, create_agent_session
 from yequ.agent.agent_stream import agent_invoke_stream, agent_plan_stream
+from yequ.agent.context_engine import JsonDict, build_capability_context
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token
-from yequ.db import async_session_factory
 from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.shared_types import JsonObject
@@ -445,11 +446,21 @@ def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
     }
 
 
-def _provider_system_prompt(provider: AgentProvider, functions: list[AgentFunction]) -> str:
+def _provider_system_prompt(
+    provider: AgentProvider,
+    functions: list[AgentFunction],
+    capability_context: JsonDict | None = None,
+) -> str:
     prompt_builder = getattr(provider, "debug_system_prompt", None)
     if not callable(prompt_builder):
         return ""
-    value = prompt_builder(functions)
+    try:
+        value = prompt_builder(
+            functions,
+            context={"capability_context": capability_context} if capability_context else None,
+        )
+    except TypeError:
+        value = prompt_builder(functions)
     return value if isinstance(value, str) else str(value)
 
 
@@ -459,11 +470,24 @@ def _agent_debug_metadata(
     available_functions: list[AgentFunction],
     target_node_id: str | None,
     execution_mode: str,
+    capability_context: JsonDict | None = None,
 ) -> dict[str, object]:
     return {
-        "system_prompt": _provider_system_prompt(provider, available_functions),
+        "system_prompt": _provider_system_prompt(
+            provider, available_functions, capability_context
+        ),
         "target_node_id": target_node_id,
         "execution_mode": execution_mode,
+        "routing_mode": (
+            str(capability_context.get("routing_mode"))
+            if capability_context
+            else ("pinned" if target_node_id else "auto")
+        ),
+        "capability_context": capability_context or {},
+        "nodes": capability_context.get("nodes", []) if capability_context else [],
+        "tool_count_by_node": (
+            capability_context.get("tool_count_by_node", {}) if capability_context else {}
+        ),
         "available_functions": [_function_debug_summary(f) for f in available_functions],
     }
 
@@ -520,13 +544,15 @@ async def create_session_endpoint(
     Returns session metadata including constraint parameters
     that will be enforced during agent invocation.
     """
-    return await create_agent_session(
-        actor_id=body.actor_id,
-        execution_mode=body.execution_mode,
-        max_depth=body.max_depth,
-        max_steps=body.max_steps,
-        max_total_duration_sec=body.max_total_duration_sec,
-    )
+    async with yequ_db.async_session_factory() as db:
+        return await create_agent_session(
+            db,
+            actor_id=body.actor_id,
+            execution_mode=body.execution_mode,
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+        )
 
 
 @router.post("/invoke", response_model=AgentInvokeResponse)
@@ -544,28 +570,36 @@ async def invoke_agent_endpoint(
     Provider "fake" is auto-created if not registered.
     """
     provider = await _resolve_provider(body.provider_name)
-    async with async_session_factory() as db:
+    async with yequ_db.async_session_factory() as db:
         available = await _available_functions(db, target_node_id=body.target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=body.target_node_id,
+        )
 
-    resp = await agent_invoke(
-        provider,
-        session_id=body.session_id,
-        prompt=body.prompt,
-        available_functions=available,
-        call_path=body.call_path,
-        max_depth=body.max_depth,
-        max_steps=body.max_steps,
-        max_total_duration_sec=body.max_total_duration_sec,
-        step_count=body.step_count,
-        execution_mode=body.execution_mode,
-        target_node_id=body.target_node_id,
-    )
+        resp = await agent_invoke(
+            db,
+            provider,
+            session_id=body.session_id,
+            prompt=body.prompt,
+            available_functions=available,
+            call_path=body.call_path,
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+            step_count=body.step_count,
+            execution_mode=body.execution_mode,
+            target_node_id=body.target_node_id,
+            context={"capability_context": capability_context},
+        )
 
     resp.metadata["prompt_context"] = _agent_debug_metadata(
         provider,
         available_functions=available,
         target_node_id=body.target_node_id,
         execution_mode=body.execution_mode,
+        capability_context=capability_context,
     )
 
     return resp
@@ -577,8 +611,13 @@ async def invoke_agent_stream_endpoint(
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
-    async with async_session_factory() as db:
+    async with yequ_db.async_session_factory() as db:
         available = await _available_functions(db, target_node_id=body.target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=body.target_node_id,
+        )
     return _sse_response(
         agent_invoke_stream(
             provider,
@@ -587,6 +626,7 @@ async def invoke_agent_stream_endpoint(
             target_node_id=body.target_node_id,
             suppress_user_message=body.suppress_user_message,
             available_functions=available,
+            capability_context=capability_context,
             call_path=body.call_path,
             max_depth=body.max_depth,
             max_steps=body.max_steps,
@@ -608,6 +648,7 @@ async def invoke_agent_stream_endpoint(
                     available_functions=available,
                     target_node_id=body.target_node_id,
                     execution_mode=body.execution_mode,
+                    capability_context=capability_context,
                 ),
             },
         },
@@ -621,15 +662,21 @@ async def agent_plan_endpoint(
 ) -> JsonObject:
     provider = await _resolve_provider(body.provider_name)
 
-    async with async_session_factory() as db:
+    async with yequ_db.async_session_factory() as db:
         target_node_id = body.target_node_id or await _default_target_node_id(db)
         available = await _available_functions(db, target_node_id=target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=target_node_id,
+        )
         plan = await agent_plan(
             provider,
             session_id=body.session_id,
             prompt=body.prompt,
             target_node_id=target_node_id,
             available_functions=available,
+            context={"capability_context": capability_context},
             execution_mode=body.execution_mode,
             max_total_duration_sec=body.max_total_duration_sec,
         )
@@ -642,9 +689,14 @@ async def agent_plan_stream_endpoint(
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
-    async with async_session_factory() as db:
+    async with yequ_db.async_session_factory() as db:
         target_node_id = body.target_node_id or await _default_target_node_id(db)
         available = await _available_functions(db, target_node_id=target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=target_node_id,
+        )
     return _sse_response(
         agent_plan_stream(
             provider,
@@ -652,6 +704,7 @@ async def agent_plan_stream_endpoint(
             prompt=body.prompt,
             target_node_id=target_node_id,
             available_functions=available,
+            capability_context=capability_context,
             execution_mode=body.execution_mode,
             max_total_duration_sec=body.max_total_duration_sec,
         ),
@@ -667,6 +720,7 @@ async def agent_plan_stream_endpoint(
                     available_functions=available,
                     target_node_id=target_node_id,
                     execution_mode=body.execution_mode,
+                    capability_context=capability_context,
                 ),
             },
         },

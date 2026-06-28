@@ -15,16 +15,8 @@ from typing import Any
 from sqlalchemy import func, select
 
 from yequ import db as yequ_db
+from yequ.agent.runtime_state import TERMINAL_AGENT_RUN_STATUSES, status_for_stream_event
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
-
-TERMINAL_TURN_STATUSES = {
-    "completed",
-    "denied",
-    "failed",
-    "provider_failed",
-    "provider_timeout",
-    "timeout",
-}
 
 
 def make_turn_id() -> str:
@@ -52,7 +44,7 @@ async def create_agent_turn(
                 provider_name=provider_name,
                 target_node_id=target_node_id,
                 execution_mode=execution_mode,
-                status="received",
+                status="created",
                 prompt=prompt,
                 started_at=now,
                 updated_at=now,
@@ -95,7 +87,7 @@ async def record_agent_turn_event(turn_id: str, event: dict[str, Any]) -> None:
             if status:
                 turn.status = status
             turn.updated_at = now
-            if turn.status in TERMINAL_TURN_STATUSES:
+            if turn.status in TERMINAL_AGENT_RUN_STATUSES:
                 turn.completed_at = now
             if event_type in {"agent.failed", "agent.provider.failed"}:
                 turn.error_code = str(data.get("error_code") or "") or None
@@ -124,28 +116,7 @@ async def list_agent_turn_events(turn_id: str) -> list[AgentTurnEvent]:
 
 
 def _status_for_event(event_type: str, data: dict[str, Any]) -> str | None:
-    if event_type == "stream.open":
-        return "received"
-    if event_type == "agent.provider.started":
-        return "planning"
-    if event_type == "agent.tool_call.created":
-        return "tool_selecting"
-    if event_type in {"agent.invocation.created", "agent.job.queued", "agent.job.running"}:
-        return "tool_running"
-    if event_type in {"agent.approval.required", "agent.tool_call.waiting_approval"}:
-        return "waiting_approval"
-    if event_type in {"agent.output.delta", "agent.synthesizing"}:
-        return "synthesizing"
-    if event_type == "agent.completed":
-        return str(data.get("status") or "completed")
-    if event_type == "agent.provider.failed":
-        return "provider_failed"
-    if event_type == "agent.failed":
-        code = str(data.get("error_code") or "")
-        if code == "provider_timeout":
-            return "provider_timeout"
-        return "failed"
-    return None
+    return status_for_stream_event(event_type, str(data.get("error_code") or "") or None)
 
 
 def _parse_event_time(value: object) -> datetime:

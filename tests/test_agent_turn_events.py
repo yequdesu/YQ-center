@@ -57,7 +57,8 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
     assert detail_resp.status_code == 200
     detail = detail_resp.json()
     assert detail["turns"][0]["turn_id"] == turn_id
-    assert detail["turns"][0]["status"] == "completed"
+    assert detail["turns"][0]["status"] == "succeeded"
+    assert detail["turns"][0]["events"]
     assert detail["turns"][0]["prompt"] == "check the machine"
 
     turns_resp = await client.get(f"/admin/sessions/{session_id}/turns")
@@ -109,6 +110,39 @@ async def test_delete_session_deletes_turn_events(client: AsyncClient):
 
     events_resp = await client.get(f"/admin/agent-turns/{turn_id}/events")
     assert events_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_agent_plan_stream_reaches_provider_for_existing_session(client: AsyncClient):
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.api.routes.agent import register_provider
+
+    provider = FakeAgentProvider("plan-stream-session-test")
+    register_provider(provider)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "plan-stream-session-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/plan/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "plan-stream-session-test",
+            "prompt": "check status",
+            "target_node_id": "test-node",
+            "execution_mode": "auto",
+        },
+    )
+
+    assert stream_resp.status_code == 200
+    event_types = [event["event_type"] for event in _parse_sse_events(stream_resp.text)]
+    assert "agent.session.resolved" in event_types
+    assert "agent.prompt.received" in event_types
+    assert "agent.provider.started" in event_types
 
 
 def _parse_sse_events(text: str) -> list[dict]:

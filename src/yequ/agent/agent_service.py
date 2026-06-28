@@ -22,6 +22,11 @@ from yequ.agent.provider import (
     AgentProvider,
     sanitize_tool_payload_for_agent,
 )
+from yequ.agent.runtime_state import (
+    AgentRuntimeController,
+    AgentRuntimeFailure,
+    AgentRuntimeLimits,
+)
 from yequ.agent.tool_execution import (
     AgentInvokeError,
     AgentInvokeOutput,
@@ -39,6 +44,39 @@ from yequ.application import (
 from yequ.protocol import ErrorCode
 
 log = logging.getLogger(__name__)
+
+
+def _runtime_error_response(
+    *,
+    provider: AgentProvider,
+    session_id: str,
+    failure: AgentRuntimeFailure,
+    trace_id: str,
+    call_path: list[str],
+    step_count: int,
+    max_depth: int,
+    max_steps: int,
+    max_total_duration_sec: int,
+) -> AgentInvokeResponse:
+    status = "timeout" if failure.error_code == ErrorCode.MAX_DURATION_EXCEEDED else "failed"
+    return AgentInvokeResponse(
+        success=False,
+        status=status,
+        provider_name=provider.provider_name(),
+        session_id=session_id,
+        error=AgentInvokeError(
+            code=failure.error_code,
+            message=failure.message,
+        ),
+        trace=AgentInvokeTrace(
+            trace_id=trace_id,
+            call_path=list(call_path),
+            step_count=step_count + 1,
+            max_depth=max_depth,
+            max_steps=max_steps,
+            max_total_duration_sec=max_total_duration_sec,
+        ),
+    )
 
 
 def _make_call_id() -> str:
@@ -125,6 +163,7 @@ async def agent_invoke(
     started_at: datetime | None = None,
     execution_mode: str = "auto",
     target_node_id: str | None = None,
+    context: dict[str, object] | None = None,
 ) -> AgentInvokeResponse:
     """Invoke an Agent through the complete execution pipeline.
 
@@ -141,66 +180,29 @@ async def agent_invoke(
     if started_at is None:
         started_at = now
     trace_id = f"tr_{uuid.uuid4().hex[:16]}"
+    runtime = AgentRuntimeController(
+        limits=AgentRuntimeLimits(
+            max_depth=max_depth,
+            max_steps=max_steps,
+            max_total_duration_sec=max_total_duration_sec,
+        ),
+        started_at=started_at,
+        current_step=step_count,
+        call_path=list(call_path),
+    )
 
-    # Duration check
-    elapsed = (now - started_at).total_seconds()
-    if elapsed > max_total_duration_sec:
-        return AgentInvokeResponse(
-            success=False,
-            status="timeout",
+    initial_failure = runtime.check_initial_constraints(now)
+    if initial_failure:
+        return _runtime_error_response(
+            provider=provider,
             session_id=session_id,
-            error=AgentInvokeError(
-                code=ErrorCode.MAX_DURATION_EXCEEDED,
-                message=(f"Duration {elapsed:.1f}s exceeds max {max_total_duration_sec}s"),
-            ),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id,
-                call_path=list(call_path),
-                step_count=step_count + 1,
-                max_depth=max_depth,
-                max_steps=max_steps,
-                max_total_duration_sec=max_total_duration_sec,
-            ),
-        )
-
-    # Step check
-    if step_count >= max_steps:
-        return AgentInvokeResponse(
-            success=False,
-            status="failed",
-            session_id=session_id,
-            error=AgentInvokeError(
-                code=ErrorCode.MAX_STEPS_EXCEEDED,
-                message=f"Max steps {max_steps} exceeded",
-            ),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id,
-                call_path=list(call_path),
-                step_count=step_count + 1,
-                max_depth=max_depth,
-                max_steps=max_steps,
-                max_total_duration_sec=max_total_duration_sec,
-            ),
-        )
-
-    # Depth check
-    if len(call_path) >= max_depth:
-        return AgentInvokeResponse(
-            success=False,
-            status="failed",
-            session_id=session_id,
-            error=AgentInvokeError(
-                code=ErrorCode.CALL_DEPTH_EXCEEDED,
-                message=f"Depth {len(call_path)} exceeds max {max_depth}",
-            ),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id,
-                call_path=list(call_path),
-                step_count=step_count + 1,
-                max_depth=max_depth,
-                max_steps=max_steps,
-                max_total_duration_sec=max_total_duration_sec,
-            ),
+            failure=initial_failure,
+            trace_id=trace_id,
+            call_path=call_path,
+            step_count=step_count,
+            max_depth=max_depth,
+            max_steps=max_steps,
+            max_total_duration_sec=max_total_duration_sec,
         )
 
     result = await db.execute(select(Session).where(Session.session_id == session_id))
@@ -262,15 +264,19 @@ async def agent_invoke(
 
     import time as _time
 
-    while current_step < max_steps:
-        # Duration guard
-        now = datetime.now(UTC)
-        elapsed = (now - started_at).total_seconds()
-        if elapsed > max_total_duration_sec:
-            loop_state = "timeout"
+    while True:
+        iteration = runtime.begin_iteration(datetime.now(UTC))
+        if isinstance(iteration, AgentRuntimeFailure):
+            loop_state = (
+                "timeout" if iteration.error_code == ErrorCode.MAX_DURATION_EXCEEDED else "failed"
+            )
+            provider_error = AgentInvokeError(
+                code=iteration.error_code,
+                message=iteration.message,
+                retryable=False,
+            )
             break
-
-        current_step += 1
+        current_step = iteration.iteration
 
         # -- Call Provider --
         log.info(
@@ -297,6 +303,7 @@ async def agent_invoke(
                         "call_path": list(call_path),
                         "session_id": session_id,
                         "step": current_step,
+                        **(context or {}),
                     },
                 ),
                 timeout=45.0,
@@ -345,22 +352,31 @@ async def agent_invoke(
             ) + len(provider_result.tool_calls)
 
         executable_calls = list(provider_result.tool_calls)
+        provider_decision = runtime.decide_provider_output(
+            assistant_text=provider_result.message,
+            tool_calls=executable_calls,
+        )
 
-        if not executable_calls:
-            if not provider_result.message:
-                loop_state = "protocol_error"
-                provider_error = AgentInvokeError(
-                    code="agent_protocol_error",
-                    message="Provider returned neither assistant text nor tool calls.",
-                    retryable=False,
-                    details={
-                        "finish_reason": provider_result.finish_reason,
-                        "step": current_step,
-                    },
-                )
-                break
-            final_provider_message = provider_result.message
-            loop_state = "completed"
+        if provider_decision.kind == "failure":
+            loop_state = "protocol_error"
+            failure = provider_decision.failure
+            provider_error = AgentInvokeError(
+                code=failure.error_code if failure else "agent_protocol_error",
+                message=(
+                    failure.message
+                    if failure
+                    else "Provider returned neither assistant text nor tool calls."
+                ),
+                retryable=False,
+                details={
+                    "finish_reason": provider_result.finish_reason,
+                    "step": current_step,
+                },
+            )
+            break
+        if provider_decision.kind == "final":
+            final_provider_message = provider_decision.final_message
+            loop_state = provider_decision.status
             await _write_timeline(
                 db,
                 "agent.provider.completed",
@@ -498,10 +514,7 @@ async def agent_invoke(
         all_tool_calls.extend(iteration_results)
 
         # After observing, guard checks
-        now_check = datetime.now(UTC)
-        if (now_check - started_at).total_seconds() > max_total_duration_sec:
-            loop_state = "timeout"
-            break
+        runtime.status = "observing"
 
     # -- Step 4: Enforce explicit provider final answer --
     if not final_provider_message and provider_error is None:
@@ -582,6 +595,7 @@ async def agent_plan(
     prompt: str,
     target_node_id: str,
     available_functions: list[AgentFunction],
+    context: dict[str, object] | None = None,
     execution_mode: str = "auto",
     max_total_duration_sec: int = 300,
 ) -> dict[str, object]:
@@ -613,7 +627,7 @@ async def agent_plan(
         provider.invoke(
             classification_prompt,
             available_functions=[],
-            context={"session_id": session_id},
+            context={"session_id": session_id, **(context or {})},
         ),
         timeout=30.0,
     )
@@ -645,6 +659,7 @@ async def agent_plan(
         prompt=prompt,
         available_functions=available_functions,
         session_id=session_id,
+        context=context,
     )
     function_name = _select_check_function(available_functions, seed_calls)
     plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
@@ -781,6 +796,7 @@ async def _infer_plan_seed_calls(
     prompt: str,
     available_functions: list[AgentFunction],
     session_id: str,
+    context: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Ask the provider for tool-shaped planning hints without execution."""
     try:
@@ -793,7 +809,11 @@ async def _infer_plan_seed_calls(
                     f"Request: {prompt}"
                 ),
                 available_functions=available_functions,
-                context={"session_id": session_id, "purpose": "maintenance_plan_seed"},
+                context={
+                    "session_id": session_id,
+                    "purpose": "maintenance_plan_seed",
+                    **(context or {}),
+                },
             ),
             timeout=30.0,
         )

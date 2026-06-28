@@ -22,7 +22,7 @@ class AgentTurn(Base):
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
     target_node_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="auto")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="received", index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created", index=True)
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

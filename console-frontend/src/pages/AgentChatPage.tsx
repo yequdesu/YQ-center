@@ -17,7 +17,7 @@ import {
   denyApproval,
   approveAndRunApproval,
 } from "@/api/admin";
-import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock } from "@/hooks/useAgentChat";
+import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock, type RunStatusBlock } from "@/hooks/useAgentChat";
 import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
@@ -98,8 +98,9 @@ export function AgentChatPage() {
     sendInvoke,
     sendPlan,
     cancel,
+    detach,
     clearBlocks,
-    loadPersistedMessages,
+    loadPersistedSession,
     patchToolCall,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
@@ -132,12 +133,12 @@ export function AgentChatPage() {
 
   // Load persisted messages into blocks when session data arrives
   useEffect(() => {
-    if (sessionQuery.data?.messages && sessionId) {
+    if (sessionQuery.data && sessionId) {
       reconciledApprovalIdsRef.current.clear();
       setDismissedApprovalIds(new Set());
-      loadPersistedMessages(sessionQuery.data.messages);
+      loadPersistedSession(sessionQuery.data);
     }
-  }, [loadPersistedMessages, sessionId, sessionQuery.data?.messages]);
+  }, [loadPersistedSession, sessionId, sessionQuery.data]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -145,12 +146,7 @@ export function AgentChatPage() {
   }, [blocks]);
 
   const switchSession = (newId: string) => {
-    if (isStreaming) {
-      if (!confirm("A stream is in progress. Switching sessions will cancel it. Continue?")) {
-        return;
-      }
-    }
-    cancel();
+    detach();
     clearBlocks();
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
@@ -158,14 +154,9 @@ export function AgentChatPage() {
 
   const createNewSession = async () => {
     if (creatingSessionRef.current) return;
-    if (isStreaming) {
-      if (!confirm("A stream is in progress. Creating a new session will cancel it. Continue?")) {
-        return;
-      }
-    }
     creatingSessionRef.current = true;
     setIsCreatingSession(true);
-    cancel();
+    detach();
     clearBlocks();
     try {
       const s = await createSession({});
@@ -703,10 +694,25 @@ export function AgentChatPage() {
             <details className="mx-auto mb-4 max-w-3xl rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-[12px]">
               <summary className="cursor-pointer font-medium text-[var(--text-muted)]">
                 Context — {promptContext.provider_name} / {promptContext.execution_mode}
+                {promptContext.routing_mode && ` / ${promptContext.routing_mode}`}
                 {promptContext.target_node_id && ` @ ${promptContext.target_node_id}`}
                 <span className="ml-2 text-[var(--text-subtle)]">({promptContext.available_functions.length} tools)</span>
               </summary>
               <div className="mt-2 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="font-semibold text-[var(--text-subtle)]">
+                      Capability Context
+                    </span>
+                    <JsonView data={promptContext.capability_context ?? {}} />
+                  </div>
+                  <div>
+                    <span className="font-semibold text-[var(--text-subtle)]">
+                      Tool Count By Node
+                    </span>
+                    <JsonView data={promptContext.tool_count_by_node ?? {}} />
+                  </div>
+                </div>
                 <div>
                   <span className="font-semibold text-[var(--text-subtle)]">System Prompt</span>
                   <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-2 text-[11px] leading-relaxed text-[var(--text)]">
@@ -867,6 +873,8 @@ function ChatTimelineBlock({
       return <ToolGroupBubble block={block} />;
     case "system_event":
       return <SystemEventBubble block={block} />;
+    case "run_status":
+      return <RunStatusBubble block={block} />;
     default:
       return null;
   }
@@ -1017,6 +1025,15 @@ function SystemEventBubble({ block }: { block: SystemEventBlock }) {
   );
 }
 
+function RunStatusBubble({ block }: { block: RunStatusBlock }) {
+  return (
+    <div className="flex items-center justify-center gap-2 py-1">
+      <Loader2 size={12} className="animate-spin text-[var(--info)]" />
+      <span className="text-[11px] text-[var(--text-muted)]">{block.label}</span>
+    </div>
+  );
+}
+
 // ── Markdown Message ──
 
 function MarkdownMessage({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
@@ -1027,7 +1044,7 @@ function MarkdownMessage({ content, isStreaming }: { content: string; isStreamin
     );
   }
   return (
-    <div className="markdown-body text-[14px] leading-[22px] text-[var(--text)]">
+    <div className="markdown-body chat-markdown text-[14px] leading-[22px] text-[var(--text)]">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       {isStreaming && (
         <span className="ml-1 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse rounded-full bg-[var(--accent)]/70 shadow-[0_0_10px_rgba(47,127,143,0.35)]" />

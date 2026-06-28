@@ -310,6 +310,35 @@ export interface AgentSessionMessage {
   created_at: string | null;
 }
 
+export interface AgentTurnEvent {
+  event_id: string;
+  turn_id: string;
+  session_id: string;
+  trace_id: string;
+  seq: number;
+  event_type: SseEventType;
+  data: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface AgentTurnSummary {
+  turn_id: string;
+  session_id: string;
+  trace_id: string;
+  provider_name: string;
+  target_node_id: string | null;
+  execution_mode: string;
+  status: string;
+  prompt: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+  metadata: Record<string, unknown>;
+  events?: AgentTurnEvent[];
+}
+
 export interface AgentSessionDetail {
   session_id: string;
   actor_type: string;
@@ -322,6 +351,7 @@ export interface AgentSessionDetail {
   metadata: Record<string, unknown>;
   label: string;
   messages: AgentSessionMessage[];
+  turns?: AgentTurnSummary[];
 }
 
 export interface AgentSessionSummary {

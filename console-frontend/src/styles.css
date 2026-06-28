@@ -140,3 +140,15 @@ input {
   background: var(--bg-subtle);
   font-weight: 600;
 }
+
+.chat-markdown > p:only-child {
+  margin: 0;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}

@@ -105,7 +105,28 @@ async def get_session(
         .where(AgentTurn.session_id == session_id)
         .order_by(AgentTurn.started_at.asc(), AgentTurn.id.asc())
     )
-    turns = [_agent_turn_dict(t) for t in turn_result.scalars().all()]
+    turn_models = list(turn_result.scalars().all())
+    turn_ids = [turn.turn_id for turn in turn_models]
+    events_by_turn: dict[str, list[dict[str, object]]] = {turn_id: [] for turn_id in turn_ids}
+    if turn_ids:
+        event_result = await db.execute(
+            select(AgentTurnEvent)
+            .where(AgentTurnEvent.turn_id.in_(turn_ids))
+            .order_by(
+                AgentTurnEvent.turn_id.asc(),
+                AgentTurnEvent.seq.asc(),
+                AgentTurnEvent.created_at.asc(),
+            )
+        )
+        for event in event_result.scalars().all():
+            events_by_turn.setdefault(event.turn_id, []).append(_agent_turn_event_dict(event))
+    turns = [
+        {
+            **_agent_turn_dict(turn),
+            "events": events_by_turn.get(turn.turn_id, []),
+        }
+        for turn in turn_models
+    ]
     return {
         "session_id": sess.session_id,
         "actor_type": sess.actor_type,
