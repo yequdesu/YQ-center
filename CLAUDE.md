@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 YeQu Center is a personal infrastructure control center. It connects devices (Nodes), collects state (Signals), dispatches capabilities (Functions), records an audit timeline, and provides a unified entry point for LLM Agents, CLI, and future Web/mobile clients.
 
+## Governing Principles
+
+These are project-level constraints. Every code change must respect them.
+
+1. **Agent 是消费者，不是系统本身** — Agent 通过调用系统能力来完成任务。系统管理基础设施状态，Agent 是使用者。系统不替 Agent 说话，Agent 不管理系统的运行。
+
+2. **失败即失败** — 错误传播到调用者，不经转换、不降级、不回退。没有 fallback、没有静默策略切换。哪个环节出了问题，哪个环节报错。
+
+3. **修结构，不打补丁** — 遇到问题时先判断：这是实现疏忽，还是设计在根本上就没覆盖这个场景？如果是后者，加 if-else 就是推迟下一次爆发。
+
+4. **读就是读** — 查询路径不产生副作用。写操作只存在于协议处理、后台扫描、工具执行三条链路。这条线模糊了，下一步就是排错地狱。
+
+5. **资源在获得处释放** — 锁、事务、连接——在同一个函数调用栈中获得和释放。不跨越 await，不传递给下游，不依赖外层的 finally 来兜底。
+
 ## Build & Development Commands
 
 ```bash
