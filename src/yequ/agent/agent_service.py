@@ -228,11 +228,7 @@ async def agent_invoke(
         started = started.replace(tzinfo=UTC)
     deadline = datetime.fromtimestamp(started.timestamp() + max_total_duration_sec, tz=UTC)
 
-    # L1 readonly policy: build a set of known function names from available_functions
-    from yequ.agent.provider import TASK_COMPLETED_FUNCTION, is_task_completed
-
-    if not any(f.name == TASK_COMPLETED_FUNCTION.name for f in available_functions):
-        available_functions = list(available_functions) + [TASK_COMPLETED_FUNCTION]
+    # L1 readonly policy: build a set of known function names from available_functions.
     known_functions = {f.name for f in available_functions}
 
     # -- Step 1: Write agent.prompt.received + COMMIT before provider call --
@@ -348,17 +344,22 @@ async def agent_invoke(
                 existing_tool_calls if isinstance(existing_tool_calls, int) else 0
             ) + len(provider_result.tool_calls)
 
-        # -- Check for task_completed: the explicit loop exit signal --
-        task_completed_call = next(
-            (tc for tc in provider_result.tool_calls if is_task_completed(tc)), None
-        )
-        executable_calls = [tc for tc in provider_result.tool_calls if not is_task_completed(tc)]
+        executable_calls = list(provider_result.tool_calls)
 
-        if task_completed_call:
-            task_completed_input = _as_object_dict(task_completed_call.get("input", {}))
-            final_provider_message = provider_result.message or _as_str(
-                task_completed_input.get("message", "")
-            )
+        if not executable_calls:
+            if not provider_result.message:
+                loop_state = "protocol_error"
+                provider_error = AgentInvokeError(
+                    code="agent_protocol_error",
+                    message="Provider returned neither assistant text nor tool calls.",
+                    retryable=False,
+                    details={
+                        "finish_reason": provider_result.finish_reason,
+                        "step": current_step,
+                    },
+                )
+                break
+            final_provider_message = provider_result.message
             loop_state = "completed"
             await _write_timeline(
                 db,
@@ -368,18 +369,6 @@ async def agent_invoke(
                 success=True,
                 final=True,
             )
-            if not executable_calls:
-                break
-            # Fall through: task_completed with additional tools
-
-        if not executable_calls and not task_completed_call:
-            log.warning("provider returned no tool calls and no task_completed — protocol error")
-            if provider_result.message:
-                final_provider_message = provider_result.message
-                loop_state = "completed"
-            else:
-                final_provider_message = ""
-                loop_state = "protocol_error"
             break
 
         # -- Append assistant message with tool_calls --
@@ -514,9 +503,15 @@ async def agent_invoke(
             loop_state = "timeout"
             break
 
-    # -- Step 4: Fallback synthesis if no final answer --
-    if not final_provider_message:
-        final_provider_message = _fallback_synthesis(all_tool_calls, loop_state)
+    # -- Step 4: Enforce explicit provider final answer --
+    if not final_provider_message and provider_error is None:
+        provider_error = AgentInvokeError(
+            code="agent_protocol_error",
+            message="Agent loop ended without a provider final answer.",
+            retryable=False,
+            details={"loop_state": loop_state, "step": current_step},
+        )
+        loop_state = "protocol_error"
 
     # -- Step 5: Final status --
     any_waiting = any(tc.status == "waiting_approval" for tc in all_tool_calls)
@@ -526,7 +521,7 @@ async def agent_invoke(
         final_status = "timeout"
     elif loop_state == "max_steps_reached":
         final_status = "max_steps_reached"
-    elif loop_state in ("provider_failed", "provider_timeout"):
+    elif loop_state in ("provider_failed", "provider_timeout", "protocol_error"):
         final_status = "failed"
     else:
         any_succeeded = any(tc.status == "succeeded" for tc in all_tool_calls)
@@ -548,7 +543,8 @@ async def agent_invoke(
     )
 
     # -- Step 7: Save history --
-    history.append(AgentMessage(role="assistant", content=final_provider_message))
+    if final_provider_message:
+        history.append(AgentMessage(role="assistant", content=final_provider_message))
     await _save_session_history(db, session_id, history)
 
     await _write_timeline(
@@ -596,7 +592,7 @@ async def agent_plan(
     2. Build deterministic check->repair->verify steps based on intent
     3. Validate, store, return plan
     """
-    # ── Step 1: Intent classification via provider ──
+    # -- Step 1: Intent classification via provider --
     func_names = [f.name for f in available_functions]
     classification_prompt = (
         f"User request: {prompt}\n"
@@ -614,23 +610,37 @@ async def agent_plan(
         repr(prompt[:100]),
     )
 
-    intent = "readonly_check"  # default
-    try:
-        provider_result = await asyncio.wait_for(
-            provider.invoke(
-                classification_prompt,
-                available_functions=[],
-                context={"session_id": session_id},
-            ),
-            timeout=30.0,
-        )
-        msg = (provider_result.message or "").strip().lower()
-        if "check_and_fix" in msg or "repair" in msg:
-            intent = "check_and_fix"
-    except Exception:
-        log.warning("intent classification failed, defaulting to readonly_check")
+    provider_result = await asyncio.wait_for(
+        provider.invoke(
+            classification_prompt,
+            available_functions=[],
+            context={"session_id": session_id},
+        ),
+        timeout=30.0,
+    )
+    if not provider_result.success:
+        return {
+            "status": "failed",
+            "error": {
+                "code": provider_result.error_code or "provider_error",
+                "message": provider_result.error_message or "Provider failed to classify intent",
+            },
+        }
+    msg = (provider_result.message or "").strip().lower()
+    if msg == "readonly_check":
+        intent = "readonly_check"
+    elif msg == "check_and_fix":
+        intent = "check_and_fix"
+    else:
+        return {
+            "status": "failed",
+            "error": {
+                "code": "agent_protocol_error",
+                "message": f"Provider returned invalid maintenance intent: {msg!r}",
+            },
+        }
 
-    # ── Step 2: infer function and input from registered tool contracts ──
+    # -- Step 2: infer function and input from registered tool contracts --
     seed_calls = await _infer_plan_seed_calls(
         provider,
         prompt=prompt,
@@ -640,7 +650,7 @@ async def agent_plan(
     function_name = _select_check_function(available_functions, seed_calls)
     plan_input = _infer_plan_input(prompt, function_name, available_functions, seed_calls)
 
-    # ── Step 3: Build IR steps based on intent ──
+    # -- Step 3: Build IR steps based on intent --
     steps_ir: list[dict[str, object]] = []
 
     if intent == "check_and_fix":
@@ -707,7 +717,7 @@ async def agent_plan(
             }
         )
 
-    # ── Step 4: Validate ──
+    # -- Step 4: Validate --
     has_write = any(s["requires_approval"] for s in steps_ir)
     for s in steps_ir:
         requires_approval = bool(s.get("requires_approval"))
@@ -726,7 +736,7 @@ async def agent_plan(
                 },
             }
 
-    # ── Step 5: Create plan ──
+    # -- Step 5: Create plan --
     plan = await MaintenancePlanApplicationService(db).create(
         goal=prompt,
         actor_id=provider.provider_name(),
@@ -921,20 +931,20 @@ def _infer_plan_input(
 
 def _input_for_function(
     function_name: str | None,
-    fallback: dict[str, object],
+    default_input: dict[str, object],
     seed_calls: list[dict[str, object]],
 ) -> dict[str, object]:
     if function_name:
         for call in seed_calls:
             if call.get("name") == function_name and isinstance(call.get("input"), dict):
                 return _as_object_dict(call["input"])
-    return dict(fallback)
+    return dict(default_input)
 
 
 def _quoted_or_named_target(prompt: str) -> str | None:
     import re
 
-    quoted = re.search(r"[`\"'“”‘’]([^`\"'“”‘’]{1,96})[`\"'“”‘’]", prompt)
+    quoted = re.search(r"[`\"']([^`\"']{1,96})[`\"']", prompt)
     if quoted:
         return quoted.group(1).strip()
     target_match = re.search(
@@ -1193,7 +1203,7 @@ async def _wait_invocation_terminal(
     return "timeout"
 
 
-# ── Session history management ──
+# -- Session history management --
 
 
 async def _load_session_history(db: AsyncSession, session_id: str) -> list[AgentMessage]:
@@ -1290,50 +1300,7 @@ async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) 
     if old_messages:
         await db.flush()
 
-
-# ── Fallback synthesis ──
-
-
-def _fallback_synthesis(
-    tool_calls: list[AgentToolCall],
-    loop_state: str,
-) -> str:
-    """Produce a human-readable summary from tool results.
-
-    Used when the LLM fails to produce a final answer or max steps reached.
-    Always returns a non-empty string.
-    """
-    if not tool_calls:
-        return "No tools were executed."
-
-    parts: list[str] = []
-    for tc in tool_calls:
-        name = tc.name
-        if tc.status == "succeeded":
-            parts.append(f"- {name}: succeeded")
-            if tc.result:
-                # Extract a brief summary
-                keys = list(tc.result.keys())[:3]
-                summary_parts = []
-                for k in keys:
-                    v = tc.result.get(k)
-                    if isinstance(v, (str, int, float, bool)):
-                        summary_parts.append(f"{k}={v}")
-                if summary_parts:
-                    parts.append(f"  ({', '.join(summary_parts)})")
-        elif tc.status in ("failed", "denied"):
-            err = tc.error or {}
-            parts.append(f"- {name}: failed — {err.get('message', tc.status)}")
-        elif tc.status == "waiting_approval":
-            parts.append(f"- {name}: requires approval")
-        else:
-            parts.append(f"- {name}: {tc.status}")
-
-    header = f"Results ({len(tool_calls)} tools, {loop_state}):"
-    return header + "\n" + "\n".join(parts)
-
-
-# ── Loop response builder ──
+# -- Loop response builder --
 
 
 def _build_loop_response(
@@ -1354,7 +1321,7 @@ def _build_loop_response(
 ) -> AgentInvokeResponse:
     """Build the final AgentInvokeResponse."""
     if output is None:
-        output = AgentInvokeOutput(message="No output generated.")
+        output = AgentInvokeOutput()
 
     if error is None and status not in ("succeeded", "waiting_approval"):
         first_failed = next((tc for tc in tool_calls if tc.status != "succeeded"), None)
@@ -1403,7 +1370,7 @@ def _extract_highlights(tool_calls: list[AgentToolCall]) -> list[str]:
 
 
 def _collect_tool_results(tool_calls: list[AgentToolCall]) -> dict[str, object]:
-    """Collect succeeded tool results into a name→result map."""
+    """Collect succeeded tool results into a name鈫抮esult map."""
     results: dict[str, object] = {}
     for tc in tool_calls:
         if tc.status == "succeeded" and tc.result:

@@ -1,11 +1,10 @@
-"""Agent Stream — SSE async generators for /agent/invoke/stream and /agent/plan/stream.
+"""Agent Stream --SSE async generators for /agent/invoke/stream and /agent/plan/stream.
 
 Each generator yields dicts with keys: event_id, event_type, session_id, trace_id, timestamp, data.
 The caller (FastAPI route) formats these as SSE text/event-stream.
 """
 
 import asyncio
-import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -49,7 +48,7 @@ def _as_str_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-# ── Active stream tracking ──
+# -- Active stream tracking --
 _active_stream_sessions: set[str] = set()
 
 
@@ -94,6 +93,42 @@ def _event(
     }
 
 
+def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
+    return {
+        "name": func.name,
+        "description": func.description,
+        "risk": func.risk,
+        "effect": func.effect,
+        "timeout_sec": func.timeout_sec,
+        "input_schema": func.input_schema or {},
+        "output_schema": func.output_schema or {},
+    }
+
+
+def _provider_system_prompt(provider: AgentProvider, functions: list[AgentFunction]) -> str:
+    prompt_builder = getattr(provider, "debug_system_prompt", None)
+    if not callable(prompt_builder):
+        return ""
+    value = prompt_builder(functions)
+    return value if isinstance(value, str) else str(value)
+
+
+def _prompt_context_event_data(
+    provider: AgentProvider,
+    *,
+    available_functions: list[AgentFunction],
+    target_node_id: str | None,
+    execution_mode: str,
+) -> dict[str, object]:
+    return {
+        "provider_name": provider.provider_name(),
+        "system_prompt": _provider_system_prompt(provider, available_functions),
+        "target_node_id": target_node_id,
+        "execution_mode": execution_mode,
+        "available_functions": [_function_debug_summary(f) for f in available_functions],
+    }
+
+
 async def agent_invoke_stream(
     provider: AgentProvider,
     *,
@@ -113,7 +148,7 @@ async def agent_invoke_stream(
     """Async generator yielding SSE event dicts for agent invoke with ReAct loop.
 
     DB sessions are created internally and held only for the duration of each
-    logical operation block — never across long async waits (LLM calls, job
+    logical operation block --never across long async waits (LLM calls, job
     polling).  This keeps PostgreSQL connections from accumulating as idle-
     in-transaction when the client disconnects or uvicorn reloads.
     """
@@ -133,6 +168,17 @@ async def agent_invoke_stream(
 
     yield _event("stream.open", session_id, trace_id)
     _mark_stream_active(session_id)
+    yield _event(
+        "agent.prompt_context",
+        session_id,
+        trace_id,
+        _prompt_context_event_data(
+            provider,
+            available_functions=available_functions,
+            target_node_id=target_node_id,
+            execution_mode=execution_mode,
+        ),
+    )
 
     # Constraint checks
     elapsed = (now - started_at).total_seconds()
@@ -173,7 +219,7 @@ async def agent_invoke_stream(
         yield _event("stream.close", session_id, trace_id)
         return
 
-    # ── Block 1: session validation + timeline (short-lived session) ──
+    # -- Block 1: session validation + timeline (short-lived session) --
     async with async_session_factory() as db:
         result = await db.execute(select(Session).where(Session.session_id == session_id))
         session = result.scalar_one_or_none()
@@ -215,14 +261,9 @@ async def agent_invoke_stream(
         {"prompt": prompt[:500], "step": step_count + 1, "internal": suppress_user_message},
     )
 
-    from yequ.agent.provider import TASK_COMPLETED_FUNCTION
-
-    # Ensure task_completed is always available so the LLM can signal completion
-    if not any(f.name == TASK_COMPLETED_FUNCTION.name for f in available_functions):
-        available_functions = list(available_functions) + [TASK_COMPLETED_FUNCTION]
     known_functions = {f.name for f in available_functions}
 
-    # ── Block 2: load history + save user message (short-lived session) ──
+    # -- Block 2: load history + save user message (short-lived session) --
     async with async_session_factory() as db:
         history = await _load_session_history(db, session_id)
         user_message = AgentMessage(role="user", content=prompt)
@@ -230,30 +271,6 @@ async def agent_invoke_stream(
         if not suppress_user_message:
             await _save_session_history(db, session_id, [user_message])
             await db.commit()
-
-    denied_message = (
-        _deterministic_denied_approval_message(prompt) if suppress_user_message else None
-    )
-    if denied_message:
-        history.append(AgentMessage(role="assistant", content=denied_message))
-        history_to_persist = [message for message in history if message is not user_message]
-        async with async_session_factory() as db:
-            await _save_session_history(db, session_id, history_to_persist)
-            await _write_timeline(
-                db,
-                "agent.final_response",
-                session_id=session_id,
-                actor=provider.provider_name(),
-                status="denied",
-            )
-            await db.commit()
-        yield _event("agent.output.delta", session_id, trace_id, {"content": denied_message})
-        yield _event(
-            "agent.completed", session_id, trace_id, {"status": "denied", "message": denied_message}
-        )
-        _mark_stream_inactive(session_id)
-        yield _event("stream.close", session_id, trace_id)
-        return
 
     yield _event(
         "agent.loop.started",
@@ -288,7 +305,7 @@ async def agent_invoke_stream(
                 {"provider_name": provider.provider_name()},
             )
 
-            # Call provider with streaming — text deltas are yielded in real-time
+            # Call provider with streaming --text deltas are yielded in real-time
             assistant_text = ""
             provider_tool_calls: list[dict[str, object]] = []
             provider_error: str | None = None
@@ -335,36 +352,23 @@ async def agent_invoke_stream(
                 )
                 break
 
-            # Check for task_completed — the explicit loop exit signal
-            from yequ.agent.provider import is_task_completed
+            executable_calls = list(provider_tool_calls)
 
-            task_completed = next((tc for tc in provider_tool_calls if is_task_completed(tc)), None)
-            executable_calls = [tc for tc in provider_tool_calls if not is_task_completed(tc)]
-
-            if task_completed:
-                # LLM's streamed text is the authoritative answer.
-                # task_completed.message is only a fallback when the LLM
-                # produced no streaming text at all (edge case).
-                task_completed_input = _as_object_dict(task_completed.get("input", {}))
-                final_message = assistant_text or _as_str(task_completed_input.get("message", ""))
-                loop_state = "completed"
-                yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
-                if not executable_calls:
-                    break
-                # Fall through: task_completed with additional tools — execute them then break
-
-            # Plain-text answers need no tool execution; accept them as complete.
-            if not executable_calls and not task_completed:
-                if assistant_text:
-                    final_message = assistant_text
-                    loop_state = "completed"
-                else:
-                    log.warning(
-                        "provider returned no tool calls and no task_completed "
-                        "treating as protocol error"
-                    )
-                    final_message = "[系统] Agent 未按协议返回 task_completed 信号。"
+            if not executable_calls:
+                if not assistant_text:
                     loop_state = "protocol_error"
+                    yield _event(
+                        "agent.failed",
+                        session_id,
+                        trace_id,
+                        {
+                            "error_code": "agent_protocol_error",
+                            "message": "Provider returned neither assistant text nor tool calls.",
+                        },
+                    )
+                    break
+                final_message = assistant_text
+                loop_state = "completed"
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
@@ -465,15 +469,33 @@ async def agent_invoke_stream(
             )
             if loop_state == "waiting_approval":
                 break
-            if task_completed:
-                break
-
-        # -- Fallback synthesis --
         if not final_message:
-            final_message = _fallback_synthesis_from_stream(all_tool_results, loop_state)
+            if loop_state == "waiting_approval":
+                history_to_persist = (
+                    [message for message in history if message is not user_message]
+                    if suppress_user_message
+                    else history
+                )
+                async with async_session_factory() as waiting_db:
+                    await _save_session_history(waiting_db, session_id, history_to_persist)
+                    await waiting_db.commit()
+                _mark_stream_inactive(session_id)
+                yield _event("stream.close", session_id, trace_id)
+                return
+            loop_state = "protocol_error"
             yield _event(
-                "agent.fallback_synthesis", session_id, trace_id, {"message": final_message[:200]}
+                "agent.failed",
+                session_id,
+                trace_id,
+                {
+                    "error_code": "agent_protocol_error",
+                    "message": "Agent loop ended without a provider final answer.",
+                    "loop_state": loop_state,
+                },
             )
+            _mark_stream_inactive(session_id)
+            yield _event("stream.close", session_id, trace_id)
+            return
 
         # -- Save history (short-lived session) --
         history.append(AgentMessage(role="assistant", content=final_message))
@@ -803,7 +825,7 @@ async def _execute_and_stream(
         poll_count += 1
         await asyncio.sleep(0.5)
 
-    # Collect result — read both Invocation and Job to preserve error details
+    # Collect result --read both Invocation and Job to preserve error details
     async with async_session_factory() as result_db:
         inv_result = await result_db.execute(
             select(Invocation).where(Invocation.invocation_id == invocation_id)
@@ -837,7 +859,7 @@ async def _execute_and_stream(
                 },
             )
         else:
-            # Preserve the original error from the Job/Invocation — never
+            # Preserve the original error from the Job/Invocation --never
             # overwrite with a generic "tool_failed".
             error_code = (
                 (job_final.error_code if job_final else None)
@@ -865,7 +887,7 @@ async def _execute_and_stream(
             )
 
 
-# ── Concurrency scheduling for tool calls ──
+# -- Concurrency scheduling for tool calls --
 
 CONCURRENCY_MAX = 4  # Configurable later
 
@@ -1067,7 +1089,7 @@ async def _execute_tool_calls_scheduled(
             }
         )
 
-    # ── Phase 2: Split into concurrent vs serial groups ──
+    # -- Phase 2: Split into concurrent vs serial groups --
     await db.rollback()
 
     concurrent_candidates = [
@@ -1090,7 +1112,7 @@ async def _execute_tool_calls_scheduled(
                 resource_key_owners[k] = str(t["call_id"])
             actual_concurrent.append(t)
 
-    # ── Phase 3: Execute ──
+    # -- Phase 3: Execute --
 
     # Execute concurrent tools with semaphore (max CONCURRENCY_MAX)
     if actual_concurrent:
@@ -1141,7 +1163,7 @@ async def _execute_tool_calls_scheduled(
                 return collected_events
 
         tasks = [asyncio.create_task(_execute_concurrent(t)) for t in actual_concurrent]
-        # Yield events as tasks complete (interleaving is fine — each event has call_id)
+        # Yield events as tasks complete (interleaving is fine --each event has call_id)
         for completed in asyncio.as_completed(tasks):
             tool_events = await completed
             for ev in tool_events:
@@ -1202,10 +1224,21 @@ async def agent_plan_stream(
 
     yield _event("stream.open", session_id, trace_id)
     _mark_stream_active(session_id)
+    yield _event(
+        "agent.prompt_context",
+        session_id,
+        trace_id,
+        _prompt_context_event_data(
+            provider,
+            available_functions=available_functions,
+            target_node_id=target_node_id,
+            execution_mode=execution_mode,
+        ),
+    )
 
     from yequ.models.session import Session
 
-    # ── Session lookup (short-lived session) ──
+    # -- Session lookup (short-lived session) --
     async with async_session_factory() as db:
         result = await db.execute(select(Session).where(Session.session_id == session_id))
         session = result.scalar_one_or_none()
@@ -1278,21 +1311,45 @@ async def agent_plan_stream(
         },
     )
 
-    intent = "readonly_check"
-    try:
-        provider_result = await asyncio.wait_for(
-            provider.invoke(
-                classification_prompt,
-                available_functions=[],
-                context={"session_id": session_id},
-            ),
-            timeout=30.0,
+    provider_result = await asyncio.wait_for(
+        provider.invoke(
+            classification_prompt,
+            available_functions=[],
+            context={"session_id": session_id},
+        ),
+        timeout=30.0,
+    )
+    if not provider_result.success:
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {
+                "error_code": provider_result.error_code or "provider_error",
+                "message": provider_result.error_message or "Provider failed to classify intent",
+            },
         )
-        msg = (provider_result.message or "").strip().lower()
-        if "check_and_fix" in msg or "repair" in msg:
-            intent = "check_and_fix"
-    except Exception:
-        pass
+        _mark_stream_inactive(session_id)
+        yield _event("stream.close", session_id, trace_id)
+        return
+    msg = (provider_result.message or "").strip().lower()
+    if msg == "readonly_check":
+        intent = "readonly_check"
+    elif msg == "check_and_fix":
+        intent = "check_and_fix"
+    else:
+        yield _event(
+            "agent.failed",
+            session_id,
+            trace_id,
+            {
+                "error_code": "agent_protocol_error",
+                "message": f"Provider returned invalid maintenance intent: {msg!r}",
+            },
+        )
+        _mark_stream_inactive(session_id)
+        yield _event("stream.close", session_id, trace_id)
+        return
 
     seed_calls = await _infer_plan_seed_calls(
         provider,
@@ -1395,7 +1452,7 @@ async def agent_plan_stream(
             yield _event("stream.close", session_id, trace_id)
             return
 
-    # ── Create plan (short-lived session) ──
+    # -- Create plan (short-lived session) --
     async with async_session_factory() as plan_db:
         plan = await MaintenancePlanApplicationService(plan_db).create(
             goal=prompt,
@@ -1453,131 +1510,3 @@ async def agent_plan_stream(
     yield _event("stream.close", session_id, trace_id)
 
 
-def _fallback_synthesis_from_stream(tool_results: list[dict[str, object]], loop_state: str) -> str:
-    """Produce a human-readable summary from streamed tool results.
-
-    Quality rules:
-    - All failed → list each tool and failure reason
-    - Partial success → "已确认 / 未确认 / 下一步"
-    - Node offline / no capability → explicit diagnostic
-    - General → structured summary
-    """
-    if not tool_results:
-        if loop_state == "provider_failed":
-            return (
-                "Agent provider did not return a usable tool plan. "
-                "No system action was executed. Please retry with a more specific request."
-            )
-        if loop_state == "timeout":
-            return (
-                "Agent execution timed out before any tool could run. "
-                "No system action was executed."
-            )
-        return (
-            "I did not receive any tool calls or final answer from the model. "
-            "No system action was executed. Please retry the request."
-        )
-
-    succeeded = [r for r in tool_results if r.get("status") == "succeeded"]
-    failed = [r for r in tool_results if r.get("status") == "failed"]
-    waiting = [r for r in tool_results if r.get("status") == "waiting_approval"]
-
-    # Check for no-node / capability failures
-    node_failures = [
-        r
-        for r in failed
-        if str(r.get("error", "")).startswith("No online node")
-        or "function_not_available" in str(r.get("error", ""))
-        or "is not available" in str(r.get("error", ""))
-        or "not available" in str(r.get("error", ""))
-    ]
-    if node_failures and not succeeded:
-        names = [str(r.get("name", "unknown")) for r in node_failures]
-        return (
-            f"无法执行检查：没有在线节点提供所需的能力。\n"
-            f"缺失的能力：{', '.join(names)}\n"
-            f"建议：请确认目标节点在线并已注册相应功能后重试。"
-        )
-
-    # All failed
-    if failed and not succeeded:
-        lines = ["所有检查均失败："]
-        for r in failed:
-            name = r.get("name", "unknown")
-            error = r.get("error", "未知错误")
-            lines.append(f"- **{name}**: {error}")
-        return "\n".join(lines)
-
-    # Partial success
-    if succeeded and failed:
-        lines = []
-        lines.append("✅ **已确认**：")
-        for r in succeeded:
-            name = r.get("name", "unknown")
-            lines.append(f"- {name}：正常")
-        lines.append("")
-        lines.append("❌ **未确认**：")
-        for r in failed:
-            name = r.get("name", "unknown")
-            error = r.get("error", "未知错误")
-            lines.append(f"- {name}：{error}")
-        lines.append("")
-        lines.append("🔜 **下一步**：请根据未确认项决定是否需要进一步排查或修复。")
-        if waiting:
-            lines.append(f"⏳ 有 {len(waiting)} 个操作等待审批。")
-        return "\n".join(lines)
-
-    # Waiting approval
-    if waiting and not failed:
-        names = [str(r.get("name", "unknown")) for r in waiting]
-        return "⏳ **等待审批**：以下操作需要审批后才能执行：\n" + "\n".join(
-            f"- {n}" for n in names
-        )
-
-    # All succeeded
-    if succeeded and not failed:
-        lines = [f"✅ 所有 {len(succeeded)} 项检查均通过："]
-        for r in succeeded:
-            name = r.get("name", "unknown")
-            lines.append(f"- {name}：正常")
-        return "\n".join(lines)
-
-    # Fallback: generic summary
-    parts = [f"Results ({len(tool_results)} tools, {loop_state}):"]
-    for r in tool_results:
-        name = r.get("name", "unknown")
-        status = r.get("status", "unknown")
-        if status == "succeeded":
-            parts.append(f"- {name}: succeeded")
-        elif status == "failed":
-            parts.append(f"- {name}: failed — {r.get('error', status)}")
-        else:
-            parts.append(f"- {name}: {status}")
-    return "\n".join(parts)
-
-
-def _deterministic_denied_approval_message(prompt: str) -> str | None:
-    marker = "approval_results:"
-    if marker not in prompt:
-        return None
-    raw = prompt.split(marker, 1)[1].strip()
-    try:
-        results = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(results, list) or not results:
-        return None
-    if not all(isinstance(item, dict) and item.get("status") == "denied" for item in results):
-        return None
-
-    names = [str(item.get("toolName") or item.get("name") or "write action") for item in results]
-    unique_names = []
-    for name in names:
-        if name not in unique_names:
-            unique_names.append(name)
-    actions = "\n".join(f"- {name}" for name in unique_names)
-    return (
-        "已收到你的审批结果：你拒绝了本次写操作，因此没有执行任何会改变系统状态的动作。\n\n"
-        f"被拒绝的操作：\n{actions}\n\n"
-        "我不会改用 dry_run 或重新发起同一个写操作。dry_run 只能用于预检，不能绕过审批。"
-    )

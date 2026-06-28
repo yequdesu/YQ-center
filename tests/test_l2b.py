@@ -186,6 +186,16 @@ async def test_l2b_plan_list(client: AsyncClient, l2b_setup):
 @pytest.mark.asyncio
 async def test_readonly_prompt_does_not_require_approval(client: AsyncClient, l2b_setup):
     """Read-only prompt -> status=ready, no approval required."""
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import AgentResult
+    from yequ.api.routes.agent import _default_functions, register_provider
+
+    prov = FakeAgentProvider(provider_name="fake")
+    for func in _default_functions():
+        prov.add_function(func)
+    prov.set_default_result(AgentResult(success=True, output={"message": "readonly_check"}))
+    register_provider(prov)
+
     node_id, token, auth = l2b_setup
     r = await client.post(
         "/agent/plan",

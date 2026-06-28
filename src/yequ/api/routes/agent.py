@@ -422,6 +422,41 @@ def _strip_internal_input_fields(
     return cleaned
 
 
+def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
+    return {
+        "name": func.name,
+        "description": func.description,
+        "risk": func.risk,
+        "effect": func.effect,
+        "timeout_sec": func.timeout_sec,
+        "input_schema": func.input_schema or {},
+        "output_schema": func.output_schema or {},
+    }
+
+
+def _provider_system_prompt(provider: AgentProvider, functions: list[AgentFunction]) -> str:
+    prompt_builder = getattr(provider, "debug_system_prompt", None)
+    if not callable(prompt_builder):
+        return ""
+    value = prompt_builder(functions)
+    return value if isinstance(value, str) else str(value)
+
+
+def _agent_debug_metadata(
+    provider: AgentProvider,
+    *,
+    available_functions: list[AgentFunction],
+    target_node_id: str | None,
+    execution_mode: str,
+) -> dict[str, object]:
+    return {
+        "system_prompt": _provider_system_prompt(provider, available_functions),
+        "target_node_id": target_node_id,
+        "execution_mode": execution_mode,
+        "available_functions": [_function_debug_summary(f) for f in available_functions],
+    }
+
+
 def _sse_response(
     event_source: AsyncIterator[JsonObject],
     turn_context: dict[str, Any] | None = None,
@@ -557,6 +592,12 @@ async def invoke_agent_stream_endpoint(
             "metadata": {
                 "suppress_user_message": body.suppress_user_message,
                 "step_count": body.step_count,
+                "prompt_context": _agent_debug_metadata(
+                    provider,
+                    available_functions=available,
+                    target_node_id=body.target_node_id,
+                    execution_mode=body.execution_mode,
+                ),
             },
         },
     )
@@ -603,5 +644,20 @@ async def agent_plan_stream_endpoint(
             available_functions=available,
             execution_mode=body.execution_mode,
             max_total_duration_sec=body.max_total_duration_sec,
-        )
+        ),
+        turn_context={
+            "session_id": body.session_id,
+            "prompt": body.prompt,
+            "provider_name": provider.provider_name(),
+            "target_node_id": target_node_id,
+            "execution_mode": body.execution_mode,
+            "metadata": {
+                "prompt_context": _agent_debug_metadata(
+                    provider,
+                    available_functions=available,
+                    target_node_id=target_node_id,
+                    execution_mode=body.execution_mode,
+                ),
+            },
+        },
     )

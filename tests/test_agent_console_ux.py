@@ -15,7 +15,7 @@ from contextlib import suppress
 import pytest
 from httpx import AsyncClient
 
-# ── 1. Stream block ordering ──
+# -- 1. Stream block ordering --
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_stream_block_ordering_assistant_text_between_tool_groups(
     assert isinstance(completed_data, dict)
 
 
-# ── 2. Concurrent safe/readonly tool events ──
+# -- 2. Concurrent safe/readonly tool events --
 
 
 @pytest.mark.asyncio
@@ -151,7 +151,7 @@ async def test_concurrent_safe_tools_emit_created_events_first(
             ),
         ]
     )
-    # All 3 tools are safe+read — should be concurrent
+    # All 3 tools are safe+read --should be concurrent
     fake.set_sequence(
         [
             ProviderInvokeResult(
@@ -214,7 +214,7 @@ async def test_concurrent_safe_tools_emit_created_events_first(
         )
 
 
-# ── 3. Write tool NOT concurrent ──
+# -- 3. Write tool NOT concurrent --
 
 
 @pytest.mark.asyncio
@@ -296,10 +296,10 @@ async def test_write_tool_not_concurrent_with_read_tools(
 
     # In test mode without real nodes, the write tool will likely fail with function_not_available
     # or wait for approval. Either way, it must not run concurrently with the read tool.
-    assert True  # Structural test — the scheduling logic prevents concurrent write execution
+    assert True  # Structural test --the scheduling logic prevents concurrent write execution
 
 
-# ── 4. Session refresh preserves chat history order ──
+# -- 4. Session refresh preserves chat history order --
 
 
 @pytest.mark.asyncio
@@ -347,7 +347,7 @@ async def test_session_refresh_preserves_chat_history_order(
         },
     )
 
-    # Fetch session — should have messages in order
+    # Fetch session --should have messages in order
     detail_resp = await client.get(f"/admin/sessions/{session_id}")
     assert detail_resp.status_code == 200
     data = detail_resp.json()
@@ -364,7 +364,7 @@ async def test_session_refresh_preserves_chat_history_order(
             "User message should come before final assistant response"
         )
 
-    # Refresh — order should be the same
+    # Refresh --order should be the same
     detail_resp2 = await client.get(f"/admin/sessions/{session_id}")
     assert detail_resp2.status_code == 200
     data2 = detail_resp2.json()
@@ -375,7 +375,7 @@ async def test_session_refresh_preserves_chat_history_order(
         assert m1["message_id"] == m2["message_id"], f"Message {i} id changed on refresh"
 
 
-# ── 5. Session sidebar summary ──
+# -- 5. Session sidebar summary --
 
 
 @pytest.mark.asyncio
@@ -447,7 +447,7 @@ async def test_session_sidebar_returns_last_message_preview_and_updated_at(
     assert our_session.get("updated_at") is not None, "updated_at should be set"
 
 
-# ── 6. No online node diagnostic ──
+# -- 6. No online node diagnostic --
 
 
 @pytest.mark.asyncio
@@ -519,32 +519,10 @@ async def test_no_online_node_produces_explicit_diagnostic(
         term in combined for term in ["no online node", "not available", "function_not_available"]
     ), f"Error should mention node/capability unavailability, got: {combined}"
 
-    # Check fallback synthesis mentions the capability/node issue
-    fallback_events = [e for e in events if e["event_type"] == "agent.fallback_synthesis"]
-    if fallback_events:
-        synthesis = str(fallback_events[0].get("data", {}).get("message", ""))
-        # The synthesis should mention the failure, not give a generic "all good"
-        assert any(
-            term in synthesis.lower()
-            for term in [
-                "无法",
-                "没有在线",
-                "不可用",
-                "unavailable",
-                "not available",
-                "失败",
-                "failed",
-                "node",
-                "能力",
-            ]
-        ), f"Fallback synthesis should diagnose the issue, got: {synthesis}"
-        # It should NOT be a simple "succeeded" message
-        assert "所有" not in synthesis or "失败" in synthesis or "❌" in synthesis, (
-            f"Should not claim success when tool failed, got: {synthesis}"
-        )
+    assert [e for e in events if e["event_type"] == "agent.fallback_synthesis"] == []
 
 
-# ── Helpers ──
+# -- Helpers --
 
 
 def _parse_sse_events(text: str) -> list[dict]:

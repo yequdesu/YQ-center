@@ -1,10 +1,9 @@
-"""FakeAgentProvider — returns canned responses for testing.
+"""FakeAgentProvider --returns canned responses for testing.
 
 Does NOT connect to a real LLM. Used for integration testing
 the Agent->Center pipeline without external dependencies.
 """
 
-import uuid
 from collections.abc import AsyncGenerator
 
 from yequ.agent.provider import (
@@ -29,7 +28,7 @@ class FakeAgentProvider(AgentProvider):
     Supports:
     - add_response(pattern, result): match on user message content
     - set_sequence(results): return results in order for multi-turn testing
-    - set_default_result(result): fallback when no pattern matches
+    - set_default_result(result): default result when no pattern matches
     """
 
     def __init__(self, provider_name: str = "fake") -> None:
@@ -64,7 +63,7 @@ class FakeAgentProvider(AgentProvider):
         """Set a sequence of responses for multi-turn loop testing.
 
         Each call to invoke() returns the next result in sequence.
-        When the sequence is exhausted, falls back to default_result.
+        When the sequence is exhausted, returns default_result.
         """
         self._sequence = list(results)
         self._seq_index = 0
@@ -96,7 +95,7 @@ class FakeAgentProvider(AgentProvider):
         """Return a canned response.
 
         Priority:
-        1. Sequence (multi-turn) — next in sequence
+        1. Sequence (multi-turn) --next in sequence
         2. Pattern match on last user message
         3. Default result
         """
@@ -109,7 +108,7 @@ class FakeAgentProvider(AgentProvider):
             self._seq_index += 1
             return sequence_result
 
-        # 2. Pattern match — look in messages or prompt
+        # 2. Pattern match --look in messages or prompt
         if messages:
             last_non_system = next((m for m in reversed(messages) if m.role != "system"), None)
             if last_non_system and last_non_system.role == "tool":
@@ -137,21 +136,11 @@ class FakeAgentProvider(AgentProvider):
                     retryable=result.retryable,
                 )
 
-        # 3. Default — ensure task_completed is always present
-        default_calls = list(self._default_result.function_calls)
-        if not any(c.get("name") == "task_completed" for c in default_calls):
-            default_message = _message_from_output(self._default_result.output)
-            default_calls.append(
-                {
-                    "name": "task_completed",
-                    "call_id": f"call_{uuid.uuid4().hex[:16]}",
-                    "input": {"message": default_message or "default fake response"},
-                }
-            )
+        # 3. Default
         return ProviderInvokeResult(
             message=_message_from_output(self._default_result.output),
             success=self._default_result.success,
-            tool_calls=default_calls,
+            tool_calls=list(self._default_result.function_calls),
         )
 
     async def invoke_stream(
@@ -162,7 +151,7 @@ class FakeAgentProvider(AgentProvider):
         messages: list[AgentMessage] | None = None,
         context: dict[str, object] | None = None,
     ) -> AsyncGenerator[dict[str, object], None]:
-        """Simulate streaming — calls invoke() and yields delta + done events."""
+        """Simulate streaming --calls invoke() and yields delta + done events."""
         result = await self.invoke(
             prompt,
             available_functions=available_functions or [],

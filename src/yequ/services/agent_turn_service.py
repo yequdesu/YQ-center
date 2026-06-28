@@ -134,7 +134,7 @@ def _status_for_event(event_type: str, data: dict[str, Any]) -> str | None:
         return "tool_running"
     if event_type in {"agent.approval.required", "agent.tool_call.waiting_approval"}:
         return "waiting_approval"
-    if event_type in {"agent.output.delta", "agent.synthesizing", "agent.fallback_synthesis"}:
+    if event_type in {"agent.output.delta", "agent.synthesizing"}:
         return "synthesizing"
     if event_type == "agent.completed":
         return str(data.get("status") or "completed")

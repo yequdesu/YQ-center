@@ -122,9 +122,7 @@ class TestFakeAgentProvider:
         r = await p.invoke("hello", available_functions=[])
         assert r.success is True
         assert r.message == "default fake response"
-        assert any(tc.get("name") == "task_completed" for tc in r.tool_calls), (
-            f"Expected task_completed in tool_calls, got: {r.tool_calls}"
-        )
+        assert r.tool_calls == []
 
     @pytest.mark.asyncio
     async def test_canned_response(self):

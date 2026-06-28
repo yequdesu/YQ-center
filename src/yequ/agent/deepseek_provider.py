@@ -50,7 +50,7 @@ class DeepSeekProvider(AgentProvider):
                 write=30.0,
                 pool=5.0,
             ),
-            max_retries=0,  # no SDK-level retry — we control retry ourselves
+            max_retries=0,  # no SDK-level retry --we control retry ourselves
         )
         self._model = settings.deepseek_model
         self._max_retries = int(settings.deepseek_max_retries)
@@ -143,8 +143,10 @@ class DeepSeekProvider(AgentProvider):
                             continue
                         try:
                             arguments = json.loads(function_call.arguments)
-                        except (json.JSONDecodeError, TypeError):
-                            arguments = {}
+                        except (json.JSONDecodeError, TypeError) as exc:
+                            raise ValueError(
+                                f"Invalid JSON arguments for tool {function_call.name!r}"
+                            ) from exc
                         original_name = self._resolve_name(function_call.name, functions)
                         sanitized_name = function_call.name
                         tool_calls.append(
@@ -178,7 +180,7 @@ class DeepSeekProvider(AgentProvider):
                 }
 
                 return ProviderInvokeResult(
-                    message="\n".join(text_output) if text_output else "Completed",
+                    message="\n".join(text_output),
                     tool_calls=tool_calls,
                     usage=usage,
                     finish_reason=finish or "stop",
@@ -258,7 +260,7 @@ class DeepSeekProvider(AgentProvider):
             try:
                 async for chunk in self._stream_one_attempt(oai_messages, tools, functions):
                     yield chunk
-                return  # success — stream completed without error
+                return  # success --stream completed without error
             except Exception as e:
                 last_error = e
                 last_error_msg = str(e)
@@ -366,8 +368,8 @@ class DeepSeekProvider(AgentProvider):
             buf_name = str(buf.get("name", ""))
             try:
                 arguments = json.loads(buf["arguments"]) if buf["arguments"].strip() else {}
-            except (json.JSONDecodeError, TypeError):
-                arguments = {}
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(f"Invalid JSON arguments for tool {buf_name!r}") from exc
 
             original_name = self._resolve_name(buf_name, functions)
             raw_tool_calls.append(
@@ -381,7 +383,7 @@ class DeepSeekProvider(AgentProvider):
 
         yield {
             "type": "done",
-            "message": "".join(text_buffer) if text_buffer else "Completed",
+            "message": "".join(text_buffer),
             "tool_calls": raw_tool_calls,
             "usage": usage_info,
             "finish_reason": finish_reason,
@@ -397,19 +399,20 @@ class DeepSeekProvider(AgentProvider):
             "Rules:\n"
             "1. Analyze the user's request and choose appropriate tools.\n"
             "2. You may call multiple tools in one response.\n"
-            "3. After receiving tool results, assess whether you need more "
-            "information or can give the final answer.\n"
-            "4. When the task is complete, you MUST call the task_completed "
-            "tool with a final summary in the user's language. Do not just "
-            "stop — always signal completion explicitly.\n"
-            "5. Never invent tool names.\n"
-            "6. If a tool fails or is denied, explain the situation to the user.\n"
-            "7. Never mention internal implementation fields such as dry_run "
+            "3. After receiving tool results, either call more tools or respond "
+            "with the final answer as normal assistant text.\n"
+            "4. Never invent tool names.\n"
+            "5. If a tool fails or is denied, explain the situation to the user.\n"
+            "6. Never mention internal implementation fields such as dry_run "
             "or approval_id. If an operation is previewed before execution, "
-            "describe it to the user as a preflight check or 预演.\n"
-            "8. Do not retry a denied write operation by changing internal "
+            "describe it to the user as a preflight check or 棰勬紨.\n"
+            "7. Do not retry a denied write operation by changing internal "
             "parameters. Ask the user for a new instruction when approval is denied.\n"
         )
+
+    def debug_system_prompt(self, functions: list[AgentFunction]) -> str:
+        """Return the exact system prompt used for provider calls."""
+        return self._system_prompt(functions)
 
     def _build_fresh_messages(
         self, prompt: str, functions: list[AgentFunction]
@@ -493,7 +496,7 @@ class DeepSeekProvider(AgentProvider):
         for f in functions:
             if self._sanitize_name(f.name) == sanitized:
                 return f.name
-        return sanitized  # fallback
+        raise ValueError(f"Unknown provider tool name: {sanitized!r}")
 
 
 def _sanitize_tool_observation_content(content: str) -> str:

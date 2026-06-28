@@ -40,7 +40,8 @@ class TestDeepSeekProvider:
         ]
         assert p._resolve_name("system_metrics_snapshot", funcs) == "system.metrics.snapshot"
         assert p._resolve_name("system_info", funcs) == "system.info"
-        assert p._resolve_name("unknown_func", funcs) == "unknown_func"
+        with pytest.raises(ValueError, match="Unknown provider tool name"):
+            p._resolve_name("unknown_func", funcs)
 
     def test_functions_to_tools(self, deepseek_provider):
         p = deepseek_provider
@@ -89,7 +90,8 @@ class TestDeepSeekProvider:
     def test_resolve_name_no_match(self, deepseek_provider):
         p = deepseek_provider
         funcs = [AgentFunction(name="existing.func")]
-        assert p._resolve_name("nonexistent_func", funcs) == "nonexistent_func"
+        with pytest.raises(ValueError, match="Unknown provider tool name"):
+            p._resolve_name("nonexistent_func", funcs)
 
     @pytest.mark.asyncio
     async def test_invoke_stream_builds_system_prompt_with_functions(self, deepseek_provider):
