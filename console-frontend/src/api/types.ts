@@ -344,6 +344,7 @@ export type SseEventType =
   | "stream.open"
   | "stream.heartbeat"
   | "stream.close"
+  | "agent.prompt_context"
   | "agent.session.resolved"
   | "agent.prompt.received"
   | "agent.provider.started"
