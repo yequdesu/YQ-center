@@ -17,6 +17,13 @@
 | `docs/yqp-production-reliability-report-2026-06-25.md` | YQP 可靠性修复记录，作为排障参考。 |
 | `docs/debug-blog/2026-06-28-yqp-deadlock-postmortem.md` | DB 连接池/事务阻塞事故复盘，作为部署排障参考。 |
 
+## 设想与路线文档
+
+| 文档 | 用途 |
+|---|---|
+| `docs/proposals/README.md` | 设想/提案/路线文档目录说明。 |
+| `docs/proposals/artifact-media-blob-layer.md` | Artifact / Media / Blob 基础层提案，覆盖文件传输、截图、摄像头和多模态资产。 |
+
 ## 当前诊断与交接类文档
 
 | 文档 | 状态 |
