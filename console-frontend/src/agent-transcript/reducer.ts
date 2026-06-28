@@ -16,6 +16,23 @@ export function emptyTranscript(): TranscriptState {
   return { blocks: [], promptContext: null };
 }
 
+export function appendOptimisticUserPrompt(
+  state: TranscriptState,
+  prompt: string,
+  eventId: string,
+  createdAt: string,
+): TranscriptState {
+  const content = prompt.trim();
+  if (!content) return state;
+  return appendBlockOnce(state, {
+    type: "user",
+    id: `user:optimistic:${eventId}`,
+    content,
+    created_at: createdAt,
+    optimistic: true,
+  } as UserBlock);
+}
+
 export function reduceSseEvent(state: TranscriptState, event: SseEvent): TranscriptState {
   const data = event.data as Record<string, unknown>;
   const createdAt = event.timestamp || nowISO();
@@ -28,12 +45,13 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
       if (data.internal === true) return state;
       const content = String(data.prompt ?? "");
       if (!content) return state;
-      // Skip if a user block with the same content was already added locally
-      // (for instant UI feedback before the SSE stream starts).
-      if (
-        state.blocks.length > 0
-        && state.blocks[state.blocks.length - 1].type === "user"
-      ) return state;
+      const replaced = replaceOptimisticUserPrompt(
+        state,
+        content,
+        `user:${event.event_id}`,
+        createdAt,
+      );
+      if (replaced) return replaced;
       return appendBlockOnce(state, {
         type: "user",
         id: `user:${event.event_id}`,
@@ -369,6 +387,29 @@ function appendArtifactPresentation(
     artifacts,
     created_at: createdAt,
   } as ArtifactPresentationBlock);
+}
+
+function replaceOptimisticUserPrompt(
+  state: TranscriptState,
+  content: string,
+  serverId: string,
+  createdAt: string,
+): TranscriptState | null {
+  for (let index = state.blocks.length - 1; index >= 0; index -= 1) {
+    const block = state.blocks[index];
+    if (block.type !== "user" || !block.optimistic || block.content !== content) {
+      continue;
+    }
+    const blocks = [...state.blocks];
+    blocks[index] = {
+      ...block,
+      id: serverId,
+      created_at: createdAt,
+      optimistic: false,
+    };
+    return { ...state, blocks };
+  }
+  return null;
 }
 
 function appendBlockOnce(state: TranscriptState, block: ChatBlock): TranscriptState {

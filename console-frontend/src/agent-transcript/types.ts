@@ -5,6 +5,7 @@ export interface UserBlock {
   id: string;
   content: string;
   created_at: string;
+  optimistic?: boolean;
 }
 
 export interface AssistantTextBlock {

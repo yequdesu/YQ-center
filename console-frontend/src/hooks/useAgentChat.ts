@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createEventStream } from "@/api/stream";
 import {
+  appendOptimisticUserPrompt,
   applyToolPatch,
   emptyTranscript,
   reduceSseEvent,
@@ -197,15 +198,10 @@ export function useAgentChat({
       // Add user message and thinking indicator locally before SSE stream
       // so the UI updates instantly instead of waiting for the first SSE event.
       if (!suppressUserMessage) {
+        const eventId = crypto.randomUUID();
+        const timestamp = new Date().toISOString();
         setTranscript((prev) =>
-          reduceSseEvent(prev, {
-            event_id: crypto.randomUUID(),
-            event_type: "agent.prompt.received",
-            session_id: sessionId,
-            trace_id: "",
-            timestamp: new Date().toISOString(),
-            data: { prompt, internal: false },
-          }),
+          appendOptimisticUserPrompt(prev, prompt, eventId, timestamp),
         );
       }
       setTranscript((prev) =>
@@ -238,15 +234,10 @@ export function useAgentChat({
   const sendPlan = useCallback(
     (prompt: string, targetNodeId: string, providerName: string) => {
       // Add user message and thinking indicator locally before SSE stream.
+      const eventId = crypto.randomUUID();
+      const timestamp = new Date().toISOString();
       setTranscript((prev) =>
-        reduceSseEvent(prev, {
-          event_id: crypto.randomUUID(),
-          event_type: "agent.prompt.received",
-          session_id: sessionId,
-          trace_id: "",
-          timestamp: new Date().toISOString(),
-          data: { prompt, internal: false },
-        }),
+        appendOptimisticUserPrompt(prev, prompt, eventId, timestamp),
       );
       setTranscript((prev) =>
         reduceSseEvent(prev, {
