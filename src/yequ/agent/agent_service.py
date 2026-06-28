@@ -27,6 +27,7 @@ from yequ.agent.runtime_state import (
     AgentRuntimeFailure,
     AgentRuntimeLimits,
 )
+from yequ.db import async_session_factory
 from yequ.agent.tool_execution import (
     AgentInvokeError,
     AgentInvokeOutput,
@@ -108,7 +109,6 @@ def _as_int_or_none(value: object) -> int | None:
 
 
 async def create_agent_session(
-    db: AsyncSession,
     *,
     actor_id: str,
     execution_mode: str = "auto",
@@ -116,28 +116,30 @@ async def create_agent_session(
     max_steps: int = 20,
     max_total_duration_sec: int = 300,
 ) -> dict[str, object]:
-    """Create an Agent Session."""
+    """Create an Agent Session.  Uses a self-managed short-lived DB session."""
     from yequ.models.session import Session
 
     session_id = _make_session_id()
     now = datetime.now(UTC)
-    sess = Session(
-        session_id=session_id,
-        actor_type="agent",
-        actor_id=actor_id,
-        status="active",
-        execution_mode=execution_mode,
-        label=session_id[:8],
-        started_at=now,
-        updated_at=now,
-        metadata_={
-            "max_depth": max_depth,
-            "max_steps": max_steps,
-            "max_total_duration_sec": max_total_duration_sec,
-        },
-    )
-    db.add(sess)
-    await db.commit()
+
+    async with async_session_factory() as db:
+        sess = Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id=actor_id,
+            status="active",
+            execution_mode=execution_mode,
+            label=session_id[:8],
+            started_at=now,
+            updated_at=now,
+            metadata_={
+                "max_depth": max_depth,
+                "max_steps": max_steps,
+                "max_total_duration_sec": max_total_duration_sec,
+            },
+        )
+        db.add(sess)
+        await db.commit()
 
     return {
         "session_id": session_id,
@@ -149,7 +151,6 @@ async def create_agent_session(
 
 
 async def agent_invoke(
-    db: AsyncSession,
     provider: AgentProvider,
     *,
     session_id: str,
@@ -172,6 +173,10 @@ async def agent_invoke(
     3. For each tool_call: validate -> resolve node -> policy -> execute -> wait
     4. Generate final output message
     5. Return complete AgentInvokeResponse
+
+    All DB operations use short-lived sessions created from
+    async_session_factory.  No session is held across await boundaries
+    (LLM calls, job polling, approval waits).
     """
     from yequ.models.session import Session
 
@@ -205,48 +210,51 @@ async def agent_invoke(
             max_total_duration_sec=max_total_duration_sec,
         )
 
-    result = await db.execute(select(Session).where(Session.session_id == session_id))
-    session = result.scalar_one_or_none()
-    if session is None:
-        return AgentInvokeResponse(
-            success=False,
-            status="failed",
-            session_id=session_id,
-            error=AgentInvokeError(code=ErrorCode.INTERNAL_ERROR, message="Session not found"),
-            trace=AgentInvokeTrace(
-                trace_id=trace_id,
-                call_path=list(call_path),
-                step_count=step_count + 1,
-                max_depth=max_depth,
-                max_steps=max_steps,
-                max_total_duration_sec=max_total_duration_sec,
-            ),
-        )
+    # -- Session validation (short-lived session) --
+    async with async_session_factory() as db:
+        result = await db.execute(select(Session).where(Session.session_id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return AgentInvokeResponse(
+                success=False,
+                status="failed",
+                session_id=session_id,
+                error=AgentInvokeError(code=ErrorCode.INTERNAL_ERROR, message="Session not found"),
+                trace=AgentInvokeTrace(
+                    trace_id=trace_id,
+                    call_path=list(call_path),
+                    step_count=step_count + 1,
+                    max_depth=max_depth,
+                    max_steps=max_steps,
+                    max_total_duration_sec=max_total_duration_sec,
+                ),
+            )
 
-    # SQLite strips timezone; if naive, assume UTC
-    started = session.started_at
-    session_actor_id = session.actor_id
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=UTC)
-    deadline = datetime.fromtimestamp(started.timestamp() + max_total_duration_sec, tz=UTC)
+        # SQLite strips timezone; if naive, assume UTC
+        started = session.started_at
+        session_actor_id = session.actor_id
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        deadline = datetime.fromtimestamp(started.timestamp() + max_total_duration_sec, tz=UTC)
+        await db.rollback()
 
     # L1 readonly policy: build a set of known function names from available_functions.
     known_functions = {f.name for f in available_functions}
 
-    # -- Step 1: Write agent.prompt.received + COMMIT before provider call --
+    # -- Step 1: Write agent.prompt.received (self-committing short session) --
     await _write_timeline(
-        db,
+        None,
         "agent.prompt.received",
         session_id=session_id,
         actor=provider.provider_name(),
         prompt=prompt,
         step=step_count + 1,
     )
-    await db.commit()  # commit so event is visible even if provider hangs
 
-    # -- Step 2: Load conversation history --
-    history = await _load_session_history(db, session_id)
-    await db.rollback()
+    # -- Step 2: Load conversation history (short-lived session) --
+    async with async_session_factory() as db:
+        history = await _load_session_history(db, session_id)
+        await db.rollback()
 
     # Build the messages array: system prompt is injected by the provider
     # Append the current user message
@@ -284,13 +292,12 @@ async def agent_invoke(
         )
 
         await _write_timeline(
-            db,
+            None,
             "agent.provider.started",
             session_id=session_id,
             actor=provider.provider_name(),
             step=current_step,
         )
-        await db.commit()
 
         _t0 = _time.monotonic()
         try:
@@ -334,7 +341,7 @@ async def agent_invoke(
             break
 
         await _write_timeline(
-            db,
+            None,
             "agent.provider.completed",
             session_id=session_id,
             actor=provider.provider_name(),
@@ -378,7 +385,7 @@ async def agent_invoke(
             final_provider_message = provider_decision.final_message
             loop_state = provider_decision.status
             await _write_timeline(
-                db,
+                None,
                 "agent.provider.completed",
                 session_id=session_id,
                 actor=provider.provider_name(),
@@ -460,7 +467,6 @@ async def agent_invoke(
             )
             func_meta = next((f for f in available_functions if f.name == tc_name), None)
             executed = await _execute_tool_call_v2(
-                db,
                 tc,
                 session_id=session_id,
                 actor_id=session_actor_id,
@@ -479,8 +485,9 @@ async def agent_invoke(
             if executed.status == "waiting_approval":
                 loop_state = "waiting_approval"
                 all_tool_calls.extend(iteration_results)
-                await _save_session_history(db, session_id, history)
-                await db.commit()
+                async with async_session_factory() as save_db:
+                    await _save_session_history(save_db, session_id, history)
+                    await save_db.commit()
                 return _build_loop_response(
                     provider=provider,
                     session_id=session_id,
@@ -558,17 +565,18 @@ async def agent_invoke(
     # -- Step 7: Save history --
     if final_provider_message:
         history.append(AgentMessage(role="assistant", content=final_provider_message))
-    await _save_session_history(db, session_id, history)
+    async with async_session_factory() as save_db:
+        await _save_session_history(save_db, session_id, history)
+        await save_db.commit()
 
     await _write_timeline(
-        db,
+        None,
         "agent.final_response",
         session_id=session_id,
         actor=provider.provider_name(),
         status=final_status,
         tool_call_count=len(all_tool_calls),
     )
-    await db.commit()
 
     return _build_loop_response(
         provider=provider,
@@ -588,7 +596,6 @@ async def agent_invoke(
 
 
 async def agent_plan(
-    db: AsyncSession,
     provider: AgentProvider,
     *,
     session_id: str,
@@ -751,7 +758,8 @@ async def agent_plan(
             }
 
     # -- Step 5: Create plan --
-    plan = await MaintenancePlanApplicationService(db).create(
+    async with async_session_factory() as plan_db:
+        plan = await MaintenancePlanApplicationService(plan_db).create(
         goal=prompt,
         actor_id=provider.provider_name(),
         target_node_id=target_node_id,
@@ -769,16 +777,18 @@ async def agent_plan(
             }
             for s in steps_ir
         ],
-        session_id=session_id,
-        risk="maintenance" if has_write else "safe",
-        max_total_duration_sec=max_total_duration_sec,
-        execution_mode=execution_mode,
-    )
+            session_id=session_id,
+            risk="maintenance" if has_write else "safe",
+            max_total_duration_sec=max_total_duration_sec,
+            execution_mode=execution_mode,
+        )
 
-    # Set status + approval
-    if has_write:
-        plan.status = "waiting_approval"
-        await db.commit()
+        # Set status + approval
+        if has_write:
+            plan.status = "waiting_approval"
+            await plan_db.commit()
+        else:
+            await plan_db.commit()
 
     return {
         "status": plan.status,
@@ -984,7 +994,6 @@ def _tool_family(function_name: str) -> str:
 
 
 async def _execute_tool_call_v2(
-    db: AsyncSession,
     tc: AgentToolCall,
     *,
     session_id: str,
@@ -998,10 +1007,16 @@ async def _execute_tool_call_v2(
     declared_risk: str | None = None,
     declared_effect: str | None = None,
 ) -> AgentToolCall:
-    """Execute a tool call through the application-layer Center boundary."""
+    """Execute a tool call through the application-layer Center boundary.
+
+    Uses a fresh DB session that is committed before returning, so the
+    FOR UPDATE lock on timeline_sequences is never held across await
+    boundaries.
+    """
     tc.started_at = _iso(datetime.now(UTC))
 
-    result = await ToolInvocationApplicationService(db).execute(
+    async with async_session_factory() as app_db:
+        result = await ToolInvocationApplicationService(app_db).execute(
         ExecuteToolCommand(
             actor_type="agent",
             actor_id=actor_id,
@@ -1012,12 +1027,20 @@ async def _execute_tool_call_v2(
             execution_mode=execution_mode,
             max_depth=max_depth,
             call_path=list(call_path) + [tc.name],
-            wait_for_result=True,
+            wait_for_result=False,
             deadline=deadline,
             declared_risk=declared_risk,
             declared_effect=declared_effect,
         )
-    )
+        )
+        await app_db.commit()
+
+    # If the job was created, poll for terminal status using short sessions.
+    if result.status == "running" and result.job_id:
+        final_status = await _wait_invocation_terminal(
+            result.invocation_id or "", deadline
+        )
+        result.status = final_status
 
     tc.target_node_id = result.target_node_id or ""
     tc.invocation_id = result.invocation_id or ""
@@ -1034,7 +1057,7 @@ async def _execute_tool_call_v2(
 
     if result.job_id:
         await _write_timeline(
-            db,
+            None,
             "agent.tool.selected",
             session_id=session_id,
             actor=provider_name,
@@ -1045,7 +1068,7 @@ async def _execute_tool_call_v2(
             effect=result.effect,
         )
         await _write_timeline(
-            db,
+            None,
             "agent.tool.job.persisted",
             session_id=session_id,
             actor=provider_name,
@@ -1057,7 +1080,7 @@ async def _execute_tool_call_v2(
             success=True,
         )
         await _write_timeline(
-            db,
+            None,
             "agent.tool.invocation_created",
             session_id=session_id,
             actor=provider_name,
@@ -1076,7 +1099,7 @@ async def _execute_tool_call_v2(
             "details": {"approval_id": result.approval_id},
         }
         await _write_timeline(
-            db,
+            None,
             "agent.tool.waiting_approval",
             session_id=session_id,
             actor=provider_name,
@@ -1094,7 +1117,7 @@ async def _execute_tool_call_v2(
             "message": result.error_message or f"No online node has {tc.name!r}",
         }
         await _write_timeline(
-            db,
+            None,
             "agent.tool.denied",
             session_id=session_id,
             actor=provider_name,
@@ -1112,7 +1135,7 @@ async def _execute_tool_call_v2(
             "message": result.error_message or "Policy denied",
         }
         await _write_timeline(
-            db,
+            None,
             "agent.tool.denied",
             session_id=session_id,
             actor=provider_name,
@@ -1127,7 +1150,7 @@ async def _execute_tool_call_v2(
         tc.status = "succeeded"
         tc.result = result.output_data or {}
         await _write_timeline(
-            db,
+            None,
             "agent.tool.completed",
             session_id=session_id,
             actor=provider_name,
@@ -1181,7 +1204,7 @@ async def _execute_tool_call_v2(
     )
     if result.effect in ("write", "destructive"):
         await _write_timeline(
-            db,
+            None,
             "l2.action.failed",
             session_id=session_id,
             actor=provider_name,

@@ -176,7 +176,6 @@ class TestFakeAgentProvider:
 async def agent_session_fixture(db_session: AsyncSession) -> dict[str, object]:
     """Create a real agent session for tests."""
     return await create_agent_session(
-        db_session,
         actor_id="test-agent",
         execution_mode="auto",
     )
@@ -188,7 +187,8 @@ class TestAgentService:
     @pytest.mark.asyncio
     async def test_create_session(self, db_session: AsyncSession):
         result = await create_agent_session(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             actor_id="test-agent",
             execution_mode="auto",
         )
@@ -222,7 +222,6 @@ class TestAgentService:
 
         # Use short max_total_duration_sec so the invocation wait times out fast
         await agent_invoke(
-            db_session,
             p,
             session_id=session_id,
             prompt="test prompt",
@@ -274,7 +273,8 @@ class TestAgentService:
         ]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id=session_id,
             prompt="recursive call",
@@ -298,7 +298,8 @@ class TestAgentService:
         funcs = [AgentFunction(name="f", risk="safe")]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id="sess_depth",
             prompt="test",
@@ -317,7 +318,8 @@ class TestAgentService:
         funcs = [AgentFunction(name="f", risk="safe")]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id="sess_steps",
             prompt="test",
@@ -336,7 +338,8 @@ class TestAgentService:
         funcs = [AgentFunction(name="f", risk="safe")]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id="sess_dur",
             prompt="test",
@@ -365,7 +368,8 @@ class TestAgentService:
         funcs = [AgentFunction(name="system.reboot", risk="destructive")]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id=session_id,
             prompt="dangerous action",
@@ -395,7 +399,8 @@ class TestAgentService:
         funcs = [AgentFunction(name="test.func", risk="safe")]
 
         result = await agent_invoke(
-            db_session,
+            # db_session removed — agent functions self-manage DB sessions now
+
             p,
             session_id=session_id,
             prompt="fail me",
