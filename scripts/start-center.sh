@@ -49,12 +49,29 @@ case "${2:-start}" in
       echo -e "${RED}[WARN] YEQU_DEEPSEEK_API_KEY not set — DeepSeek provider will fail${NC}"
     fi
 
+    # Clear orphaned PostgreSQL sessions from a previous (killed) Center process.
+    # When Center is killed with pkill/Ctrl+C, its DB connections become orphaned
+    # and hold locks for up to 2 min (idle_in_transaction_session_timeout).
+    echo -e "${YELLOW}[1/5] Clean orphaned DB sessions ...${NC}"
+    "$ROOT/.venv/bin/python" -c "
+import asyncio
+from sqlalchemy import text
+from yequ.db import async_session_factory
+async def clean():
+    async with async_session_factory() as db:
+        r = await db.execute(text(\"\"\"SELECT pid FROM pg_stat_activity WHERE state = 'idle in transaction' AND pid != pg_backend_pid()\"\"\"))
+        for (pid,) in r.fetchall():
+            await db.execute(text(f'SELECT pg_terminate_backend({pid})'))
+        await db.commit()
+asyncio.run(clean())
+" 2>/dev/null || true
+
     echo ""
-    echo -e "${YELLOW}[1/4] alembic migrate ...${NC}"
+    echo -e "${YELLOW}[2/5] alembic migrate ...${NC}"
     alembic upgrade head 2>&1 | tail -1
 
     echo ""
-    echo -e "${YELLOW}[2/4] Provision winClient node ...${NC}"
+    echo -e "${YELLOW}[3/5] Provision winClient node ...${NC}"
     python src/yequ/main.py &
     PID=$!
     sleep 3
