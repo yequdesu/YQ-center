@@ -17,6 +17,7 @@ import type {
   ToolGroupBlock,
   SystemEventBlock,
   RunStatusBlock,
+  ArtifactPresentationBlock,
 } from "@/agent-transcript/types";
 import type { AgentSessionDetail, SseEvent } from "@/api/types";
 
@@ -31,6 +32,7 @@ export type {
   ToolGroupBlock,
   SystemEventBlock,
   RunStatusBlock,
+  ArtifactPresentationBlock,
 };
 
 interface UseAgentChatOptions {

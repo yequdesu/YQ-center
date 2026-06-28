@@ -1,4 +1,4 @@
-import type { AgentSessionMessage, AgentTurnEvent } from "@/api/types";
+import type { AgentSessionMessage, AgentTurnEvent, CenterArtifactDetail } from "@/api/types";
 
 export interface UserBlock {
   type: "user";
@@ -36,12 +36,20 @@ export interface RunStatusBlock {
   created_at: string;
 }
 
+export interface ArtifactPresentationBlock {
+  type: "artifact_presentation";
+  id: string;
+  artifacts: Partial<CenterArtifactDetail>[];
+  created_at: string;
+}
+
 export type ChatBlock =
   | UserBlock
   | AssistantTextBlock
   | ToolGroupBlock
   | SystemEventBlock
-  | RunStatusBlock;
+  | RunStatusBlock
+  | ArtifactPresentationBlock;
 
 export interface ToolCallState {
   callId: string;

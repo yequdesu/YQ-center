@@ -1,5 +1,6 @@
 import type { AgentSessionMessage, SseEvent } from "@/api/types";
 import type {
+  ArtifactPresentationBlock,
   AssistantTextBlock,
   ChatBlock,
   PersistedTranscriptInput,
@@ -79,13 +80,18 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
 
-    case "agent.tool_call.completed":
-      return patchToolCall(state, data, (tool) => ({
+    case "agent.tool_call.completed": {
+      const next = patchToolCall(state, data, (tool) => ({
         ...tool,
         status: "succeeded",
         result: asRecord(data.result),
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
+      if (String(data.name ?? "") === "artifact.present") {
+        return appendArtifactPresentation(next, data, createdAt);
+      }
+      return next;
+    }
 
     case "agent.tool_call.waiting_approval":
       return patchToolCall(state, data, (tool) => ({
@@ -342,6 +348,23 @@ function appendSystemEvent(
   } as SystemEventBlock);
 }
 
+function appendArtifactPresentation(
+  state: TranscriptState,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const result = asRecord(data.result);
+  const artifacts = asArtifactList(result.artifacts);
+  const callId = String(data.call_id ?? "");
+  if (!callId || artifacts.length === 0) return state;
+  return appendBlockOnce(state, {
+    type: "artifact_presentation",
+    id: `artifact_presentation:${callId}`,
+    artifacts,
+    created_at: createdAt,
+  } as ArtifactPresentationBlock);
+}
+
 function appendBlockOnce(state: TranscriptState, block: ChatBlock): TranscriptState {
   if (state.blocks.some((existing) => existing.id === block.id)) return state;
   return { ...state, blocks: [...state.blocks, block] };
@@ -457,6 +480,17 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function asArtifactList(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      typeof (item as Record<string, unknown>).artifact_id === "string",
+  );
 }
 
 function parseToolMessageContent(content: string | null): Record<string, unknown> {

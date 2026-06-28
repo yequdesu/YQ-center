@@ -17,7 +17,17 @@ import {
   denyApproval,
   approveAndRunApproval,
 } from "@/api/admin";
-import { useAgentChat, type ToolCallState, type ChatBlock, type UserBlock, type AssistantTextBlock, type ToolGroupBlock, type SystemEventBlock, type RunStatusBlock } from "@/hooks/useAgentChat";
+import {
+  useAgentChat,
+  type ArtifactPresentationBlock,
+  type AssistantTextBlock,
+  type ChatBlock,
+  type RunStatusBlock,
+  type SystemEventBlock,
+  type ToolCallState,
+  type ToolGroupBlock,
+  type UserBlock,
+} from "@/hooks/useAgentChat";
 import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
@@ -872,6 +882,8 @@ function ChatTimelineBlock({
       return <AssistantTextBubble block={block} />;
     case "tool_group":
       return <ToolGroupBubble block={block} />;
+    case "artifact_presentation":
+      return <ArtifactPresentationBubble block={block} />;
     case "system_event":
       return <SystemEventBubble block={block} />;
     case "run_status":
@@ -971,6 +983,19 @@ function AssistantTextBubble({ block }: { block: AssistantTextBlock }) {
       </div>
       <div className="max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] px-4 py-2.5">
         <MarkdownMessage content={block.content} isStreaming={block.streaming} />
+      </div>
+    </div>
+  );
+}
+
+function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBlock }) {
+  return (
+    <div className="flex gap-3">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
+        <Bot size={14} />
+      </div>
+      <div className="w-full max-w-[75%]">
+        <ArtifactList artifacts={block.artifacts} />
       </div>
     </div>
   );
@@ -1076,6 +1101,7 @@ function ThinkingIndicator() {
 function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
   const [expanded, setExpanded] = useState(false);
   const artifacts = artifactsFromResult(toolCall.result);
+  const showInlineArtifacts = toolCall.name !== "artifact.present" && artifacts.length > 0;
 
   const hasDetails = Boolean(
     toolCall.result ||
@@ -1172,7 +1198,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
           {toolCall.result && (
             <div>
               <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Result</p>
-              {artifacts.length > 0 && (
+              {showInlineArtifacts && (
                 <div className="mb-2">
                   <ArtifactList artifacts={artifacts} />
                 </div>
