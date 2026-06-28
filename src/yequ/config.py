@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # Timeline
     debug_timeline: bool = False  # Set YEQU_DEBUG_TIMELINE=true to write diagnostic events
 
+    # Artifact storage
+    artifact_storage_dir: str = "var/artifacts"
+    artifact_max_upload_bytes: int = 50 * 1024 * 1024
+
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"

@@ -50,6 +50,7 @@ def override_settings(monkeypatch, db_engine):
         test_mode=True,
         log_level="WARNING",
         require_admin_auth=False,
+        artifact_storage_dir="test_artifacts",
     )
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
@@ -96,6 +97,10 @@ async def db_engine():
                 if attempt == 9:
                     raise
                 time.sleep(0.1)
+    if os.path.exists("test_artifacts"):
+        import shutil
+
+        shutil.rmtree("test_artifacts")
 
 
 @pytest_asyncio.fixture

@@ -1,5 +1,7 @@
 """Node service — business logic for YQP node protocol messages."""
 
+import base64
+import binascii
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -449,6 +451,87 @@ async def handle_signal_report(
         "accepted": accepted,
         "rejected": rejected,
     }
+
+
+async def handle_artifact_upload(
+    db: AsyncSession,
+    node: Node,
+    payload: JsonObject,
+    settings: Settings,
+) -> JsonObject:
+    """Process artifact.upload from a Node."""
+    from fastapi import HTTPException, status
+
+    from yequ.protocol.errors import ErrorCode, YqpError
+    from yequ.services.artifact_service import (
+        ArtifactPayload,
+        artifact_to_dict,
+        create_artifact,
+    )
+
+    data_base64 = payload.get("data_base64")
+    if not isinstance(data_base64, str) or not data_base64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=YqpError(
+                code=ErrorCode.SCHEMA_INVALID,
+                message="artifact.upload requires non-empty data_base64",
+            ).model_dump(),
+        )
+
+    try:
+        data = base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=YqpError(
+                code=ErrorCode.SCHEMA_INVALID,
+                message=f"Invalid artifact data_base64: {exc}",
+            ).model_dump(),
+        ) from exc
+
+    try:
+        artifact = await create_artifact(
+            db,
+            ArtifactPayload(
+                data=data,
+                artifact_type=str(payload.get("artifact_type") or "file"),
+                content_type=(
+                    str(payload.get("content_type")) if payload.get("content_type") else None
+                ),
+                title=str(payload.get("title")) if payload.get("title") else None,
+                summary=(
+                    payload.get("summary") if isinstance(payload.get("summary"), dict) else None
+                ),
+                metadata=(
+                    payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+                ),
+                session_id=str(payload.get("session_id")) if payload.get("session_id") else None,
+                invocation_id=(
+                    str(payload.get("invocation_id")) if payload.get("invocation_id") else None
+                ),
+                job_id=str(payload.get("job_id")) if payload.get("job_id") else None,
+                node_id=node.node_id,
+                capability_source_id=(
+                    str(payload.get("capability_source_id"))
+                    if payload.get("capability_source_id")
+                    else None
+                ),
+            ),
+            settings=settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=YqpError(
+                code=ErrorCode.SCHEMA_INVALID,
+                message=str(exc),
+            ).model_dump(),
+        ) from exc
+
+    await db.commit()
+    await db.refresh(artifact, attribute_names=["blobs"])
+    return {"artifact": artifact_to_dict(artifact)}
 
 
 def _parse_signal_datetime(value: object) -> datetime | None:

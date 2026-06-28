@@ -794,3 +794,65 @@ Node 实现原则：
 - 不支持二进制 artifact 的通用上传协议。截图/摄像头正式实现前应先补 Artifact API。
 - 不支持按 Signal stale 自动把 Node 标记为 degraded；当前调度主要看 heartbeat liveness。
 - 不支持在 YQP payload 中传 node token。
+
+## Appendix: artifact.upload current contract
+
+This appendix records the current Node-to-Center artifact upload contract and
+supersedes older notes that said generic binary artifact upload was unsupported.
+
+`artifact.upload` uses the normal `/yqp/` envelope and Bearer token
+authentication. It is intended for screenshots, small files, command outputs,
+camera captures, and other binary/text outputs that should be stored as Center
+artifacts instead of being embedded directly in `job.finished.output`.
+
+Request `payload`:
+
+```json
+{
+  "artifact_type": "file",
+  "content_type": "text/plain",
+  "title": "example.txt",
+  "summary": {
+    "kind": "example"
+  },
+  "metadata": {
+    "source": "node-runtime"
+  },
+  "session_id": "optional-agent-session-id",
+  "invocation_id": "optional-invocation-id",
+  "job_id": "optional-job-id",
+  "capability_source_id": "optional-capability-source-id",
+  "data_base64": "SGVsbG8="
+}
+```
+
+Response:
+
+```json
+{
+  "message_type": "artifact.accepted",
+  "payload": {
+    "artifact": {
+      "artifact_id": "...",
+      "artifact_type": "file",
+      "node_id": "authenticated-node-id",
+      "size_bytes": 5,
+      "sha256": "...",
+      "download_url": "/admin/artifacts/{artifact_id}/download"
+    }
+  }
+}
+```
+
+Rules:
+
+- `data_base64` is required and must be valid base64.
+- Center binds `node_id` from the authenticated Node. Payload cannot override
+  the owner Node.
+- Upload size is bounded by `YEQU_ARTIFACT_MAX_UPLOAD_BYTES`.
+- The initial backend stores blobs on local Center disk under
+  `YEQU_ARTIFACT_STORAGE_DIR`.
+- Job output should reference the returned `artifact_id` when the output is
+  large or binary.
+- Chunked upload, signed Node download grants, retention cleanup, and
+  cross-node transfer are not implemented in this slice.

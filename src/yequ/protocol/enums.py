@@ -22,6 +22,10 @@ class MessageType(StrEnum):
     # Signal
     SIGNAL_REPORT = "signal.report"
 
+    # Artifact
+    ARTIFACT_UPLOAD = "artifact.upload"
+    ARTIFACT_ACCEPTED = "artifact.accepted"
+
     # Job delivery
     JOB_POLL = "job.poll"
     JOB_AVAILABLE = "job.available"

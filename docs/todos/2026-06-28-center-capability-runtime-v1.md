@@ -50,10 +50,18 @@ Implemented in the current slice:
     `capability.search`, `capability.describe`, and `capability.invoke`;
   - test mode still keeps legacy/default raw tools for isolated compatibility
     tests during the transition.
+- Phase 3 Artifact baseline was started:
+  - Center now has local artifact/blob storage behind `Artifact` and
+    `ArtifactBlob`;
+  - admin APIs can upload, list, inspect, and download artifacts;
+  - Nodes can upload artifacts through YQP `artifact.upload`, and Center
+    returns `artifact.accepted` with the stored artifact metadata;
+  - storage root is configurable through `YEQU_ARTIFACT_STORAGE_DIR`;
+  - upload size is bounded by `YEQU_ARTIFACT_MAX_UPLOAD_BYTES`.
 
 Not implemented in this slice:
 
-- artifact upload/download storage APIs;
+- automatic conversion of Node tool outputs into artifact records;
 - cross-node file transfer;
 - durable Agent graph/resume integration beyond schema.
 

@@ -16,6 +16,7 @@ from yequ.protocol.errors import ErrorCode, YqpError
 from yequ.services.message_dedup import check_and_record_message
 from yequ.services.node_auth import authenticate_node, verify_node_id_binding
 from yequ.services.node_service import (
+    handle_artifact_upload,
     handle_heartbeat,
     handle_hello,
     handle_job_accepted,
@@ -50,6 +51,7 @@ def _response_type(
         MessageType.NODE_REGISTER_CAPABILITIES: MessageType.REGISTRY_ACCEPTED,
         MessageType.NODE_HEARTBEAT: MessageType.NODE_HEARTBEAT,
         MessageType.SIGNAL_REPORT: MessageType.SIGNAL_REPORT,
+        MessageType.ARTIFACT_UPLOAD: MessageType.ARTIFACT_ACCEPTED,
         MessageType.JOB_POLL: MessageType.JOB_AVAILABLE,
         MessageType.JOB_ACCEPTED: MessageType.JOB_ACCEPTED,
         MessageType.JOB_FINISHED: MessageType.JOB_FINISHED,
@@ -182,6 +184,8 @@ async def yqp_endpoint(
         response_payload = await handle_register_capabilities(db, node, envelope.payload, settings)
     elif msg_type == MessageType.SIGNAL_REPORT:
         response_payload = await handle_signal_report(db, node, envelope.payload, settings)
+    elif msg_type == MessageType.ARTIFACT_UPLOAD:
+        response_payload = await handle_artifact_upload(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_POLL:
         response_payload = await handle_job_poll(db, node, envelope.payload, settings)
     elif msg_type == MessageType.JOB_ACCEPTED:

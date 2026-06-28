@@ -13,6 +13,7 @@ from starlette.responses import Response
 from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.admin_activity import router as admin_activity_router
 from yequ.api.routes.admin_approvals import router as admin_approvals_router
+from yequ.api.routes.admin_artifacts import router as admin_artifacts_router
 from yequ.api.routes.admin_invocations import router as admin_invocations_router
 from yequ.api.routes.admin_nodes import router as admin_nodes_router
 from yequ.api.routes.admin_provisioning import router as admin_provisioning_router
@@ -186,6 +187,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(admin_activity_router)
     app.include_router(admin_approvals_router)
+    app.include_router(admin_artifacts_router)
     app.include_router(admin_invocations_router)
     app.include_router(admin_nodes_router)
     app.include_router(admin_provisioning_router)
