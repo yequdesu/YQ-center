@@ -54,8 +54,8 @@ class DeepSeekProvider(AgentProvider):
             max_retries=0,  # no SDK-level retry --we control retry ourselves
         )
         self._model = settings.deepseek_model
-        self._max_retries = int(settings.deepseek_max_retries)
-        self._retry_backoff_base = float(settings.deepseek_retry_backoff_base)
+        self._max_retries = 5  # 5 retry attempts with fixed 5s intervals
+        self._retry_interval_sec = 5.0
         self._read_timeout = read_timeout
         self._functions: list[AgentFunction] = []
 
@@ -197,17 +197,16 @@ class DeepSeekProvider(AgentProvider):
                 if not retryable or attempt >= self._max_retries:
                     break
 
-                backoff = self._retry_backoff_base * (2 ** attempt)
                 _log.warning(
-                    "deepseek provider retry attempt=%d/%d backoff=%.1fs error=%s",
-                    attempt + 1, self._max_retries, backoff, last_error_msg[:200],
+                    "deepseek provider retry attempt=%d/%d interval=%.1fs error=%s",
+                    attempt + 1, self._max_retries, self._retry_interval_sec, last_error_msg[:200],
                 )
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(self._retry_interval_sec)
 
         # All retries exhausted or non-retryable error
         _t_exc = _time.monotonic() - _t0
         _log.error(
-            "deepseek provider exception: elapsed=%.1fs retries=%d error=%s",
+            "deepseek provider exception: elapsed=%.1fs attempts=%d error=%s",
             _t_exc, self._max_retries, last_error_msg[:500],
         )
         return ProviderInvokeResult(
@@ -270,12 +269,11 @@ class DeepSeekProvider(AgentProvider):
                 if not retryable or attempt >= self._max_retries:
                     break
 
-                backoff = self._retry_backoff_base * (2 ** attempt)
                 _log.warning(
-                    "deepseek stream retry attempt=%d/%d backoff=%.1fs error=%s",
-                    attempt + 1, self._max_retries, backoff, last_error_msg[:200],
+                    "deepseek stream retry attempt=%d/%d interval=%.1fs error=%s",
+                    attempt + 1, self._max_retries, self._retry_interval_sec, last_error_msg[:200],
                 )
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(self._retry_interval_sec)
 
         # All retries exhausted or non-retryable error
         _log.error("deepseek stream error: %s", last_error_msg[:500])
