@@ -264,6 +264,7 @@ Linux：
 - `relay_url`
 - `timeout_sec`
 - `overwrite`
+- `resume_mode`
 - `expected_sha256`
 
 输出：
@@ -275,7 +276,77 @@ Linux：
 - `started_at`
 - `completed_at`
 
-### 6.5 Center 侧 Artifact 注册能力
+### 6.5 断点续传与 Node 协作合同
+
+croc 支持中断后恢复传输，但 YeQu 不能把这件事理解成“Center 自动拥有断点续传”。Center 只做控制面；断点续传是否真正可用，取决于 Node 是否保存本地传输事实、是否保留部分文件、是否能用兼容参数重新启动 croc。
+
+Node 必须承担以下职责：
+
+- 持久化本地 transfer ledger。
+- 对同一个 `transfer_id` 做幂等处理。
+- 检测源文件是否变化。
+- 保留接收端部分文件，除非用户明确选择 overwrite/delete。
+- 在 daemon 重启后能上报 interrupted/running/succeeded/failed。
+- 长时间传输期间持续 `job.lease_renew`。
+- 通过 `job.event` 上报进度或至少上报 keepalive。
+- 完成后计算 size / sha256。
+- 隐藏 croc code 和 relay pass。
+
+本地 transfer ledger 至少包含：
+
+| 字段 | 说明 |
+|---|---|
+| `transfer_id` | Center 生成或用户指定的传输 ID。 |
+| `role` | `sender` / `receiver`。 |
+| `status` | `created`、`running`、`interrupted`、`succeeded`、`failed`、`cancelled`。 |
+| `code_hash` | croc code 的 hash。不得保存明文 code 到日志。 |
+| `relay_url` | 使用的 relay。 |
+| `source_path` | sender 侧源路径。 |
+| `target_path` / `output_dir` | receiver 侧目标路径。 |
+| `source_size_bytes` | 传输开始前的源大小。 |
+| `source_mtime` / `source_sha256` | 用于判断源文件是否变化。 |
+| `partial_path` | receiver 侧部分文件路径。 |
+| `resume_mode` | `resume`、`overwrite`、`fail_if_exists`。 |
+| `attempt_count` | 已尝试次数。 |
+| `pid` | 当前 croc 子进程 ID，可为空。 |
+| `started_at` / `last_progress_at` / `completed_at` | 生命周期时间。 |
+| `last_error_code` / `last_error_message` | 最近失败原因。 |
+
+`resume_mode` 语义：
+
+| 值 | 语义 |
+|---|---|
+| `resume` | 默认。接收端发现部分文件时尝试续传；不得删除部分文件。 |
+| `overwrite` | 用户明确要求重新覆盖。允许删除或覆盖已有文件。 |
+| `fail_if_exists` | 发现目标文件或部分文件时失败。适合保守写入。 |
+
+断点续传成立的前提：
+
+- 两端重新执行时使用同一个 code、relay/pass、源路径、目标路径语义。
+- 源文件未变化。
+- 接收端部分文件未被删除。
+- Node 没有使用会强制覆盖部分文件的参数。
+- 目标目录仍有权限与剩余空间。
+
+如果任一条件不满足，Node 必须失败并报告具体原因，不得静默改成全量覆盖或 YQP artifact 上传。
+
+建议增加辅助能力：
+
+Windows：
+
+- `windows.transfer.local.stat`
+- `windows.transfer.croc.reconcile`
+
+Linux：
+
+- `linux.transfer.local.stat`
+- `linux.transfer.croc.reconcile`
+
+`*.transfer.local.stat` 用于传输前后探测路径、大小、mtime、sha256、可读/可写和剩余空间。
+
+`*.transfer.croc.reconcile` 用于 Node 重启后返回本地 transfer ledger 状态，帮助 Center 修正 `TransferSession`。它不直接启动传输。
+
+### 6.6 Center 侧 Artifact 注册能力
 
 如果接收方是 Center 同机 Linux Node，需要一个能力把接收到的本地文件注册为 Center Artifact：
 
@@ -302,6 +373,9 @@ Linux：
 
 - 实现 `*.transfer.croc.send`。
 - 实现 `*.transfer.croc.receive`。
+- 实现或明确暂缓 `*.transfer.local.stat`。
+- 实现本地 transfer ledger。
+- send/receive 对同一个 `transfer_id` 必须幂等。
 - Center 仍只把它们当普通 capability 调用。
 - 先允许用户手动指定 source、target、path、code。
 
@@ -310,6 +384,7 @@ Linux：
 - WinNode -> LinuxNode 可传一个 100 MiB 文件。
 - LinuxNode -> WinNode 可传一个 100 MiB 文件。
 - 中断后重新执行能利用 croc 的恢复能力。
+- Node 重启后能通过本地 ledger 报告上次传输处于 interrupted 或 succeeded。
 - 失败错误直接传播到 Agent/Console，不静默降级。
 
 ### 阶段 3：TransferSession 编排
@@ -318,6 +393,8 @@ Linux：
 - 新增 `TransferApplicationService`。
 - Center 生成 transfer code。
 - Center 同时调度 source send job 与 target receive job。
+- Center 记录 `resume_mode`、attempt、code_hash 和两端 job_id。
+- Center 根据 Node `*.transfer.croc.reconcile` 修复 TransferSession 状态。
 - Timeline 记录 transfer lifecycle。
 - Agent 暴露 meta tool：`transfer.create`、`transfer.status`、`transfer.cancel`。
 

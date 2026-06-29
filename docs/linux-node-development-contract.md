@@ -235,6 +235,73 @@ Linux Node 必须提供事实探测能力：
 
 如果 `croc` 不可用、目标路径不允许、权限不足、relay 不可用或校验失败，必须让 Job 失败并传播错误，不得静默降级。
 
+### croc 断点续传与 Node 配合
+
+croc 本身支持 interrupted transfer resume，但这不是 Center 单方面能保证的能力。Linux Node 必须配合保存本地传输事实，并在重试时重新构造与上次兼容的 croc 命令。
+
+Node 必须持久化一份本地 transfer ledger，至少包含：
+
+- `transfer_id`
+- `role`：`sender` 或 `receiver`
+- `status`：`created`、`running`、`interrupted`、`succeeded`、`failed`、`cancelled`
+- `code_hash`：croc code 的 hash，不保存明文 code 到日志或普通状态接口
+- `relay_url` / `relay_pass_configured`
+- `source_path` 或 `target_path` / `output_dir`
+- `source_size_bytes`
+- `source_mtime` 或 `source_sha256`，用于判断源文件是否已变化
+- `partial_path`：接收端已存在的部分文件路径
+- `resume_mode`：`resume`、`overwrite`、`fail_if_exists`
+- `attempt_count`
+- `started_at` / `last_progress_at` / `completed_at`
+- `last_error_code` / `last_error_message`
+
+断点续传成立的前提：
+
+- sender 和 receiver 使用同一个 `code`、relay 配置和目标路径语义重新启动；
+- 接收端保留未完成的目标文件或 croc 可识别的部分文件；
+- 源文件没有发生变化；
+- Node 没有使用会强制覆盖部分文件的参数；
+- Node 没有在失败清理中删除部分文件；
+- 目标目录仍有权限和足够空间。
+
+因此 `linux.transfer.croc.receive` 必须显式支持 `resume_mode`：
+
+```json
+{
+  "code": "not-logged-secret",
+  "output_dir": "/tmp/yequ-transfer/inbox",
+  "relay_url": null,
+  "timeout_sec": 3600,
+  "resume_mode": "resume",
+  "expected_sha256": "optional"
+}
+```
+
+`resume_mode` 语义：
+
+| 值 | 行为 |
+|---|---|
+| `resume` | 默认策略。发现部分文件时尝试续传。不得主动删除部分文件。 |
+| `overwrite` | 明确允许覆盖已有文件。用于用户确认后的重新传输。 |
+| `fail_if_exists` | 目标已存在或存在部分文件时直接失败。 |
+
+Node 必须测试并固定本平台的 croc 调用方式。不能在 `resume` 模式下使用会强制覆盖已有文件的参数。不同 croc 版本的行为差异必须通过 `linux.transfer.croc.status` 暴露。
+
+建议增加辅助能力：
+
+- `linux.transfer.local.stat`：检查本地路径、大小、mtime、sha256、可读/可写、剩余空间。
+- `linux.transfer.croc.reconcile`：Node 重启后扫描本地 transfer ledger，返回 interrupted/running/succeeded/failed 状态，供 Center 修复 TransferSession。
+
+这些辅助能力不是替代 send/receive，而是让 Center 在大文件传输前后能建立事实。没有这些能力时，第一版仍可手动传输，但不能声称具备可靠断点续传编排。
+
+长时间 croc Job 必须：
+
+- 定期发送 `job.event` 进度事件，至少包含状态和已知的 stdout/stderr 摘要；
+- 定期 `job.lease_renew`，避免 Center 将长传输误判为 timeout；
+- 支持 job cancel，取消时只杀进程，不默认删除部分文件；
+- 完成后计算 size/sha256 并上报；
+- stdout/stderr 中如包含 code，必须脱敏。
+
 ## 5. 第一版 Capabilities
 
 建议第一版只注册安全读能力：
