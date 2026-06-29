@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.job import Job
-from yequ.protocol import InvocationStatus, JobStatus
+from yequ.models.resource_lock import ResourceLock
+from yequ.protocol import InvocationStatus, JobStatus, LockStatus
 
 # ── Cancel Flow ────────────────────────────────────────────────────
 
@@ -35,6 +36,42 @@ async def test_cancel_queued_job(db_session: AsyncSession):
     fetched = result.scalar_one()
     assert fetched.status == JobStatus.CANCELLED
     assert fetched.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_job_releases_resource_lock(db_session: AsyncSession):
+    """Immediate queued cancellation must not leave a held resource lock."""
+    from yequ.services.job_service import cancel_job
+
+    job = Job(
+        job_id="job_cancel_q_lock",
+        invocation_id="inv_cancel_lock",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.QUEUED,
+        timeout_sec=30,
+    )
+    lock = ResourceLock(
+        lock_id="lock_cancel_q",
+        resource_key="node:test-node:transfer",
+        job_id=job.job_id,
+        invocation_id=job.invocation_id,
+        node_id=job.node_id,
+        status=LockStatus.HELD,
+        created_at=datetime.now(UTC),
+    )
+    db_session.add_all([job, lock])
+    await db_session.flush()
+
+    await cancel_job(db_session, job, reason="test_cancel", node_id="test-node")
+    await db_session.commit()
+
+    result = await db_session.execute(
+        select(ResourceLock).where(ResourceLock.lock_id == "lock_cancel_q")
+    )
+    fetched_lock = result.scalar_one()
+    assert fetched_lock.status == LockStatus.RELEASED
+    assert fetched_lock.released_at is not None
 
 
 @pytest.mark.asyncio
@@ -90,13 +127,73 @@ async def test_find_expired_jobs(db_session: AsyncSession):
         status=JobStatus.RUNNING,
         lease_expires_at=now + timedelta(minutes=10),
     )
-    db_session.add_all([expired, active])
+    cancelling = Job(
+        job_id="job_cancelling_expired",
+        invocation_id="inv_timeout",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.CANCELLING,
+        lease_expires_at=now - timedelta(minutes=10),
+    )
+    db_session.add_all([expired, active, cancelling])
     await db_session.commit()
 
     found = await find_expired_jobs(db_session)
     found_ids = {j.job_id for j in found}
     assert "job_expired_1" in found_ids
+    assert "job_cancelling_expired" in found_ids
     assert "job_active_1" not in found_ids
+
+
+@pytest.mark.asyncio
+async def test_acquire_lock_releases_stale_terminal_owner(db_session: AsyncSession):
+    """A stale held lock owned by a terminal job should not block future jobs."""
+    from yequ.services.resource_lock_service import acquire_lock
+
+    old_job = Job(
+        job_id="job_stale_terminal_lock",
+        invocation_id="inv_stale_lock",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.CANCELLED,
+        timeout_sec=30,
+    )
+    old_lock = ResourceLock(
+        lock_id="lock_stale_terminal",
+        resource_key="node:test-node:transfer",
+        job_id=old_job.job_id,
+        invocation_id=old_job.invocation_id,
+        node_id=old_job.node_id,
+        status=LockStatus.HELD,
+        created_at=datetime.now(UTC),
+    )
+    new_job = Job(
+        job_id="job_new_lock_owner",
+        invocation_id="inv_new_lock",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.QUEUED,
+        timeout_sec=30,
+    )
+    db_session.add_all([old_job, old_lock, new_job])
+    await db_session.flush()
+
+    new_lock = await acquire_lock(
+        db_session,
+        "node:test-node:transfer",
+        new_job.job_id,
+        new_job.invocation_id,
+        new_job.node_id,
+    )
+    await db_session.commit()
+
+    assert new_lock.job_id == new_job.job_id
+    result = await db_session.execute(
+        select(ResourceLock).where(ResourceLock.lock_id == "lock_stale_terminal")
+    )
+    fetched_old_lock = result.scalar_one()
+    assert fetched_old_lock.status == LockStatus.RELEASED
+    assert fetched_old_lock.released_at is not None
 
 
 @pytest.mark.asyncio

@@ -144,6 +144,9 @@ async def cancel_job(
             node_id=node_id,
             reason=reason,
         )
+        from yequ.services.resource_lock_service import release_lock
+
+        await release_lock(db, job.job_id)
     elif job.status in (JobStatus.CLAIMED, JobStatus.RUNNING):
         await transition(
             db,
@@ -185,13 +188,13 @@ async def timeout_job(
 async def find_expired_jobs(db: AsyncSession) -> list[Job]:
     """Find all jobs with expired leases that should time out.
 
-    Only checks CLAIMED and RUNNING jobs that have a non-null
+    Checks CLAIMED, RUNNING, and CANCELLING jobs that have a non-null
     lease_expires_at in the past.
     """
     now = datetime.now(UTC)
     result = await db.execute(
         select(Job).where(
-            Job.status.in_([JobStatus.CLAIMED, JobStatus.RUNNING]),
+            Job.status.in_([JobStatus.CLAIMED, JobStatus.RUNNING, JobStatus.CANCELLING]),
             Job.lease_expires_at.isnot(None),
             Job.lease_expires_at < now,
         )

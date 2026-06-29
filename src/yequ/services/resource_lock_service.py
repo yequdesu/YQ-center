@@ -6,11 +6,19 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.models.job import Job
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.timeline import TimelineEvent
-from yequ.protocol import LockStatus
+from yequ.protocol import JobStatus, LockStatus
 from yequ.services.timeline_writer import add_timeline_event
 from yequ.shared_types import JsonObject
+
+TERMINAL_JOB_VALUES = {status.value for status in JobStatus if status in {
+    JobStatus.SUCCEEDED,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+    JobStatus.TIMEOUT,
+}}
 
 
 def _make_lock_id() -> str:
@@ -30,15 +38,23 @@ async def acquire_lock(
     Returns the lock if acquired. Raises ValueError if the resource
     is already locked by another active job.
     """
-    # Check for existing held locks
+    # Check for existing held locks. Stale locks whose owner job is already
+    # terminal are released here so one historical bad state cannot block a
+    # serialized resource forever.
     result = await db.execute(
         select(ResourceLock).where(
             ResourceLock.resource_key == resource_key,
             ResourceLock.status == LockStatus.HELD,
         )
     )
-    existing = result.scalar_one_or_none()
-    if existing is not None:
+    existing_locks = list(result.scalars().all())
+    for existing in existing_locks:
+        owner_result = await db.execute(select(Job).where(Job.job_id == existing.job_id))
+        owner = owner_result.scalar_one_or_none()
+        if owner is not None and str(owner.status) in TERMINAL_JOB_VALUES:
+            await _release_one_lock(db, existing, reason="stale_owner_terminal")
+            continue
+
         # Write lock conflict timeline event before raising
         conflict_event = TimelineEvent(
             global_seq=0,
@@ -87,6 +103,28 @@ async def acquire_lock(
     return lock
 
 
+async def _release_one_lock(
+    db: AsyncSession,
+    lock: ResourceLock,
+    *,
+    reason: str = "released",
+) -> None:
+    lock.status = LockStatus.RELEASED
+    lock.released_at = datetime.now(UTC)
+    event = TimelineEvent(
+        global_seq=0,
+        event_type="resource.lock.released",
+        actor_type="system",
+        actor_id="resource_lock",
+        node_id=lock.node_id,
+        job_id=lock.job_id,
+        invocation_id=lock.invocation_id,
+        data={"resource_key": lock.resource_key, "lock_id": lock.lock_id, "reason": reason},
+        timestamp=lock.released_at,
+    )
+    await add_timeline_event(db, event)
+
+
 async def release_lock(
     db: AsyncSession,
     job_id: str,
@@ -99,22 +137,8 @@ async def release_lock(
         )
     )
     locks = list(result.scalars().all())
-    now = datetime.now(UTC)
     for lock in locks:
-        lock.status = LockStatus.RELEASED
-        lock.released_at = now
-        event = TimelineEvent(
-            global_seq=0,
-            event_type="resource.lock.released",
-            actor_type="system",
-            actor_id="resource_lock",
-            node_id=lock.node_id,
-            job_id=lock.job_id,
-            invocation_id=lock.invocation_id,
-            data={"resource_key": lock.resource_key, "lock_id": lock.lock_id},
-            timestamp=datetime.now(UTC),
-        )
-        await add_timeline_event(db, event)
+        await _release_one_lock(db, lock)
     return locks
 
 
