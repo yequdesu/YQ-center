@@ -1,4 +1,4 @@
-# Linux Node Development Contract
+# Linux Node 开发合同
 
 状态：当前开发约束
 依赖协议：`YQP-Node-Protocol.md`
@@ -165,6 +165,75 @@ sudo/root runtime 示例：
   }
 }
 ```
+
+## croc 传输工具部署合同
+
+`croc` 属于 Node 本地运行时依赖，不属于 Center 的隐式能力。Center 可以随仓库提供 release 包，方便部署；但每个 Node 是否可用，必须由 Node 自己在启动和 capability 执行时探测并上报。
+
+仓库内当前随附包位置：
+
+```text
+third_party/croc/v10.4.4/
+  croc_v10.4.4_checksums.txt
+  croc_v10.4.4_Linux-64bit.tar.gz
+  croc_v10.4.4_Windows-64bit.zip
+```
+
+Linux Node 第一版推荐安装到 `/usr/local/bin/croc`：
+
+```bash
+cd /tmp
+tar -xzf /path/to/croc_v10.4.4_Linux-64bit.tar.gz
+sudo install -m 0755 croc /usr/local/bin/croc
+croc --version
+```
+
+如果不能使用 `sudo`，可以安装到 Node daemon 用户自己的 bin 目录：
+
+```bash
+mkdir -p "$HOME/.local/bin"
+tar -xzf /path/to/croc_v10.4.4_Linux-64bit.tar.gz -C "$HOME/.local/bin" croc
+chmod 0755 "$HOME/.local/bin/croc"
+"$HOME/.local/bin/croc" --version
+```
+
+Node 配置中应允许显式指定 croc 路径，不应只依赖 `PATH`：
+
+```yaml
+transfer:
+  croc:
+    enabled: true
+    binary_path: /usr/local/bin/croc
+    relay_url: null
+    temp_dir: /tmp/yequ-transfer
+    allow_send: true
+    allow_receive: true
+```
+
+Linux Node 必须提供事实探测能力：
+
+- `linux.transfer.croc.status`
+
+该能力必须返回：
+
+- `installed`：是否能执行 croc；
+- `binary_path`：实际使用的二进制路径；
+- `version`：`croc --version` 结果，无法获取则为 `null`；
+- `relay_url`：当前配置的 relay，未配置则为 `null`；
+- `temp_dir`：传输临时目录；
+- `daemon_user`：daemon 当前用户；
+- `allow_send` / `allow_receive`；
+- `limits`：Node 本地限制，例如允许路径、最大并发数；
+- `error`：不可用时的明确错误。
+
+未安装或不可执行时，`linux.transfer.croc.status` 不应注册为“成功的传输能力”的替代品，也不允许 fallback 到 YQP artifact upload。它应返回明确失败或明确的 `installed=false` 状态，让 Center 和 Agent 基于事实决策。
+
+后续 send/receive 能力必须基于 status 探测事实：
+
+- `linux.transfer.croc.send`
+- `linux.transfer.croc.receive`
+
+如果 `croc` 不可用、目标路径不允许、权限不足、relay 不可用或校验失败，必须让 Job 失败并传播错误，不得静默降级。
 
 ## 5. 第一版 Capabilities
 
