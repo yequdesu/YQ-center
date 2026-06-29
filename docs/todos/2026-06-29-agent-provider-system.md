@@ -450,9 +450,9 @@ Provider 系统不替代 Tool RAG。Provider 系统解决“用哪个模型、�
 
 Provider capability 中必须预留 vision/audio/file 能力，这样后续 Artifact 多模态输入可以根据 provider/model 能力选择是否允许发送图片、音频或文件引用。
 
-### Agent Runtime v2
+### Center Execution Runtime v2
 
-Agent Runtime v2 应只依赖 `AgentProvider` 接口和 provider/model metadata，不直接关心 DeepSeek/OpenAI/Qwen 等具体实现。
+Center Execution Runtime v2 和 Agent Runtime 应只依赖 `AgentProvider` 接口和 provider/model metadata，不直接关心 DeepSeek/OpenAI/Qwen 等具体实现。Provider 系统不参与 Operation 调度决策；它只声明模型能力、连通性和调用行为。
 
 ## 14. 非目标
 

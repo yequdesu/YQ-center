@@ -1,14 +1,18 @@
-# Agent Runtime Rebuild And Multi-Node UX TODO
+# Agent Runtime 重建与多 Node UX 待办
 
-Status: validated
-Scope: completed Agent runtime / multi-node UX baseline
-Owner: Center / Agent / Console
+状态：已验收
+范围：已完成的 Agent runtime / 多 Node UX 基线
+负责人：Center / Agent / Console
 
-## Implementation Checkpoint
+2026-06-30 更新：
 
-Updated: 2026-06-28
+本文件记录的是已验收的多 Node Agent UX 与基础 Runtime 重建。后续长任务、Operation Bus、Execution Admission、AgentRun `waiting_operation` 和 resume 由 `2026-06-30-center-execution-runtime-v2.md` 跟踪。不要继续在本文件中扩展新的调度总线设计。
 
-Manual validation:
+## 实现检查点
+
+更新时间：2026-06-28
+
+手动验收：
 
 - Win Node and Linux Node were connected together and ran stably.
 - Multi-node Agent routing, prompt diagnostics, tool node identity, transcript
@@ -16,7 +20,7 @@ Manual validation:
 - Follow-up architecture should now start from the Tool RAG / Center meta-tool
   roadmap instead of continuing broad runtime refactors in this phase.
 
-Completed in the current engineering pass:
+本轮工程已完成：
 
 - Agent prompt context is now built from structured Center state before prompt
   rendering.
@@ -49,7 +53,7 @@ Completed in the current engineering pass:
 - `agent_plan_stream` session lookup no longer closes a valid stream
   immediately after resolving the session.
 
-Deferred follow-up boundaries:
+延后处理的边界：
 
 - Tool validation, preflight, execution, and job polling are now out of
   `agent_stream.py`; synthesis/final persistence can move next if retry/resume
@@ -64,7 +68,7 @@ Deferred follow-up boundaries:
   phase. Current Agent behavior is explicit pause + admin approve/approve-and-run;
   it does not pretend the LLM continued after a human approval click.
 
-## Stage Objective
+## 阶段目标
 
 Rebuild the Agent side into a recoverable, node-aware, inspectable runtime.
 
@@ -91,7 +95,7 @@ The end result should be visibly better in daily use:
 This is the stage success bar. Internal cleanup is not enough unless the above
 is true.
 
-## Architectural Decision
+## 架构决策
 
 Keep the existing Center/Node control plane.
 
@@ -130,9 +134,9 @@ It deliberately does not adopt LangGraph, AutoGen, OpenAI Agents SDK, or MCP as
 the core runtime. Their patterns are useful; replacing YeQu's control plane is
 not.
 
-## Current Problems To Remove
+## 需要移除的当前问题
 
-### Backend
+### 后端
 
 1. The Agent receives a flat `available_functions` list.
 2. Provider prompt generation owns too much context shaping.
@@ -145,7 +149,7 @@ not.
    - Linux exposes `linux.*`.
    - Routing truth should be node/runtime metadata, not prefixes.
 
-### Frontend
+### 前端
 
 1. Live streaming and persisted history use different reconstruction paths.
 2. Current live path mutates `ChatBlock[]` directly from SSE events.
@@ -159,7 +163,7 @@ not.
    contains an extra blank line.
 7. Switching sessions currently treats live stream state as disposable.
 
-## Target Runtime Shape
+## 目标 runtime 形态
 
 ```text
 User prompt
@@ -181,19 +185,19 @@ State first, stream second.
 SSE should reflect AgentRun state. It should not be the only place where the
 run exists.
 
-## Backend Workstream A: AgentRun Checkpoints
+## 后端工作流 A：AgentRun Checkpoint
 
-### Goal
+### 目标
 
 Persist enough Agent run state to restore and inspect a running or completed
 turn.
 
-### Required Model
+### 必要模型
 
 Use existing `AgentTurn`, session timeline, and messages if they are enough.
 If they are not enough, add a small explicit checkpoint/projection model.
 
-Required concepts:
+必要概念：
 
 ```text
 run_id
@@ -212,7 +216,7 @@ updated_at
 terminal_error
 ```
 
-Status values:
+状态值：
 
 ```text
 created
@@ -221,6 +225,7 @@ model_running
 validating_tools
 preflighting
 waiting_approval
+waiting_operation
 executing_tools
 observing
 synthesizing
@@ -239,10 +244,11 @@ Checkpoint data must be able to represent:
 - invocation/job IDs;
 - tool result or failure;
 - approval waiting state;
+- operation waiting state;
 - final assistant text;
 - terminal failure.
 
-### Rules
+### 规则
 
 - Checkpoints must be written with short-lived DB sessions.
 - Do not hold a DB session across LLM calls.
@@ -252,16 +258,16 @@ Checkpoint data must be able to represent:
   non-restorable run.
 - Every transcript-relevant event must have a stable ordering key.
 
-### Deliverables
+### 交付物
 
 - Agent run/checkpoint/projection service or equivalent.
 - API or existing session endpoint extension that lets Console rebuild a run.
 - Tests proving an in-progress run can reconstruct prompt context and tool
   state.
 
-## Backend Workstream B: AgentRuntime State Machine
+## 后端工作流 B：AgentRuntime 状态机
 
-### Goal
+### 目标
 
 Replace the implicit ReAct while-loop shape with explicit runtime states and
 transitions.
@@ -269,7 +275,7 @@ transitions.
 This does not require a full graph framework. It does require code structure
 that makes every Agent step named, testable, and checkpointed.
 
-### Required State Flow
+### 必要状态流
 
 ```text
 created
@@ -288,11 +294,13 @@ Failure and pause edges:
 ```text
 any step -> failed
 preflight_tool_calls -> waiting_approval
+execute_tool_calls -> waiting_operation
 waiting_approval -> execute_tool_calls
+waiting_operation -> resume_with_observation
 execute_tool_calls -> failed | observe_tool_results
 ```
 
-### Required Step Contracts
+### 必要 step 合同
 
 Each step should have explicit input/output data:
 
@@ -306,7 +314,7 @@ Each step should have explicit input/output data:
 
 Names can differ, but the boundaries must exist.
 
-### Rules
+### 规则
 
 - The runtime may still execute inside the existing stream route initially.
 - The route should orchestrate the runtime, not contain runtime logic.
@@ -318,7 +326,7 @@ Names can differ, but the boundaries must exist.
 - If a tool is unknown or unavailable, fail explicitly.
 - Do not create hardcoded natural-language fallback answers.
 
-### Deliverables
+### 交付物
 
 - [x] First Agent runtime/state-machine module:
   `src/yequ/agent/runtime_state.py`.
@@ -334,15 +342,18 @@ Names can differ, but the boundaries must exist.
 - [~] Agent approval resume as a full graph transition is deferred to a
   dedicated Agent resume API/task. Maintenance runs already have their own
   resume mechanism.
+- [~] Agent operation resume is deferred to Center Execution Runtime v2. Long
+  operations must return a wait handle instead of forcing the LLM to poll status
+  tools inside the ReAct loop.
 
-## Backend Workstream C: AgentContextEngine And Capability Context
+## 后端工作流 C：AgentContextEngine 与 Capability Context
 
-### Goal
+### 目标
 
 Build Agent context as structured data first, then render prompt text from that
 data.
 
-### Required Module
+### 必要模块
 
 ```text
 src/yequ/agent/capability_context.py
@@ -357,7 +368,7 @@ src/yequ/agent/context_engine.py
 The broader name is preferred if implementation also includes runtime state,
 node state, diagnostics, or future artifact context.
 
-### Required Context Shape
+### 必要上下文形态
 
 ```json
 {
@@ -402,7 +413,7 @@ node state, diagnostics, or future artifact context.
 }
 ```
 
-### Routing Rules
+### 路由规则
 
 - Auto routing means no single node is pinned.
 - Auto exposes capabilities from all online schedulable nodes.
@@ -412,7 +423,7 @@ node state, diagnostics, or future artifact context.
 - Same-name capabilities must show all source nodes.
 - Platform must come from node/runtime metadata, not tool-name prefix.
 
-### Prompt Rendering
+### Prompt 渲染
 
 Replace flat prompt text:
 
@@ -461,7 +472,7 @@ Add:
 - `nodes`
 - `tool_count_by_node`
 
-### Deliverables
+### 交付物
 
 - Context builder.
 - Prompt renderer using grouped context.
@@ -470,9 +481,9 @@ Add:
 - Tests for Auto, pinned Linux, pinned Win, same-name capability, and wrong
   tool failure.
 
-## Frontend Workstream: Transcript Projection
+## 前端工作流：Transcript Projection
 
-### Goal
+### 目标
 
 Replace ad hoc chat block mutation with a canonical transcript projection.
 
@@ -486,7 +497,7 @@ session restore rendering
 
 All inputs should pass through one reducer.
 
-### Required Flow
+### 必要流程
 
 ```text
 SSE events
@@ -497,7 +508,7 @@ AgentRun projection
         -> React components
 ```
 
-### Segment Types
+### Segment 类型
 
 ```text
 user_message
@@ -518,29 +529,26 @@ Every segment must have:
 - status if mutable;
 - source event/message ID if available.
 
-### Ordering Rules
+### 排序规则
 
-- Never reorder segments by role.
-- Preserve the order generated by AgentRun event sequence.
-- Assistant text before tool calls remains before tool calls after refresh.
-- Tool result/observation remains attached to the correct tool call.
-- Assistant text after observation remains after the relevant tool call.
-- Empty assistant placeholders are not renderable transcript segments.
-- Thinking/provider-running state is a run status indicator, not an empty
-  assistant bubble.
+- 不能按 role 重新排序 segment。
+- 保持 AgentRun event sequence 生成的顺序。
+- tool call 前的 assistant text 在刷新后仍必须位于 tool call 前。
+- tool result / observation 必须挂在正确的 tool call 上。
+- observation 之后的 assistant text 必须位于对应 tool call 之后。
+- 空 assistant placeholder 不能成为可渲染 transcript segment。
+- Thinking / provider-running 状态是 run status indicator，不是空 assistant 气泡。
 
-### Rendering Rules
+### 渲染规则
 
-- A single plain sentence is compact.
-- Markdown spacing is used for real markdown blocks, not to create blank rows
-  in one-line messages.
-- Standard transcript segment gap is the only gap between an assistant thought
-  and the following tool-call block.
-- Tool cards show `tool_name @ node_id`.
-- Later runtime metadata may extend this to `tool_name @ node_id / runtime_id`.
-- Prompt diagnostics are inspectable but are not assistant messages.
+- 单句纯文本必须紧凑显示。
+- Markdown 间距只用于真实 markdown block，不能让单行消息出现空行。
+- assistant thought 与后续 tool-call block 之间只能使用标准 transcript segment 间距。
+- 工具卡片显示 `tool_name @ node_id`。
+- 后续 runtime 元数据可以扩展为 `tool_name @ node_id / runtime_id`。
+- Prompt diagnostics 可检查，但不是 assistant message。
 
-### Suggested Module Split
+### 建议模块拆分
 
 ```text
 console-frontend/src/agent-transcript/types.ts
@@ -550,137 +558,129 @@ console-frontend/src/agent-transcript/fromPersisted.ts
 console-frontend/src/agent-transcript/rendering.ts
 ```
 
-`useAgentChat` should become orchestration glue:
+`useAgentChat` 应退化为编排胶水：
 
-- start/stop streams;
-- feed events to reducer;
-- load history/projection;
-- expose `TranscriptSegment[]`;
-- expose run status;
-- expose diagnostics;
-- no longer own ordering rules.
+- 启停 stream；
+- 将事件送入 reducer；
+- 加载 history / projection；
+- 暴露 `TranscriptSegment[]`；
+- 暴露 run status；
+- 暴露 diagnostics；
+- 不再拥有排序规则。
 
-### Session Switching
+### Session 切换
 
-Normal session switching should not mean "cancel and lose the running trace".
+普通 session 切换不应等价于“取消并丢失运行中的 trace”。
 
-Required behavior:
+必要行为：
 
-- switching away from a running session keeps or detaches from the run;
-- switching back reloads projection/history and restores the transcript;
-- if the stream is still active or reconnectable, new events continue from the
-  restored state;
-- if the run ended, the terminal state is shown;
-- cancellation is an explicit action, not the default meaning of navigation.
+- 从运行中的 session 切走时，应保留 run 或与 run 分离，而不是取消。
+- 切回时重新加载 projection / history 并恢复 transcript。
+- 如果 stream 仍活跃或可重连，新事件应从恢复后的状态继续。
+- 如果 run 已结束，应显示终态。
+- 取消必须是显式动作，不能作为导航的默认含义。
 
-## Capability Naming Decision
+## Capability 命名决策
 
-Current state is mixed:
+当前状态是混合的：
 
 - Windows uses mostly `system.*`.
 - Linux uses `linux.*`.
 
-This phase should not perform a full rename unless it becomes necessary, but
-it must stop treating prefixes as routing truth.
+除非必要，本阶段不做完整重命名；但必须停止把前缀当作路由事实。
 
-Near-term rule:
+近期规则：
 
-- keep registered names as-is;
-- route by node/runtime metadata;
-- expose grouped context so mixed names are understandable;
-- do not add silent aliases;
-- document inconsistency in diagnostics.
+- 保持 registered name 原样；
+- 按 node / runtime metadata 路由；
+- 暴露分组上下文，让混合命名可理解；
+- 不增加静默 alias；
+- 在 diagnostics 中记录不一致。
 
-Longer-term canonical capability IDs and aliases belong in a separate
-capability model task or the Tool RAG roadmap.
+更长期的 canonical capability id 和 aliases 属于独立 capability model 任务或 Tool RAG 路线图。
 
-## Implementation Order
+## 实现顺序
 
-1. Backend context engine and grouped prompt.
-2. AgentRun checkpoint/projection baseline.
-3. AgentRuntime state-machine boundary.
-4. Frontend transcript reducer and rendering refactor.
-5. Session switching restoration.
-6. Prompt diagnostics UI.
-7. Focused tests and user-level demo.
+1. 后端 context engine 与 grouped prompt。
+2. AgentRun checkpoint / projection 基线。
+3. AgentRuntime state-machine 边界。
+4. 前端 transcript reducer 与渲染重构。
+5. Session 切换恢复。
+6. Prompt diagnostics UI。
+7. 聚焦测试和用户级演示。
 
-The ordering may be adjusted during implementation, but the final result must
-include all workstreams. Completing only context grouping or only frontend
-rendering is not enough for this phase.
+实现过程中可以调整顺序，但最终结果必须覆盖所有工作流。只完成 context grouping 或只完成前端渲染，不足以认为本阶段完成。
 
-## Acceptance Criteria
+## 验收标准
 
-### Backend
+### 后端
 
-1. Auto routing with Win + Linux online:
+1. Win + Linux 在线时的 auto routing：
    - `routing_mode == "auto"`;
    - `target_node_id` is null;
    - capability context includes both nodes;
    - prompt groups capabilities by node.
 
-2. Pinned Linux:
+2. Pinned Linux：
    - only Linux executable tools are provider-visible;
    - Win-only tools are absent;
    - prompt says pinned to `linux-node-01`.
 
-3. Pinned Win:
+3. Pinned Win：
    - only Win executable tools are provider-visible;
    - Linux-only tools are absent;
    - prompt says pinned to `winClient`.
 
-4. AgentRun restoration:
+4. AgentRun 恢复：
    - an in-progress run can reconstruct prompt context, assistant text
      segments, tool call state, and terminal/error state if present.
 
-5. State-machine behavior:
+5. 状态机行为：
    - successful ReAct run records ordered steps;
    - wrong tool call fails explicitly;
    - no silent fallback;
    - no hardcoded assistant answer in place of model/tool output.
 
-6. DB discipline:
+6. DB 纪律：
    - no DB session is held across LLM calls, job polling waits, or approval
      waits.
 
-### Frontend
+### 前端
 
-1. Live SSE rendering and persisted rendering use the same transcript reducer.
-2. Assistant text -> tool call order is preserved after stream close, refresh,
-   and session switch.
-3. One-line assistant text before a tool call has no unexplained blank row.
-4. Tool cards render node identity.
-5. Prompt diagnostics show raw prompt and structured capability context.
-6. Agent chat defaults to Auto routing.
-7. Node pinning is an advanced/debug override, not the main path.
-8. Switching sessions during a running ReAct turn restores intermediate state.
-9. Cancellation is explicit.
+1. Live SSE 渲染和 persisted 渲染使用同一个 transcript reducer。
+2. stream close、refresh、session switch 后，assistant text -> tool call 的顺序保持不变。
+3. tool call 前的单行 assistant text 不出现无法解释的空行。
+4. 工具卡片渲染 node identity。
+5. Prompt diagnostics 展示 raw prompt 和 structured capability context。
+6. Agent chat 默认使用 Auto routing。
+7. Node pinning 是高级/调试 override，不是主路径。
+8. 在运行中的 ReAct turn 期间切换 session，切回后能恢复中间态。
+9. 取消是显式动作。
 
-### User-Level Demo
+### 用户级演示
 
-Run this before declaring the phase complete:
+宣布本阶段完成前，必须跑以下演示：
 
-1. Start Center with Win Node and Linux Node online.
-2. Open Agent chat.
-3. Confirm Auto routing is active without selecting a node.
-4. Ask: "What nodes and capabilities are currently available?"
-5. Confirm the answer describes both nodes from Center state.
-6. Open diagnostics and confirm grouped capability context is visible.
-7. Ask: "Show Linux system info."
-8. Confirm the tool card shows `linux.system.info @ linux-node-01`.
-9. Ask a prompt that causes assistant text before a tool call, e.g. "Inspect
-   the current project structure."
-10. Confirm the assistant text bubble appears before the tool-call block with
-    clean spacing.
-11. Refresh or reload the session.
-12. Confirm the order and spacing are unchanged.
-13. Start a long-running Agent/tool operation.
-14. Switch to another session before it finishes.
-15. Switch back.
-16. Confirm intermediate tool state and run status are restored.
+1. 启动 Center，并保持 Win Node 与 Linux Node 在线。
+2. 打开 Agent chat。
+3. 确认未选择 node 时 Auto routing 已启用。
+4. 提问：“当前有哪些节点和能力？”
+5. 确认回答基于 Center state 描述两个节点。
+6. 打开 diagnostics，确认 grouped capability context 可见。
+7. 提问：“显示 Linux 系统信息。”
+8. 确认工具卡片显示 `linux.system.info @ linux-node-01`。
+9. 发送会让 assistant 在 tool call 前输出文本的 prompt，例如：“检查当前项目结构。”
+10. 确认 assistant text 气泡位于 tool-call block 前，并且间距干净。
+11. refresh 或 reload session。
+12. 确认顺序和间距不变。
+13. 启动一个长时间运行的 Agent / tool 操作。
+14. 在它完成前切换到另一个 session。
+15. 再切回来。
+16. 确认中间 tool state 和 run status 已恢复。
 
-## Tests To Add
+## 需要新增的测试
 
-### Backend
+### 后端
 
 - `test_capability_context_groups_by_node`
 - `test_auto_prompt_declares_no_pinned_node`
@@ -694,37 +694,35 @@ Run this before declaring the phase complete:
 - `test_agent_runtime_state_machine_success_path`
 - `test_agent_runtime_state_machine_wrong_tool_failure`
 
-### Frontend
+### 前端
 
-- Transcript reducer preserves `assistant_text -> tool_call -> observation`.
-- Transcript reducer produces the same segments from live SSE and persisted
-  projection/history.
-- Assistant text before tool calls does not move after refresh.
-- Empty streaming assistant placeholders are not rendered.
-- One-line assistant markdown is compact.
-- Tool cards show `name @ node_id`.
-- Prompt diagnostics render raw prompt and structured context.
-- Auto mode sends no `target_node_id`.
-- Explicit pin mode sends `target_node_id`.
-- Session switching restores an in-flight ReAct turn.
+- Transcript reducer 保持 `assistant_text -> tool_call -> observation`。
+- Transcript reducer 从 live SSE 和 persisted projection/history 生成相同 segments。
+- tool call 前的 assistant text 在 refresh 后不会移动。
+- 空 streaming assistant placeholder 不被渲染。
+- 单行 assistant markdown 紧凑显示。
+- 工具卡片显示 `name @ node_id`。
+- Prompt diagnostics 渲染 raw prompt 和 structured context。
+- Auto mode 不发送 `target_node_id`。
+- 显式 pin mode 发送 `target_node_id`。
+- Session switching 恢复进行中的 ReAct turn。
 
-## Validation Policy
+## 验收策略
 
-- Prefer targeted tests during iteration.
-- Use the repository fast-check script when touching both backend and frontend.
-- Full suite is a checkpoint before larger merge/push decisions, not every
-  inner-loop run.
+- 迭代期间优先跑聚焦测试。
+- 同时修改后端和前端时，使用仓库 fast-check 脚本。
+- 全量测试是较大 merge / push 前的 checkpoint，不是每次 inner-loop 都要跑。
 
-## Non-Goals
+## 非目标
 
-- Do not implement full Tool RAG in this phase.
-- Do not build a multi-agent swarm.
-- Do not replace YQP with MCP.
-- Do not adopt a full external Agent framework.
-- Do not migrate every capability name immediately.
-- Do not add silent alias fallback.
-- Do not hide execution errors.
+- 本阶段不实现完整 Tool RAG。
+- 不构建 multi-agent swarm。
+- 不用 MCP 替代 YQP。
+- 不采用完整外部 Agent framework。
+- 不立刻迁移所有 capability name。
+- 不增加静默 alias fallback。
+- 不隐藏执行错误。
 
-Longer-range capability discovery and Tool RAG work is tracked separately:
+更长期的 capability discovery 和 Tool RAG 工作单独跟踪：
 
 - `docs/todos/2026-06-28-agent-tool-rag-roadmap.md`

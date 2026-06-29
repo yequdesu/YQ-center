@@ -1,7 +1,7 @@
-# Documentation Index
+# 文档索引
 
 状态：当前文档入口
-更新时间：2026-06-29
+更新时间：2026-06-30
 
 本文说明当前哪些文档是权威依据，哪些文档已经归档，避免后续开发引用过期计划。
 
@@ -14,6 +14,7 @@
 | `docs/linux-node-development-contract.md` | Linux node POC 的实现约束与能力范围。 |
 | `docs/current-project-overview-2026-06-28.md` | 当前项目全貌与能力边界。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
+| `docs/documentation-policy.md` | 文档维护规范，包含 UTF-8 编码硬规则、归档规则和一致性规则。 |
 | `docs/yqp-production-reliability-report-2026-06-25.md` | YQP 可靠性修复记录，作为排障参考。 |
 | `docs/debug-blog/2026-06-28-yqp-deadlock-postmortem.md` | DB 连接池/事务阻塞事故复盘，作为部署排障参考。 |
 
@@ -23,6 +24,19 @@
 |---|---|
 | `docs/proposals/README.md` | 设想/提案/路线文档目录说明。 |
 | `docs/proposals/artifact-media-blob-layer.md` | Artifact / Media / Blob 基础层提案，覆盖文件传输、截图、摄像头和多模态资产。 |
+| `docs/proposals/2026-06-30-operation-bus-execution-admission.md` | Operation Bus / Execution Admission accepted proposal，解释为何新增调度总线以及它如何避免成为 Agent/transfer 补丁。 |
+
+## 活跃待办文档
+
+| 文档 | 用途 |
+|---|---|
+| `docs/todos/README.md` | 当前待办文档目录。 |
+| `docs/todos/2026-06-30-center-execution-runtime-v2.md` | 当前主路线图。将 Capability Runtime v1 升级为 Center Execution Runtime v2，覆盖 Admission、Operation Bus、workflow handlers、Agent wait/resume 和 future MQ 边界。 |
+| `docs/todos/2026-06-28-center-capability-runtime-v1.md` | 已部分验收的 v1 基线与历史路线图。后续执行以 v2 文档为准。 |
+| `docs/todos/2026-06-28-agent-multinode-routing.md` | 已验收的 Agent runtime / 多 Node UX 基线记录。 |
+| `docs/todos/2026-06-28-agent-tool-rag-roadmap.md` | Tool RAG 与元工具路线图。 |
+| `docs/todos/2026-06-29-artifact-transfer-strategy.md` | Artifact 传输策略：轻量 YQP artifact 与 croc 大文件/跨 Node 传输。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | Agent Provider 系统路线图：provider registry、模型发现、连通性探测和前端动态选择。 |
 
 ## 历史诊断与交接类文档
 
@@ -51,3 +65,6 @@ docs/archive/refactor/
 3. Agent 前端事件以 `docs/agent-sse-contract.md` 为合同。
 4. 旧计划文档只保留历史意义，发现冲突时应更新权威文档，而不是让实现迁就旧计划。
 5. 新增 Node capability 前，应先确认 capability name、risk、effect、runtime requirement 和 output 形态。
+6. 当前有效文档应以中文叙述为主；代码标识、协议字段、API 路径、模型/类名和第三方项目名可以保留英文。
+7. 所有文档必须使用 UTF-8 编码；详见 `docs/documentation-policy.md`。
+8. 2026-06-30 起，Center 执行运行时主线以 `docs/todos/2026-06-30-center-execution-runtime-v2.md` 为准。旧的 Capability Runtime v1 文档只作为已验收基线和历史背景。

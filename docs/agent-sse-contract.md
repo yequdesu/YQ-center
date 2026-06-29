@@ -1,84 +1,92 @@
-# Agent SSE Contract
+# Agent SSE 事件合同
 
-Agent streaming events are delivered via `POST /agent/invoke/stream` and `POST /agent/plan/stream` as `text/event-stream`.
+状态：当前前后端流式事件合同
+更新时间：2026-06-30
 
-## Event Envelope
+Agent 流式事件通过 `POST /agent/invoke/stream` 和
+`POST /agent/plan/stream` 返回，响应类型为 `text/event-stream`。
 
-Every event has the same envelope:
+## 1. 事件信封
+
+所有事件使用相同信封：
 
 ```json
 {
   "event_id": "evt_<16 hex>",
-  "event_type": "<see table below>",
+  "event_type": "<见下表>",
   "session_id": "sess_<16 hex>",
   "trace_id": "tr_<16 hex>",
   "timestamp": "ISO-8601 UTC",
-  "data": { /* type-specific payload */ }
+  "data": { "type_specific": "payload" }
 }
 ```
 
-## Invoke Stream Event Types
+## 2. Invoke Stream 事件类型
 
-| Event Type | Direction | data.* | Notes |
+| 事件类型 | 出现时机 | `data.*` | 说明 |
 |---|---|---|---|
-| `stream.open` | always first | — | Opens the SSE stream |
-| `agent.prompt_context` | after `stream.open` | `provider_name`, `system_prompt`, `target_node_id`, `execution_mode`, `available_functions` | Debug metadata. Frontend SHOULD expose this in diagnostics, not as assistant text |
-| `agent.session.resolved` | after `stream.open` | `session_status`, `execution_mode` | Confirms session is valid |
-| `agent.prompt.received` | after `session.resolved` | `prompt` (≤500 chars), `step` | User prompt acknowledged |
-| `agent.loop.started` | after `prompt.received` | `max_steps`, `max_duration_sec` | ReAct loop begins |
-| `agent.loop.iteration` | per loop iteration | `iteration`, `max_steps` | New iteration started |
-| `agent.provider.started` | per provider call | `provider_name` | LLM invocation begins |
-| `agent.output.delta` | 0+ per iteration | `content` (text chunk) | Streaming LLM text. Emitted BEFORE any tool calls in the same iteration |
-| `agent.tool_call.created` | per tool call | `call_id`, `name`, `sanitized_name`, `input` | Tool call started. For concurrent-safe tools, all created events appear before the first execution event |
-| `agent.tool_call.arguments` | per tool call, after `created` | `call_id`, `name`, `input` | Tool input arguments |
-| `agent.invocation.created` | per tool call | `call_id`, `name`, `invocation_id`, `target_node_id` | Invocation created for this tool |
-| `agent.job.queued` | per tool call | `call_id`, `name`, `invocation_id`, `job_id` | Job queued on target node |
-| `agent.job.running` | per tool call | `call_id`, `name`, `job_id`, `status` | Job is executing |
-| `agent.job.finished` | per tool call | `call_id`, `name`, `job_id`, `status` | Job reached terminal state |
-| `agent.tool_call.completed` | per successful tool | `call_id`, `name`, `result` | Tool succeeded with result |
-| `agent.tool_call.failed` | per failed tool | `call_id`, `name`, `error_code`, `message` | Tool failed |
-| `agent.tool_call.waiting_approval` | per tool needing approval | `call_id`, `name`, `approval_id`, `status`, `message` | Write operation requires approval. Frontend MUST render interactive ApprovalCard |
-| `agent.approval.required` | per approval | `call_id`, `name`, `approval_id`, `target_node_id` | Approval has been created |
-| `agent.observing` | after all tools in iteration | `tool_count` | Tools completed, agent observing results |
-| `agent.synthesizing` | after final iteration | `source` | Agent has received final provider text |
-| `agent.completed` | on success | `status`, `message` | Stream finished normally. Frontend MUST render as `system_event`, NOT a big bubble |
-| `agent.failed` | on error | `error_code`, `message`, optional details | Stream failed. Protocol errors are surfaced here instead of generating fallback assistant text |
-| `agent.provider.failed` | on provider error | `error_code`, `message` | LLM provider error |
-| `stream.close` | always last | — | Closes the SSE stream |
+| `stream.open` | 永远第一条 | 无 | 打开 SSE 流。 |
+| `agent.prompt_context` | `stream.open` 后 | `provider_name`, `system_prompt`, `target_node_id`, `execution_mode`, `available_functions` | 调试元数据。前端应放在诊断面板，不应渲染成 assistant 正文。 |
+| `agent.session.resolved` | `stream.open` 后 | `session_status`, `execution_mode` | 确认 session 有效。 |
+| `agent.prompt.received` | `session.resolved` 后 | `prompt`（最多 500 字符）, `step` | 服务端确认收到用户 prompt。 |
+| `agent.loop.started` | `prompt.received` 后 | `max_steps`, `max_duration_sec` | ReAct loop 开始。 |
+| `agent.loop.iteration` | 每轮循环 | `iteration`, `max_steps` | 新一轮迭代开始。 |
+| `agent.provider.started` | 每次 provider 调用 | `provider_name` | LLM 调用开始。 |
+| `agent.output.delta` | 每轮 0 次或多次 | `content` | LLM 文本流片段。同一轮里，如果有工具调用，文本片段应先于工具调用事件出现。 |
+| `agent.tool_call.created` | 每个 tool call | `call_id`, `name`, `sanitized_name`, `input` | 工具调用创建。对可并发工具，同组所有 created 事件应先于第一个执行事件出现。 |
+| `agent.tool_call.arguments` | `created` 后 | `call_id`, `name`, `input` | 工具入参。 |
+| `agent.invocation.created` | 每个 tool call | `call_id`, `name`, `invocation_id`, `target_node_id` | 已为该工具创建 Invocation。 |
+| `agent.job.queued` | 每个 tool call | `call_id`, `name`, `invocation_id`, `job_id` | Job 已排队到目标 Node。 |
+| `agent.job.running` | 每个 tool call | `call_id`, `name`, `job_id`, `status` | Job 正在执行。 |
+| `agent.job.finished` | 每个 tool call | `call_id`, `name`, `job_id`, `status` | Job 进入终态。 |
+| `agent.tool_call.completed` | 成功工具 | `call_id`, `name`, `result` | 工具成功并返回结果。 |
+| `agent.tool_call.failed` | 失败工具 | `call_id`, `name`, `error_code`, `message` | 工具失败。 |
+| `agent.tool_call.waiting_approval` | 需要审批的工具 | `call_id`, `name`, `approval_id`, `status`, `message` | 写操作需要审批。前端必须渲染交互式 ApprovalCard。 |
+| `agent.approval.required` | 每个审批 | `call_id`, `name`, `approval_id`, `target_node_id` | 审批请求已创建。 |
+| `agent.operation.created` | Center 创建可等待 Operation | `operation_id`, `kind`, `status`, `ref_type`, `ref_id`, `title` | Execution Runtime v2 事件。用于长任务、复合任务和 future workflow 的可恢复投影。 |
+| `agent.operation.waiting` | AgentRun 暂停等待 Operation | `operation_id`, `kind`, `status`, `wait_handle`, `resume_policy`, `message` | 前端必须渲染独立 OperationCard，不得放进 tool-call 结果块作为唯一展示。 |
+| `agent.operation.completed` | Operation 进入终态 | `operation_id`, `kind`, `status`, `summary`, `error_code`, `message` | 前端更新 OperationCard；是否恢复 Agent 由 resume 策略或用户动作决定。 |
+| `agent.run.waiting` | AgentRun 已挂起 | `run_id`, `wait_handle`, `status` | 表示本轮 ReAct loop 正常暂停，不是失败。 |
+| `agent.observing` | 本轮所有工具结束后 | `tool_count` | 工具完成，Agent 正在观察结果。 |
+| `agent.synthesizing` | 最后一轮后 | `source` | Agent 已收到 provider 最终文本。 |
+| `agent.completed` | 成功结束 | `status`, `message` | 流正常完成。前端必须渲染为 `system_event`，不能渲染成大气泡。 |
+| `agent.failed` | 出错 | `error_code`, `message`, 可选 details | 流失败。协议错误通过该事件显式暴露，不能生成伪造 assistant fallback 文本。 |
+| `agent.provider.failed` | provider 出错 | `error_code`, `message` | LLM provider 失败。 |
+| `stream.close` | 永远最后一条 | 无 | 关闭 SSE 流。 |
 
-## Standard Invoke Event Order
+## 3. Invoke 标准事件顺序
 
-```
+```text
 stream.open
   agent.prompt_context
   agent.session.resolved
   agent.prompt.received
   agent.loop.started
-  ┌─ iteration N ─┐
+  ┌─ 第 N 轮 ─┐
   │ agent.loop.iteration
   │ agent.provider.started
-  │ agent.output.delta              # LLM text (optional, multiples allowed)
-  │ ├─ tool block ─┤                # one block per tool call
-  │ │ agent.tool_call.created       # (all created first for concurrent tools)
+  │ agent.output.delta              # LLM 文本，可选，可出现多次
+  │ ├─ 工具块 ─┤                    # 每个 tool call 一个块
+  │ │ agent.tool_call.created       # 并发工具时，同组 created 先全部出现
   │ │ agent.tool_call.arguments
   │ │ agent.invocation.created
   │ │ agent.job.queued
   │ │ agent.job.running
   │ │ agent.job.finished
   │ │ agent.tool_call.completed / .failed / .waiting_approval
-  │ └──────────────┘
-  │ agent.observing                 # after all tools complete
-  └────────────────┘
+  │ └──────────┘
+  │ agent.observing                 # 本轮全部工具结束后
+  └────────────┘
   agent.synthesizing
   agent.completed
 stream.close
 ```
 
-## Plan Stream Event Types
+## 4. Plan Stream 事件类型
 
-| Event Type | data.* |
+| 事件类型 | `data.*` |
 |---|---|
-| `stream.open` | — |
+| `stream.open` | 无 |
 | `agent.prompt_context` | `provider_name`, `system_prompt`, `target_node_id`, `execution_mode`, `available_functions` |
 | `agent.session.resolved` | `session_status` |
 | `agent.prompt.received` | `prompt` |
@@ -87,55 +95,56 @@ stream.close
 | `agent.plan.step.created` | `seq`, `kind`, `function_name`, `requires_approval` |
 | `agent.plan.created` | `plan_id`, `goal`, `status`, `step_count` |
 | `agent.approval.required` | `plan_id`, `message` |
-| `agent.completed` | — |
+| `agent.completed` | 无 |
 | `agent.failed` | `error_code`, `message` |
-| `stream.close` | — |
+| `stream.close` | 无 |
 
-## Error Codes
+## 5. 错误码
 
-| error_code | Meaning | Frontend Display |
+| `error_code` | 含义 | 前端展示建议 |
 |---|---|---|
-| `max_duration_exceeded` | Total duration exceeded limit | "Duration exceeded: {elapsed}s" |
-| `max_steps_exceeded` | Step count exceeded limit | "Max steps exceeded" |
-| `call_depth_exceeded` | Recursive call depth exceeded | "Call depth exceeded" |
-| `session_not_found` | Session ID invalid | "Session not found" |
-| `provider_timeout` | LLM invocation timed out | "Provider timed out" |
-| `agent_protocol_error` | Provider returned neither assistant text nor tool calls, or returned an invalid planning intent | Show explicit protocol error; do not invent assistant text |
-| `internal_error` | Unexpected server error | "Internal error: {message}" |
-| `function_not_available` | No online node has this function | "No online node has '{name}'" |
-| `circular_dependency` | Function already in call path | "Circular: {name}" |
-| `policy_denied` | Execution mode disallows this action | Policy reason |
-| `tool_failed` | Job ended with non-success status | "Tool {name} ended with {status}" |
+| `max_duration_exceeded` | 总耗时超过限制。 | `Duration exceeded: {elapsed}s` |
+| `max_steps_exceeded` | step 数超过限制。 | `Max steps exceeded` |
+| `call_depth_exceeded` | 递归调用深度超过限制。 | `Call depth exceeded` |
+| `session_not_found` | session id 无效。 | `Session not found` |
+| `provider_timeout` | LLM 调用超时。 | `Provider timed out` |
+| `agent_protocol_error` | Provider 既没有返回 assistant 文本，也没有返回 tool call；或返回了非法 planning intent。 | 显示明确协议错误，不编造 assistant 文本。 |
+| `internal_error` | 非预期服务端错误。 | `Internal error: {message}` |
+| `function_not_available` | 没有在线 Node 拥有该 function。 | `No online node has '{name}'` |
+| `circular_dependency` | function 已经在 call path 中。 | `Circular: {name}` |
+| `policy_denied` | execution mode 不允许该动作。 | 展示策略拒绝原因。 |
+| `tool_failed` | Job 以非成功状态结束。 | `Tool {name} ended with {status}` |
 
-## Frontend ChatBlock Mapping
+## 6. 前端 ChatBlock 映射
 
-| SSE Event | ChatBlock Type | Action |
+| SSE 事件 | ChatBlock 类型 | 前端动作 |
 |---|---|---|
-| `agent.output.delta` | `assistant_text` | Append to current or create new |
-| `agent.prompt_context` | diagnostics/debug panel | Store for inspection; do not render as assistant text |
-| `agent.tool_call.created` | `tool_group` | Append to current tool_group or create new |
-| `agent.tool_call.completed` | (update tool_group) | Update tool status → succeeded |
-| `agent.tool_call.completed` where `name == "artifact.present"` | `artifact_presentation` + update tool_group | Update tool status and render returned artifacts as a first-class media block outside the tool-call card |
-| `agent.tool_call.failed` | (update tool_group) | Update tool status → failed |
-| `agent.tool_call.waiting_approval` | (update tool_group) + `system_event` (approval) | Update tool status → waiting_approval. Also render ApprovalCard |
-| `agent.approval.required` | `system_event` | Subtle banner. Frontend also shows ApprovalCard from waiting_approval |
-| `agent.completed` | `system_event` | Subtle "Completed (status)" label. NOT a big bubble |
-| `agent.failed` / `agent.provider.failed` | `system_event` | Error label |
-| User prompt | `user` | User message bubble |
+| `agent.output.delta` | `assistant_text` | 追加到当前 assistant 文本块，或创建新文本块。 |
+| `agent.prompt_context` | diagnostics/debug panel | 存入诊断面板，不渲染成 assistant 正文。 |
+| `agent.tool_call.created` | `tool_group` | 追加到当前 tool group，或创建新 tool group。 |
+| `agent.tool_call.completed` | 更新 `tool_group` | 将工具状态更新为 succeeded。 |
+| `agent.tool_call.completed` 且 `name == "artifact.present"` | `artifact_presentation` + 更新 `tool_group` | 更新工具状态，并把返回的 artifacts 渲染为独立媒体块，不能只放在 tool-call 卡片里。 |
+| `agent.tool_call.failed` | 更新 `tool_group` | 将工具状态更新为 failed。 |
+| `agent.tool_call.waiting_approval` | 更新 `tool_group` + `system_event` | 将工具状态更新为 waiting_approval，并渲染 ApprovalCard。 |
+| `agent.operation.created` | `operation_card` | 创建或更新独立 OperationCard。 |
+| `agent.operation.waiting` | `operation_card` + `system_event` | 显示 AgentRun 正在等待 Operation，tool-call 块只保留调试轨迹。 |
+| `agent.operation.completed` | 更新 `operation_card` | 更新终态、summary、错误或完成信息。 |
+| `agent.run.waiting` | `system_event` | 显示当前 AgentRun 已正常挂起，不应渲染为失败。 |
+| `agent.approval.required` | `system_event` | 渲染低强调提示；ApprovalCard 仍以 waiting_approval 事件为准。 |
+| `agent.completed` | `system_event` | 渲染低强调 `Completed (status)` 标签，不能渲染成大气泡。 |
+| `agent.failed` / `agent.provider.failed` | `system_event` | 渲染错误标签。 |
+| 用户 prompt | `user` | 用户消息气泡。 |
 
-## Constraints
+## 7. 约束
 
-1. `tool_group` MUST NOT wrap `assistant_text`. `assistant_text` MUST NOT wrap `tool_group`. They are separate blocks in the timeline.
-2. `agent.completed` MUST be rendered as a subtle `system_event`, never as a large content bubble.
-3. All tool_call execution events for the same `call_id` MUST appear after its `agent.tool_call.created`.
-4. For concurrent tools: all `agent.tool_call.created` events for the concurrent group MUST appear before any `agent.invocation.created` or `agent.job.queued`.
-5. Tool call observations MUST be written back to LLM history in the original provider call order, regardless of concurrent execution order.
-6. Approval text ("确认", "批准", "可以执行") MUST NOT auto-approve. User MUST click the ApprovalCard buttons.
-7. The stream MUST NOT synthesize fallback assistant text when the provider gives no final answer. Surface `agent.failed` with `agent_protocol_error`.
-8. Frontend MAY optimistically render the outgoing user prompt before the SSE
-   stream emits `agent.prompt.received`, but it MUST reconcile the optimistic
-   block with the server event instead of rendering a duplicate user bubble.
-9. `artifact.present` is a presentation meta tool. Its artifacts SHOULD render
-   as standalone chat media/content blocks. The tool-call card remains an
-   execution/debug record and MUST NOT be the only place where presented media
-   appears.
+1. `tool_group` 不能包裹 `assistant_text`；`assistant_text` 也不能包裹 `tool_group`。它们是时间线中的独立块。
+2. `agent.completed` 必须渲染成低强调 `system_event`，不能渲染成大内容气泡。
+3. 同一 `call_id` 的所有工具执行事件必须出现在对应 `agent.tool_call.created` 之后。
+4. 并发工具同组执行时，所有 `agent.tool_call.created` 必须先于任何 `agent.invocation.created` 或 `agent.job.queued`。
+5. 工具观察结果写回 LLM history 时，必须保持 provider 原始 tool call 顺序，不受并发执行完成顺序影响。
+6. 用户输入“确认”“批准”“可以执行”等文本不能自动审批。用户必须点击 ApprovalCard 按钮。
+7. 当 provider 没有给出最终回答时，stream 不能合成 fallback assistant 文本。必须用 `agent.failed` 和 `agent_protocol_error` 显式暴露。
+8. 前端可以在 SSE 发出 `agent.prompt.received` 前乐观渲染用户消息，但必须在服务端事件到达后完成 reconcile，不能出现重复用户气泡。
+9. `artifact.present` 是展示型元工具。它返回的 artifacts 应渲染成独立聊天媒体/内容块；tool-call 卡片只保留执行和调试记录，不能成为展示媒体的唯一位置。
+10. `agent.operation.*` 是 Center Execution Runtime v2 的等待/恢复事件。OperationCard 必须独立于 `tool_group`，因为 Operation 可能由 transfer、maintenance、approval、long job 或 future subagent 触发。
+11. Agent 因 Operation 等待而关闭 stream 时，这是正常暂停，不是失败。前端应保留 wait handle，并允许后续查询、取消或恢复。

@@ -1,6 +1,6 @@
 # YeQu Center 当前项目全貌与架构诊断
 
-日期：2026-06-29
+日期：2026-06-30
 基于提交：`d46b244 fix: switch LLM retry from exponential backoff to 5x5s fixed intervals`
 验证命令：
 
@@ -19,7 +19,9 @@ mypy src/
 
 ## 1. 结论摘要
 
-YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具备清晰核心控制面的平台雏形。项目的主架构方向仍然符合最初设计：Center 作为统一控制中心，Node Daemon 作为设备侧执行面，Agent/Admin/Console 作为调用入口，所有实际设备能力执行都通过 Center 的策略、审批、Invocation、Job、Timeline 和 YQP 协议路径。
+YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具备清晰核心控制面的平台雏形。项目的主架构方向仍然符合最初设计：Center 作为统一控制中心，Node Daemon 作为设备侧执行面，Agent/Admin/Console/CLI 作为调用入口，所有实际设备能力执行都通过 Center 的策略、审批、Invocation、Job、Timeline 和 YQP 协议路径。
+
+2026-06-30 架构判断：随着 WinNode + LinuxNode 稳定接入、Artifact 实际落地、croc 跨 Node 传输跑通，项目主线应从 “Center Capability Runtime v1” 升级为 “Center Execution Runtime v2”。新的主线不是替代 capability registry，而是在其之上增加 Execution Admission、Operation Bus、OperationEvent/Waiter、workflow handlers 和 Agent wait/resume。后续执行以 `docs/todos/2026-06-30-center-execution-runtime-v2.md` 为准。
 
 当前项目已经比较成熟的部分包括：
 
@@ -43,6 +45,7 @@ YeQu Center 当前已经从早期的功能堆叠型原型，进入了一个具�
 - Agent 默认不再一次性接收所有 raw Node capabilities，但未来能力数量继续增长后
   仍需要 Tool RAG / semantic retrieval 来治理候选工具集合。
 - 多 Node fan-out/fan-in、跨节点聚合执行、调度策略仍是基础阶段。
+- 长任务/复合任务的等待、取消、恢复和前端投影仍缺少统一 Operation Bus；当前 transfer、maintenance、approval、Agent stream 各自承担了一部分运行时语义。
 - `agent_service.py`、`agent_stream.py`、`node_service.py`、`maintenance_executor.py` 仍是大模块，结构风险未完全消除。
 - Maintenance executor 仍直接创建 Invocation/Job，和统一 application 执行入口的理想边界仍有差距。
 - MCP adapter 尚未实现；当前核心协议仍是 YQP。
@@ -117,6 +120,7 @@ agent/*
 | AgentTurn / AgentTurnEvent | Agent SSE 交互过程的持久化事件流。 |
 | CapabilityDefinition / CapabilitySource | v2 能力注册表。Definition 表示语义能力，Source 表示某个 Node/plugin 的具体注册来源。 |
 | Artifact / ArtifactBlob | Center 托管的文件、图片、报告、日志等二进制/媒体资产及其物理存储记录。 |
+| Operation / OperationEvent | 目标 v2 模型。表示 Center 管理的可等待运行时过程和运行时事件流，用于长任务、复合任务、Agent wait/resume 和未来 MQ/outbox。当前尚未实现。 |
 
 ## 4. 能力边界
 

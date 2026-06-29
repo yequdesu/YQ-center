@@ -476,6 +476,7 @@ Node 调 croc 失败时，错误必须包含足够诊断信息，不得只返回
 - Timeline 记录 transfer lifecycle。
 - Agent 暴露 meta tool：`transfer.create`、`transfer.status`、`transfer.cancel`。
 - Agent 不再直接编排底层 croc send/receive。
+- 当前阶段允许 `transfer.create` 返回 TransferSession 并由用户显式查询状态；长期目标是由 Center Execution Runtime v2 创建 Operation 并返回 wait handle。
 
 验收：
 
@@ -483,6 +484,7 @@ Node 调 croc 失败时，错误必须包含足够诊断信息，不得只返回
 - Tool call UI 显示 TransferSession，而不是一堆裸 croc 命令结果。
 - receive 阻塞等待 sender 时，Center 仍能启动 sender job，不会因单个 tool call 阻塞导致 Agent loop 超时。
 - croc 失败时，TransferSession detail 能看到两端 job_id、stderr/stdout 摘要和脱敏错误。
+- 长任务不要求 LLM 持续调用 `transfer.status`；若进入 Operation 化路径，前端显示 OperationCard，AgentRun 进入 `waiting_operation`。
 
 ### 阶段 4：Node-to-Center 大文件入库
 
@@ -542,7 +544,15 @@ Node 调 croc 失败时，错误必须包含足够诊断信息，不得只返回
 - 底层 `windows.transfer.croc.*` 和 `linux.transfer.croc.*` 由 Capability Context Builder / Tool RAG 按需召回。
 - 传输详情进入 `TransferSession` 和 Timeline，不膨胀 prompt。
 
-这也符合 Agent Runtime v2 的方向：Agent 发起语义意图，Center 用显式状态机/服务编排底层 Node jobs。
+2026-06-30 修正：这条路线应纳入 `2026-06-30-center-execution-runtime-v2.md`。Agent 发起语义意图后，不应由 LLM 轮询 `transfer.status` 等待长任务；Center 应通过 Execution Admission 判定为 `workflow_operation`，由 Operation Bus 管理等待、事件、取消和恢复。
+
+边界：
+
+- `TransferSession` 保存传输领域事实：source/target、路径、两端 job、hash、错误、attempt、resume_mode。
+- `TransferWorkflow` 负责编排 receiver/send Job。
+- `Operation` 保存运行时等待外壳：operation_id、status、owner、ref_type/ref_id、progress、resume/cancel policy。
+- `OperationEvent` 服务前端 projection、Agent resume 和未来 MQ/outbox。
+- Agent 只看到 `wait_handle` 和完成后的结构化 observation，不管理 croc 并发和 Node 轮询。
 
 ## 10. 非目标
 
@@ -570,11 +580,22 @@ Node 调 croc 失败时，错误必须包含足够诊断信息，不得只返回
 
 ## 12. 近期执行顺序
 
+已完成或基本完成：
+
 1. 更新文档与协议边界，明确 YQP artifact 是轻量上传通道。
 2. WinNode 增加 croc status/send/receive capability。
 3. LinuxNode 对齐同名语义能力。
 4. Center 增加 `TransferSession` model 与 service。
 5. Center 增加 transfer meta tools。
-6. Console 增加 transfer block / transfer list。
-7. 做 WinNode <-> LinuxNode 大文件验收。
-8. 做 Node -> Center 大文件入库验收。
+6. WinNode -> LinuxNode 小文件传输已跑通并完成 size / sha256 比对。
+
+下一步进入 Center Execution Runtime v2：
+
+1. 为 `transfer.create` 增加 Execution Admission 决策。
+2. 增加 Operation / OperationEvent 基线。
+3. 将 `TransferSession` 接入 `Operation(kind=transfer)`。
+4. `transfer.create` 返回 wait handle。
+5. AgentRun 支持 `waiting_operation`，不再用 LLM 轮询长传输。
+6. Console 增加 OperationCard / transfer detail projection。
+7. 再做 WinNode <-> LinuxNode 大文件验收。
+8. 再做 Node -> Center 大文件入库验收。

@@ -1,4 +1,4 @@
-# Artifact / Media / Blob Layer Proposal
+# Artifact / Media / Blob 基础层提案
 
 状态：partially implemented proposal
 日期：2026-06-28
@@ -13,10 +13,11 @@
 - YQP `artifact.upload`，Node 可上传文件/图片类产物。
 - Console Artifact Browser 和 Agent chat artifact preview。
 - Agent meta tools：`artifact.list`、`artifact.get`、`artifact.present`。
+- 2026-06-30 设计更新：长任务、跨 Node 传输和大文件入库的等待/恢复不应由 Artifact 层承担；应进入 Center Execution Runtime v2 的 Operation Bus。Artifact 继续负责二进制/媒体资产的元数据、存储和引用。
 
 仍未落地：
 
-- 跨 Node 文件传输。
+- 跨 Node 文件传输的完整 Operation 化 UI / resume。
 - artifact TTL / GC。
 - 多模态 LLM 对图片/音频/视频内容的理解。
 - 统一 Access Grant / signed URL 模型。
