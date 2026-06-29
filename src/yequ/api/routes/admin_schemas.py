@@ -92,7 +92,7 @@ class JobSummary(BaseModel):
     invocation_id: str
     node_id: str
     runtime_id: str | None = None
-    execution_requirements: dict[str, object] | None = None
+    execution_requirements: object | None = None
     function_name: str
     status: str
     timeout_sec: int
@@ -102,10 +102,10 @@ class JobSummary(BaseModel):
     finished_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
-    error_details: dict[str, object] | None = None
+    error_details: object | None = None
     cancel_reason: str | None = None
     attempt: int
-    output: dict[str, object] | None = None
+    output: object | None = None
 
 
 class InvocationDetail(BaseModel):
@@ -123,7 +123,7 @@ class InvocationDetail(BaseModel):
     max_total_duration_sec: int | None = None
     started_at: str | None = None
     finished_at: str | None = None
-    result: dict[str, object] | None = None
+    result: object | None = None
     error_code: str | None = None
     error_message: str | None = None
     jobs: list[JobSummary] = []
@@ -139,7 +139,7 @@ class TimelineSummary(BaseModel):
     job_id: str | None = None
     node_id: str | None = None
     timestamp: str | None = None
-    data: dict[str, object] | None = None
+    data: object | None = None
 
 
 # ── Read endpoints ──
