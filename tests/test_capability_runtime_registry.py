@@ -186,6 +186,66 @@ async def _register_windows_croc_status(
                                 "effect": "read",
                                 "execution_context": "system",
                                 "resource_keys": ["node.transfer"],
+                            },
+                            {
+                                "name": "windows.transfer.local.stat",
+                                "description": "Inspect local transfer path facts.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"path": {"type": "string"}},
+                                    "required": ["path"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "user",
+                                "resource_keys": ["node.transfer", "node.file"],
+                            },
+                            {
+                                "name": "windows.transfer.croc.reconcile",
+                                "description": "Read local croc transfer ledger.",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "system",
+                                "resource_keys": ["node.transfer"],
+                            },
+                            {
+                                "name": "windows.transfer.croc.send",
+                                "description": "Send a local path through croc.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "code": {"type": "string"},
+                                    },
+                                    "required": ["path", "code"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "external",
+                                "execution_context": "user",
+                                "resource_keys": ["node.transfer"],
+                                "hidden_input_fields": ["code"],
+                            },
+                            {
+                                "name": "windows.transfer.croc.receive",
+                                "description": "Receive files through croc.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {"type": "string"},
+                                        "output_dir": {"type": "string"},
+                                    },
+                                    "required": ["code"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "external",
+                                "execution_context": "user",
+                                "resource_keys": ["node.transfer"],
+                                "hidden_input_fields": ["code"],
                             }
                         ],
                         "signals": [],
@@ -273,8 +333,13 @@ async def test_croc_status_capability_is_searchable_without_center_hardcoding(
     search_resp = await client.get("/admin/meta/capabilities/search", params={"q": "croc"})
     assert search_resp.status_code == 200, search_resp.text
     matches = search_resp.json()
-    assert [item["canonical_name"] for item in matches] == ["transfer.croc.status"]
-    assert matches[0]["sources"][0]["registered_name"] == "windows.transfer.croc.status"
+    names = [item["canonical_name"] for item in matches]
+    assert names == [
+        "transfer.croc.receive",
+        "transfer.croc.reconcile",
+        "transfer.croc.send",
+        "transfer.croc.status",
+    ]
 
     describe_resp = await client.get("/admin/meta/capabilities/windows.transfer.croc.status")
     assert describe_resp.status_code == 200, describe_resp.text
@@ -282,6 +347,14 @@ async def test_croc_status_capability_is_searchable_without_center_hardcoding(
     assert detail["canonical_name"] == "transfer.croc.status"
     assert detail["sources"][0]["node_id"] == node.node_id
     assert detail["sources"][0]["resource_keys"] == ["node.transfer"]
+
+    send_resp = await client.get("/admin/meta/capabilities/windows.transfer.croc.send")
+    assert send_resp.status_code == 200, send_resp.text
+    send_detail = send_resp.json()
+    assert send_detail["canonical_name"] == "transfer.croc.send"
+    assert send_detail["risk"] == "maintenance"
+    assert send_detail["effect"] == "external"
+    assert send_detail["sources"][0]["hidden_input_fields"] == ["code"]
 
 
 @pytest.mark.asyncio

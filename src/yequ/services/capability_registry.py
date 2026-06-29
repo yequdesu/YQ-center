@@ -594,6 +594,7 @@ def _source_summary(
         "resource_keys": list(source.resource_keys or []),
         "conflict_policy": source.conflict_policy,
         "preflight_supported": source.preflight_supported,
+        "hidden_input_fields": list(source.hidden_input_fields or []),
     }
 
 
