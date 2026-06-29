@@ -555,8 +555,8 @@ async def test_job_finished_rejects_non_running_job(client: AsyncClient, node_wi
 
 
 @pytest.mark.asyncio
-async def test_job_double_finish_rejected(client: AsyncClient, node_with_hello):
-    """Terminal state is immutable -- second finish must be rejected."""
+async def test_job_double_finish_is_idempotent(client: AsyncClient, node_with_hello):
+    """Repeating the same terminal report is accepted for lost-response recovery."""
     node, token = node_with_hello
     auth = {"Authorization": f"Bearer {token}"}
     await _create_queued_job(node.node_id)
@@ -600,7 +600,10 @@ async def test_job_double_finish_rejected(client: AsyncClient, node_with_hello):
         ),
         headers=auth,
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    payload = resp.json()["payload"]
+    assert payload["status"] == "already_terminal"
+    assert payload["center_status"] == "succeeded"
 
 
 @pytest.mark.asyncio

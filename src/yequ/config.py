@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     database_max_overflow: int = 20
     database_pool_timeout_sec: float = 10.0
     database_pool_recycle_sec: int = 1800
+    postgres_application_name: str = "yequ-center"
+    postgres_idle_in_transaction_session_timeout_ms: int = 120_000
+    postgres_statement_timeout_ms: int = 120_000
+    postgres_lock_timeout_ms: int = 10_000
+    postgres_terminate_stale_idle_transactions_on_startup: bool = True
 
     # Node protocol
     allowed_timestamp_skew_sec: int = 30

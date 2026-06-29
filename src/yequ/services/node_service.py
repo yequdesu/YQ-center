@@ -720,8 +720,15 @@ async def handle_job_finished(
             ).model_dump(),
         )
 
-    # Reject if already in terminal state -- terminal state is immutable
+    # job.finished is idempotent for the same terminal state. This covers the
+    # common case where Center committed the result but the response was lost.
     if job.status in valid_terminals:
+        if job.status == terminal_status:
+            return {
+                "job_id": job_id,
+                "status": "already_terminal",
+                "center_status": job.status,
+            }
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=YqpError(
@@ -924,6 +931,7 @@ async def _reconcile_to_terminal(
     output: JsonObject | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    error_details: JsonObject | None = None,
 ) -> None:
     """Move a daemon-reported terminal reconciliation through legal transitions."""
     from yequ.protocol import JobStatus
@@ -949,6 +957,7 @@ async def _reconcile_to_terminal(
         output=output,
         error_code=error_code,
         error_message=error_message,
+        error_details=error_details,
     )
 
 
@@ -1018,10 +1027,15 @@ async def handle_reconcile_jobs(
         # Center is authoritative once a Job reaches terminal state; late daemon results are
         # intentionally discarded to preserve terminal immutability and avoid result drift.
         if center_status in terminal_statuses and local_status in daemon_terminal:
+            action = (
+                ReconciliationAction.ACCEPT_RESULT
+                if center_status == local_status
+                else ReconciliationAction.DISCARD_RESULT
+            )
             actions.append(
                 {
                     "job_id": job_id,
-                    "action": ReconciliationAction.DISCARD_RESULT,
+                    "action": action,
                     "reason": f"center_already_{center_status}",
                     "center_status": center_status,
                     "local_status": local_status,
@@ -1043,6 +1057,15 @@ async def handle_reconcile_jobs(
         # Rule 3: Center is non-terminal (running/claimed/queued/created),
         # Daemon completed — accept the result and sync Center state
         if center_status in non_terminal_statuses and local_status in daemon_terminal:
+            raw_error = kj.get("error")
+            if isinstance(raw_error, dict):
+                error_code = raw_error.get("code") or kj.get("error_code")
+                error_message = raw_error.get("message") or kj.get("error_message")
+                error_details = raw_error.get("details")
+            else:
+                error_code = kj.get("error_code")
+                error_message = kj.get("error_message")
+                error_details = None
             try:
                 await _reconcile_to_terminal(
                     db,
@@ -1050,8 +1073,9 @@ async def handle_reconcile_jobs(
                     terminal_status=local_status,
                     node_id=node.node_id,
                     output=kj.get("output"),
-                    error_code=kj.get("error_code"),
-                    error_message=kj.get("error_message"),
+                    error_code=error_code,
+                    error_message=error_message,
+                    error_details=error_details,
                 )
             except ValueError as e:
                 from fastapi import HTTPException, status

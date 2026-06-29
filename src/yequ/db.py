@@ -27,8 +27,17 @@ _engine_kwargs: dict[str, object] = {
 if _is_sqlite:
     _engine_kwargs["poolclass"] = NullPool
 else:
+    _server_settings = {
+        "application_name": _settings.postgres_application_name,
+        "idle_in_transaction_session_timeout": str(
+            _settings.postgres_idle_in_transaction_session_timeout_ms
+        ),
+        "statement_timeout": str(_settings.postgres_statement_timeout_ms),
+        "lock_timeout": str(_settings.postgres_lock_timeout_ms),
+    }
     _engine_kwargs.update(
         {
+            "connect_args": {"server_settings": _server_settings},
             "pool_size": _settings.database_pool_size,
             "max_overflow": _settings.database_max_overflow,
             "pool_timeout": _settings.database_pool_timeout_sec,

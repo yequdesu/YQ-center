@@ -128,6 +128,43 @@ async def test_timeout_job_transitions(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_extend_expired_jobs_for_recovery_keeps_jobs_non_terminal(
+    db_session: AsyncSession,
+):
+    """Startup recovery should give Nodes time to reconcile local terminal results."""
+    from yequ.services.job_service import extend_expired_jobs_for_recovery
+
+    now = datetime.now(UTC)
+    job = Job(
+        job_id="job_recovery_grace",
+        invocation_id="inv_recovery_grace",
+        node_id="test-node",
+        function_name="test.func",
+        status=JobStatus.RUNNING,
+        timeout_sec=30,
+        lease_sec=10,
+        lease_expires_at=now - timedelta(seconds=30),
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    count = await extend_expired_jobs_for_recovery(
+        db_session,
+        recovery_window_sec=300,
+        now=now,
+    )
+    await db_session.commit()
+
+    result = await db_session.execute(select(Job).where(Job.job_id == "job_recovery_grace"))
+    fetched = result.scalar_one()
+    assert count == 1
+    assert fetched.status == JobStatus.RUNNING
+    assert fetched.finished_at is None
+    assert fetched.lease_expires_at is not None
+    assert fetched.lease_expires_at > now
+
+
+@pytest.mark.asyncio
 async def test_find_incomplete_jobs(db_session: AsyncSession):
     """find_incomplete_jobs should return non-terminal jobs only."""
     from yequ.services.job_service import find_incomplete_jobs

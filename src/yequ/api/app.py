@@ -46,23 +46,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Recovery + bootstrap + background tasks: skip in test mode
     if not settings.test_mode:
         try:
+            from sqlalchemy import text
+
             from yequ.db import async_session_factory
-            from yequ.services.job_service import find_incomplete_jobs, timeout_job
+            from yequ.services.job_service import extend_expired_jobs_for_recovery
+
+            if (
+                "sqlite" not in settings.database_url
+                and settings.postgres_terminate_stale_idle_transactions_on_startup
+            ):
+                async with async_session_factory() as db:
+                    terminated = await db.execute(
+                        text(
+                            """
+                            SELECT pg_terminate_backend(pid)
+                            FROM pg_stat_activity
+                            WHERE pid <> pg_backend_pid()
+                              AND datname = current_database()
+                              AND application_name = :application_name
+                              AND state = 'idle in transaction'
+                              AND xact_start < now() - interval '30 seconds'
+                            """
+                        ),
+                        {"application_name": settings.postgres_application_name},
+                    )
+                    terminated_count = len(list(terminated.all()))
+                    if terminated_count:
+                        log.warning(
+                            "terminated stale postgres idle-in-transaction sessions",
+                            count=terminated_count,
+                        )
 
             async with async_session_factory() as db:
-                incomplete = await find_incomplete_jobs(db)
-                recovered = 0
-                for job in incomplete:
-                    if (
-                        job.status in ("claimed", "running")
-                        and job.lease_expires_at
-                        and job.lease_expires_at < datetime.now(UTC)
-                    ):
-                        await timeout_job(db, job, node_id="recovery")
-                        recovered += 1
+                recovered = await extend_expired_jobs_for_recovery(
+                    db,
+                    recovery_window_sec=settings.recovery_window_sec,
+                    now=datetime.now(UTC),
+                )
                 if recovered:
                     await db.commit()
-                    log.info("recovery complete", recovered_jobs=recovered)
+                    log.info("startup recovery grace extended", recovered_jobs=recovered)
 
         except Exception:
             log.exception("recovery scan failed")
@@ -139,6 +162,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await liveness_scanner.stop()
         await scanner.stop()
         await tl_writer.stop()
+    from yequ.db import engine
+
+    await engine.dispose()
     log.info("yeau center shutting down")
 
 

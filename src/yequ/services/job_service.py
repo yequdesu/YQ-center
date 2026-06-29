@@ -5,7 +5,7 @@ via job_state_machine.transition().
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -207,3 +207,34 @@ async def find_incomplete_jobs(db: AsyncSession) -> list[Job]:
     terminal_values = [s.value for s in TERMINAL_STATUSES]
     result = await db.execute(select(Job).where(Job.status.notin_(terminal_values)))
     return list(result.scalars().all())
+
+
+async def extend_expired_jobs_for_recovery(
+    db: AsyncSession,
+    *,
+    recovery_window_sec: int,
+    now: datetime | None = None,
+) -> int:
+    """Give in-flight jobs a restart grace window instead of timing them out.
+
+    During a planned or abrupt Center restart, Nodes may finish jobs while Center
+    is offline. If Center immediately times out expired leases at startup, those
+    legitimate local results can no longer be accepted. Extending the lease lets
+    the Node reconcile or report the terminal result first; the normal timeout
+    scanner will still time out jobs after the grace window if the Node never
+    returns.
+    """
+
+    current = now or datetime.now(UTC)
+    new_deadline = current + timedelta(seconds=max(recovery_window_sec, 1))
+    result = await db.execute(
+        select(Job).where(
+            Job.status.in_([JobStatus.CLAIMED, JobStatus.RUNNING, JobStatus.CANCELLING]),
+            Job.lease_expires_at.isnot(None),
+            Job.lease_expires_at < current,
+        )
+    )
+    jobs = list(result.scalars().all())
+    for job in jobs:
+        job.lease_expires_at = new_deadline
+    return len(jobs)
