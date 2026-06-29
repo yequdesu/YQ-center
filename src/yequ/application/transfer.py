@@ -161,7 +161,7 @@ class TransferApplicationService:
         session = await self._get_session(transfer_id)
         source_job = await self._get_job(session.source_job_id)
         target_job = await self._get_job(session.target_job_id)
-        self._refresh_status_from_jobs(session, source_job, target_job)
+        await self._refresh_status_from_jobs(session, source_job, target_job)
         await self.db.commit()
         return self._session_dict(session, source_job=source_job, target_job=target_job)
 
@@ -251,7 +251,7 @@ class TransferApplicationService:
         result = await self.db.execute(select(Job).where(Job.job_id == job_id))
         return result.scalar_one_or_none()
 
-    def _refresh_status_from_jobs(
+    async def _refresh_status_from_jobs(
         self,
         session: TransferSession,
         source_job: Job | None,
@@ -263,10 +263,22 @@ class TransferApplicationService:
         statuses = {job.status for job in jobs}
         if "failed" in statuses:
             session.status = "failed"
+            await self._cancel_non_terminal_peer(
+                jobs,
+                reason="transfer_peer_failed",
+            )
         elif "timeout" in statuses:
             session.status = "timeout"
+            await self._cancel_non_terminal_peer(
+                jobs,
+                reason="transfer_peer_timeout",
+            )
         elif "cancelled" in statuses:
             session.status = "cancelled"
+            await self._cancel_non_terminal_peer(
+                jobs,
+                reason="transfer_peer_cancelled",
+            )
         elif statuses == {"succeeded"}:
             session.status = "succeeded"
             session.completed_at = session.completed_at or datetime.now(UTC)
@@ -286,6 +298,21 @@ class TransferApplicationService:
             session.error_code = failed_job.error_code
             session.error_message = failed_job.error_message
             session.completed_at = session.completed_at or datetime.now(UTC)
+
+    async def _cancel_non_terminal_peer(
+        self,
+        jobs: list[Job],
+        *,
+        reason: str,
+    ) -> None:
+        terminal_statuses = {"succeeded", "failed", "timeout", "cancelled"}
+        for job in jobs:
+            if job.status in terminal_statuses:
+                continue
+            try:
+                await cancel_job(self.db, job, reason=reason, node_id=job.node_id)
+            except ValueError:
+                continue
 
     def _session_dict(
         self,
