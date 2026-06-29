@@ -47,6 +47,30 @@ async def _hello_linux_node(client: AsyncClient, node_id: str, token: str) -> No
     assert resp.status_code == 200, resp.text
 
 
+async def _hello_windows_node(client: AsyncClient, node_id: str, token: str) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            payload={
+                "daemon_version": "0.5.0",
+                "platform": {"os": "windows", "arch": "AMD64"},
+                "runtimes": [
+                    {
+                        "runtime_id": "windows-system",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "admin",
+                    }
+                ],
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 async def _register_linux_system_info(client: AsyncClient, node_id: str, token: str) -> None:
     resp = await client.post(
         "/yqp/",
@@ -122,6 +146,58 @@ async def _register_artifact_output_capability(
     assert resp.status_code == 200, resp.text
 
 
+async def _register_windows_croc_status(
+    client: AsyncClient,
+    node_id: str,
+    token: str,
+) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "windows.transfer",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "windows.transfer.croc.status",
+                                "description": (
+                                    "Probe local croc installation and transfer runtime facts."
+                                ),
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                                "output_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "installed": {"type": "boolean"},
+                                        "version": {"type": ["string", "null"]},
+                                        "allow_send": {"type": "boolean"},
+                                        "allow_receive": {"type": "boolean"},
+                                    },
+                                },
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "system",
+                                "resource_keys": ["node.transfer"],
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 @pytest.mark.asyncio
 async def test_register_capabilities_writes_definition_and_source(
     client: AsyncClient,
@@ -183,6 +259,29 @@ async def test_meta_capability_search_and_describe_api(
     node_detail = node_resp.json()
     assert node_detail["capability_source_count"] == 1
     assert node_detail["capability_sources"][0]["canonical_name"] == "system.info"
+
+
+@pytest.mark.asyncio
+async def test_croc_status_capability_is_searchable_without_center_hardcoding(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _hello_windows_node(client, node.node_id, token)
+    await _register_windows_croc_status(client, node.node_id, token)
+
+    search_resp = await client.get("/admin/meta/capabilities/search", params={"q": "croc"})
+    assert search_resp.status_code == 200, search_resp.text
+    matches = search_resp.json()
+    assert [item["canonical_name"] for item in matches] == ["transfer.croc.status"]
+    assert matches[0]["sources"][0]["registered_name"] == "windows.transfer.croc.status"
+
+    describe_resp = await client.get("/admin/meta/capabilities/windows.transfer.croc.status")
+    assert describe_resp.status_code == 200, describe_resp.text
+    detail = describe_resp.json()
+    assert detail["canonical_name"] == "transfer.croc.status"
+    assert detail["sources"][0]["node_id"] == node.node_id
+    assert detail["sources"][0]["resource_keys"] == ["node.transfer"]
 
 
 @pytest.mark.asyncio
