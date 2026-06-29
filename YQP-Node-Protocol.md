@@ -791,21 +791,18 @@ Node 实现原则：
 
 - 不支持 WebSocket job push。
 - 不支持 Node 主动自动注册到 Center，必须先由 Admin provisioning 创建 node/token。
-- 不支持二进制 artifact 的通用上传协议。截图/摄像头正式实现前应先补 Artifact API。
+- YQP `artifact.upload` 已支持轻量二进制 artifact 上传；但不支持分片、断点续传或跨 Node 大文件传输。
+- Center Execution Runtime v2 / Operation Bus 是 Center 侧调度层，不改变 YQP 第一版合同。Node 仍只通过 `job.*`、`artifact.upload`、`signal.report`、`node.reconcile_jobs` 等协议消息执行与上报；Node 不直接感知 Operation。
 - 不支持按 Signal stale 自动把 Node 标记为 degraded；当前调度主要看 heartbeat liveness。
 - 不支持在 YQP payload 中传 node token。
 
-## Appendix: artifact.upload current contract
+## 附录：`artifact.upload` 当前合同
 
-This appendix records the current Node-to-Center artifact upload contract and
-supersedes older notes that said generic binary artifact upload was unsupported.
+本附录记录当前 Node 到 Center 的 artifact 上传合同，并取代早期“暂不支持通用二进制 artifact 上传”的旧说明。
 
-`artifact.upload` uses the normal `/yqp/` envelope and Bearer token
-authentication. It is intended for screenshots, small files, command outputs,
-camera captures, and other binary/text outputs that should be stored as Center
-artifacts instead of being embedded directly in `job.finished.output`.
+`artifact.upload` 使用普通 `/yqp/` envelope 和 Bearer token 认证。它适用于截图、小文件、命令输出、摄像头采集，以及其他应存入 Center artifact store、而不应直接嵌入 `job.finished.output` 的二进制或文本产物。
 
-Request `payload`:
+请求 `payload`：
 
 ```json
 {
@@ -826,7 +823,7 @@ Request `payload`:
 }
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -844,15 +841,11 @@ Response:
 }
 ```
 
-Rules:
+规则：
 
-- `data_base64` is required and must be valid base64.
-- Center binds `node_id` from the authenticated Node. Payload cannot override
-  the owner Node.
-- Upload size is bounded by `YEQU_ARTIFACT_MAX_UPLOAD_BYTES`.
-- The initial backend stores blobs on local Center disk under
-  `YEQU_ARTIFACT_STORAGE_DIR`.
-- Job output should reference the returned `artifact_id` when the output is
-  large or binary.
-- Chunked upload, signed Node download grants, retention cleanup, and
-  cross-node transfer are not implemented in this slice.
+- `data_base64` 必填，且必须是合法 base64。
+- Center 使用认证后的 Node 绑定 `node_id`；payload 不能覆盖归属 Node。
+- 上传大小受 `YEQU_ARTIFACT_MAX_UPLOAD_BYTES` 限制。
+- 当前初始后端将 blob 存储在 Center 本地磁盘的 `YEQU_ARTIFACT_STORAGE_DIR` 下。
+- 当 Job 输出较大或包含二进制内容时，Job output 应引用返回的 `artifact_id`。
+- 当前切片尚未实现分片上传、签名 Node 下载授权、保留期清理和跨 Node 传输。
