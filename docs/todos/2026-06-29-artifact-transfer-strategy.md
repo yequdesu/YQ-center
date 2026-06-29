@@ -236,7 +236,12 @@ Linux：
 - `*.transfer.croc.status`、`*.transfer.local.stat`、`*.transfer.croc.reconcile` 只应要求基础平台 runtime，例如 `labels=["linux"]` 或 `labels=["windows"]`。
 - send/receive 能力注册前必须依赖本地 probe；不可执行时不得注册为可用。
 - send/receive 可以要求 `labels=["linux", "transfer"]` 或 `labels=["windows", "transfer"]`，但 Node 必须同时上报匹配 runtime。
+- send/receive 必须声明 `risk=maintenance`、`effect=external`，不要声明为 `effect=write`。
 - Center/Agent 只能根据 status 和 capability registry 判断是否能做大文件传输。
+
+`*.transfer.croc.receive` 会写入目标 Node 文件系统，但第一版把它建模为外部传输进程控制能力。目标路径权限、覆盖策略、断点续传和本地 ledger 由 Node 自己执行；Center 用 `resource_keys=["node.transfer"]` 与 `conflict_policy=serialize` 控制并发。若 Node 把 receive 注册成 `effect=write`，Center L2 策略会要求底层 receive job 单独审批，`transfer.create` 就无法同时启动 receiver 和 sender。
+
+后续如果需要对跨 Node 文件落盘做审批，应把审批建模在高层 `transfer.create` 上，一次审批覆盖整个 TransferSession，而不是让底层 croc receive 单独进入审批流。
 
 ### 6.3 `*.transfer.croc.send`
 

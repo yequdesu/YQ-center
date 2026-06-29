@@ -261,6 +261,17 @@ transfer 相关 capability 必须按职责声明不同的 `execution_requirement
 - `linux.transfer.croc.send`
 - `linux.transfer.croc.receive`
 
+能力声明要求：
+
+- `risk` 必须声明为 `maintenance`。
+- `effect` 必须声明为 `external`，不要声明为 `write`。
+- `resource_keys` 应包含稳定的传输资源键，例如 `node.transfer`。
+- `conflict_policy` 应声明为 `serialize`，避免同一 Node 上多个 croc 传输互相抢占临时目录、ledger 或网络资源。
+
+原因：`linux.transfer.croc.receive` 确实会在目标 Node 写入文件，但在 YeQu 建模中，croc send/receive 是“外部传输进程控制能力”，目标路径权限由 Node runtime/path policy 自己执行；Center 的 `transfer.create` 负责一次高层 TransferSession 编排。如果 Node 把 receive 声明为 `effect=write`，当前 Center L2 策略会要求单独审批底层 receive job，导致 `transfer.create` 无法自动同时启动 receiver 和 sender。
+
+后续如果需要对跨 Node 文件落盘做强审批，应在 `transfer.create` 这个高层元工具上建模一次完整审批，而不是让底层 `*.transfer.croc.receive` 单独触发审批；否则会破坏 TransferSession 的并发编排。
+
 如果 Linux Node 给 send/receive 声明了 `labels=["linux", "transfer"]`，则必须同时上报一个匹配 runtime：
 
 ```json
