@@ -228,12 +228,108 @@ Linux Node 必须提供事实探测能力：
 
 未安装或不可执行时，`linux.transfer.croc.status` 不应注册为“成功的传输能力”的替代品，也不允许 fallback 到 YQP artifact upload。它应返回明确失败或明确的 `installed=false` 状态，让 Center 和 Agent 基于事实决策。
 
+### transfer runtime requirement 分层
+
+transfer 相关 capability 必须按职责声明不同的 `execution_requirements`。不要让诊断能力依赖只有传输可用时才存在的 runtime 标签，否则 Center 无法调用 status 来诊断 transfer 为什么不可用。
+
+诊断/事实类能力只要求基础 Linux runtime：
+
+```json
+{
+  "runtime_kind": "privileged",
+  "labels": ["linux"]
+}
+```
+
+适用能力：
+
+- `linux.transfer.croc.status`
+- `linux.transfer.local.stat`
+- `linux.transfer.croc.reconcile`
+
+实际传输类能力可以要求 transfer runtime：
+
+```json
+{
+  "runtime_kind": "privileged",
+  "labels": ["linux", "transfer"]
+}
+```
+
+适用能力：
+
+- `linux.transfer.croc.send`
+- `linux.transfer.croc.receive`
+
+如果 Linux Node 给 send/receive 声明了 `labels=["linux", "transfer"]`，则必须同时上报一个匹配 runtime：
+
+```json
+{
+  "runtime_id": "linux-transfer",
+  "kind": "privileged",
+  "status": "online",
+  "interactive": false,
+  "privilege": "user",
+  "labels": ["linux", "transfer"],
+  "metadata": {
+    "croc_binary_path": "/usr/local/bin/croc",
+    "temp_dir": "/tmp/yequ-transfer"
+  }
+}
+```
+
+如果 croc 未安装或 send/receive 被配置禁用，Node 可以不注册 send/receive，或注册为 unavailable/degraded；但 `linux.transfer.croc.status` 必须仍然可调用，用于返回 `installed=false`、`allow_send=false`、`allow_receive=false` 和明确错误。
+
 后续 send/receive 能力必须基于 status 探测事实：
 
 - `linux.transfer.croc.send`
 - `linux.transfer.croc.receive`
 
 如果 `croc` 不可用、目标路径不允许、权限不足、relay 不可用或校验失败，必须让 Job 失败并传播错误，不得静默降级。
+
+### send/receive 执行语义
+
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 是阻塞型长任务：capability 返回时表示该端 croc 子进程已经结束，状态必须是成功、失败、取消或超时之一。
+
+因此 Phase 2 手动传输不能依赖 Agent 顺序调用：
+
+```text
+receive 阻塞等待 sender
+Agent 等 receive 返回后才会调用 send
+=> 会超时或失败
+```
+
+Phase 2 验收如果不使用 Center TransferSession，必须用两个并发控制流启动两端任务。Phase 3 以后由 Center `TransferSession` 同时创建 receiver job 和 sender job，Agent 只调用 `transfer.create`。
+
+Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台进程后立即返回”的非阻塞模式，必须另起新的 capability 或在输出中明确 `process_status=started`，并提供查询/cancel 机制；第一版合同不采用这种模式。
+
+### croc 错误上报合同
+
+croc 子进程失败时，Node 上报的 Job error 必须包含可诊断信息：
+
+```json
+{
+  "code": "croc_failed",
+  "message": "croc receive failed with exit code 1",
+  "details": {
+    "returncode": 1,
+    "stdout": "... last 4000 chars, code redacted ...",
+    "stderr": "... last 4000 chars, code redacted ...",
+    "binary_path": "/usr/local/bin/croc",
+    "relay_url": null,
+    "output_dir": "/tmp/yequ-transfer",
+    "resume_mode": "overwrite"
+  }
+}
+```
+
+要求：
+
+- `stdout` / `stderr` 至少保留尾部摘要，便于判断 relay、权限、路径、code、网络问题。
+- croc code、relay pass、token 必须脱敏。
+- 不允许只返回 `exit 1` 或空消息。
+- 目录不存在、权限不足、目标已存在、sha256 不匹配必须有稳定 `code`。
+- 失败时 ledger 必须从 `running` 更新为 `failed` 或 `interrupted`，不得长期停留在 `running`。
 
 ### croc 断点续传与 Node 配合
 

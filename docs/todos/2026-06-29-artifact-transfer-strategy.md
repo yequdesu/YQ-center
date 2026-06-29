@@ -233,15 +233,20 @@ Linux：
 
 - 未安装 croc 时，status 必须明确返回 `installed=false` 或失败。
 - 不允许 fallback 到 YQP `artifact.upload`。
+- `*.transfer.croc.status`、`*.transfer.local.stat`、`*.transfer.croc.reconcile` 只应要求基础平台 runtime，例如 `labels=["linux"]` 或 `labels=["windows"]`。
 - send/receive 能力注册前必须依赖本地 probe；不可执行时不得注册为可用。
+- send/receive 可以要求 `labels=["linux", "transfer"]` 或 `labels=["windows", "transfer"]`，但 Node 必须同时上报匹配 runtime。
 - Center/Agent 只能根据 status 和 capability registry 判断是否能做大文件传输。
 
 ### 6.3 `*.transfer.croc.send`
+
+执行语义：阻塞型长任务。返回时表示 sender 端 croc 子进程已经结束。
 
 输入：
 
 - `path`
 - `code`
+- `transfer_id`
 - `relay_url`
 - `timeout_sec`
 - `expected_receiver_node_id`
@@ -256,6 +261,8 @@ Linux：
 - `completed_at`
 
 ### 6.4 `*.transfer.croc.receive`
+
+执行语义：阻塞型长任务。返回时表示 receiver 端 croc 子进程已经结束。
 
 输入：
 
@@ -346,7 +353,55 @@ Linux：
 
 `*.transfer.croc.reconcile` 用于 Node 重启后返回本地 transfer ledger 状态，帮助 Center 修正 `TransferSession`。它不直接启动传输。
 
-### 6.6 Center 侧 Artifact 注册能力
+### 6.6 双端阻塞与 Agent 调用限制
+
+croc 传输天然需要 sender 和 receiver 同时存在。底层 `*.transfer.croc.receive` 会阻塞等待 sender，`*.transfer.croc.send` 会阻塞等待 receiver。因此 Agent 不能可靠地通过普通 ReAct 顺序调用完成传输：
+
+```text
+Agent 调 receive
+receive 阻塞等待 send
+Agent 等 receive 返回后才有机会调 send
+=> 超时、失败或 loop 中断
+```
+
+这不是 prompt 问题，而是编排模型问题。Phase 2 的底层 send/receive 只适合：
+
+- 人工用两个控制流并发测试；
+- Center 内部服务并发创建两个 Job；
+- 后续 `TransferSession` 编排调用。
+
+Agent 普通对话默认不应直接手写底层 send/receive 序列。Phase 3 必须提供 `transfer.create` 元工具，由 Center 同时调度 receiver job 和 sender job。
+
+### 6.7 错误上报合同
+
+Node 调 croc 失败时，错误必须包含足够诊断信息，不得只返回 `exit 1`。
+
+推荐错误结构：
+
+```json
+{
+  "code": "croc_failed",
+  "message": "croc receive failed with exit code 1",
+  "details": {
+    "returncode": 1,
+    "stdout": "... redacted tail ...",
+    "stderr": "... redacted tail ...",
+    "binary_path": "/usr/local/bin/croc",
+    "relay_url": null,
+    "output_dir": "/tmp/yequ-transfer",
+    "resume_mode": "overwrite"
+  }
+}
+```
+
+要求：
+
+- stdout/stderr 至少保留尾部摘要；
+- croc code、relay pass、token 必须脱敏；
+- path、权限、relay、sha256、超时应有稳定错误码；
+- ledger 必须同步更新为 `failed` 或 `interrupted`。
+
+### 6.8 Center 侧 Artifact 注册能力
 
 如果接收方是 Center 同机 Linux Node，需要一个能力把接收到的本地文件注册为 Center Artifact：
 
@@ -378,6 +433,7 @@ Linux：
 - send/receive 对同一个 `transfer_id` 必须幂等。
 - Center 仍只把它们当普通 capability 调用。
 - 先允许用户手动指定 source、target、path、code。
+- 明确限制：Agent 不应顺序调用 receive 再 send 来做自动验收；该路径需要并发控制流。
 
 验收：
 
@@ -392,16 +448,19 @@ Linux：
 - Center 新增 `TransferSession` model + migration。
 - 新增 `TransferApplicationService`。
 - Center 生成 transfer code。
-- Center 同时调度 source send job 与 target receive job。
+- Center 同时调度 target receive job 与 source send job；receive 必须先入队/启动，send 随后启动，但两者必须并发等待。
 - Center 记录 `resume_mode`、attempt、code_hash 和两端 job_id。
 - Center 根据 Node `*.transfer.croc.reconcile` 修复 TransferSession 状态。
 - Timeline 记录 transfer lifecycle。
 - Agent 暴露 meta tool：`transfer.create`、`transfer.status`、`transfer.cancel`。
+- Agent 不再直接编排底层 croc send/receive。
 
 验收：
 
 - 用户只说“把 A 节点某文件传到 B 节点某目录”，Agent 使用 meta tool 编排，不手写两个底层 croc capability。
 - Tool call UI 显示 TransferSession，而不是一堆裸 croc 命令结果。
+- receive 阻塞等待 sender 时，Center 仍能启动 sender job，不会因单个 tool call 阻塞导致 Agent loop 超时。
+- croc 失败时，TransferSession detail 能看到两端 job_id、stderr/stdout 摘要和脱敏错误。
 
 ### 阶段 4：Node-to-Center 大文件入库
 
