@@ -288,6 +288,21 @@ Linux：
 - `started_at`
 - `completed_at`
 
+成功判定：
+
+- 只有实际收到文件或目录后才能返回 succeeded。
+- croc returncode 为 0 但目标目录没有新增文件时，必须 failed，错误码建议 `received_file_missing`。
+- 不得把输出目录自身的 stat 作为接收结果；例如目录 block size 4096 不能作为 `size_bytes`。
+- `size_bytes` 和 `sha256` 必须来自实际接收的文件。
+- 如果接收的是目录，必须明确返回 `received_kind="directory"`，并提供目录清单摘要或 archive 级校验；不能伪装成单文件。
+- 如果 `expected_sha256` 已提供，sha256 不一致必须 failed。
+
+命令兼容性：
+
+- Node 必须根据本机 croc 版本探测可用 flags，不得硬编码当前二进制不支持的参数。
+- 已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。
+- 不支持的 flag 必须在 status/preflight/执行前暴露为明确错误，不能在传输中途静默失败。
+
 ### 6.5 断点续传与 Node 协作合同
 
 croc 支持中断后恢复传输，但 YeQu 不能把这件事理解成“Center 自动拥有断点续传”。Center 只做控制面；断点续传是否真正可用，取决于 Node 是否保存本地传输事实、是否保留部分文件、是否能用兼容参数重新启动 croc。
@@ -303,6 +318,8 @@ Node 必须承担以下职责：
 - 通过 `job.event` 上报进度或至少上报 keepalive。
 - 完成后计算 size / sha256。
 - 隐藏 croc code 和 relay pass。
+- send/receive 必须以可取消的子进程方式执行；收到 `job.cancel` 时必须 terminate/kill 对应 croc 子进程，并尽快上报 `cancelled`、`failed` 或 `interrupted`，不能让 Job 长期卡在 `cancelling`。
+- 取消时不得默认删除部分文件，除非用户或 capability 输入显式要求清理。
 
 本地 transfer ledger 至少包含：
 

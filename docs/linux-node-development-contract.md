@@ -314,6 +314,34 @@ Phase 2 验收如果不使用 Center TransferSession，必须用两个并发控�
 
 Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台进程后立即返回”的非阻塞模式，必须另起新的 capability 或在输出中明确 `process_status=started`，并提供查询/cancel 机制；第一版合同不采用这种模式。
 
+### receive 成功判定
+
+`linux.transfer.croc.receive` 只有在实际收到文件或目录后才能返回 succeeded。以下情况必须返回 failed，并写入稳定错误码：
+
+- croc 子进程 returncode 为 0，但 `output_dir` 中没有新增文件或目标 `target_path` 不存在；
+- 只检测到输出目录本身，不得把目录 inode/block size（例如 4096 bytes）当成传输文件大小；
+- `received_path` 指向目录但本次传输预期是单文件，且没有可验证的文件级 size/sha256；
+- `expected_sha256` 已提供但接收文件 sha256 不一致；
+- 目标路径被权限、白名单、磁盘空间或覆盖策略拒绝。
+
+receive 输出中的 `size_bytes` 和 `sha256` 必须来自实际接收的文件；如果接收的是目录，必须明确返回 `received_kind="directory"`，并提供目录清单摘要或 archive 级校验，不能用目录自身 stat 伪装成文件校验。
+
+### croc 命令兼容性
+
+Node 必须在启动时或 `*.transfer.croc.status` 中探测本机 croc 版本和支持的 flags。不得硬编码当前二进制不支持的参数。
+
+已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。如果需要减少输出，应优先使用当前版本支持的 `--quiet`；如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+
+### 取消语义
+
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须以可取消的子进程方式执行。收到 Center `job.cancel` 或本地任务取消时：
+
+- 必须终止对应 croc 子进程，必要时先 terminate 再 kill；
+- ledger 状态更新为 `cancelled` 或 `interrupted`；
+- Job 必须尽快上报 `cancelled` 或 `failed`，不能长期停留在 `running` / `cancelling`；
+- 不得默认删除部分文件，除非用户或 capability 输入显式要求清理；
+- stdout/stderr 摘要仍需脱敏上报，便于判断取消前状态。
+
 ### croc 错误上报合同
 
 croc 子进程失败时，Node 上报的 Job error 必须包含可诊断信息：
