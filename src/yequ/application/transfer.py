@@ -81,6 +81,7 @@ class TransferApplicationService:
         )
         self.db.add(session)
         await self.db.flush()
+        await self.db.commit()
 
         receive_result = await self._invoke_capability(
             command,
@@ -107,7 +108,7 @@ class TransferApplicationService:
         session.target_invocation_id = receive_result.invocation_id
         session.target_job_id = receive_result.job_id
         session.status = "receiving"
-        await self.db.flush()
+        await self.db.commit()
 
         send_result = await self._invoke_capability(
             command,
@@ -212,26 +213,28 @@ class TransferApplicationService:
         tool_input: dict[str, object],
     ) -> ExecuteToolResult:
         from yequ.application.tool_invocation import ToolInvocationApplicationService
+        from yequ.db import async_session_factory
 
         clean_input = {key: value for key, value in tool_input.items() if value is not None}
-        return await ToolInvocationApplicationService(self.db).execute(
-            ExecuteToolCommand(
-                function_name="capability.invoke",
-                input_data={
-                    "capability_ref": capability_ref,
-                    "node_id": node_id,
-                    "input": clean_input,
-                },
-                actor_type=command.actor_type,
-                actor_id=command.actor_id,
-                session_id=command.session_id,
-                execution_mode=command.execution_mode,
-                wait_for_result=False,
-                timeout_sec=command.timeout_sec,
-                lease_sec=30,
-                resource_keys=[f"node:{node_id}:transfer"],
+        async with async_session_factory() as db:
+            return await ToolInvocationApplicationService(db).execute(
+                ExecuteToolCommand(
+                    function_name="capability.invoke",
+                    input_data={
+                        "capability_ref": capability_ref,
+                        "node_id": node_id,
+                        "input": clean_input,
+                    },
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                    execution_mode=command.execution_mode,
+                    wait_for_result=False,
+                    timeout_sec=command.timeout_sec,
+                    lease_sec=30,
+                    resource_keys=[f"node:{node_id}:transfer"],
+                )
             )
-        )
 
     async def _get_session(self, transfer_id: str) -> TransferSession:
         result = await self.db.execute(

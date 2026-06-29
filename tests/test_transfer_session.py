@@ -194,3 +194,61 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     assert status.output_data["transfer"]["target_job"]["function_name"] == (
         "linux.transfer.croc.receive"
     )
+
+
+@pytest.mark.asyncio
+async def test_transfer_create_returns_structured_conflict_when_transfer_lock_is_held(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await _provision(db_session, "winClient", "win-token")
+    await _provision(db_session, "linux-node-01", "linux-token")
+    await _hello(client, "winClient", "win-token", "windows")
+    await _hello(client, "linux-node-01", "linux-token", "linux")
+    await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
+    await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
+
+    service = ToolInvocationApplicationService(db_session)
+    first = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+                "timeout_sec": 600,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert first.status == "succeeded"
+    assert first.output_data is not None
+    assert first.output_data["transfer"]["status"] == "running"
+
+    second = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\2.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+                "timeout_sec": 600,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert second.status == "succeeded"
+    assert second.output_data is not None
+    transfer = second.output_data["transfer"]
+    assert isinstance(transfer, dict)
+    assert transfer["status"] == "failed"
+    assert transfer["error_code"] == "resource_lock_conflict"
+    assert "receive_result" in transfer
+    assert transfer["receive_result"]["error_code"] == "resource_lock_conflict"

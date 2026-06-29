@@ -212,15 +212,23 @@ class ToolInvocationApplicationService:
             )
         except ValueError as exc:
             invocation_id = inv.invocation_id
+            resolved_node_id = resolved.node_id
+            resolved_risk = resolved.risk
+            resolved_effect = resolved.effect
             await self.db.rollback()
-            await self._write_resource_conflict(command, resolved, invocation_id, str(exc))
+            await self._write_resource_conflict(
+                command,
+                node_id=resolved_node_id,
+                invocation_id=invocation_id,
+                message=str(exc),
+            )
             return ExecuteToolResult(
                 status="failed",
                 function_name=command.function_name,
-                target_node_id=resolved.node_id,
+                target_node_id=resolved_node_id,
                 invocation_id=invocation_id,
-                risk=resolved.risk,
-                effect=resolved.effect,
+                risk=resolved_risk,
+                effect=resolved_effect,
                 error_code="resource_lock_conflict",
                 error_message=str(exc),
             )
@@ -707,7 +715,8 @@ class ToolInvocationApplicationService:
     async def _write_resource_conflict(
         self,
         command: ExecuteToolCommand,
-        resolved: ResolvedCapability,
+        *,
+        node_id: str,
         invocation_id: str,
         message: str,
     ) -> None:
@@ -716,7 +725,7 @@ class ToolInvocationApplicationService:
             event_type="resource.lock.conflict",
             actor_type="system",
             actor_id=command.actor_id,
-            node_id=resolved.node_id,
+            node_id=node_id,
             invocation_id=invocation_id,
             data={"error": message},
             timestamp=datetime.now(UTC),
