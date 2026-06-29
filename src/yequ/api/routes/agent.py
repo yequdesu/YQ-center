@@ -190,6 +190,62 @@ def _center_meta_functions() -> list[AgentFunction]:
             effect="read",
             timeout_sec=5,
         ),
+        AgentFunction(
+            name="transfer.create",
+            description=(
+                "Create a Center-managed croc TransferSession between two nodes. "
+                "Use this instead of directly calling low-level croc send/receive; "
+                "Center will start receiver and sender jobs concurrently."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "source_node_id": {"type": "string"},
+                    "target_node_id": {"type": "string"},
+                    "source_path": {"type": "string"},
+                    "target_output_dir": {"type": "string"},
+                    "target_path": {"type": "string"},
+                    "resume_mode": {
+                        "type": "string",
+                        "enum": ["resume", "overwrite", "fail_if_exists"],
+                        "default": "resume",
+                    },
+                    "timeout_sec": {"type": "integer", "default": 3600},
+                    "expected_sha256": {"type": "string"},
+                },
+                "required": ["source_node_id", "target_node_id", "source_path"],
+            },
+            risk="maintenance",
+            effect="external",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="transfer.status",
+            description="Inspect one Center-managed TransferSession and its sender/receiver jobs.",
+            input_schema={
+                "type": "object",
+                "properties": {"transfer_id": {"type": "string"}},
+                "required": ["transfer_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="transfer.cancel",
+            description="Cancel one Center-managed TransferSession and its non-terminal jobs.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "transfer_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["transfer_id"],
+            },
+            risk="maintenance",
+            effect="write",
+            timeout_sec=5,
+        ),
     ]
 
 

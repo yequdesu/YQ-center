@@ -30,6 +30,7 @@ import yequ.models.runtime_instance  # noqa: F401
 import yequ.models.session  # noqa: F401
 import yequ.models.signal_state  # noqa: F401
 import yequ.models.timeline  # noqa: F401
+import yequ.models.transfer  # noqa: F401
 import yequ.models.yqp_message  # noqa: F401
 from yequ.api.app import create_app
 from yequ.config import Settings

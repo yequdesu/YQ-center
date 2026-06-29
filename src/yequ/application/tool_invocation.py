@@ -40,6 +40,9 @@ CENTER_META_TOOLS = {
     "artifact.list",
     "artifact.get",
     "artifact.present",
+    "transfer.create",
+    "transfer.status",
+    "transfer.cancel",
 }
 
 
@@ -315,6 +318,7 @@ class ToolInvocationApplicationService:
         self,
         command: ExecuteToolCommand,
     ) -> ExecuteToolResult:
+        from yequ.application.transfer import TransferApplicationService, TransferCreateCommand
         from yequ.services.artifact_service import (
             artifact_to_dict,
             get_artifact,
@@ -423,6 +427,58 @@ class ToolInvocationApplicationService:
                         "kind": "artifact_gallery",
                         "count": len(artifacts),
                     },
+                }
+            elif command.function_name == "transfer.create":
+                output = {
+                    "transfer": await TransferApplicationService(self.db).create(
+                        TransferCreateCommand(
+                            source_node_id=_required_string(
+                                input_data.get("source_node_id"),
+                                "source_node_id",
+                            ),
+                            target_node_id=_required_string(
+                                input_data.get("target_node_id"),
+                                "target_node_id",
+                            ),
+                            source_path=_required_string(
+                                input_data.get("source_path"),
+                                "source_path",
+                            ),
+                            target_output_dir=_string_or_none(
+                                input_data.get("target_output_dir")
+                            ),
+                            target_path=_string_or_none(input_data.get("target_path")),
+                            code=_string_or_none(input_data.get("code")),
+                            relay_url=_string_or_none(input_data.get("relay_url")),
+                            resume_mode=_string_or_none(input_data.get("resume_mode"))
+                            or "resume",
+                            timeout_sec=_int_or_default(
+                                input_data.get("timeout_sec"),
+                                3600,
+                            ),
+                            expected_sha256=_string_or_none(
+                                input_data.get("expected_sha256")
+                            ),
+                            actor_type=command.actor_type,
+                            actor_id=command.actor_id,
+                            session_id=command.session_id,
+                            execution_mode=command.execution_mode,
+                        )
+                    )
+                }
+            elif command.function_name == "transfer.status":
+                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
+                output = {
+                    "transfer": await TransferApplicationService(self.db).status(transfer_id)
+                }
+            elif command.function_name == "transfer.cancel":
+                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
+                output = {
+                    "transfer": await TransferApplicationService(self.db).cancel(
+                        transfer_id,
+                        reason=_string_or_none(input_data.get("reason"))
+                        or "transfer_cancelled",
+                    )
                 }
             else:
                 return _meta_tool_error(command, "unknown_meta_tool", command.function_name)
@@ -671,6 +727,13 @@ class ToolInvocationApplicationService:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _required_string(value: object, field_name: str) -> str:
+    text = _string_or_none(value)
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
 
 
 def _int_or_default(value: object, default: int) -> int:

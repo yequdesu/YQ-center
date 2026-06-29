@@ -730,6 +730,9 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
     assert "artifact.list" in names
     assert "artifact.get" in names
     assert "artifact.present" in names
+    assert "transfer.create" in names
+    assert "transfer.status" in names
+    assert "transfer.cancel" in names
     assert "linux.system.info" not in names
     assert "system.info" not in names
 

@@ -23,6 +23,7 @@ from yequ.models.resource_lock import ResourceLock
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
+from yequ.models.transfer import TransferSession
 from yequ.models.yqp_message import YqpMessage
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "Session",
     "TimelineEvent",
     "TimestampMixin",
+    "TransferSession",
     "YqpMessage",
     "generate_uuid",
 ]
