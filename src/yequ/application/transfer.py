@@ -8,6 +8,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath, PureWindowsPath
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,7 @@ TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
 TRANSFER_SENDER_START_WAIT_SEC = 8.0
+TRANSFER_SENDER_ROOM_GRACE_SEC = 2.0
 
 
 @dataclass(slots=True)
@@ -63,6 +65,12 @@ class TransferPreflightCommand:
     execution_mode: str = "auto"
 
 
+@dataclass(frozen=True, slots=True)
+class NormalizedTransferTarget:
+    output_dir: str
+    target_path: str | None
+
+
 class TransferApplicationService:
     """Create and inspect transfer sessions without exposing croc sequencing to Agent."""
 
@@ -97,6 +105,30 @@ class TransferApplicationService:
                 "ttl_sec": ttl_sec,
                 "expires_at": expires_at.isoformat(),
             }
+        try:
+            target_intent = _normalize_transfer_target(
+                source_path=command.source_path,
+                target_output_dir=command.target_output_dir,
+                target_path=command.target_path,
+            )
+        except ValueError as exc:
+            return {
+                "allowed": False,
+                "decision": "needs_input",
+                "missing_slots": [],
+                "failed_preconditions": [
+                    {
+                        "fact": "target_path",
+                        "code": "unsupported_target_path",
+                        "message": str(exc),
+                    }
+                ],
+                "source": None,
+                "target": None,
+                "observed_at": now.isoformat(),
+                "ttl_sec": ttl_sec,
+                "expires_at": expires_at.isoformat(),
+            }
 
         source_result = await self._invoke_stat_capability(
             command,
@@ -104,7 +136,7 @@ class TransferApplicationService:
             path=command.source_path,
             include_sha256=command.include_sha256,
         )
-        target_probe_path = command.target_path or command.target_output_dir or ""
+        target_probe_path = target_intent.output_dir
         target_result = await self._invoke_stat_capability(
             command,
             node_id=command.target_node_id,
@@ -150,15 +182,15 @@ class TransferApplicationService:
                 source_node_id=command.source_node_id,
                 target_node_id=command.target_node_id,
                 source_path=command.source_path,
-                target_output_dir=command.target_output_dir,
-                target_path=command.target_path,
+                target_output_dir=target_intent.output_dir,
+                target_path=target_intent.target_path,
                 resume_mode=resume_mode,
             ),
             source_node_id=command.source_node_id,
             target_node_id=command.target_node_id,
             source_path=command.source_path,
-            target_output_dir=command.target_output_dir,
-            target_path=command.target_path,
+            target_output_dir=target_intent.output_dir,
+            target_path=target_intent.target_path,
             resume_mode=resume_mode,
             source_fact=source,
             target_fact=target,
@@ -196,6 +228,11 @@ class TransferApplicationService:
             raise ValueError("source_path is required")
         if not command.target_output_dir and not command.target_path:
             raise ValueError("target_output_dir or target_path is required")
+        target_intent = _normalize_transfer_target(
+            source_path=command.source_path,
+            target_output_dir=command.target_output_dir,
+            target_path=command.target_path,
+        )
 
         code = command.code or _generate_croc_code()
         resume_mode = command.resume_mode
@@ -211,8 +248,8 @@ class TransferApplicationService:
             source_node_id=command.source_node_id,
             target_node_id=command.target_node_id,
             source_path=command.source_path,
-            target_path=command.target_path,
-            target_output_dir=command.target_output_dir,
+            target_path=target_intent.target_path,
+            target_output_dir=target_intent.output_dir,
             relay_url=command.relay_url,
             code_hash=_secret_hash(code),
             resume_mode=resume_mode,
@@ -283,12 +320,13 @@ class TransferApplicationService:
             )
             await self.db.commit()
             return self._session_dict(session, source_job=sender_start, send_result=send_result)
+        await self._wait_for_sender_room_grace()
 
         receive_input: dict[str, object] = {
             "transfer_id": session.transfer_id,
             "code": code,
-            "output_dir": command.target_output_dir,
-            "target_path": command.target_path,
+            "output_dir": target_intent.output_dir,
+            "target_path": target_intent.target_path,
             "relay_url": command.relay_url,
             "timeout_sec": command.timeout_sec,
             "resume_mode": resume_mode,
@@ -387,6 +425,13 @@ class TransferApplicationService:
         except ValueError:
             return
 
+    async def _wait_for_sender_room_grace(self) -> None:
+        from yequ.config import get_settings
+
+        if get_settings().test_mode:
+            return
+        await asyncio.sleep(TRANSFER_SENDER_ROOM_GRACE_SEC)
+
     async def _wait_for_job_start(self, job_id: str | None) -> Job | None:
         if not job_id:
             return None
@@ -423,6 +468,11 @@ class TransferApplicationService:
             raise ValueError(
                 "preflight_required: transfer.preflight must pass before transfer.create"
             )
+        target_intent = _normalize_transfer_target(
+            source_path=command.source_path,
+            target_output_dir=command.target_output_dir,
+            target_path=command.target_path,
+        )
 
         result = await self.db.execute(
             select(TransferPreflight).where(
@@ -441,8 +491,8 @@ class TransferApplicationService:
             source_node_id=command.source_node_id,
             target_node_id=command.target_node_id,
             source_path=command.source_path,
-            target_output_dir=command.target_output_dir,
-            target_path=command.target_path,
+            target_output_dir=target_intent.output_dir,
+            target_path=target_intent.target_path,
             resume_mode=resume_mode,
         )
         if preflight.intent_hash != expected_hash:
@@ -601,13 +651,14 @@ class TransferApplicationService:
         elif "queued" in statuses or "created" in statuses:
             session.status = "queued"
 
-        failed_job = next((job for job in jobs if job.status in {"failed", "timeout"}), None)
+        failed_job = _select_transfer_failure_job(jobs)
         if failed_job is not None:
+            error_message = _transfer_failure_message(failed_job)
             session.error_code = _classify_transfer_error(
                 failed_job.error_code,
-                failed_job.error_message,
+                error_message,
             )
-            session.error_message = failed_job.error_message
+            session.error_message = error_message
             session.completed_at = session.completed_at or datetime.now(UTC)
 
     async def _cancel_non_terminal_peer(
@@ -701,6 +752,66 @@ def _job_dict(job: Job) -> dict[str, object]:
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
+
+
+def _select_transfer_failure_job(jobs: list[Job]) -> Job | None:
+    candidates = [job for job in jobs if job.status in {"failed", "timeout"}]
+    if not candidates:
+        return None
+    return max(candidates, key=_transfer_failure_priority)
+
+
+def _transfer_failure_priority(job: Job) -> int:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            job.error_code,
+            job.error_message,
+            job.error_details,
+        )
+    ).lower()
+    score = 0
+    if job.status == "failed":
+        score += 30
+    if job.status == "timeout":
+        score += 20
+    if job.error_code == "function_execution_failed":
+        score += 40
+    if any(
+        marker in text
+        for marker in (
+            "could not secure channel",
+            "secure channel",
+            "peer disconnected",
+            "output_dir is required",
+            "permission denied",
+            "croc transfer failed",
+            "croc receive failed",
+            "croc send failed",
+        )
+    ):
+        score += 80
+    if "409 conflict" in text or "already in terminal" in text:
+        score -= 100
+    return score
+
+
+def _transfer_failure_message(job: Job) -> str | None:
+    base = job.error_message
+    detail_message = _transfer_failure_detail_message(job.error_details)
+    if detail_message and base and detail_message not in base:
+        return f"{base}: {detail_message}"
+    return base or detail_message
+
+
+def _transfer_failure_detail_message(details: object) -> str | None:
+    if not isinstance(details, dict):
+        return None
+    for key in ("stderr", "stdout", "message", "error"):
+        value = details.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _stat_payload(result: ExecuteToolResult) -> dict[str, object]:
@@ -1097,6 +1208,55 @@ def _preflight_ttl(value: object) -> int:
             min(TRANSFER_PREFLIGHT_MAX_TTL_SEC, int(value)),
         )
     return TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
+
+
+def _normalize_transfer_target(
+    *,
+    source_path: str,
+    target_output_dir: str | None,
+    target_path: str | None,
+) -> NormalizedTransferTarget:
+    if target_output_dir:
+        return NormalizedTransferTarget(output_dir=target_output_dir, target_path=target_path)
+
+    if not target_path:
+        raise ValueError("target_output_dir or target_path is required")
+
+    target_parent = _path_parent(target_path)
+    if not target_parent:
+        raise ValueError("target_path must include a parent directory")
+
+    source_name = _path_name(source_path)
+    target_name = _path_name(target_path)
+    if source_name and target_name and source_name != target_name:
+        raise ValueError(
+            "target_path filename must match source filename for croc transfer; "
+            "use target_output_dir to choose a landing directory"
+        )
+
+    return NormalizedTransferTarget(output_dir=target_parent, target_path=target_path)
+
+
+def _path_name(path: str) -> str:
+    return _pure_path(path).name
+
+
+def _path_parent(path: str) -> str:
+    pure = _pure_path(path)
+    parent = str(pure.parent)
+    if parent in {"", "."}:
+        return ""
+    return parent
+
+
+def _pure_path(path: str) -> PurePosixPath | PureWindowsPath:
+    if "\\" in path or _looks_like_windows_drive(path):
+        return PureWindowsPath(path)
+    return PurePosixPath(path)
+
+
+def _looks_like_windows_drive(path: str) -> bool:
+    return len(path) >= 2 and path[1] == ":"
 
 
 def _transfer_intent_hash(

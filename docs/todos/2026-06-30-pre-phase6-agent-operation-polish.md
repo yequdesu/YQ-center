@@ -650,11 +650,17 @@ Prompt 规则必须有 Center 约束配合，否则会变成软建议。
 或等价 precondition 模型驱动：
 
 - `target_output_dir` 和 `target_path` 不能同时为空；已完成；
+- `target_path` 只表示最终落点事实。croc receive 只能接收 `output_dir`，
+  Center 已将 `target_path=/tmp/name` 正规化为 `output_dir=/tmp`；如果
+  `target_path` 的文件名与源文件名不同，Center 必须拒绝，因为当前 croc
+  workflow 不支持传输时改名；
 - `source_node_id`、`target_node_id`、`source_path` 必填；已完成；
 - `resume_mode` 不能为空；已完成。工具 schema、`ExecutionGuard` 和 `transfer.preflight` 均不再接受隐式默认值；
 - 对跨 Node 传输，默认要求 preflight 已通过；已完成 `preflight_id` 绑定；
 - 如果 preflight 未执行或失败，返回 `preflight_required` / `preflight_failed`，不创建 Operation；缺失、过期、intent mismatch、preflight failed 均已阻断；
 - 如果用户显式选择跳过 preflight，必须在 input 中有 `skip_preflight=true` 和 `skip_reason`；第一版已完成 skip reason 约束。
+- croc workflow 已改为 sender-first：先启动发送端并等待其被 Node 领取，再启动接收端；这是 croc room 建立的执行先决条件，不能由 Agent prompt 自行协调。
+- Node 的 transfer local stat 必须用真实探针判断目录可写性；Linux 目录不能通过普通写模式 `open(directory)` 判断 writable。
 
 新增或强化 Center meta tool：
 
@@ -686,7 +692,8 @@ Prompt 规则必须有 Center 约束配合，否则会变成软建议。
     "transfer_policy": {
       "requires_target": true,
       "requires_preflight": true,
-      "default_resume_mode": "resume"
+      "default_resume_mode": null,
+      "requires_explicit_resume_mode": true
     },
     "guard": {
       "last_decision": "allow | needs_input | preflight_required | preflight_failed | blocked",

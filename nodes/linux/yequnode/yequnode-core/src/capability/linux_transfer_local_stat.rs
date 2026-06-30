@@ -60,17 +60,23 @@ impl Capability for LinuxTransferLocalStat {
         let path = std::path::Path::new(path_str);
 
         if !path.exists() {
+            let parent = path.parent();
+            let parent_exists = parent.map(|p| p.exists()).unwrap_or(false);
+            let parent_writable = parent.map(is_writable).unwrap_or(false);
             return Ok(json!({
                 "path": path_str,
                 "exists": false,
+                "parent": parent.map(|p| p.to_string_lossy().to_string()),
+                "parent_exists": parent_exists,
+                "parent_writable": parent_writable,
                 "readable": false,
-                "writable": false,
+                "writable": parent_writable,
                 "size_bytes": null,
                 "mtime": null,
                 "sha256": null,
                 "is_file": false,
                 "is_dir": false,
-                "disk_available_bytes": null,
+                "disk_available_bytes": parent.and_then(get_disk_available),
                 "error": "path does not exist",
             }));
         }
@@ -97,13 +103,23 @@ impl Capability for LinuxTransferLocalStat {
         // Check permissions
         let readable = is_readable(path);
         let writable = is_writable(path);
+        let parent = path.parent();
+        let parent_exists = parent.map(|p| p.exists()).unwrap_or(false);
+        let parent_writable = parent.map(is_writable).unwrap_or(false);
 
         // Disk space for parent directory
-        let disk_available_bytes = get_disk_available(path.parent().unwrap_or(path));
+        let disk_available_bytes = get_disk_available(if is_dir {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        });
 
         Ok(json!({
             "path": path_str,
             "exists": true,
+            "parent": parent.map(|p| p.to_string_lossy().to_string()),
+            "parent_exists": parent_exists,
+            "parent_writable": parent_writable,
             "readable": readable,
             "writable": writable,
             "size_bytes": size_bytes,
@@ -129,8 +145,30 @@ fn is_readable(path: &std::path::Path) -> bool {
 }
 
 fn is_writable(path: &std::path::Path) -> bool {
-    // Try to open for writing (doesn't actually write)
+    if path.is_dir() {
+        return directory_is_writable(path);
+    }
     std::fs::OpenOptions::new().write(true).open(path).is_ok()
+}
+
+fn directory_is_writable(path: &std::path::Path) -> bool {
+    let probe_name = format!(
+        ".yequ-transfer-write-probe-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let probe_path = path.join(probe_name);
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe_path)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe_path);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 fn get_disk_available(path: &std::path::Path) -> Option<u64> {

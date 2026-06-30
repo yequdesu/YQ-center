@@ -246,6 +246,79 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
 
 
 @pytest.mark.asyncio
+async def test_transfer_create_derives_output_dir_from_target_path(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await _provision(db_session, "winClient", "win-token")
+    await _provision(db_session, "linux-node-01", "linux-token")
+    await _hello(client, "winClient", "win-token", "windows")
+    await _hello(client, "linux-node-01", "linux-token", "linux")
+    await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
+    await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "G:\\Minecraft\\280Pack.zip",
+                "target_path": "/tmp/280Pack.zip",
+                "resume_mode": "overwrite",
+                "timeout_sec": 600,
+                "skip_preflight": True,
+                "skip_reason": "test target_path normalization",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "waiting_operation"
+    jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
+    jobs = list(jobs_result.scalars().all())
+    receive_job = jobs[1]
+    assert receive_job.function_name == "linux.transfer.croc.receive"
+    assert receive_job.input_payload["output_dir"] == "/tmp"
+    assert receive_job.input_payload["target_path"] == "/tmp/280Pack.zip"
+
+    session_result = await db_session.execute(select(TransferSession))
+    session = session_result.scalar_one()
+    assert session.target_output_dir == "/tmp"
+    assert session.target_path == "/tmp/280Pack.zip"
+
+
+@pytest.mark.asyncio
+async def test_transfer_create_rejects_target_path_rename(
+    db_session: AsyncSession,
+) -> None:
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "G:\\Minecraft\\280Pack.zip",
+                "target_path": "/tmp/renamed.zip",
+                "resume_mode": "overwrite",
+                "timeout_sec": 600,
+                "skip_preflight": True,
+                "skip_reason": "test target_path rename rejection",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "invalid_input"
+    assert "target_path filename must match source filename" in (
+        result.error_message or ""
+    )
+
+
+@pytest.mark.asyncio
 async def test_transfer_operation_projects_job_progress(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -916,7 +989,7 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
     assert isinstance(transfer, dict)
 
     jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
-    target_job, source_job = list(jobs_result.scalars().all())
+    source_job, target_job = list(jobs_result.scalars().all())
     target_job.status = "failed"
     target_job.error_code = "received_file_missing"
     target_job.error_message = "croc returned success but no file found"
@@ -944,6 +1017,70 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
     assert operation_status.status == "succeeded"
     assert operation_status.output_data is not None
     assert operation_status.output_data["operation"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_transfer_status_deprioritizes_late_409_conflict_error(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await _provision(db_session, "winClient", "win-token")
+    await _provision(db_session, "linux-node-01", "linux-token")
+    await _hello(client, "winClient", "win-token", "windows")
+    await _hello(client, "linux-node-01", "linux-token", "linux")
+    await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
+    await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
+
+    service = CenterExecutionRuntime(db_session)
+    created = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+                "timeout_sec": 600,
+                "skip_preflight": True,
+                "skip_reason": "test transfer error priority",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert created.status == "waiting_operation"
+    assert created.output_data is not None
+    transfer = created.output_data["transfer"]
+    assert isinstance(transfer, dict)
+
+    jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
+    source_job, target_job = list(jobs_result.scalars().all())
+    source_job.status = "failed"
+    source_job.error_code = "http_error"
+    source_job.error_message = (
+        "Client error '409 Conflict' for url 'https://gtw.yequdesu.top/yqp/'"
+    )
+    target_job.status = "failed"
+    target_job.error_code = "function_execution_failed"
+    target_job.error_message = "croc receive failed with exit code Some(1)"
+    target_job.error_details = {"stdout": "could not secure channel", "returncode": 1}
+    await db_session.commit()
+
+    status = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.status",
+            input_data={"transfer_id": transfer["transfer_id"]},
+        )
+    )
+
+    assert status.status == "succeeded"
+    assert status.output_data is not None
+    refreshed = status.output_data["transfer"]
+    assert refreshed["error_code"] == "croc_secure_channel_failed"
+    assert refreshed["error_message"] == (
+        "croc receive failed with exit code Some(1): could not secure channel"
+    )
 
 
 @pytest.mark.asyncio
