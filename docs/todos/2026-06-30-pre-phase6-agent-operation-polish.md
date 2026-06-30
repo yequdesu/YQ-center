@@ -255,6 +255,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - [x] Windows / Linux Node 已改为解析 croc stderr 终端进度条，使用 `progress_source="croc_stderr"` 上报真实传输进度；
 - [x] receiver output-size 方案经实测存在假进度风险，已降级为 observation，不再生成 `progress_pct`。
 - [x] sender 端读取到 croc `Code is:` 后上报 `progress_source="croc_sender_ready"`，Center 等待该事件后再启动 receiver，避免大文件 hash/准备阶段过早启动 receive 造成 `room not ready`。
+- [x] `transfer.create` 在 Operation 创建前如被客户端取消，必须取消已创建的 sender/receiver job 并标记 TransferSession cancelled，避免资源锁残留阻塞下一次传输。
 
 ```json
 {

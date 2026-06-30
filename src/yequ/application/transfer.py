@@ -24,7 +24,7 @@ TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
 TRANSFER_SENDER_START_WAIT_SEC = 8.0
-TRANSFER_SENDER_READY_WAIT_SEC = 120.0
+TRANSFER_SENDER_READY_WAIT_SEC = 30.0
 
 
 @dataclass(slots=True)
@@ -303,31 +303,34 @@ class TransferApplicationService:
         session.status = "sending"
         await self.db.commit()
 
-        sender_start = await self._wait_for_job_start(session.source_job_id)
-        if sender_start and sender_start.status in {
-            "succeeded",
-            "failed",
-            "timeout",
-            "cancelled",
-        }:
-            session.status = "failed"
-            session.error_code = _classify_transfer_error(
-                sender_start.error_code or "sender_job_finished_before_receiver",
-                sender_start.error_message,
-            )
-            session.error_message = sender_start.error_message or (
-                "sender job reached terminal state before receiver was started"
-            )
-            await self.db.commit()
-            return self._session_dict(session, source_job=sender_start, send_result=send_result)
-        sender_ready = await self._wait_for_sender_ready(session.source_job_id)
+        try:
+            sender_start = await self._wait_for_job_start(session.source_job_id)
+            if sender_start and sender_start.status in {
+                "succeeded",
+                "failed",
+                "timeout",
+                "cancelled",
+            }:
+                session.status = "failed"
+                session.error_code = _classify_transfer_error(
+                    sender_start.error_code or "sender_job_finished_before_receiver",
+                    sender_start.error_message,
+                )
+                session.error_message = sender_start.error_message or (
+                    "sender job reached terminal state before receiver was started"
+                )
+                await self.db.commit()
+                return self._session_dict(session, source_job=sender_start, send_result=send_result)
+            sender_ready = await self._wait_for_sender_ready(session.source_job_id)
+        except asyncio.CancelledError:
+            await self._cancel_transfer_create_inflight(session)
+            raise
+
         if sender_ready is None:
             await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
             session.status = "failed"
             session.error_code = "sender_room_ready_timeout"
-            session.error_message = (
-                "sender job disappeared before reporting croc_sender_ready"
-            )
+            session.error_message = "sender job disappeared before reporting croc_sender_ready"
             await self.db.commit()
             return self._session_dict(session, send_result=send_result)
         if sender_ready.status in {
@@ -458,6 +461,15 @@ class TransferApplicationService:
             await cancel_job(self.db, job, reason=reason, node_id=job.node_id)
         except ValueError:
             return
+
+    async def _cancel_transfer_create_inflight(self, session: TransferSession) -> None:
+        await self._cancel_job_id(session.source_job_id, reason="transfer_create_request_cancelled")
+        await self._cancel_job_id(session.target_job_id, reason="transfer_create_request_cancelled")
+        session.status = "cancelled"
+        session.completed_at = datetime.now(UTC)
+        session.error_code = "transfer_create_request_cancelled"
+        session.error_message = "transfer.create request was cancelled before operation creation"
+        await self.db.commit()
 
     async def _wait_for_job_start(self, job_id: str | None) -> Job | None:
         if not job_id:
