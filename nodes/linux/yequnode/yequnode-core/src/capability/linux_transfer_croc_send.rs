@@ -259,6 +259,7 @@ impl Capability for LinuxTransferCrocSend {
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
         cmd.arg("--yes") // auto-accept (global)
+            .arg("--disable-clipboard")
             .arg("send")
             .arg(path_str);
 
@@ -270,7 +271,8 @@ impl Capability for LinuxTransferCrocSend {
         cmd.env("CROC_SECRET", code);
 
         // Spawn as background process
-        cmd.stdout(std::process::Stdio::piped())
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
         let mut child = cmd

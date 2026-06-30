@@ -566,7 +566,13 @@ receive 输出中的 `size_bytes` 和 `sha256` 必须来自实际接收的文件
 
 Node 必须在启动时或 `*.transfer.croc.status` 中探测本机 croc 版本和支持的 flags。不得硬编码当前二进制不支持的参数。
 
-已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。daemon 环境必须传 `--disable-clipboard`，并将 stdin 设为 null，避免 croc 在无交互环境中读取 stdin 或访问剪贴板。如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+
+`resume_mode` 到 croc 参数的映射必须明确：
+
+- `overwrite`：receive 端必须传 `--overwrite`；
+- `resume`：不得传 `--overwrite`，保留 croc 自身恢复语义；
+- `fail_if_exists`：Node 必须在启动 croc 前做本地目录/目标检查，失败时不得启动 croc。
 
 ### croc 真实进度上报
 

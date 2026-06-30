@@ -323,7 +323,11 @@ impl Capability for LinuxTransferCrocReceive {
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes");
+        cmd.arg("--yes").arg("--disable-clipboard");
+
+        if resume_mode == crate::transfer_ledger::ResumeMode::Overwrite {
+            cmd.arg("--overwrite");
+        }
 
         if let Some(relay) = relay_url {
             cmd.arg("--relay").arg(relay);
@@ -336,7 +340,8 @@ impl Capability for LinuxTransferCrocReceive {
         cmd.current_dir(output_dir);
 
         // Spawn as background process
-        cmd.stdout(std::process::Stdio::piped())
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
         let mut child = cmd
