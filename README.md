@@ -2,14 +2,16 @@
 
 个人基础设施控制中心 — 连接设备、收集状态、调度能力、记录审计时间线，为 LLM Agent、Web 控制台、CLI 提供统一入口。
 
-当前架构主线：Center 正在从 Capability Runtime v1 演进为 Center Execution Runtime v2。目标是把 Agent、Console、CLI、未来 MCP 的意图转成可审计、可调度、可等待、可取消、可恢复、可观察的 Center 执行过程。详见 `docs/todos/2026-06-30-center-execution-runtime-v2.md`。
+当前架构主线：Center 已进入 Center Execution Runtime v2。目标是把 Agent、Console、CLI、未来 MCP 的意图转成可审计、可调度、可等待、可取消、可恢复、可观察的 Center 执行过程。详见 `docs/current-project-overview.md` 和 `docs/todos/2026-06-30-center-execution-runtime-v2.md`。
 
 ## 架构
 
 ```
 Agent / Web / CLI ──→ Center (FastAPI :9800)
                          │
+                         ├── Execution Guard ── 事实先决条件 + 硬约束
                          ├── Policy Engine ──── execution mode × risk matrix + L2 write gate
+                         ├── Execution Gate ─── Guard -> Policy -> Admission 组合门面
                          ├── Capability Resolver ── 选择最佳在线 Node + 运行时匹配
                          ├── Execution Admission ── 判定 inline / sync wait / Operation / workflow
                          ├── Operation Bus ── 长任务等待、事件、取消、恢复、future MQ 边界
@@ -144,8 +146,10 @@ message_type 处理器：
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/agent/sessions` | 创建会话（指定执行模式、Actor） |
-| `POST` | `/agent/invoke` | 同步 Agent 调用 |
-| `POST` | `/agent/invoke/stream` | SSE 流式 Agent 调用（25 种事件类型） |
+| `POST` | `/agent/invoke` | 旧非流式入口，生产主线不再使用 |
+| `POST` | `/agent/invoke/stream` | SSE 流式 Agent 调用 |
+| `POST` | `/agent/resume-run/stream` | 基于 AgentRun checkpoint 恢复 |
+| `POST` | `/agent/resume-last-run/stream` | 恢复当前 session 最近可恢复 run |
 | `POST` | `/agent/plan` | 同步生成维护计划 |
 | `POST` | `/agent/plan/stream` | SSE 流式计划生成 |
 

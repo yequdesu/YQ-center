@@ -49,17 +49,22 @@ impl Capability for LinuxArtifactUploadProc {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let entry = input
-            .get("entry")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let entry = input.get("entry").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "entry".into(),
                 message: "entry must be a non-empty string".into(),
-            })?;
+            }
+        })?;
 
         // Sanitize the entry: reject paths with slashes to prevent directory traversal
         if entry.contains('/') || entry.contains("..") {
@@ -95,7 +100,8 @@ impl Capability for LinuxArtifactUploadProc {
         // Upload via global YQP client
         let client = super::YQP_CLIENT.get().ok_or_else(|| {
             CapabilityError::Internal(
-                "YQP client not initialized; set_yqp_client() must be called at daemon startup".into(),
+                "YQP client not initialized; set_yqp_client() must be called at daemon startup"
+                    .into(),
             )
         })?;
 

@@ -12,7 +12,9 @@ impl Capability for LinuxNetworkConnections {
         CapabilityManifest {
             name: "linux.network.connections".into(),
             description: "List current TCP and UDP connections with process info.".into(),
-            agent_description: Some("List current TCP and UDP connections with process info.".into()),
+            agent_description: Some(
+                "List current TCP and UDP connections with process info.".into(),
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -29,6 +31,12 @@ impl Capability for LinuxNetworkConnections {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -131,7 +139,10 @@ fn extract_process_name(raw: &str) -> String {
     // Alternative: try pid= extraction for raw output without escapes
     if let Some(pid_start) = raw.find("pid=") {
         let after_pid = &raw[pid_start + 4..];
-        let pid: String = after_pid.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let pid: String = after_pid
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         if !pid.is_empty() {
             return format!("pid={}", pid);
         }

@@ -1,8 +1,8 @@
 # Center Execution Runtime v2 待办
 
-状态：阶段 6 前验收通过；阶段 4.6、4.7、5A、5B、5C、5D、5E、5F、5G 已落地，后续可进入阶段 6  
+状态：阶段 4.6、4.7、5A、5B、5C、5D、5E、5F、5G 已落地；阶段 6 前新增 5H、5I、5J、5K 优化门槛
 日期：2026-06-30  
-取代范围：`2026-06-28-center-capability-runtime-v1.md` 的后续主线  
+取代范围：`docs/archive/todos/2026-06-28-center-capability-runtime-v1.md` 的后续主线
 适用阶段：WinNode + LinuxNode 已稳定接入，croc 跨 Node 传输已跑通之后
 
 ## 0. 2026-06-30 实施记录
@@ -146,7 +146,7 @@ cd console-frontend && npm run build
 验收结果：ruff 通过；Agent/session/runtime graph/capability context/import boundary/transfer/artifact
 与 OperationEvent dispatcher/scanner 共 46 项通过；Console typecheck + production build 通过。
 
-阶段 6 前非阻塞后续项：
+阶段 6 前后续项：
 
 - 阶段 5E 第一版已完成：artifact-producing capability 不再新增独立
   `ArtifactTask` 实体，统一归入 Job Operation 投影；后续如果出现非 Job 型离线 artifact
@@ -158,6 +158,11 @@ cd console-frontend && npm run build
 - 阶段 5G 仍是 PostgreSQL scanner 第一版：已有 terminal lock cleanup 和 active operation
   projection sync、OperationEventDispatcher、cancelling 超时专用策略和 startup 恢复报告；
   外部 MQ backend 仍不是本阶段目标。
+- 阶段 5H、5I、5J、5K 已提升为阶段 6 前置门槛，详见
+  `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`。本轮优化覆盖
+  Operation 进度透明、`ExecutionGuard` / `ExecutionGate`、Agent 工具选择治理、transfer preflight、
+  capability projection 查询、Node capability 描述合同、prompt diagnostics 和 Linux Node
+  能力扩展。它们不再归类为“非阻塞后续项”。
 - 部分历史文档仍描述 v1/v1.5 旧路径；不影响当前生产路径，但后续文档整理时应归档
   或改为历史记录。
 
@@ -173,6 +178,11 @@ cd console-frontend && npm run build
 - TransferSession 已出现复合任务编排；
 - Agent 不能再通过 ReAct loop 等待长任务；
 - 未来还会出现 maintenance resume、SubAgent、Tool RAG、MCP adapter、更多大输出/长任务能力。
+
+其中，当前阶段的 `capability.search` / `capability.describe` 是确定性的 capability
+index / structured discovery，不是完整 Tool RAG。未来 Tool RAG 只能在 Runtime 入口前提供候选
+capability、示例和参数模式，不能取代 capability registry、preflight facts、`ExecutionGuard`、
+`PolicyEngine`、`ExecutionAdmissionService` 或 Operation handler。
 
 因此，Center 的核心不应再被理解为“能力注册与调用”，而应被理解为：
 
@@ -916,7 +926,7 @@ src/yequ/runtime/
 
 13. 文档状态修正
 
-    - 修正 `docs/todos/2026-06-28-center-capability-runtime-v1.md` 中与顶部状态冲突的文字；
+    - 修正 `docs/archive/todos/2026-06-28-center-capability-runtime-v1.md` 中与顶部状态冲突的文字；
     - `docs/documentation-index.md` 保持 v2 为当前主线；
     - `docs/todos/README.md` 保持 v1 为已验收基线；
     - 新增或更新一节“Runtime v1 遗留处理结果”，列明已迁移和未迁移对象。
@@ -1122,7 +1132,7 @@ test-only 旧能力对架构的污染。阶段 5 不允许在迁移 shim 存在�
 
     - 本文阶段 4.7 标记完成项；
     - `docs/documentation-index.md` 增加“唯一执行入口：CenterExecutionRuntime”；
-    - `docs/todos/2026-06-28-center-capability-runtime-v1.md` 只保留历史基线；
+    - `docs/archive/todos/2026-06-28-center-capability-runtime-v1.md` 只保留历史基线；
     - 删除或归档仍要求旧 service 的测试文档。
 
 #### 4.7.4 验收
@@ -1150,7 +1160,7 @@ test-only 旧能力对架构的污染。阶段 5 不允许在迁移 shim 存在�
 
 ### 阶段 5：Operation Runtime 泛化
 
-阶段 5 不再是一个单块任务，而是分为 5A-5G。目标是让 Operation Runtime
+阶段 5 不再是一个单块任务，而是分为 5A-5K。目标是让 Operation Runtime
 成为 Center 长任务、等待、取消、恢复和前端投影的统一层，而不是 transfer 的补丁。
 
 #### 阶段 5A：OperationService 泛化
@@ -1462,6 +1472,137 @@ resume-last-run(session_id)
 - queued/running stuck 当前只报告，不自动失败；长任务是否终结必须由对应 handler
   或显式取消策略决定。
 
+#### 阶段 5H：Operation 进度透明
+
+阶段 5H 是进入阶段 6 前的用户可见优化门槛。完整执行计划见
+`docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`。
+
+目标：
+
+- `OperationCard` 展示 `progress_pct` / `progress_message`；
+- transfer Operation 投影当前阶段、源/目标节点、文件名、size、速度、ETA；
+- 有可靠字节进度时显示确定进度条；
+- 没有可靠字节进度时显示不确定进度条，不伪造百分比；
+- long-running Operation 的状态固定展示在 Activity 面板，不被聊天流冲走。
+
+需要完成：
+
+- `TransferOperationHandler.project()` 聚合 `TransferSession`、source job、target job
+  和最近 `job.event`；
+- Node transfer progress 合同增加 `bytes_transferred`、`total_bytes`、
+  `rate_bytes_per_sec`、`eta_sec`；如果只能上报 keepalive，必须显式标记；
+- `transfer.status.summary` 与 `operation.status` 使用同一套 progress projection；
+- Console `OperationCard` 渲染确定/不确定进度条；
+- scanner 同步 running transfer 时刷新 Operation 进度。
+
+验收：
+
+- 100MB 以上跨 Node 传输时，Agent run 进入 `waiting_operation` 后不消耗 LLM token；
+- Activity 面板可看到进度；
+- 失败时显示稳定错误码；
+- 终态后通过 Append context chip 将 `operation.status` 引用放入输入框，用户可追加文本后提交；
+  Agent 基于最新 operation observation 总结，不重复创建 transfer。
+
+#### 阶段 5I：意图槽位、ExecutionGuard 与 Agent 工具选择治理
+
+阶段 5I 解决当前 Agent 在工具选择和业务判断上的混乱。它不把工具选择硬编码为固定流程，
+而是建立 intent slots、preconditions、`ExecutionGuard`、preflight facts 和 execution admission。
+完整执行计划见
+`docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`。
+
+目标：
+
+- 用户请求缺少关键参数时，Agent 必须反问；
+- 对 transfer 任务，Agent 不得猜测目标目录；
+- 执行 transfer 前必须做源路径、目标目录、权限、空间、runtime 状态 preflight；
+- 工具失败后，Agent 必须区分节点离线、capability 未注册、权限不足、链路失败和策略拒绝；
+- Prompt Context 面板展示工具选择所依赖的结构化事实。
+- `ExecutionGuard` 负责硬约束，例如写前必须读、目标路径必须已探测、缺少先决事实时阻断执行。
+- `ExecutionGate` 作为轻薄门面组合 GuardDecision、PolicyDecision 和 ExecutionPlan，但不吞并
+  `ExecutionGuard`、`PolicyEngine` 或 `ExecutionAdmissionService`。
+
+需要完成：
+
+- `transfer.create` schema 和 Center 结构化校验要求 `target_output_dir` 或 `target_path`；
+- 新增 `src/yequ/runtime/guards/`，实现 `ExecutionGuard`、guard rules、facts 和 preflight decision；
+- 新增 `ExecutionGate` 门面，固定执行顺序为 Guard -> Policy -> Admission；
+- 新增或强化 `transfer.preflight` Center meta tool；
+- Agent system prompt 增加明确规则：缺少传输落点必须询问，不能默认 `/home/user` 或 `/tmp`；
+- `capability.search` / `capability.describe` 支持 node/platform/effect/risk/runtime/projection/limit 等结构化筛选；
+- prompt diagnostics 增加 `tool_selection_context` 和 transfer policy；
+- resume prompt 保持 INFO/observation 语义，不生成硬编码 assistant fallback。
+
+验收：
+
+- “把 Win 上那个 zip 传到 Linux”不会直接启动传输；
+- “传到 `/root`”会在 preflight 阶段失败，不启动 croc；
+- “传到 `/tmp/yequ-transfer` overwrite”会先 preflight，再创建 Operation；
+- `waiting_operation` 后 Agent 停止本轮，不轮询。
+- OperationCard 的原 Continue 主交互改为 Append context chip：把 operation observation 引用插入输入框，允许用户追加文本后一起提交。
+- LLM 不需要接收完整无关 capability 列表即可完成工具选择。
+
+#### 阶段 5J：Capability 合同与 Node 描述治理
+
+阶段 5J 解决“Node 能力描述也是提示词系统的一部分”的问题。完整执行计划见
+`docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`。
+
+目标：
+
+- capability name、description、input schema、output schema、risk/effect、
+  runtime requirement、progress/cancel/resume 声明共同构成工具选择事实；
+- WinNode 和 LinuxNode 的 transfer 能力合同对齐；
+- 新增 capability manifest lint 或测试，避免新增能力时继续产生模糊描述和缺失 schema；
+- `capability.describe` 能让 Agent 清楚知道某能力属于哪个 Node、哪个 runtime、需要什么权限。
+
+需要完成：
+
+- transfer capability 明确声明 `supports_progress`、`supports_cancel`、
+  `supports_resume`、`preflight_supported`；
+- `*.transfer.local.stat` 输出路径存在性、可读/可写、空间、size、mtime、sha256；
+- permission denied、source not found、target not writable、insufficient space 等错误码稳定；
+- output 不得把旧 ledger 或其他文件误报为当前任务结果。
+
+验收：
+
+- Agent 不再用函数名前缀作为唯一路由事实；
+- Linux/Windows transfer 能力描述一致；
+- capability lint 或窄测试能检出缺少 required input、空 description、写操作缺 resource key、
+  长任务缺 progress/cancel 声明等问题。
+
+#### 阶段 5K：Linux Node 能力扩展
+
+阶段 5K 直接在仓库内 `nodes/linux/yequnode` 推进。完整执行计划见
+`docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`。
+
+目标：
+
+- 补齐 Linux Node 基础文件、进程、服务、网络、包管理、artifact、传输辅助能力；
+- 减少 Agent 为常见 Linux 操作绕路；
+- Center -> Node artifact 下发第一版进入 Job Operation 主路径；
+- 每个新增能力都声明 runtime、risk、effect、resource_keys、preflight/progress/cancel 支持。
+- 同步更新 `YQP-Node-Protocol.md`、`docs/node-capability-contract.md`、
+  `docs/linux-node-development-contract.md` 和 Windows Node 相关合同文档。
+
+第一批候选能力：
+
+- `linux.filesystem.write_text`、`copy`、`move`、`remove`、`mkdir`、`chmod`、
+  `chown`、`disk_usage`、`hash`；
+- `linux.artifact.download_file`、`windows.artifact.download_file`、`linux.artifact.register_local_file`；
+- `linux.process.kill`、`linux.process.tree`；
+- `linux.service.start`、`stop`、`enable`、`disable`、`logs`；
+- `linux.network.ping`、`dns_lookup`、`http_probe`、`port_check`；
+- `linux.package.install`、`remove`、`update_cache`；
+- 强化 `linux.transfer.local.stat`、`linux.transfer.croc.reconcile` 和 transfer progress。
+
+验收：
+
+- Agent 能直接完成常见 Linux 查询、文件落点准备、权限探测、传输核验；
+- Center Artifact 可以通过 `artifact.deploy.preflight` + `artifact.deploy` 第一版下发到 Linux/Windows Node；
+- 新能力不会绕过 Center policy 和 Operation Runtime；
+- 权限不足在 preflight 阶段暴露；
+- Node 合同精细到 input/output/error/preflight/progress/cancel/risk/effect/runtime，其他 Agent
+  按合同执行不会出现“能用就行”的偏离实现。
+
 阶段 5 总体验收：
 
 - 不同领域共享 Operation / WaitHandle / OperationEvent / Activity 面板；
@@ -1469,6 +1610,10 @@ resume-last-run(session_id)
 - 新长任务不再各自发明等待、取消、resume、前端投影；
 - `ToolInvocationApplicationService` 不再作为 v2 新功能的扩张点；
 - SubAgent 所需的 parent/child run、wait_handle、resume observation 有可复用基础。
+- 长任务在前端可观察，传输进度以 Operation projection 表达；
+- Agent 对参数不完整、权限不明、路径不明的任务先确认或 preflight，不直接执行；
+- Node capability 描述和 schema 足以支撑 Agent 做正确工具选择。
+- Linux Node 能力足以支撑常见 Linux 文件、服务、网络、artifact 和传输辅助操作。
 
 ### 阶段 6：SubAgent 预留与实现
 

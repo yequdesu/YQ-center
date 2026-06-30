@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,3 +53,32 @@ class TransferSession(Base, TimestampMixin):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class TransferPreflight(Base, TimestampMixin):
+    """Persisted transfer preflight facts bound to one explicit intent."""
+
+    __tablename__ = "transfer_preflights"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    preflight_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, default=generate_uuid, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    intent_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    source_node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    target_node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    target_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resume_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="resume")
+
+    source_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    target_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    failed_preconditions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

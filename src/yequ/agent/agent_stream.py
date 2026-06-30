@@ -12,6 +12,11 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from yequ.agent.agent_service import _write_timeline
+from yequ.agent.limits import (
+    DEFAULT_AGENT_MAX_DEPTH,
+    DEFAULT_AGENT_MAX_STEPS,
+    DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+)
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.runtime_state import (
     AgentRunGraph,
@@ -160,17 +165,19 @@ async def agent_invoke_stream(
     *,
     session_id: str,
     prompt: str,
+    user_visible_prompt: str | None = None,
     target_node_id: str | None = None,
     available_functions: list[AgentFunction],
     capability_context: JsonDict | None = None,
     suppress_user_message: bool = False,
     call_path: list[str] | None = None,
-    max_depth: int = 5,
-    max_steps: int = 20,
-    max_total_duration_sec: int = 300,
+    max_depth: int = DEFAULT_AGENT_MAX_DEPTH,
+    max_steps: int = DEFAULT_AGENT_MAX_STEPS,
+    max_total_duration_sec: int = DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
     step_count: int = 0,
     started_at: datetime | None = None,
     execution_mode: str = "auto",
+    run_metadata: JsonDict | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Async generator yielding SSE event dicts for agent invoke with ReAct loop.
 
@@ -204,6 +211,7 @@ async def agent_invoke_stream(
     run_graph = AgentRunGraph(runtime)
     trace_id = _make_trace_id()
     agent_run_id: str | None = None
+    visible_prompt = prompt if user_visible_prompt is None else user_visible_prompt
 
     yield _event("stream.open", session_id, trace_id)
     _mark_stream_active(session_id)
@@ -258,7 +266,7 @@ async def agent_invoke_stream(
             "agent.prompt.received",
             session_id=session_id,
             actor=provider.provider_name(),
-            prompt=prompt,
+            prompt=visible_prompt,
             step=step_count + 1,
         )
         agent_run = await create_agent_run(
@@ -267,14 +275,16 @@ async def agent_invoke_stream(
             provider_name=provider.provider_name(),
             execution_mode=execution_mode,
             target_node_id=target_node_id,
-            user_message=None if suppress_user_message else prompt,
+            user_message=None if suppress_user_message else visible_prompt,
             trace_id=trace_id,
             metadata={
                 "source": "agent.invoke.stream",
                 "suppress_user_message": suppress_user_message,
+                "has_context_prompt": visible_prompt != prompt,
                 "max_depth": max_depth,
                 "max_steps": max_steps,
                 "max_total_duration_sec": max_total_duration_sec,
+                **(run_metadata or {}),
             },
         )
         agent_run_id = agent_run.run_id
@@ -290,7 +300,11 @@ async def agent_invoke_stream(
         "agent.prompt.received",
         session_id,
         trace_id,
-        {"prompt": prompt[:500], "step": step_count + 1, "internal": suppress_user_message},
+        {
+            "prompt": visible_prompt[:500],
+            "step": step_count + 1,
+            "internal": suppress_user_message,
+        },
     )
     yield _event(
         "agent.run.created",
@@ -307,7 +321,11 @@ async def agent_invoke_stream(
         user_message = AgentMessage(role="user", content=prompt)
         history.append(user_message)
         if not suppress_user_message:
-            await _save_session_history(db, session_id, [user_message])
+            await _save_session_history(
+                db,
+                session_id,
+                [AgentMessage(role="user", content=visible_prompt)],
+            )
             await db.commit()
 
     yield _event(
@@ -559,11 +577,9 @@ async def agent_invoke_stream(
                 break
         if not final_message:
             if loop_state in {"waiting_approval", "waiting_operation"}:
-                history_to_persist = (
-                    [message for message in history if message is not user_message]
-                    if suppress_user_message
-                    else history
-                )
+                history_to_persist = [
+                    message for message in history if message is not user_message
+                ]
                 async with async_session_factory() as waiting_db:
                     await _save_session_history(waiting_db, session_id, history_to_persist)
                     await waiting_db.commit()
@@ -596,11 +612,9 @@ async def agent_invoke_stream(
 
         # -- Save history (short-lived session) --
         history.append(AgentMessage(role="assistant", content=final_message))
-        history_to_persist = (
-            [message for message in history if message is not user_message]
-            if suppress_user_message
-            else history
-        )
+        history_to_persist = [
+            message for message in history if message is not user_message
+        ]
         async with async_session_factory() as final_db:
             await _save_session_history(final_db, session_id, history_to_persist)
             await _write_timeline(

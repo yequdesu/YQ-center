@@ -218,8 +218,10 @@ impl TransferLedger {
         let mut rows = stmt.query_map(params![transfer_id], |row| {
             Ok(TransferLedgerEntry {
                 transfer_id: row.get(0)?,
-                role: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(1)?)).unwrap_or(TransferRole::Sender),
-                status: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?)).unwrap_or(TransferStatus::Created),
+                role: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(1)?))
+                    .unwrap_or(TransferRole::Sender),
+                status: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(TransferStatus::Created),
                 code_hash: row.get(3)?,
                 relay_url: row.get(4)?,
                 source_path: row.get(5)?,
@@ -229,7 +231,8 @@ impl TransferLedger {
                 source_mtime: row.get(9)?,
                 source_sha256: row.get(10)?,
                 partial_path: row.get(11)?,
-                resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?)).unwrap_or(ResumeMode::Resume),
+                resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?))
+                    .unwrap_or(ResumeMode::Resume),
                 attempt_count: row.get::<_, i32>(13)? as u32,
                 pid: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
                 started_at: row.get(15)?,
@@ -248,18 +251,26 @@ impl TransferLedger {
     }
 
     /// List all entries, optionally filtered by status.
-    pub fn list(&self, status_filter: Option<&TransferStatus>) -> Result<Vec<TransferLedgerEntry>, rusqlite::Error> {
+    pub fn list(
+        &self,
+        status_filter: Option<&TransferStatus>,
+    ) -> Result<Vec<TransferLedgerEntry>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match status_filter {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match status_filter
+        {
             Some(status) => {
-                let s = serde_json::to_string(status).unwrap_or_default().trim_matches('"').to_string();
+                let s = serde_json::to_string(status)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string();
                 (
                     "SELECT transfer_id, role, status, code_hash, relay_url, source_path,
                      target_path, output_dir, source_size_bytes, source_mtime, source_sha256,
                      partial_path, resume_mode, attempt_count, pid, started_at,
                      last_progress_at, completed_at, last_error_code, last_error_message,
                      created_at, updated_at
-                     FROM transfer_ledger WHERE status = ?1 ORDER BY created_at DESC".into(),
+                     FROM transfer_ledger WHERE status = ?1 ORDER BY created_at DESC"
+                        .into(),
                     vec![Box::new(s)],
                 )
             }
@@ -269,7 +280,8 @@ impl TransferLedger {
                  partial_path, resume_mode, attempt_count, pid, started_at,
                  last_progress_at, completed_at, last_error_code, last_error_message,
                  created_at, updated_at
-                 FROM transfer_ledger ORDER BY created_at DESC".into(),
+                 FROM transfer_ledger ORDER BY created_at DESC"
+                    .into(),
                 vec![],
             ),
         };
@@ -277,8 +289,10 @@ impl TransferLedger {
         let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter()), |row| {
             Ok(TransferLedgerEntry {
                 transfer_id: row.get(0)?,
-                role: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(1)?)).unwrap_or(TransferRole::Sender),
-                status: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?)).unwrap_or(TransferStatus::Created),
+                role: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(1)?))
+                    .unwrap_or(TransferRole::Sender),
+                status: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(TransferStatus::Created),
                 code_hash: row.get(3)?,
                 relay_url: row.get(4)?,
                 source_path: row.get(5)?,
@@ -288,7 +302,8 @@ impl TransferLedger {
                 source_mtime: row.get(9)?,
                 source_sha256: row.get(10)?,
                 partial_path: row.get(11)?,
-                resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?)).unwrap_or(ResumeMode::Resume),
+                resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?))
+                    .unwrap_or(ResumeMode::Resume),
                 attempt_count: row.get::<_, i32>(13)? as u32,
                 pid: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
                 started_at: row.get(15)?,

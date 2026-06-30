@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
+from yequ.agent.limits import (
+    DEFAULT_AGENT_MAX_DEPTH,
+    DEFAULT_AGENT_MAX_STEPS,
+    DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+)
+
 AgentRunStatus = Literal[
     "created",
     "building_context",
@@ -46,9 +52,9 @@ ToolObservationEventType = Literal[
 
 @dataclass(frozen=True)
 class AgentRuntimeLimits:
-    max_depth: int = 5
-    max_steps: int = 20
-    max_total_duration_sec: int = 300
+    max_depth: int = DEFAULT_AGENT_MAX_DEPTH
+    max_steps: int = DEFAULT_AGENT_MAX_STEPS
+    max_total_duration_sec: int = DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC
 
 
 @dataclass(frozen=True)

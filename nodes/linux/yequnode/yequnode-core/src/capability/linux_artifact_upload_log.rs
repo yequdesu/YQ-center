@@ -57,14 +57,17 @@ impl Capability for LinuxArtifactUploadLog {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let lines = input
-            .get("lines")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(200);
+        let lines = input.get("lines").and_then(|v| v.as_i64()).unwrap_or(200);
         let unit = input.get("unit").and_then(|v| v.as_str());
         let priority = input.get("priority").and_then(|v| v.as_str());
 
@@ -88,7 +91,11 @@ impl Capability for LinuxArtifactUploadLog {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CapabilityError::FunctionExecutionFailed {
-                message: format!("journalctl exited with code {:?}: {}", output.status.code(), stderr),
+                message: format!(
+                    "journalctl exited with code {:?}: {}",
+                    output.status.code(),
+                    stderr
+                ),
                 exit_code: output.status.code(),
                 stderr: Some(stderr.to_string()),
             });
@@ -103,7 +110,8 @@ impl Capability for LinuxArtifactUploadLog {
         // Upload via global YQP client
         let client = super::YQP_CLIENT.get().ok_or_else(|| {
             CapabilityError::Internal(
-                "YQP client not initialized; set_yqp_client() must be called at daemon startup".into(),
+                "YQP client not initialized; set_yqp_client() must be called at daemon startup"
+                    .into(),
             )
         })?;
 

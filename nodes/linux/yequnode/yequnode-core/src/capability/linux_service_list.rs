@@ -13,7 +13,7 @@ impl Capability for LinuxServiceList {
             name: "linux.service.list".into(),
             description: "List systemd service units and their states.".into(),
             agent_description: Some(
-                "List all systemd service units with their load, active, and sub states.".into()
+                "List all systemd service units with their load, active, and sub states.".into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -31,13 +31,25 @@ impl Capability for LinuxServiceList {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(_input: Value) -> Result<Value, CapabilityError> {
         let output = tokio::task::spawn_blocking(|| {
             std::process::Command::new("systemctl")
-                .args(["list-units", "--type=service", "--all", "--no-legend", "--no-pager"])
+                .args([
+                    "list-units",
+                    "--type=service",
+                    "--all",
+                    "--no-legend",
+                    "--no-pager",
+                ])
                 .output()
         })
         .await
@@ -62,12 +74,17 @@ impl Capability for LinuxServiceList {
                 continue;
             }
 
-            let parts: Vec<&str> = line.splitn(5, char::is_whitespace)
+            let parts: Vec<&str> = line
+                .splitn(5, char::is_whitespace)
                 .filter(|s| !s.is_empty())
                 .collect();
 
             if parts.len() >= 4 {
-                let description = if parts.len() >= 5 { parts[4].trim().to_string() } else { String::new() };
+                let description = if parts.len() >= 5 {
+                    parts[4].trim().to_string()
+                } else {
+                    String::new()
+                };
                 services.push(json!({
                     "unit": parts[0],
                     "load": parts[1],

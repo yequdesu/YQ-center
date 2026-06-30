@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tracing::Span;
 
 use crate::config::Config;
@@ -65,11 +67,7 @@ impl YqpClient {
             error.message,
         )
     )]
-    pub async fn send(
-        &self,
-        message_type: &str,
-        payload: Value,
-    ) -> Result<YqpResponse, YqpError> {
+    pub async fn send(&self, message_type: &str, payload: Value) -> Result<YqpResponse, YqpError> {
         let envelope = YqpEnvelope::new(message_type, &self.node_id, payload);
 
         let span = Span::current();
@@ -85,8 +83,8 @@ impl YqpClient {
 
             let start = std::time::Instant::now();
 
-            let request_body = serde_json::to_value(&envelope)
-                .map_err(|e| YqpError::JsonError(e.to_string()))?;
+            let request_body =
+                serde_json::to_value(&envelope).map_err(|e| YqpError::JsonError(e.to_string()))?;
 
             let result = self
                 .http
@@ -258,8 +256,8 @@ impl YqpClient {
 
     /// Report a finished job result.
     pub async fn job_finished(&self, result: &JobFinishedPayload) -> Result<YqpResponse, YqpError> {
-        let payload = serde_json::to_value(result)
-            .map_err(|e| YqpError::JsonError(e.to_string()))?;
+        let payload =
+            serde_json::to_value(result).map_err(|e| YqpError::JsonError(e.to_string()))?;
         self.send("job.finished", payload).await
     }
 
@@ -294,10 +292,7 @@ impl YqpClient {
     }
 
     /// Reconcile known jobs with the center after reconnection.
-    pub async fn reconcile_jobs(
-        &self,
-        known_jobs: &[KnownJob],
-    ) -> Result<YqpResponse, YqpError> {
+    pub async fn reconcile_jobs(&self, known_jobs: &[KnownJob]) -> Result<YqpResponse, YqpError> {
         let payload = json!({
             "known_jobs": known_jobs,
         });
@@ -332,17 +327,142 @@ impl YqpClient {
 
         if resp.message_type != "artifact.accepted" {
             return Err(YqpError::NetworkError {
-                message: format!(
-                    "unexpected response type: {}",
-                    resp.message_type
-                ),
+                message: format!("unexpected response type: {}", resp.message_type),
                 retryable: false,
             });
         }
 
-        serde_json::from_value(resp.payload)
-            .map_err(|e| YqpError::JsonError(e.to_string()))
+        serde_json::from_value(resp.payload).map_err(|e| YqpError::JsonError(e.to_string()))
     }
+
+    /// Download a Center artifact to a local file using the Node bearer token.
+    pub async fn download_artifact_to_file(
+        &self,
+        artifact_id: &str,
+        output_path: &std::path::Path,
+        overwrite: bool,
+    ) -> Result<ArtifactDownloadResult, YqpError> {
+        let url = format!(
+            "{}/artifacts/{}/download",
+            self.base_url.trim_end_matches('/'),
+            artifact_id
+        );
+        if output_path.exists() && !overwrite {
+            return Err(YqpError::NetworkError {
+                message: format!("output path already exists: {}", output_path.display()),
+                retryable: false,
+            });
+        }
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| YqpError::NetworkError {
+                    message: format!(
+                        "failed to create output directory {}: {}",
+                        parent.display(),
+                        e
+                    ),
+                    retryable: false,
+                })?;
+        }
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(classify_reqwest_error)?;
+        let status = response.status();
+        if !status.is_success() {
+            let status_code = status.as_u16();
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "artifact download failed".into());
+            return Err(YqpError::HttpError {
+                status: status_code,
+                detail: YqpErrorDetail {
+                    code: if status_code == 404 {
+                        "artifact_not_found".into()
+                    } else {
+                        "artifact_download_failed".into()
+                    },
+                    message: format!("artifact download HTTP {}: {}", status_code, message),
+                    retryable: status.is_server_error(),
+                    details: json!({"artifact_id": artifact_id}),
+                },
+            });
+        }
+
+        let expected_sha256 = response
+            .headers()
+            .get("X-YeQu-Artifact-Sha256")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let mut file =
+            tokio::fs::File::create(output_path)
+                .await
+                .map_err(|e| YqpError::NetworkError {
+                    message: format!("failed to create {}: {}", output_path.display(), e),
+                    retryable: false,
+                })?;
+        let mut hasher = Sha256::new();
+        let mut size_bytes: u64 = 0;
+        let mut stream = response;
+        while let Some(chunk) = stream.chunk().await.map_err(classify_reqwest_error)? {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| YqpError::NetworkError {
+                    message: format!("failed to write {}: {}", output_path.display(), e),
+                    retryable: false,
+                })?;
+            hasher.update(&chunk);
+            size_bytes += chunk.len() as u64;
+        }
+        file.flush().await.map_err(|e| YqpError::NetworkError {
+            message: format!("failed to flush {}: {}", output_path.display(), e),
+            retryable: false,
+        })?;
+
+        let sha256 = hex::encode(hasher.finalize());
+        if let Some(expected) = &expected_sha256 {
+            if !expected.eq_ignore_ascii_case(&sha256) {
+                return Err(YqpError::NetworkError {
+                    message: format!(
+                        "artifact sha256 mismatch: expected {}, got {}",
+                        expected, sha256
+                    ),
+                    retryable: false,
+                });
+            }
+        }
+
+        Ok(ArtifactDownloadResult {
+            artifact_id: artifact_id.to_string(),
+            output_path: output_path.display().to_string(),
+            size_bytes,
+            sha256,
+            expected_sha256,
+            content_type,
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ArtifactDownloadResult {
+    pub artifact_id: String,
+    pub output_path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub expected_sha256: Option<String>,
+    pub content_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -433,8 +553,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload =
-            make_response("node.accepted", "test-node", json!({"status": "ok"}));
+        let response_payload = make_response("node.accepted", "test-node", json!({"status": "ok"}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -454,11 +573,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload = make_response(
-            "job.available",
-            "test-node",
-            json!({"jobs": []}),
-        );
+        let response_payload = make_response("job.available", "test-node", json!({"jobs": []}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -480,8 +595,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload =
-            make_response("node.accepted", "test-node", json!({"status": "ok"}));
+        let response_payload = make_response("node.accepted", "test-node", json!({"status": "ok"}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -501,8 +615,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload =
-            make_response("node.accepted", "test-node", json!({"status": "ok"}));
+        let response_payload = make_response("node.accepted", "test-node", json!({"status": "ok"}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -530,8 +643,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload =
-            make_response("job.event", "test-node", json!({"status": "ok"}));
+        let response_payload = make_response("job.event", "test-node", json!({"status": "ok"}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -553,11 +665,8 @@ mod tests {
         let mock_server = MockServer::start().await;
         let config = test_config(&mock_server.uri());
 
-        let response_payload = make_response(
-            "node.reconciliation",
-            "test-node",
-            json!({"actions": []}),
-        );
+        let response_payload =
+            make_response("node.reconciliation", "test-node", json!({"actions": []}));
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
@@ -587,13 +696,11 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
-            .respond_with(
-                ResponseTemplate::new(409).set_body_json(json!({
-                    "code": "duplicate_message",
-                    "message": "message already processed",
-                    "retryable": false,
-                })),
-            )
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "code": "duplicate_message",
+                "message": "message already processed",
+                "retryable": false,
+            })))
             .mount(&mock_server)
             .await;
 
@@ -611,13 +718,11 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/yqp/"))
-            .respond_with(
-                ResponseTemplate::new(403).set_body_json(json!({
-                    "code": "forbidden",
-                    "message": "invalid token",
-                    "retryable": false,
-                })),
-            )
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "code": "forbidden",
+                "message": "invalid token",
+                "retryable": false,
+            })))
             .mount(&mock_server)
             .await;
 
@@ -642,13 +747,11 @@ mod tests {
         // Return 503 (retryable) for every request
         Mock::given(method("POST"))
             .and(path("/yqp/"))
-            .respond_with(
-                ResponseTemplate::new(503).set_body_json(json!({
-                    "code": "service_unavailable",
-                    "message": "try again later",
-                    "retryable": true,
-                })),
-            )
+            .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+                "code": "service_unavailable",
+                "message": "try again later",
+                "retryable": true,
+            })))
             .mount(&mock_server)
             .await;
 

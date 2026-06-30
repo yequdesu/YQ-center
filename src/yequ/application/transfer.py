@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,9 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.application.schemas import ExecuteToolResult
 from yequ.models.job import Job
 from yequ.models.timeline import TimelineEvent
-from yequ.models.transfer import TransferSession
+from yequ.models.transfer import TransferPreflight, TransferSession
 from yequ.services.job_service import cancel_job
 from yequ.services.timeline_writer import add_timeline_event
+
+TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
+TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
+TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
 
 
 @dataclass(slots=True)
@@ -30,6 +35,26 @@ class TransferCreateCommand:
     resume_mode: str = "resume"
     timeout_sec: int = 3600
     expected_sha256: str | None = None
+    preflight_id: str | None = None
+    skip_preflight: bool = False
+    skip_reason: str | None = None
+    actor_type: str = "agent"
+    actor_id: str = "agent"
+    session_id: str | None = None
+    execution_mode: str = "auto"
+
+
+@dataclass(slots=True)
+class TransferPreflightCommand:
+    source_node_id: str
+    target_node_id: str
+    source_path: str
+    target_output_dir: str | None = None
+    target_path: str | None = None
+    resume_mode: str = "resume"
+    include_sha256: bool = False
+    timeout_sec: int = 20
+    ttl_sec: int = TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
     actor_type: str = "agent"
     actor_id: str = "agent"
     session_id: str | None = None
@@ -41,6 +66,119 @@ class TransferApplicationService:
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    async def preflight(self, command: TransferPreflightCommand) -> dict[str, object]:
+        now = datetime.now(UTC)
+        ttl_sec = _preflight_ttl(command.ttl_sec)
+        expires_at = now + timedelta(seconds=ttl_sec)
+        missing = []
+        if not command.source_node_id:
+            missing.append("source_node_id")
+        if not command.target_node_id:
+            missing.append("target_node_id")
+        if not command.source_path:
+            missing.append("source_path")
+        if not command.target_output_dir and not command.target_path:
+            missing.append("target_output_dir_or_target_path")
+        if missing:
+            return {
+                "allowed": False,
+                "decision": "needs_input",
+                "missing_slots": missing,
+                "failed_preconditions": [],
+                "source": None,
+                "target": None,
+                "observed_at": now.isoformat(),
+                "ttl_sec": ttl_sec,
+                "expires_at": expires_at.isoformat(),
+            }
+
+        source_result = await self._invoke_stat_capability(
+            command,
+            node_id=command.source_node_id,
+            path=command.source_path,
+            include_sha256=command.include_sha256,
+        )
+        target_probe_path = command.target_path or command.target_output_dir or ""
+        target_result = await self._invoke_stat_capability(
+            command,
+            node_id=command.target_node_id,
+            path=target_probe_path,
+            include_sha256=False,
+        )
+        source_status_result = await self._invoke_status_capability(
+            command,
+            node_id=command.source_node_id,
+        )
+        target_status_result = await self._invoke_status_capability(
+            command,
+            node_id=command.target_node_id,
+        )
+
+        source = _stat_payload(source_result)
+        target = _stat_payload(target_result)
+        source_status = _status_payload(source_status_result)
+        target_status = _status_payload(target_status_result)
+        source["observed_at"] = now.isoformat()
+        source["runtime"] = source_status
+        source_status["observed_at"] = now.isoformat()
+        target["observed_at"] = now.isoformat()
+        target["runtime"] = target_status
+        target_status["observed_at"] = now.isoformat()
+        failed = _transfer_preflight_failures(
+            source_result=source_result,
+            target_result=target_result,
+            source_status_result=source_status_result,
+            target_status_result=target_status_result,
+            source=source,
+            target=target,
+            source_status=source_status,
+            target_status=target_status,
+            target_path=command.target_path,
+            resume_mode=command.resume_mode or "resume",
+        )
+        preflight = TransferPreflight(
+            preflight_id=f"tpf_{secrets.token_hex(8)}",
+            status="allow" if not failed else "preflight_failed",
+            allowed=not failed,
+            intent_hash=_transfer_intent_hash(
+                source_node_id=command.source_node_id,
+                target_node_id=command.target_node_id,
+                source_path=command.source_path,
+                target_output_dir=command.target_output_dir,
+                target_path=command.target_path,
+                resume_mode=command.resume_mode or "resume",
+            ),
+            source_node_id=command.source_node_id,
+            target_node_id=command.target_node_id,
+            source_path=command.source_path,
+            target_output_dir=command.target_output_dir,
+            target_path=command.target_path,
+            resume_mode=command.resume_mode or "resume",
+            source_fact=source,
+            target_fact=target,
+            failed_preconditions=failed,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+            expires_at=expires_at,
+        )
+        self.db.add(preflight)
+        await self.db.commit()
+        return {
+            "preflight_id": preflight.preflight_id,
+            "allowed": not failed,
+            "decision": "allow" if not failed else "preflight_failed",
+            "missing_slots": [],
+            "failed_preconditions": failed,
+            "source": source,
+            "target": target,
+            "source_runtime": source_status,
+            "target_runtime": target_status,
+            "resume_mode": command.resume_mode or "resume",
+            "observed_at": now.isoformat(),
+            "ttl_sec": ttl_sec,
+            "expires_at": preflight.expires_at.isoformat(),
+        }
 
     async def create(self, command: TransferCreateCommand) -> dict[str, object]:
         if not command.source_node_id:
@@ -58,6 +196,7 @@ class TransferApplicationService:
         resume_mode = command.resume_mode or "resume"
         if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
             raise ValueError("resume_mode must be resume, overwrite, or fail_if_exists")
+        preflight = await self._verify_preflight(command, resume_mode=resume_mode)
 
         session = TransferSession(
             transfer_id=f"trf_{secrets.token_hex(8)}",
@@ -77,26 +216,41 @@ class TransferApplicationService:
             actor_id=command.actor_id,
             session_id=command.session_id,
             started_at=datetime.now(UTC),
-            metadata_json={"phase": "transfer_session_v1"},
+            metadata_json={
+                "phase": "transfer_session_v1",
+                "preflight_id": preflight.preflight_id if preflight else None,
+                "skip_preflight": command.skip_preflight,
+                "skip_reason": command.skip_reason,
+            },
         )
         self.db.add(session)
         await self.db.flush()
         await self.db.commit()
 
+        expected_size_bytes = (
+            _first_int(preflight.source_fact.get("size_bytes"))
+            if preflight and isinstance(preflight.source_fact, dict)
+            else None
+        )
+
+        receive_input: dict[str, object] = {
+            "transfer_id": session.transfer_id,
+            "code": code,
+            "output_dir": command.target_output_dir,
+            "target_path": command.target_path,
+            "relay_url": command.relay_url,
+            "timeout_sec": command.timeout_sec,
+            "resume_mode": resume_mode,
+            "expected_sha256": command.expected_sha256,
+        }
+        if expected_size_bytes is not None:
+            receive_input["expected_size_bytes"] = expected_size_bytes
+
         receive_result = await self._invoke_capability(
             command,
             node_id=command.target_node_id,
             capability_ref="transfer.croc.receive",
-            tool_input={
-                "transfer_id": session.transfer_id,
-                "code": code,
-                "output_dir": command.target_output_dir,
-                "target_path": command.target_path,
-                "relay_url": command.relay_url,
-                "timeout_sec": command.timeout_sec,
-                "resume_mode": resume_mode,
-                "expected_sha256": command.expected_sha256,
-            },
+            tool_input=receive_input,
         )
         if receive_result.status not in {"created", "running"}:
             session.status = "failed"
@@ -210,6 +364,48 @@ class TransferApplicationService:
         except ValueError:
             return
 
+    async def _verify_preflight(
+        self,
+        command: TransferCreateCommand,
+        *,
+        resume_mode: str,
+    ) -> TransferPreflight | None:
+        if command.skip_preflight:
+            if not command.skip_reason:
+                raise ValueError("skip_preflight requires skip_reason")
+            return None
+        if not command.preflight_id:
+            raise ValueError(
+                "preflight_required: transfer.preflight must pass before transfer.create"
+            )
+
+        result = await self.db.execute(
+            select(TransferPreflight).where(
+                TransferPreflight.preflight_id == command.preflight_id
+            )
+        )
+        preflight = result.scalar_one_or_none()
+        if preflight is None:
+            raise ValueError(f"preflight_not_found: {command.preflight_id}")
+        expires_at = preflight.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at < datetime.now(UTC):
+            raise ValueError("preflight_expired: rerun transfer.preflight")
+        expected_hash = _transfer_intent_hash(
+            source_node_id=command.source_node_id,
+            target_node_id=command.target_node_id,
+            source_path=command.source_path,
+            target_output_dir=command.target_output_dir,
+            target_path=command.target_path,
+            resume_mode=resume_mode,
+        )
+        if preflight.intent_hash != expected_hash:
+            raise ValueError("preflight_intent_mismatch: rerun transfer.preflight")
+        if not preflight.allowed:
+            raise ValueError("preflight_failed: rerun transfer.preflight and inspect failures")
+        return preflight
+
     async def _invoke_capability(
         self,
         command: TransferCreateCommand,
@@ -239,6 +435,66 @@ class TransferApplicationService:
                     timeout_sec=command.timeout_sec,
                     lease_sec=30,
                     resource_keys=[f"node:{node_id}:transfer"],
+                    suppress_operation=True,
+                )
+            )
+
+    async def _invoke_stat_capability(
+        self,
+        command: TransferPreflightCommand,
+        *,
+        node_id: str,
+        path: str,
+        include_sha256: bool,
+    ) -> ExecuteToolResult:
+        from yequ.db import async_session_factory
+        from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
+
+        async with async_session_factory() as db:
+            return await CenterExecutionRuntime(db).execute(
+                RuntimeCommand(
+                    function_name="capability.invoke",
+                    input_data={
+                        "capability_ref": "transfer.local.stat",
+                        "node_id": node_id,
+                        "input": {"path": path, "sha256": include_sha256},
+                    },
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                    execution_mode=command.execution_mode,
+                    wait_for_result=True,
+                    deadline=datetime.now(UTC) + timedelta(seconds=command.timeout_sec),
+                    timeout_sec=command.timeout_sec,
+                    suppress_operation=True,
+                )
+            )
+
+    async def _invoke_status_capability(
+        self,
+        command: TransferPreflightCommand,
+        *,
+        node_id: str,
+    ) -> ExecuteToolResult:
+        from yequ.db import async_session_factory
+        from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
+
+        async with async_session_factory() as db:
+            return await CenterExecutionRuntime(db).execute(
+                RuntimeCommand(
+                    function_name="capability.invoke",
+                    input_data={
+                        "capability_ref": "transfer.croc.status",
+                        "node_id": node_id,
+                        "input": {},
+                    },
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                    execution_mode=command.execution_mode,
+                    wait_for_result=True,
+                    deadline=datetime.now(UTC) + timedelta(seconds=command.timeout_sec),
+                    timeout_sec=command.timeout_sec,
                     suppress_operation=True,
                 )
             )
@@ -389,6 +645,9 @@ def _job_dict(job: Job) -> dict[str, object]:
         "node_id": job.node_id,
         "function_name": job.function_name,
         "status": job.status,
+        "progress_pct": job.progress_pct,
+        "progress_message": job.progress_message,
+        "progress_detail": job.progress_detail,
         "output": job.output,
         "error_code": job.error_code,
         "error_message": job.error_message,
@@ -397,6 +656,116 @@ def _job_dict(job: Job) -> dict[str, object]:
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
+
+
+def _stat_payload(result: ExecuteToolResult) -> dict[str, object]:
+    if result.status != "succeeded":
+        return {
+            "status": result.status,
+            "error_code": result.error_code,
+            "error_message": result.error_message,
+        }
+    return dict(result.output_data or {})
+
+
+def _status_payload(result: ExecuteToolResult) -> dict[str, object]:
+    if result.status != "succeeded":
+        return {
+            "status": result.status,
+            "error_code": result.error_code,
+            "error_message": result.error_message,
+        }
+    return dict(result.output_data or {})
+
+
+def _transfer_preflight_failures(
+    *,
+    source_result: ExecuteToolResult,
+    target_result: ExecuteToolResult,
+    source_status_result: ExecuteToolResult,
+    target_status_result: ExecuteToolResult,
+    source: dict[str, object],
+    target: dict[str, object],
+    source_status: dict[str, object],
+    target_status: dict[str, object],
+    target_path: str | None,
+    resume_mode: str,
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    if source_result.status != "succeeded":
+        failures.append(
+            {
+                "fact": "source.stat",
+                "code": source_result.error_code or source_result.status,
+                "message": source_result.error_message,
+            }
+        )
+    if target_result.status != "succeeded":
+        failures.append(
+            {
+                "fact": "target.stat",
+                "code": target_result.error_code or target_result.status,
+                "message": target_result.error_message,
+            }
+        )
+    if failures:
+        return failures
+
+    if source_status_result.status != "succeeded":
+        failures.append(
+            {
+                "fact": "source.runtime.status",
+                "code": source_status_result.error_code or source_status_result.status,
+                "message": source_status_result.error_message,
+            }
+        )
+    if target_status_result.status != "succeeded":
+        failures.append(
+            {
+                "fact": "target.runtime.status",
+                "code": target_status_result.error_code or target_status_result.status,
+                "message": target_status_result.error_message,
+            }
+        )
+    if failures:
+        return failures
+
+    if source.get("found") is not True:
+        failures.append({"fact": "source.exists", "code": "source_not_found"})
+    if source.get("readable") is not True:
+        failures.append({"fact": "source.readable", "code": "source_not_readable"})
+
+    if target.get("parent_exists") is False:
+        failures.append(
+            {"fact": "target.parent_exists", "code": "target_parent_not_found"}
+        )
+    if target.get("writable") is not True:
+        failures.append({"fact": "target.writable", "code": "target_not_writable"})
+    if target_path and resume_mode == "fail_if_exists" and target.get("found") is True:
+        failures.append({"fact": "target.not_exists", "code": "target_exists"})
+
+    source_size = _first_int(source.get("size_bytes"), source.get("size"))
+    free_bytes = _first_int(target.get("free_bytes"))
+    if source_size is not None and free_bytes is not None and free_bytes < source_size:
+        failures.append(
+            {
+                "fact": "target.free_space",
+                "code": "insufficient_space",
+                "required_bytes": source_size,
+                "available_bytes": free_bytes,
+            }
+        )
+
+    if source_status.get("installed") is not True:
+        failures.append({"fact": "source.runtime.croc_installed", "code": "croc_not_installed"})
+    if source_status.get("allow_send") is not True:
+        failures.append({"fact": "source.runtime.allow_send", "code": "send_not_allowed"})
+    if target_status.get("installed") is not True:
+        failures.append({"fact": "target.runtime.croc_installed", "code": "croc_not_installed"})
+    if target_status.get("allow_receive") is not True:
+        failures.append({"fact": "target.runtime.allow_receive", "code": "receive_not_allowed"})
+
+    return failures
 
 
 def _transfer_summary(data: dict[str, object]) -> dict[str, object]:
@@ -475,7 +844,157 @@ def _transfer_summary(data: dict[str, object]) -> dict[str, object]:
                 else None
             ),
         },
+        "progress": _transfer_progress(data),
     }
+
+
+def _transfer_progress(data: dict[str, object]) -> dict[str, object]:
+    status = str(data.get("status") or "created")
+    source_job = data.get("source_job")
+    target_job = data.get("target_job")
+    source_progress = _job_progress(source_job if isinstance(source_job, dict) else None)
+    target_progress = _job_progress(target_job if isinstance(target_job, dict) else None)
+    known_pcts = [
+        progress["progress_pct"]
+        for progress in (source_progress, target_progress)
+        if isinstance(progress.get("progress_pct"), int | float)
+    ]
+    pct: int | None = None
+    if status == "succeeded":
+        pct = 100
+    elif known_pcts:
+        pct = max(0, min(100, round(sum(float(value) for value in known_pcts) / len(known_pcts))))
+
+    bytes_transferred = _max_int(
+        source_progress.get("bytes_transferred"),
+        target_progress.get("bytes_transferred"),
+    )
+    total_bytes = _first_int(
+        source_progress.get("total_bytes"),
+        target_progress.get("total_bytes"),
+        data.get("size_bytes"),
+    )
+    rate_bytes_per_sec = _max_int(
+        source_progress.get("rate_bytes_per_sec"),
+        target_progress.get("rate_bytes_per_sec"),
+    )
+    eta_sec = _min_int(source_progress.get("eta_sec"), target_progress.get("eta_sec"))
+    last_progress_at = _max_str(
+        source_progress.get("last_progress_at"),
+        target_progress.get("last_progress_at"),
+    )
+    phase = _transfer_phase(status, source_progress, target_progress)
+
+    return {
+        "phase": phase,
+        "pct": pct,
+        "message": _transfer_progress_message(status, phase, source_progress, target_progress),
+        "source": source_progress,
+        "target": target_progress,
+        "size_bytes": total_bytes,
+        "bytes_transferred": bytes_transferred,
+        "rate_bytes_per_sec": rate_bytes_per_sec,
+        "eta_sec": eta_sec,
+        "last_progress_at": last_progress_at,
+    }
+
+
+def _job_progress(job: dict[str, object] | None) -> dict[str, object]:
+    if job is None:
+        return {
+            "job_id": None,
+            "status": None,
+            "progress_pct": None,
+            "progress_message": None,
+        }
+    pct = job.get("progress_pct")
+    detail = job.get("progress_detail")
+    detail_dict = detail if isinstance(detail, dict) else {}
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status"),
+        "progress_pct": pct if isinstance(pct, int | float) else None,
+        "progress_message": _first_str(job.get("progress_message")),
+        "bytes_transferred": _first_int(detail_dict.get("bytes_transferred")),
+        "total_bytes": _first_int(detail_dict.get("total_bytes")),
+        "rate_bytes_per_sec": _first_int(detail_dict.get("rate_bytes_per_sec")),
+        "eta_sec": _first_int(detail_dict.get("eta_sec")),
+        "last_progress_at": _first_str(detail_dict.get("last_progress_at")),
+        "progress_source": _first_str(detail_dict.get("progress_source")),
+        "phase": _first_str(detail_dict.get("phase")),
+    }
+
+
+def _transfer_progress_message(
+    status: str,
+    phase: str,
+    source_progress: dict[str, object],
+    target_progress: dict[str, object],
+) -> str:
+    if status == "succeeded":
+        return "Transfer completed"
+    if status == "failed":
+        return "Transfer failed"
+    if status == "cancelled":
+        return "Transfer cancelled"
+    if status == "timeout":
+        return "Transfer timed out"
+    phase_message = {
+        "preflighting": "Checking transfer prerequisites",
+        "starting_receiver": "Starting receiver",
+        "starting_sender": "Starting sender",
+        "transferring": "Transferring",
+        "verifying": "Verifying transfer",
+    }.get(phase)
+    source_message = _first_str(source_progress.get("progress_message"))
+    target_message = _first_str(target_progress.get("progress_message"))
+    if source_message and target_message and source_message != target_message:
+        return f"{source_message}; {target_message}"
+    if source_message:
+        return source_message
+    if target_message:
+        return target_message
+    if phase_message:
+        return phase_message
+    source_status = _first_str(source_progress.get("status"))
+    target_status = _first_str(target_progress.get("status"))
+    if source_status == "running" and target_status == "running":
+        return "Transferring"
+    if source_status == "queued" or target_status == "queued":
+        return "Waiting for transfer jobs"
+    return "Transfer is running"
+
+
+def _transfer_phase(
+    status: str,
+    source_progress: dict[str, object],
+    target_progress: dict[str, object],
+) -> str:
+    if status in {"succeeded", "failed", "cancelled", "timeout"}:
+        return status
+    source_status = _first_str(source_progress.get("status"))
+    target_status = _first_str(target_progress.get("status"))
+    source_phase = _first_str(source_progress.get("phase"))
+    target_phase = _first_str(target_progress.get("phase"))
+    if _phase_indicates_transfer(source_phase) or _phase_indicates_transfer(target_phase):
+        return "transferring"
+    if source_status == "succeeded" and target_status == "succeeded":
+        return "verifying"
+    if source_status in {"running", "claimed"} and target_status in {"running", "claimed"}:
+        return "transferring"
+    if target_status in {"running", "claimed"} and source_status in {None, "created", "queued"}:
+        return "starting_sender"
+    if target_status in {None, "created", "queued"}:
+        return "starting_receiver"
+    if source_status in {None, "created", "queued"}:
+        return "starting_sender"
+    if status in {"created", "queued"}:
+        return "starting_receiver"
+    return "transferring"
+
+
+def _phase_indicates_transfer(value: str | None) -> bool:
+    return value in {"transferring", "sending", "receiving"}
 
 
 def _classify_transfer_error(error_code: str | None, error_message: str | None) -> str | None:
@@ -495,9 +1014,21 @@ def _first_int(*values: object) -> int | None:
     for value in values:
         if isinstance(value, bool):
             continue
-        if isinstance(value, int):
-            return value
+        if isinstance(value, int | float):
+            return int(value)
     return None
+
+
+def _max_int(*values: object) -> int | None:
+    numbers = [_first_int(value) for value in values]
+    present = [value for value in numbers if value is not None]
+    return max(present) if present else None
+
+
+def _min_int(*values: object) -> int | None:
+    numbers = [_first_int(value) for value in values]
+    present = [value for value in numbers if value is not None]
+    return min(present) if present else None
 
 
 def _first_str(*values: object) -> str | None:
@@ -505,6 +1036,43 @@ def _first_str(*values: object) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _max_str(*values: object) -> str | None:
+    strings = [value for value in values if isinstance(value, str) and value]
+    return max(strings) if strings else None
+
+
+def _preflight_ttl(value: object) -> int:
+    if isinstance(value, bool):
+        return TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
+    if isinstance(value, int | float):
+        return max(
+            TRANSFER_PREFLIGHT_MIN_TTL_SEC,
+            min(TRANSFER_PREFLIGHT_MAX_TTL_SEC, int(value)),
+        )
+    return TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
+
+
+def _transfer_intent_hash(
+    *,
+    source_node_id: str,
+    target_node_id: str,
+    source_path: str,
+    target_output_dir: str | None,
+    target_path: str | None,
+    resume_mode: str,
+) -> str:
+    payload = {
+        "source_node_id": source_node_id,
+        "target_node_id": target_node_id,
+        "source_path": source_path,
+        "target_output_dir": target_output_dir,
+        "target_path": target_path,
+        "resume_mode": resume_mode,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _generate_croc_code() -> str:

@@ -99,6 +99,12 @@ class CapabilitySource(Base, TimestampMixin):
     hidden_input_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     failure_modes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     preflight_supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    supports_progress: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    supports_cancel: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    supports_resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    progress_contract: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preconditions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    required_intent_slots: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
     ttl_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
     registered_at: Mapped[datetime] = mapped_column(

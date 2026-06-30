@@ -6,6 +6,12 @@ Fields can be added but never removed or redefined.
 
 from pydantic import BaseModel, Field
 
+from yequ.agent.limits import (
+    DEFAULT_AGENT_MAX_DEPTH,
+    DEFAULT_AGENT_MAX_STEPS,
+    DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+)
+
 
 class AgentToolPolicySnapshot(BaseModel):
     """Policy decision snapshot for each tool call."""
@@ -69,9 +75,9 @@ class AgentInvokeTrace(BaseModel):
     trace_id: str = ""
     call_path: list[str] = Field(default_factory=list)
     step_count: int = 0
-    max_depth: int = 5
-    max_steps: int = 20
-    max_total_duration_sec: int = 300
+    max_depth: int = DEFAULT_AGENT_MAX_DEPTH
+    max_steps: int = DEFAULT_AGENT_MAX_STEPS
+    max_total_duration_sec: int = DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC
 
 
 class AgentInvokeResponse(BaseModel):

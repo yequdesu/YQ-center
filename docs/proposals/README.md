@@ -16,9 +16,11 @@
 
 当前提案：
 
-- `artifact-media-blob-layer.md`：Artifact / Media / Blob 基础层，用于文件传输、截图、摄像头、多模态输入输出和审计附件。
-- `2026-06-30-operation-bus-execution-admission.md`：已采纳的 Operation Bus / Execution Admission 提案，作为 Center Execution Runtime v2 的调度与等待设计依据。
+当前没有仍需作为活跃入口的 proposal。新的设计如果已经进入执行，应直接写入
+`docs/todos/` 或权威合同文档；仅保留尚未进入执行的设想在本目录。
 
-已取代提案：
+已归档提案：
 
 - 原 `2026-06-30-operation-supervisor-agent-runtime.md`：已移除并被 `2026-06-30-operation-bus-execution-admission.md` 取代。原提案过度强调 Operation Supervisor，本次修正后以 Execution Admission + Operation Bus 为核心。
+- `docs/archive/proposals/2026-06-30-operation-bus-execution-admission.md`：已采纳，内容并入 `docs/todos/2026-06-30-center-execution-runtime-v2.md`。
+- `docs/archive/proposals/artifact-media-blob-layer.md`：已被当前 Artifact 实现、`docs/node-capability-contract.md` 和阶段 5H-5K 吸收。

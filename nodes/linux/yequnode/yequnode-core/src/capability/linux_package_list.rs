@@ -13,7 +13,8 @@ impl Capability for LinuxPackageList {
             name: "linux.package.list".into(),
             description: "List installed system packages.".into(),
             agent_description: Some(
-                "List all installed system packages with name and version. Supports dpkg and rpm.".into()
+                "List all installed system packages with name and version. Supports dpkg and rpm."
+                    .into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -31,17 +32,24 @@ impl Capability for LinuxPackageList {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(_input: Value) -> Result<Value, CapabilityError> {
         // Try dpkg first
-        let packages = tokio::task::spawn_blocking(|| {
-            list_packages_dpkg().or_else(|_| list_packages_rpm())
-        })
-        .await
-        .map_err(|e| CapabilityError::Internal(format!("spawn blocking failed: {}", e)))?
-        .map_err(|e| CapabilityError::Internal(format!("package listing failed: {:?}", e)))?;
+        let packages =
+            tokio::task::spawn_blocking(|| list_packages_dpkg().or_else(|_| list_packages_rpm()))
+                .await
+                .map_err(|e| CapabilityError::Internal(format!("spawn blocking failed: {}", e)))?
+                .map_err(|e| {
+                    CapabilityError::Internal(format!("package listing failed: {:?}", e))
+                })?;
 
         Ok(json!(packages))
     }

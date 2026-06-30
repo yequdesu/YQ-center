@@ -15,7 +15,8 @@ impl Capability for LinuxTransferLocalStat {
             description: "Check local path metadata for transfer operations.".into(),
             agent_description: Some(
                 "Inspect a local path for transfer readiness: size, mtime, sha256, \
-                 readability, writability, and available disk space.".into()
+                 readability, writability, and available disk space."
+                    .into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -39,16 +40,22 @@ impl Capability for LinuxTransferLocalStat {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let path_str = input.get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let path_str = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "path".into(),
                 message: "path is required".into(),
-            })?;
+            }
+        })?;
 
         let path = std::path::Path::new(path_str);
 
@@ -123,10 +130,7 @@ fn is_readable(path: &std::path::Path) -> bool {
 
 fn is_writable(path: &std::path::Path) -> bool {
     // Try to open for writing (doesn't actually write)
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .is_ok()
+    std::fs::OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn get_disk_available(path: &std::path::Path) -> Option<u64> {

@@ -1,175 +1,18 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the Claude Code entry point for this repository.
 
-## Project Overview
+To avoid duplicated and stale agent instructions, Claude should use the same project guidance as Codex:
 
-YeQu Center is a personal infrastructure control center. It connects devices (Nodes), collects state (Signals), dispatches capabilities (Functions), records an audit timeline, and provides a unified entry point for LLM Agents, CLI, and future Web/mobile clients.
+1. Read `AGENTS.md` first.
+2. Read `docs/documentation-index.md` before using project documents.
+3. Treat archived documents under `docs/archive/` as historical context only, never as current implementation constraints.
+4. Treat current Node development as governed by:
+   - `YQP-Node-Protocol.md`
+   - `docs/node-capability-contract.md`
+   - `docs/linux-node-development-contract.md`
+5. Treat current runtime work as governed by:
+   - `docs/todos/2026-06-30-center-execution-runtime-v2.md`
+   - `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`
 
-## Governing Principles
-
-These are project-level constraints. Every code change must respect them.
-
-1. **Agent 是消费者，不是系统本身** — Agent 通过调用系统能力来完成任务。系统管理基础设施状态，Agent 是使用者。系统不替 Agent 说话，Agent 不管理系统的运行。
-
-2. **失败即失败** — 错误传播到调用者，不经转换、不降级、不回退。没有 fallback、没有静默策略切换。哪个环节出了问题，哪个环节报错。
-
-3. **修结构，不打补丁** — 遇到问题时先判断：这是实现疏忽，还是设计在根本上就没覆盖这个场景？如果是后者，加 if-else 就是推迟下一次爆发。
-
-4. **读就是读** — 查询路径不产生副作用。写操作只存在于协议处理、后台扫描、工具执行三条链路。这条线模糊了，下一步就是排错地狱。
-
-5. **资源在获得处释放** — 锁、事务、连接——在同一个函数调用栈中获得和释放。不跨越 await，不传递给下游，不依赖外层的 finally 来兜底。
-
-6. **热路径零清理** — 不在请求路径上执行 DELETE/UPDATE 清理操作。`SELECT ... FOR UPDATE` 获取的行锁在 commit 前不释放，请求路径上任何清理类 DML 都会在多 Node 并发下产生 tuple 锁竞争。过期清理统一走后台定时任务。
-
-## Build & Development Commands
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run the server (port 9800, reload enabled)
-python -m yequ.main
-# or via entry point:
-yequ  # (CLI tool, not server)
-
-# Run all tests (uses SQLite, no PostgreSQL needed)
-pytest
-
-# Run a single test file
-pytest tests/test_yqp_protocol.py
-
-# Run a single test function
-pytest tests/test_yqp_protocol.py::test_hello_flow
-
-# Run tests with verbose output
-pytest -v
-
-# Lint
-ruff check .
-
-# Format
-ruff format .
-
-# Type check (strict mode)
-mypy src/
-
-# Create a new DB migration (requires running PostgreSQL via docker-compose)
-docker compose up -d postgres
-alembic revision --autogenerate -m "description_of_change"
-alembic upgrade head
-
-# Run the CLI
-python -m yequ.cli health
-python -m yequ.cli nodes list
-```
-
-## Architecture
-
-### Core Concepts (layered top to bottom)
-
-| Layer | Responsibility |
-|---|---|
-| **Center** | Auth, registry, policy, scheduling, state, audit, job lifecycle |
-| **Node** | A connectable execution environment (device, VM, etc.) |
-| **Daemon** | Persistent process on a Node; executes Jobs, reports Signals |
-| **Plugin** | Adapts local system/service capabilities into Functions and Signals |
-| **Agent** | LLM-driven caller; goes through Center's standard path, never direct to Node |
-
-### Key Domain Objects
-
-- **Invocation** — semantic call intent by an Actor (user/agent/system). Created in PENDING, transitions to RUNNING when Jobs are fanned out.
-- **Job** — the actual execution task dispatched to a specific Node. Follows a strict state machine: `created → queued → claimed → running → (succeeded|failed|cancelled|cancelling→cancelled|timeout)`. Terminal states are immutable.
-- **Capability** — a Function or Signal registered by a Node's Plugin. Contains risk level, effect, input/output schemas, resource keys, and conflict policy.
-- **TimelineEvent** — every significant action is recorded with a monotonically increasing `global_seq`. Serves as audit log and distributed tracing backbone.
-
-### YQP Protocol (`src/yequ/protocol/`)
-
-The YeQu Protocol is the communication contract between Center and Node Daemons. All messages use a unified envelope with `message_type` routing:
-
-- **Node lifecycle**: `node.hello` → `node.accepted`, heartbeat, capability registration
-- **Job delivery**: poll-based (`job.poll` → `job.available`), claimed→running→finished
-- **Signal reporting**: periodic push of signal values with schema validation
-- **Reconciliation**: reconnection recovery with conflict resolution rules
-
-Single POST endpoint at `/yqp/` dispatches by `message_type`. Auth is Bearer token in HTTP header (not in payload).
-
-### Policy Engine (`src/yequ/services/policy.py`)
-
-Execution mode × risk level matrix:
-
-| Mode | safe | maintenance | destructive | catastrophic |
-|---|---|---|---|---|
-| auto | allow | allow | ask | deny |
-| assist | allow | conditional | ask | deny |
-| readonly | allow | deny | deny | deny |
-| manual | allow | ask | ask | deny |
-
-L2 write operations always require approval, regardless of risk level.
-
-### Agent Pipeline (`src/yequ/agent/`)
-
-```
-prompt → Provider.invoke() → raw tool_calls
-→ validate (known function? loop? policy?) → resolve target node
-→ create Invocation + Job → poll for terminal status → collect result → final response
-```
-
-- `AgentProvider` is the abstract interface for LLM backends. Two implementations: `FakeAgentProvider` (deterministic testing) and `DeepSeekProvider` (OpenAI-compatible API).
-- Agent never calls Nodes directly — everything goes through Center's standard Invocation→Job path.
-- Enforcement: depth limit, step limit, total duration limit, circular dependency detection.
-
-### Maintenance Plans (`src/yequ/services/maintenance_executor.py`)
-
-Multi-step maintenance operations with check→repair→verify flow:
-- **Conditions**: `always`, `if_previous_unhealthy`, `after_repair`, `if_previous_failed`, `manual`
-- **Artifacts**: `before`, `after`, `check_result`, `verify_result`, `error`, `rollback_hint` written at each step boundary
-- **Rollback**: failures in repair/write/verify steps trigger `rollback_recommended` with hints
-- Test failure injection via `test.maintenance.repair_fail` / `test.maintenance.verify_fail` functions or `__test_fail_stage` in input_data
-
-### Job State Machine (`src/yequ/services/job_state_machine.py`)
-
-ALL job status changes MUST go through `transition()`. Illegal transitions are rejected with audit events. Terminal states (succeeded/failed/cancelled/timeout) are immutable.
-
-### Database
-
-- Production: PostgreSQL via asyncpg. Connection URL in `YEQU_DATABASE_URL`.
-- Dev/Test: SQLite via aiosqlite. Test conftest creates a fresh in-file SQLite DB per run.
-- Migrations in `alembic/versions/`. Always use alembic for schema changes.
-- SQLite is rejected at startup in non-test mode (enforced in `api/app.py` lifespan).
-
-### Route Structure
-
-| Prefix | Tag | Auth Scope | Purpose |
-|---|---|---|---|
-| `/healthz` | health | none | Health check |
-| `/agent/*` | agent | agent token | Agent sessions, invoke, plan |
-| `/admin/*` | admin | admin token | Node provisioning, invocations, jobs, timeline, approvals, tokens, maintenance plans |
-| `/yqp/` | yqp | node Bearer token | Node protocol endpoint |
-
-## Testing
-
-- Tests use SQLite with WAL mode (configured in `tests/conftest.py` via `override_settings` fixture)
-- `test_mode=True` skips background tasks (timeout scanner, timeline writer, recovery scan)
-- `require_admin_auth=False` in test mode bypasses token auth
-- Key fixtures: `client` (async HTTP client), `db_session` (raw DB access), `provisioned_node`, `node_with_hello` (provisioned + hello'd node)
-- `make_yqp_envelope()` helper builds protocol messages for YQP endpoint tests
-- Use `pytest-asyncio` with `asyncio_mode = "auto"`
-
-## Configuration
-
-All settings via environment variables with `YEQU_` prefix (see `src/yequ/config.py`):
-- `YEQU_DATABASE_URL` — PostgreSQL connection string
-- `YEQU_DEEPSEEK_API_KEY` — DeepSeek API key for LLM agent
-- `YEQU_DEBUG` — enable debug logging
-- `YEQU_DEBUG_TIMELINE` — write diagnostic timeline events
-- `YEQU_REQUIRE_ADMIN_AUTH` — enforce admin/agent token scopes
-- `YEQU_LOG_FORMAT` — `json` or `console`
-
-## Key Patterns
-
-- **Never commit without a timeline event**: State changes should be accompanied by a `TimelineEvent` with the next `global_seq`.
-- **State transitions through `job_state_machine.transition()`**: Never set `job.status` directly.
-- **Write operations need approval**: L2 write/destructive effects automatically create an `ApprovalRequest`. The caller must approve it before the Job is created.
-- **Timeline writer is async**: For diagnostic/fire-and-forget events, use `get_timeline_writer().enqueue(event)`. For critical audit events, write synchronously in the same transaction.
-- **DB sessions are short-lived**: The Agent and Maintenance executor poll for results using fresh sessions from `async_session_factory` — never hold a session open while waiting.
+All repository documents must be UTF-8. If this file conflicts with `AGENTS.md` or `docs/documentation-index.md`, those files win.

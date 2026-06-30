@@ -34,7 +34,9 @@ async fn main() {
     }
 }
 
-async fn run_artifact_smoke_test(config: &yequnode_core::config::Config) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_artifact_smoke_test(
+    config: &yequnode_core::config::Config,
+) -> Result<(), Box<dyn std::error::Error>> {
     use yequnode_core::yqp::client::YqpClient;
 
     let client = YqpClient::new(config);
@@ -80,7 +82,8 @@ async fn run_artifact_smoke_test(config: &yequnode_core::config::Config) -> Resu
     );
     println!(
         "verify: curl -H 'Authorization: Bearer <admin-token>' {} | wc -c  # expect {}",
-        verify_url, data.len()
+        verify_url,
+        data.len()
     );
 
     Ok(())

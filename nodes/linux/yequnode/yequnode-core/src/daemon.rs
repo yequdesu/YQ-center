@@ -590,7 +590,12 @@ fn build_user_runtime() -> RuntimeSnapshot {
         status: "online".into(),
         interactive: false,
         privilege: Some(RuntimePrivilege::User),
-        labels: Some(vec!["linux".into()]),
+        labels: Some(vec![
+            "linux".into(),
+            "filesystem".into(),
+            "filesystem:limited".into(),
+            "network".into(),
+        ]),
         owner: None,
         metadata: Some(serde_json::json!({"user": user})),
     }
@@ -605,6 +610,8 @@ fn build_sudo_runtime() -> RuntimeSnapshot {
         privilege: Some(RuntimePrivilege::Root),
         labels: Some(vec![
             "linux".into(),
+            "filesystem".into(),
+            "artifact".into(),
             "sudoers:yequnode".into(),
             "filesystem:host".into(),
         ]),

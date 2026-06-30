@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use serde_json::{json, Value};
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
+use async_trait::async_trait;
+use serde_json::{json, Value};
 
 pub struct LinuxProcessList;
 
@@ -30,11 +30,18 @@ impl Capability for LinuxProcessList {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let limit = input.get("limit")
+        let limit = input
+            .get("limit")
             .and_then(|v| v.as_u64())
             .unwrap_or(50)
             .min(200) as usize;
@@ -104,7 +111,8 @@ fn read_process_list(limit: usize) -> Result<Vec<ProcessEntry>, CapabilityError>
 
         // Get username from /proc/[pid]/status Uid field
         let status = std::fs::read_to_string(entry.path().join("status")).unwrap_or_default();
-        let uid = status.lines()
+        let uid = status
+            .lines()
             .find(|l| l.starts_with("Uid:"))
             .and_then(|l| l.split_whitespace().nth(1))
             .unwrap_or("?");

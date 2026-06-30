@@ -55,6 +55,8 @@ export interface OperationCardBlock {
   refId?: string;
   waitHandle?: Record<string, unknown>;
   message?: string;
+  progressPct?: number | null;
+  progressMessage?: string | null;
   errorCode?: string;
   errorMessage?: string;
   created_at: string;

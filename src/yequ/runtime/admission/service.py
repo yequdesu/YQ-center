@@ -17,7 +17,9 @@ INLINE_TOOLS = {
     "artifact.list",
     "artifact.get",
     "artifact.present",
+    "artifact.deploy.preflight",
     "operation.status",
+    "transfer.preflight",
     "transfer.status",
 }
 
@@ -42,6 +44,15 @@ class ExecutionAdmissionService:
                 waitable=True,
                 metadata={"ref_type": "transfer_session"},
             )
+        if name == "artifact.deploy":
+            return ExecutionPlan(
+                function_name=name,
+                decision="waitable_operation",
+                reason="artifact_deploy_delegates_to_target_node_download_job",
+                operation_kind="job",
+                waitable=True,
+                metadata={"ref_type": "job"},
+            )
         if name in {"transfer.cancel", "operation.cancel"}:
             return ExecutionPlan(
                 function_name=name,
@@ -59,4 +70,3 @@ class ExecutionAdmissionService:
             decision="sync_wait",
             reason="default_node_capability_execution_path",
         )
-

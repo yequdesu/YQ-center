@@ -1,14 +1,24 @@
 # Linux Node 开发合同
 
-状态：当前开发约束
+状态：当前 Linux Node 开发硬约束
 依赖协议：`YQP-Node-Protocol.md`
-目标：在部署 Center 的 Linux 服务器或其他 Linux 主机上实现一个最小 Node，用于验证多 Node 调度与 Linux 能力接入。
+依赖能力合同：`docs/node-capability-contract.md`
+目标：在部署 Center 的 Linux 服务器或其他 Linux 主机上实现可长期演进的 Linux Node，用于多 Node 调度、Linux 运维、artifact、跨 Node 传输和后续 Operation Runtime 验证。
 
 ## 1. 开发目标
 
-第一版 Linux node 只做一件事：证明 Center 可以同时管理 Windows node 与 Linux node，并能把 Job 正确调度到目标 Node。
+当前 Linux Node 已经不再只是 POC。仓库内 `nodes/linux/yequnode` 是当前部署实现，后续 Linux Node 相关工作直接在该目录推进。
 
-第一版不追求通用远控、不追求复杂插件市场、不追求二进制 artifact。截图/摄像头属于 Windows interactive node 的下一阶段能力，Linux node POC 不应被这些需求阻塞。
+本合同的目标不是“能跑通就行”，而是让其他 Agent 或人类开发者按合同实现时不会偏离意图。新增 capability 必须满足：
+
+- manifest 精确；
+- input/output schema 精确；
+- preflight、progress、cancel、resume 支持情况明确；
+- 错误码稳定；
+- 权限模型清楚；
+- Center `capability.describe` 能解释该能力何时可用、需要什么权限、会产生什么副作用。
+
+截图/摄像头仍不是 Linux Node 第一优先级。Linux Node 当前优先补齐文件、服务、网络、包管理、artifact、transfer 辅助能力。
 
 ## 2. 必须遵守的协议
 
@@ -27,7 +37,13 @@ Linux node 必须以 `YQP-Node-Protocol.md` 为准，实现：
 可以暂缓：
 
 - `signal.report`：如果第一版没有周期 Signal，可以暂缓；但推荐至少上报 load/memory。
-- `job.cancel`：poll 模式下没有独立 push cancel 通道，第一版可只支持本地取消标记和 cancelled 终态。
+
+不能暂缓：
+
+- `job.cancel` 语义：poll/reconcile 模式下收到 Center `cancelling` 后，必须终止本地子进程并上报终态。长任务不能长期卡在 `cancelling`。
+- 长任务 `job.lease_renew`。
+- 长任务 `job.event` progress/keepalive。
+- Node 重启后的 `node.reconcile_jobs`。
 
 ## 3. 配置约定
 
@@ -126,7 +142,7 @@ sudo/root runtime 示例：
   "status": "online",
   "interactive": false,
   "privilege": "root",
-  "labels": ["linux", "sudoers:yequnode", "filesystem:host"],
+  "labels": ["linux", "filesystem", "artifact", "sudoers:yequnode", "filesystem:host"],
   "metadata": {
     "sudoers_file": "/etc/sudoers.d/yequnode",
     "allowed_commands": ["stat", "journalctl"]
@@ -149,6 +165,8 @@ sudo/root runtime 示例：
 }
 ```
 
+说明：`filesystem` 和 `artifact` 是 capability routing 用的通用标签；`filesystem:host` 是更细的诊断/权限语义标签。需要文件读写或 artifact 读写的能力不得要求一个 runtime 未声明的标签。
+
 执行时权限不足必须显式失败：
 
 ```json
@@ -165,6 +183,224 @@ sudo/root runtime 示例：
   }
 }
 ```
+
+## Artifact 下发能力合同
+
+Linux Node 必须把 Center artifact 下发和 croc 跨 Node 传输区分开：
+
+- `linux.artifact.upload_file`：从 Linux 本地读取文件并上传到 Center；
+- `linux.artifact.download_file`：从 Center artifact 存储下载文件并写入 Linux 本地路径；
+- `linux.transfer.croc.*`：Node 到 Node 直接传输，大文件优先使用该路径。
+
+`linux.artifact.download_file` 是 Center -> Linux 的能力原语，不是完整 workflow。它不负责选择 artifact、不负责选择目标 Node、不负责替用户猜测路径，也不负责把多个 Node 串成一个流程。完整流程应由 Center 后续 `artifact.deploy` workflow 组合。
+
+### `linux.artifact.download_file`
+
+输入：
+
+```json
+{
+  "artifact_id": "id_x",
+  "output_path": "/tmp/yequ-transfer/a.bin",
+  "mode": "fail_if_exists"
+}
+```
+
+字段要求：
+
+| 字段 | 要求 |
+|---|---|
+| `artifact_id` | 必填。必须是 Center 已存在的 artifact id。 |
+| `output_path` | 必填。必须是绝对路径。Agent 不得在用户未指定或未确认时猜测落点。 |
+| `mode` | 可选，`fail_if_exists` 或 `overwrite`，默认 `fail_if_exists`。 |
+
+输出：
+
+```json
+{
+  "artifact_id": "id_x",
+  "output_path": "/tmp/yequ-transfer/a.bin",
+  "size_bytes": 123,
+  "sha256": "...",
+  "expected_sha256": "...",
+  "content_type": "application/octet-stream",
+  "verified": true
+}
+```
+
+执行要求：
+
+- 使用 Node Bearer token 访问 Center `GET /yqp/artifacts/{artifact_id}/download`；
+- 不得使用 admin token；
+- 不得把 artifact bytes 经过 Agent prompt、tool JSON、stdout/stderr 或日志；
+- 必须流式写入文件并同步计算 SHA-256；
+- Center 返回 `X-YeQu-Artifact-Sha256` 时必须校验，不一致必须失败；
+- `mode=fail_if_exists` 且目标已存在时必须失败；
+- `output_path` 父目录不存在时可以创建；创建失败或权限不足必须失败；
+- 不支持断点续传时必须声明 `supports_resume=false`；
+- 如果需要写系统目录，应由 runtime 权限决定；权限不足不得 fallback 到其他目录。
+
+能力 manifest 第一版要求：
+
+```json
+{
+  "name": "linux.artifact.download_file",
+  "risk": "maintenance",
+  "effect": "write",
+  "execution_requirements": {
+    "runtime_kind": "privileged",
+    "labels": ["linux", "artifact"]
+  },
+  "resource_keys": ["node.filesystem", "center.artifact"],
+  "conflict_policy": "serialize",
+  "supports_progress": false,
+  "supports_cancel": false,
+  "supports_resume": false,
+  "required_intent_slots": ["artifact_id", "output_path"]
+}
+```
+
+## 文件系统写能力合同
+
+Linux Node 的文件系统写能力必须明确区分“普通用户权限可写”和“sudo/root 才可写”。能力不得在权限不足时改写到其他目录，也不得静默降级。
+
+### `linux.filesystem.mkdir`
+
+用途：创建明确指定的目录，主要服务于 transfer 目标目录准备、artifact 下发落点准备和常规 Linux 文件管理。
+
+输入：
+
+```json
+{
+  "path": "/tmp/yequ-transfer",
+  "parents": true,
+  "exist_ok": true,
+  "mode": "0755"
+}
+```
+
+字段要求：
+
+| 字段 | 要求 |
+|---|---|
+| `path` | 必填。必须是用户明确指定或已确认的路径；Agent 不得猜测落点。 |
+| `parents` | 可选，默认 true。true 时创建缺失父目录。 |
+| `exist_ok` | 可选，默认 true。false 且目录已存在时返回 `target_exists`。 |
+| `mode` | 可选，八进制权限字符串，例如 `755` 或 `0750`。 |
+
+输出：
+
+```json
+{
+  "path": "/tmp/yequ-transfer",
+  "created": true,
+  "already_exists": false,
+  "is_dir": true,
+  "mode": "0755"
+}
+```
+
+manifest 要求：
+
+- `risk=maintenance`
+- `effect=write`
+- `execution_requirements.labels` 至少包含 `linux` 和 `filesystem`
+- `resource_keys=["node.filesystem"]`
+- `conflict_policy=serialize`
+- `required_intent_slots=["path"]`
+- `preconditions` 至少表达 `target.path_explicit` 和 `target.parent_writable`
+
+执行要求：
+
+- 使用当前 runtime 的 OS 权限创建目录；
+- 权限不足返回 `permission_denied`；
+- 目标已存在且不是目录，或 `exist_ok=false` 时目录已存在，返回 `target_exists`；
+- 不得 fallback 到 `/tmp`、`/home/user` 或其他目录。
+
+## 网络探测能力合同
+
+Linux Node 的网络探测能力用于回答“从这个 Node 看，某个域名、端口或服务是否可达”。这些能力是 read-only，不得修改系统网络配置。
+
+### `linux.network.dns_lookup`
+
+用途：使用 Linux Node 的系统 resolver 解析 hostname。
+
+输入：
+
+```json
+{
+  "hostname": "example.com",
+  "port": 80
+}
+```
+
+要求：
+
+- `hostname` 必填，不能包含 URL scheme、斜杠或路径；
+- `port` 仅用于系统 resolver API，默认 80；
+- `risk=safe`，`effect=read`；
+- `execution_requirements.labels` 至少包含 `linux` 和 `network`；
+- `required_intent_slots=["hostname"]`。
+
+输出：
+
+```json
+{
+  "hostname": "example.com",
+  "port": 80,
+  "addresses": ["93.184.216.34"],
+  "count": 1
+}
+```
+
+### `linux.network.port_check`
+
+用途：从 Linux Node 发起 TCP connect，检查某个 host:port 是否可达。
+
+输入：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 22,
+  "timeout_ms": 3000
+}
+```
+
+要求：
+
+- `host` 和 `port` 必填；
+- `host` 不能包含 URL scheme、斜杠或路径；
+- `timeout_ms` 必须被限制在合理范围；
+- `risk=safe`，`effect=read`；
+- `execution_requirements.labels` 至少包含 `linux` 和 `network`；
+- `required_intent_slots=["host", "port"]`。
+
+输出：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 22,
+  "reachable": true,
+  "latency_ms": 3.2,
+  "error_code": null,
+  "error_message": null
+}
+```
+
+连接失败不是 capability 执行失败；应返回 `reachable=false` 和稳定 `error_code`，让 Agent 能解释网络状态。
+
+错误码要求：
+
+| 场景 | code |
+|---|---|
+| artifact 不存在或 Center 返回 404 | `source_not_found` 或 `artifact_not_found` |
+| 下载 HTTP 失败 | `external_service_failed` |
+| 目标已存在且禁止覆盖 | `target_exists` |
+| 输出路径不是绝对路径 | `invalid_input` |
+| 无法创建父目录或写入文件 | `permission_denied` |
+| SHA-256 不一致 | `integrity_mismatch` |
 
 ## croc 传输工具部署合同
 
@@ -507,8 +743,8 @@ Node 必须测试并固定本平台的 croc 调用方式。不能在 `resume` �
     },
     {
       "name": "linux.filesystem.stat",
-      "description": "Return stat information for a whitelisted path.",
-      "agent_description": "Inspect Linux filesystem metadata for an allowed path.",
+      "description": "Return stat information for a local path visible to the Linux runtime.",
+      "agent_description": "Inspect Linux filesystem metadata for a runtime-visible path.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -526,6 +762,82 @@ Node 必须测试并固定本平台的 croc 调用方式。不能在 `resume` �
         "runtime_kind": "privileged",
         "labels": ["linux"]
       }
+    },
+    {
+      "name": "linux.filesystem.hash",
+      "description": "Compute the SHA-256 hash for a readable local Linux file.",
+      "agent_description": "Compute sha256 for a readable local file. Use this to verify file integrity after transfer.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "algorithm": { "type": "string", "enum": ["sha256"], "default": "sha256" }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "algorithm": { "type": "string" },
+          "sha256": { "type": "string" },
+          "size_bytes": { "type": "integer" }
+        },
+        "required": ["path", "algorithm", "sha256", "size_bytes"],
+        "additionalProperties": false
+      },
+      "risk": "safe",
+      "effect": "read",
+      "timeout_sec": 60,
+      "idempotency": "idempotent",
+      "execution_requirements": {
+        "runtime_kind": "privileged",
+        "labels": ["linux", "filesystem"]
+      },
+      "preconditions": [
+        { "fact": "source.path_readable", "source": "runtime" }
+      ],
+      "required_intent_slots": ["path"]
+    },
+    {
+      "name": "linux.filesystem.disk_usage",
+      "description": "Report filesystem capacity and free space for a Linux path.",
+      "agent_description": "Check disk capacity, free bytes, and available bytes for a runtime-visible Linux path.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "block_size": { "type": "integer" },
+          "total_bytes": { "type": "integer" },
+          "free_bytes": { "type": "integer" },
+          "available_bytes": { "type": "integer" },
+          "used_bytes": { "type": "integer" },
+          "used_percent": { "type": "number" }
+        },
+        "required": ["path", "block_size", "total_bytes", "free_bytes", "available_bytes", "used_bytes", "used_percent"],
+        "additionalProperties": false
+      },
+      "risk": "safe",
+      "effect": "read",
+      "timeout_sec": 5,
+      "idempotency": "idempotent",
+      "execution_requirements": {
+        "runtime_kind": "privileged",
+        "labels": ["linux", "filesystem"]
+      },
+      "preconditions": [
+        { "fact": "target.path_visible", "source": "runtime" }
+      ],
+      "required_intent_slots": ["path"]
     }
   ],
   "signals": [
@@ -539,14 +851,10 @@ Node 必须测试并固定本平台的 croc 调用方式。不能在 `resume` �
 }
 ```
 
-`linux.filesystem.stat` 必须做路径白名单，第一版建议只允许：
-
-- `/`
-- `/tmp`
-- `/var/log`
-- 项目部署目录
-
-不要在第一版提供任意文件读取。
+`linux.filesystem.stat`、`linux.filesystem.hash` 和 `linux.filesystem.disk_usage`
+遵循 runtime 可见性和 OS 权限。
+Center 不应在能力名中假设所有路径都可访问；不可访问时必须返回稳定错误码，例如
+`permission_denied` 或 `source_not_found`。不要静默降级为“文件不存在”。
 
 ## 6. Job 执行规则
 

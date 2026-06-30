@@ -65,6 +65,15 @@ impl Capability for LinuxTransferCrocSend {
             })),
             resource_keys: Some(vec!["node.transfer".into()]),
             conflict_policy: Some("serialize".into()),
+            supports_progress: true,
+            supports_cancel: true,
+            supports_resume: true,
+            progress_contract: Some("transfer_progress_v1".into()),
+            preconditions: vec![
+                json!({"fact": "source.exists", "capability": "linux.transfer.local.stat"}),
+                json!({"fact": "source.readable", "capability": "linux.transfer.local.stat"}),
+            ],
+            required_intent_slots: vec!["source_path".into(), "code".into()],
         }
     }
 

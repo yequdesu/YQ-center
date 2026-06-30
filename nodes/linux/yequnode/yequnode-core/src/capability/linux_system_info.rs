@@ -13,7 +13,7 @@ impl Capability for LinuxSystemInfo {
             name: "linux.system.info".into(),
             description: "Return basic Linux host information.".into(),
             agent_description: Some(
-                "Inspect Linux host OS, kernel, uptime, CPU and memory summary.".into()
+                "Inspect Linux host OS, kernel, uptime, CPU and memory summary.".into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -31,11 +31,18 @@ impl Capability for LinuxSystemInfo {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(_input: Value) -> Result<Value, CapabilityError> {
-        let hostname = read_first_line("/proc/sys/kernel/hostname").unwrap_or_else(|_| "unknown".into());
+        let hostname =
+            read_first_line("/proc/sys/kernel/hostname").unwrap_or_else(|_| "unknown".into());
         let os_release = read_file("/etc/os-release").unwrap_or_default();
         let kernel = read_first_line("/proc/version").unwrap_or_else(|_| "unknown".into());
         let uptime_sec = read_first_line("/proc/uptime")
@@ -86,7 +93,8 @@ impl Capability for LinuxSystemInfo {
 // /proc helpers — these are private to this module
 
 fn read_file(path: &str) -> Result<String, CapabilityError> {
-    std::fs::read_to_string(path).map_err(|e| CapabilityError::Internal(format!("read {} failed: {}", path, e)))
+    std::fs::read_to_string(path)
+        .map_err(|e| CapabilityError::Internal(format!("read {} failed: {}", path, e)))
 }
 
 fn read_first_line(path: &str) -> Result<String, CapabilityError> {
@@ -104,7 +112,9 @@ fn parse_proc_meminfo_key(key: &str) -> Option<u64> {
     read_file("/proc/meminfo").ok().and_then(|content| {
         content.lines().find_map(|line| {
             if line.starts_with(key) {
-                line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok())
+                line.split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<u64>().ok())
             } else {
                 None
             }
@@ -113,16 +123,21 @@ fn parse_proc_meminfo_key(key: &str) -> Option<u64> {
 }
 
 fn read_cpu_model(path: &str) -> String {
-    read_file(path).ok().and_then(|content| {
-        content.lines()
-            .find(|l| l.starts_with("model name"))
-            .and_then(|l| l.split(':').nth(1))
-            .map(|s| s.trim().to_string())
-    }).unwrap_or_else(|| "unknown".into())
+    read_file(path)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn parse_os_pretty_name(os_release: &str) -> String {
-    os_release.lines()
+    os_release
+        .lines()
         .find(|l| l.starts_with("PRETTY_NAME="))
         .and_then(|l| l.split('=').nth(1))
         .map(|v| v.trim_matches('"').to_string())
@@ -140,7 +155,10 @@ fn current_groups() -> Vec<String> {
                 let gid_str = parts[2];
                 let members = parts[3];
                 if let Ok(g) = gid_str.parse::<u32>() {
-                    if g == gid { groups.push(name.to_string()); continue; }
+                    if g == gid {
+                        groups.push(name.to_string());
+                        continue;
+                    }
                 }
                 let user = std::env::var("USER").unwrap_or_default();
                 if members.split(',').any(|m| m == user) {
@@ -153,7 +171,8 @@ fn current_groups() -> Vec<String> {
 }
 
 fn check_sudo() -> Result<bool, std::io::Error> {
-    std::process::Command::new("sudo").arg("-ln")
+    std::process::Command::new("sudo")
+        .arg("-ln")
         .output()
         .map(|o| o.status.success())
 }

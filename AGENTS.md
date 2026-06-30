@@ -65,13 +65,15 @@ python -m yequ.cli nodes list
 - **Invocation** — semantic call intent by an Actor (user/agent/system). Created in PENDING, transitions to RUNNING when Jobs are fanned out.
 - **Job** — the actual execution task dispatched to a specific Node. Follows a strict state machine: `created → queued → claimed → running → (succeeded|failed|cancelled|cancelling→cancelled|timeout)`. Terminal states are immutable.
 - **Capability** — a Function or Signal registered by a Node's Plugin. Contains risk level, effect, input/output schemas, resource keys, and conflict policy.
-- **Operation** — planned Center Execution Runtime v2 waitable runtime process. It will represent long/workflow execution such as transfer, maintenance, long jobs, approval waits, and future subagent runs without replacing domain models such as Job or TransferSession.
+- **Operation** — Center Execution Runtime v2 waitable runtime process. It represents long/workflow execution such as transfer, maintenance, long jobs, approval waits, and future subagent runs without replacing domain models such as Job or TransferSession.
 - **TimelineEvent** — every significant action is recorded with a monotonically increasing `global_seq`. Serves as audit log and distributed tracing backbone.
 
-### Center Execution Runtime v2 Direction
+### Center Execution Runtime v2
 
-The current architecture is moving from "Capability Runtime v1" to "Center Execution Runtime v2". The target runtime adds:
+The current architecture is centered on "Center Execution Runtime v2". The runtime adds:
 
+- `ExecutionGuard` for hard preconditions and anti-hallucination constraints such as write-before-read blocking, path writability, source readability, runtime facts, and missing intent slots.
+- `ExecutionGate` as a thin orchestration facade that combines Guard -> Policy -> Admission without owning concrete rules.
 - `ExecutionAdmissionService` to decide per call whether to run inline, wait synchronously, create a waitable Operation, create a workflow Operation, detach, require approval, or deny.
 - `Operation` / `OperationEvent` / wait handles for long tasks and workflow fan-out/fan-in.
 - Workflow handlers such as TransferWorkflow and MaintenanceWorkflow. `TransferSession` remains the transfer domain model; Operation owns waiting, events, cancellation, and resume projection.

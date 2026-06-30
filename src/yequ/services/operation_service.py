@@ -305,6 +305,12 @@ class OperationService:
         completed_at = values.get("completed_at")
         created_at = values.get("created_at")
         updated_at = values.get("updated_at")
+        output_data = values.get("output_data")
+        progress_detail = (
+            output_data.get("progress_detail")
+            if isinstance(output_data, dict)
+            else None
+        )
         return {
             "operation_id": values.get("operation_id"),
             "kind": values.get("kind"),
@@ -314,6 +320,7 @@ class OperationService:
             "title": values.get("title"),
             "progress_pct": values.get("progress_pct"),
             "progress_message": values.get("progress_message"),
+            "progress_detail": progress_detail if isinstance(progress_detail, dict) else None,
             "error_code": values.get("error_code"),
             "error_message": values.get("error_message"),
             "wait_policy": values.get("wait_policy"),

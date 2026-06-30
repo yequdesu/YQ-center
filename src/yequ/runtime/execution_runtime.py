@@ -28,6 +28,7 @@ from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.runtime.admission import ExecutionAdmissionService
 from yequ.runtime.command import RuntimeCommand
+from yequ.runtime.guards import ExecutionGuard, GuardDecision
 from yequ.services.approval_service import (
     consume_approval,
     create_approval,
@@ -47,8 +48,11 @@ CENTER_META_TOOLS = {
     "artifact.list",
     "artifact.get",
     "artifact.present",
+    "artifact.deploy.preflight",
+    "artifact.deploy",
     "operation.status",
     "operation.cancel",
+    "transfer.preflight",
     "transfer.create",
     "transfer.status",
     "transfer.cancel",
@@ -67,12 +71,17 @@ class CenterExecutionRuntime:
     ) -> ExecuteToolResult:
         runtime_command = _as_runtime_command(command)
         execute_command = runtime_command.to_execute_tool_command()
+        guard_decision = ExecutionGuard().evaluate(runtime_command)
+        if not guard_decision.allowed:
+            return _guard_error(runtime_command, guard_decision)
         admission_plan = ExecutionAdmissionService().plan(execute_command)
 
         if runtime_command.function_name == "capability.invoke":
             result = await self._execute_capability_invoke(runtime_command)
         elif runtime_command.function_name == "transfer.create":
             result = await self._execute_transfer_create(runtime_command)
+        elif runtime_command.function_name == "artifact.deploy":
+            result = await self._execute_artifact_deploy(runtime_command)
         elif runtime_command.function_name in CENTER_META_TOOLS:
             result = await self._execute_inline_meta_tool(runtime_command)
         else:
@@ -148,6 +157,86 @@ class CenterExecutionRuntime:
         )
         return await self.execute(delegated)
 
+    async def _execute_artifact_deploy(self, command: RuntimeCommand) -> ExecuteToolResult:
+        from yequ.application.artifact_deploy import (
+            ArtifactDeployApplicationService,
+            ArtifactDeployCommand,
+        )
+
+        input_data = dict(command.input_data)
+        try:
+            artifact_id = _required_string(input_data.get("artifact_id"), "artifact_id")
+            target_node_id = _required_string(input_data.get("target_node_id"), "target_node_id")
+            output_path = _required_string(input_data.get("output_path"), "output_path")
+        except ValueError as exc:
+            return _runtime_error(command, "invalid_input", str(exc))
+        mode = _string_or_none(input_data.get("mode")) or "fail_if_exists"
+        if mode not in {"fail_if_exists", "overwrite"}:
+            return _runtime_error(
+                command,
+                "invalid_input",
+                "mode must be fail_if_exists or overwrite",
+            )
+        try:
+            await ArtifactDeployApplicationService(self.db).validate_preflight(
+                ArtifactDeployCommand(
+                    artifact_id=artifact_id,
+                    target_node_id=target_node_id,
+                    output_path=output_path,
+                    mode=mode,
+                    preflight_id=_string_or_none(input_data.get("preflight_id")),
+                    skip_preflight=bool(input_data.get("skip_preflight", False)),
+                    skip_reason=_string_or_none(input_data.get("skip_reason")),
+                )
+            )
+        except ValueError as exc:
+            return _runtime_error(command, "invalid_input", str(exc))
+
+        delegated = RuntimeCommand(
+            function_name="capability.invoke",
+            input_data={
+                "capability_ref": "artifact.download_file",
+                "source_id": _string_or_none(input_data.get("source_id")),
+                "node_id": target_node_id,
+                "input": {
+                    "artifact_id": artifact_id,
+                    "output_path": output_path,
+                    "mode": mode,
+                },
+            },
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+            target_node_id=target_node_id,
+            execution_mode=command.execution_mode,
+            max_depth=command.max_depth,
+            max_steps=command.max_steps,
+            max_total_duration_sec=command.max_total_duration_sec,
+            call_path=list(command.call_path or []) + ["artifact.deploy"],
+            approval_id=command.approval_id,
+            dry_run=command.dry_run,
+            wait_for_result=command.wait_for_result,
+            deadline=command.deadline,
+            timeout_sec=command.timeout_sec or 300,
+            lease_sec=command.lease_sec,
+            declared_risk="maintenance",
+            declared_effect="write",
+            allow_unregistered_function=False,
+            suppress_operation=command.suppress_operation,
+        )
+        result = await self._execute_capability_invoke(delegated)
+        result.function_name = command.function_name
+        result.output_data = dict(result.output_data or {})
+        result.output_data["artifact_deploy"] = {
+            "artifact_id": artifact_id,
+            "target_node_id": target_node_id,
+            "output_path": output_path,
+            "mode": mode,
+            "preflight_id": _string_or_none(input_data.get("preflight_id")),
+            "node_capability_ref": "artifact.download_file",
+        }
+        return result
+
     async def _execute_transfer_create(self, command: RuntimeCommand) -> ExecuteToolResult:
         from yequ.application.transfer import TransferApplicationService, TransferCreateCommand
         from yequ.services.operation_service import OperationService, wait_handle_for_operation
@@ -172,6 +261,9 @@ class CenterExecutionRuntime:
                     resume_mode=_string_or_none(input_data.get("resume_mode")) or "resume",
                     timeout_sec=_int_or_default(input_data.get("timeout_sec"), 3600),
                     expected_sha256=_string_or_none(input_data.get("expected_sha256")),
+                    preflight_id=_string_or_none(input_data.get("preflight_id")),
+                    skip_preflight=bool(input_data.get("skip_preflight", False)),
+                    skip_reason=_string_or_none(input_data.get("skip_reason")),
                     actor_type=command.actor_type,
                     actor_id=command.actor_id,
                     session_id=command.session_id,
@@ -204,7 +296,7 @@ class CenterExecutionRuntime:
         )
 
     async def _execute_inline_meta_tool(self, command: RuntimeCommand) -> ExecuteToolResult:
-        from yequ.application.transfer import TransferApplicationService
+        from yequ.application.transfer import TransferApplicationService, TransferPreflightCommand
         from yequ.services.artifact_service import (
             artifact_to_dict,
             get_artifact,
@@ -237,11 +329,25 @@ class CenterExecutionRuntime:
                         platform_os=_string_or_none(input_data.get("platform_os")),
                         effect=_string_or_none(input_data.get("effect")),
                         risk=_string_or_none(input_data.get("risk")),
+                        runtime_kind=_string_or_none(input_data.get("runtime_kind")),
+                        runtime_labels=_string_list(input_data.get("runtime_labels"))
+                        or _string_list(input_data.get("labels")),
+                        supports_progress=_bool_or_none(input_data.get("supports_progress")),
+                        supports_cancel=_bool_or_none(input_data.get("supports_cancel")),
+                        supports_resume=_bool_or_none(input_data.get("supports_resume")),
+                        preflight_supported=_bool_or_none(
+                            input_data.get("preflight_supported")
+                        ),
+                        artifact_input=_bool_or_none(input_data.get("artifact_input")),
+                        artifact_output=_bool_or_none(input_data.get("artifact_output")),
+                        projection=(
+                            _string_or_none(input_data.get("projection")) or "summary"
+                        ),
                         capability_type=(
                             _string_or_none(input_data.get("capability_type")) or "function"
                         ),
                         include_inactive=bool(input_data.get("include_inactive", False)),
-                        limit=_int_or_default(input_data.get("limit"), 20),
+                        limit=_int_or_default(input_data.get("limit"), 10),
                     )
                 }
             elif command.function_name == "capability.describe":
@@ -257,6 +363,8 @@ class CenterExecutionRuntime:
                         self.db,
                         capability_ref,
                         node_id=_string_or_none(input_data.get("node_id")),
+                        sections=_string_list(input_data.get("sections")),
+                        projection=_string_or_none(input_data.get("projection")) or "detail",
                         include_inactive=bool(input_data.get("include_inactive", False)),
                     )
                 }
@@ -307,6 +415,38 @@ class CenterExecutionRuntime:
                         "count": len(artifacts),
                     },
                 }
+            elif command.function_name == "artifact.deploy.preflight":
+                from yequ.application.artifact_deploy import (
+                    ArtifactDeployApplicationService,
+                    ArtifactDeployPreflightCommand,
+                )
+
+                output = {
+                    "preflight": await ArtifactDeployApplicationService(self.db).preflight(
+                        ArtifactDeployPreflightCommand(
+                            artifact_id=_required_string(
+                                input_data.get("artifact_id"),
+                                "artifact_id",
+                            ),
+                            target_node_id=_required_string(
+                                input_data.get("target_node_id"),
+                                "target_node_id",
+                            ),
+                            output_path=_required_string(
+                                input_data.get("output_path"),
+                                "output_path",
+                            ),
+                            mode=_string_or_none(input_data.get("mode"))
+                            or "fail_if_exists",
+                            timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
+                            ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
+                            actor_type=command.actor_type,
+                            actor_id=command.actor_id,
+                            session_id=command.session_id,
+                            execution_mode=command.execution_mode,
+                        )
+                    )
+                }
             elif command.function_name == "operation.status":
                 operation_id = _required_string(input_data.get("operation_id"), "operation_id")
                 output = await OperationService(self.db).status(operation_id)
@@ -316,6 +456,38 @@ class CenterExecutionRuntime:
                     operation_id,
                     reason=_string_or_none(input_data.get("reason")) or "operation_cancelled",
                 )
+            elif command.function_name == "transfer.preflight":
+                output = {
+                    "preflight": await TransferApplicationService(self.db).preflight(
+                        TransferPreflightCommand(
+                            source_node_id=_required_string(
+                                input_data.get("source_node_id"),
+                                "source_node_id",
+                            ),
+                            target_node_id=_required_string(
+                                input_data.get("target_node_id"),
+                                "target_node_id",
+                            ),
+                            source_path=_required_string(
+                                input_data.get("source_path"),
+                                "source_path",
+                            ),
+                            target_output_dir=_string_or_none(
+                                input_data.get("target_output_dir")
+                            ),
+                            target_path=_string_or_none(input_data.get("target_path")),
+                            resume_mode=_string_or_none(input_data.get("resume_mode"))
+                            or "resume",
+                            include_sha256=bool(input_data.get("include_sha256", False)),
+                            timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
+                            ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
+                            actor_type=command.actor_type,
+                            actor_id=command.actor_id,
+                            session_id=command.session_id,
+                            execution_mode=command.execution_mode,
+                        )
+                    )
+                }
             elif command.function_name == "transfer.status":
                 transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
                 output = {
@@ -841,6 +1013,12 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str) and item]
 
 
+def _bool_or_none(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
 def _dedupe_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
     unique: list[str] = []
@@ -865,6 +1043,33 @@ def _runtime_error(
         effect="read",
         error_code=error_code,
         error_message=error_message,
+    )
+
+
+def _guard_error(
+    command: RuntimeCommand,
+    decision: GuardDecision,
+) -> ExecuteToolResult:
+    return ExecuteToolResult(
+        status="failed",
+        function_name=command.function_name,
+        target_node_id=command.target_node_id,
+        risk=(
+            "maintenance"
+            if command.function_name in {"transfer.create", "artifact.deploy"}
+            else "safe"
+        ),
+        effect=(
+            "external"
+            if command.function_name == "transfer.create"
+            else "write"
+            if command.function_name == "artifact.deploy"
+            else "read"
+        ),
+        output_data={"guard": decision.to_dict()},
+        error_code=decision.decision,
+        error_message=decision.reason,
+        error_details=decision.to_dict(),
     )
 
 

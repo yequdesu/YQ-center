@@ -1165,6 +1165,8 @@ async def handle_job_event(
     j_result = await db.execute(select(Job).where(Job.job_id == job_id))
     job = j_result.scalar_one_or_none()
     invocation_id = job.invocation_id if job else None
+    if job is not None and isinstance(data, dict):
+        _apply_job_event_projection(job, str(event_type), data)
 
     now = datetime.now(UTC)
 
@@ -1188,6 +1190,137 @@ async def handle_job_event(
     await db.commit()
 
     return {"job_id": job_id, "event_type": event_type, "sequence": sequence}
+
+
+def _apply_job_event_projection(job: "Job", event_type: str, data: JsonObject) -> None:
+    """Project latest job.event progress facts onto the Job read model.
+
+    TimelineEvent remains the complete event log. Job.progress_* is only the
+    latest compact projection used by Operation status and Console progress UI.
+    """
+    progress_pct = _event_progress_pct(data)
+    if progress_pct is not None:
+        job.progress_pct = progress_pct
+    progress_message = _event_progress_message(event_type, data)
+    if progress_message:
+        job.progress_message = progress_message[:512]
+    progress_detail = _event_progress_detail(event_type, data, progress_pct, progress_message)
+    if progress_detail:
+        job.progress_detail = progress_detail
+
+
+def _event_progress_pct(data: JsonObject) -> float | None:
+    direct = _number_value(data.get("progress_pct"))
+    if direct is not None:
+        return max(0.0, min(100.0, direct))
+
+    nested = data.get("progress")
+    if isinstance(nested, dict):
+        nested_pct = _number_value(nested.get("pct") or nested.get("progress_pct"))
+        if nested_pct is not None:
+            return max(0.0, min(100.0, nested_pct))
+
+    transferred = _number_value(
+        data.get("bytes_transferred")
+        or data.get("transferred_bytes")
+        or data.get("received_bytes")
+        or data.get("sent_bytes")
+    )
+    total = _number_value(data.get("total_bytes") or data.get("size_bytes"))
+    if transferred is not None and total and total > 0:
+        return max(0.0, min(100.0, transferred / total * 100.0))
+    return None
+
+
+def _event_progress_detail(
+    event_type: str,
+    data: JsonObject,
+    progress_pct: float | None,
+    progress_message: str | None,
+) -> dict[str, object]:
+    nested = data.get("progress")
+    nested_data = nested if isinstance(nested, dict) else {}
+    detail: dict[str, object] = {
+        "event_type": event_type,
+        "last_progress_at": datetime.now(UTC).isoformat(),
+    }
+    if progress_pct is not None:
+        detail["progress_pct"] = progress_pct
+    if progress_message:
+        detail["progress_message"] = progress_message
+
+    for target_key, source_keys in {
+        "bytes_transferred": (
+            "bytes_transferred",
+            "transferred_bytes",
+            "received_bytes",
+            "sent_bytes",
+        ),
+        "total_bytes": ("total_bytes", "size_bytes"),
+        "rate_bytes_per_sec": ("rate_bytes_per_sec", "bytes_per_sec", "throughput_bps"),
+        "eta_sec": ("eta_sec", "estimated_seconds_remaining"),
+        "process_pid": ("process_pid", "pid"),
+    }.items():
+        value = _first_number(data, nested_data, source_keys)
+        if value is not None:
+            detail[target_key] = value
+
+    for key in ("transfer_id", "role", "phase", "status", "progress_source"):
+        value = data.get(key)
+        if value is None:
+            value = nested_data.get(key)
+        if isinstance(value, str) and value.strip():
+            detail[key] = value.strip()
+
+    return detail
+
+
+def _event_progress_message(event_type: str, data: JsonObject) -> str | None:
+    message = data.get("progress_message") or data.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+
+    role = data.get("role")
+    status = data.get("status")
+    if event_type == "transfer_started":
+        if isinstance(role, str) and role:
+            return f"{role} started"
+        return "transfer started"
+    if event_type in {"transfer_progress", "job.progress", "progress"}:
+        if isinstance(role, str) and isinstance(status, str) and status:
+            return f"{role} {status}"
+        if isinstance(status, str) and status:
+            return status
+        return "transfer running"
+    if event_type in {"transfer_cancelled", "job.cancelling"}:
+        return "transfer cancelling"
+    if event_type in {"transfer_timeout", "job.timeout"}:
+        return "transfer timeout"
+    if event_type.endswith("_failed") or event_type == "job.failed":
+        return "transfer failed"
+    return None
+
+
+def _first_number(
+    data: JsonObject,
+    nested_data: dict[object, object],
+    keys: tuple[str, ...],
+) -> float | None:
+    for key in keys:
+        value = _number_value(data.get(key))
+        if value is None:
+            value = _number_value(nested_data.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _number_value(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 async def handle_job_cancel(

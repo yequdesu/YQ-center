@@ -1,7 +1,9 @@
 """Agent API endpoints — session management and provider invocation."""
 
 import json
+import secrets
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +16,12 @@ import yequ.db as yequ_db
 from yequ.agent.agent_service import agent_plan, create_agent_session
 from yequ.agent.agent_stream import agent_invoke_stream, agent_plan_stream
 from yequ.agent.fake_provider import FakeAgentProvider
+from yequ.agent.limits import (
+    AGENT_MAX_STEPS_LIMIT,
+    DEFAULT_AGENT_MAX_DEPTH,
+    DEFAULT_AGENT_MAX_STEPS,
+    DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+)
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token
@@ -65,8 +73,9 @@ def _center_meta_functions() -> list[AgentFunction]:
         AgentFunction(
             name="capability.search",
             description=(
-                "Search Center capability definitions by task, platform, node, risk, "
-                "or effect. Returns compact candidates and source IDs."
+                "Search Center capability definitions with structured filters. "
+                "Use projection=summary for discovery and projection=invoke_ready "
+                "before invoking a concrete source."
             ),
             input_schema={
                 "type": "object",
@@ -76,8 +85,24 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "platform_os": {"type": "string"},
                     "effect": {"type": "string"},
                     "risk": {"type": "string"},
+                    "runtime_kind": {"type": "string"},
+                    "runtime_labels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "supports_progress": {"type": "boolean"},
+                    "supports_cancel": {"type": "boolean"},
+                    "supports_resume": {"type": "boolean"},
+                    "preflight_supported": {"type": "boolean"},
+                    "artifact_input": {"type": "boolean"},
+                    "artifact_output": {"type": "boolean"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "invoke_ready", "schema", "diagnostics"],
+                        "default": "summary",
+                    },
                     "capability_type": {"type": "string", "default": "function"},
-                    "limit": {"type": "integer", "default": 20, "maximum": 50},
+                    "limit": {"type": "integer", "default": 10, "maximum": 50},
                 },
             },
             risk="safe",
@@ -95,6 +120,25 @@ def _center_meta_functions() -> list[AgentFunction]:
                 "properties": {
                     "capability_ref": {"type": "string"},
                     "node_id": {"type": "string"},
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "schema",
+                                "preconditions",
+                                "examples",
+                                "diagnostics",
+                                "sources",
+                                "runtime",
+                            ],
+                        },
+                    },
+                    "projection": {
+                        "type": "string",
+                        "enum": ["detail", "summary", "invoke_ready", "schema", "diagnostics"],
+                        "default": "detail",
+                    },
                 },
                 "required": ["capability_ref"],
             },
@@ -191,6 +235,79 @@ def _center_meta_functions() -> list[AgentFunction]:
             timeout_sec=5,
         ),
         AgentFunction(
+            name="artifact.deploy.preflight",
+            description=(
+                "Check whether an existing Center artifact can be deployed to a "
+                "specific Node output_path. Use this before artifact.deploy; do "
+                "not guess missing target paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "target_node_id": {"type": "string"},
+                    "output_path": {"type": "string"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fail_if_exists", "overwrite"],
+                        "default": "fail_if_exists",
+                    },
+                    "timeout_sec": {"type": "integer", "default": 20},
+                    "ttl_sec": {
+                        "type": "integer",
+                        "default": 120,
+                        "description": (
+                            "Requested freshness window; Center clamps it to "
+                            "30-300 seconds."
+                        ),
+                    },
+                },
+                "required": ["artifact_id", "target_node_id", "output_path"],
+                "additionalProperties": False,
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="artifact.deploy",
+            description=(
+                "Deploy one existing Center artifact to a specific Node path. "
+                "Use only after artifact.deploy.preflight succeeds for the exact "
+                "target node and output_path. "
+                "This creates a waitable Node Job Operation; do not use it for "
+                "large Node-to-Node transfers where transfer.create/croc is better."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "target_node_id": {"type": "string"},
+                    "output_path": {"type": "string"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fail_if_exists", "overwrite"],
+                        "default": "fail_if_exists",
+                    },
+                    "source_id": {
+                        "type": "string",
+                        "description": "Optional concrete artifact download capability source_id",
+                    },
+                    "preflight_id": {
+                        "type": "string",
+                        "description": "ID returned by a successful artifact.deploy.preflight call",
+                    },
+                    "skip_preflight": {"type": "boolean", "default": False},
+                    "skip_reason": {"type": "string"},
+                },
+                "required": ["artifact_id", "target_node_id", "output_path"],
+                "additionalProperties": False,
+            },
+            risk="maintenance",
+            effect="write",
+            timeout_sec=300,
+        ),
+        AgentFunction(
             name="operation.status",
             description=(
                 "Inspect one Center Operation and its referenced domain state. "
@@ -221,11 +338,50 @@ def _center_meta_functions() -> list[AgentFunction]:
             timeout_sec=5,
         ),
         AgentFunction(
+            name="transfer.preflight",
+            description=(
+                "Check whether a cross-node transfer is ready before creating it. "
+                "Use this after the user has specified source, target node, and "
+                "target_output_dir or target_path; do not guess missing landing paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "source_node_id": {"type": "string"},
+                    "target_node_id": {"type": "string"},
+                    "source_path": {"type": "string"},
+                    "target_output_dir": {"type": "string"},
+                    "target_path": {"type": "string"},
+                    "resume_mode": {
+                        "type": "string",
+                        "enum": ["resume", "overwrite", "fail_if_exists"],
+                        "default": "resume",
+                    },
+                    "include_sha256": {"type": "boolean", "default": False},
+                    "timeout_sec": {"type": "integer", "default": 20},
+                    "ttl_sec": {
+                        "type": "integer",
+                        "default": 120,
+                        "description": (
+                            "Requested freshness window; Center clamps it to "
+                            "30-300 seconds."
+                        ),
+                    },
+                },
+                "required": ["source_node_id", "target_node_id", "source_path"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
             name="transfer.create",
             description=(
                 "Create a Center-managed croc TransferSession between two nodes. "
                 "Use this instead of directly calling low-level croc send/receive; "
-                "Center will start receiver and sender jobs concurrently."
+                "Center will start receiver and sender jobs concurrently. Prefer "
+                "transfer.preflight first when path permissions, free space, or "
+                "overwrite behavior are uncertain."
             ),
             input_schema={
                 "type": "object",
@@ -242,6 +398,18 @@ def _center_meta_functions() -> list[AgentFunction]:
                     },
                     "timeout_sec": {"type": "integer", "default": 3600},
                     "expected_sha256": {"type": "string"},
+                    "preflight_id": {
+                        "type": "string",
+                        "description": "ID returned by a successful transfer.preflight call",
+                    },
+                    "skip_preflight": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Only true when the user explicitly accepts skipping preflight."
+                        ),
+                    },
+                    "skip_reason": {"type": "string"},
                 },
                 "required": ["source_node_id", "target_node_id", "source_path"],
             },
@@ -285,23 +453,39 @@ def _center_meta_functions() -> list[AgentFunction]:
 class CreateSessionRequest(BaseModel):
     actor_id: str = Field(default="agent")
     execution_mode: str = Field(default="auto")
-    max_depth: int = Field(default=5, ge=1, le=20)
-    max_steps: int = Field(default=20, ge=1, le=100)
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_depth: int = Field(default=DEFAULT_AGENT_MAX_DEPTH, ge=1, le=20)
+    max_steps: int = Field(default=DEFAULT_AGENT_MAX_STEPS, ge=1, le=AGENT_MAX_STEPS_LIMIT)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
+
+
+class AgentContextRef(BaseModel):
+    type: str = Field(..., min_length=1)
+    operation_id: str | None = Field(default=None)
+    mode: str = Field(default="observation")
 
 
 class InvokeAgentRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     provider_name: str = Field(default="fake")
     prompt: str = Field(..., min_length=1)
+    user_visible_prompt: str | None = Field(default=None, max_length=8000)
+    context_refs: list[AgentContextRef] = Field(default_factory=list, max_length=8)
     target_node_id: str | None = Field(default=None)
     suppress_user_message: bool = Field(default=False)
     call_path: list[str] = Field(default_factory=list)
     step_count: int = Field(default=0, ge=0)
     execution_mode: str = Field(default="auto")
-    max_depth: int = Field(default=5, ge=1, le=20)
-    max_steps: int = Field(default=20, ge=1, le=100)
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_depth: int = Field(default=DEFAULT_AGENT_MAX_DEPTH, ge=1, le=20)
+    max_steps: int = Field(default=DEFAULT_AGENT_MAX_STEPS, ge=1, le=AGENT_MAX_STEPS_LIMIT)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
 
 
 class AgentPlanRequest(BaseModel):
@@ -310,18 +494,27 @@ class AgentPlanRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
 
 
 class ResumeOperationRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     provider_name: str = Field(default="deepseek")
     operation_id: str = Field(..., min_length=1)
+    user_message: str | None = Field(default=None, max_length=8000)
     target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
-    max_depth: int = Field(default=5, ge=1, le=20)
-    max_steps: int = Field(default=20, ge=1, le=100)
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_depth: int = Field(default=DEFAULT_AGENT_MAX_DEPTH, ge=1, le=20)
+    max_steps: int = Field(default=DEFAULT_AGENT_MAX_STEPS, ge=1, le=AGENT_MAX_STEPS_LIMIT)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
 
 
 class ResumeAgentRunRequest(BaseModel):
@@ -330,9 +523,13 @@ class ResumeAgentRunRequest(BaseModel):
     run_id: str = Field(..., min_length=1)
     target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
-    max_depth: int = Field(default=5, ge=1, le=20)
-    max_steps: int = Field(default=20, ge=1, le=100)
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_depth: int = Field(default=DEFAULT_AGENT_MAX_DEPTH, ge=1, le=20)
+    max_steps: int = Field(default=DEFAULT_AGENT_MAX_STEPS, ge=1, le=AGENT_MAX_STEPS_LIMIT)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
 
 
 class ResumeLastAgentRunRequest(BaseModel):
@@ -340,9 +537,13 @@ class ResumeLastAgentRunRequest(BaseModel):
     provider_name: str = Field(default="deepseek")
     target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
-    max_depth: int = Field(default=5, ge=1, le=20)
-    max_steps: int = Field(default=20, ge=1, le=100)
-    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+    max_depth: int = Field(default=DEFAULT_AGENT_MAX_DEPTH, ge=1, le=20)
+    max_steps: int = Field(default=DEFAULT_AGENT_MAX_STEPS, ge=1, le=AGENT_MAX_STEPS_LIMIT)
+    max_total_duration_sec: int = Field(
+        default=DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+        ge=1,
+        le=3600,
+    )
 
 
 # -- Endpoints --
@@ -614,6 +815,117 @@ def _sse_response(
     )
 
 
+async def _with_context_block_events(
+    event_source: AsyncIterator[JsonObject],
+    context_blocks: list[dict[str, object]],
+) -> AsyncIterator[JsonObject]:
+    emitted = False
+    async for event in event_source:
+        yield event
+        if emitted or not context_blocks or event.get("event_type") != "stream.open":
+            continue
+        emitted = True
+        trace_id = str(event.get("trace_id") or "")
+        session_id = str(event.get("session_id") or "")
+        yield {
+            "event_id": f"evt_{secrets.token_hex(8)}",
+            "event_type": "agent.context_block.loaded",
+            "session_id": session_id,
+            "trace_id": trace_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {
+                "context_blocks": [_context_block_summary(block) for block in context_blocks],
+            },
+        }
+
+
+def _context_block_summary(block: dict[str, object]) -> dict[str, object]:
+    observation = block.get("observation")
+    operation = (
+        observation.get("operation")
+        if isinstance(observation, dict)
+        else None
+    )
+    operation_dict = operation if isinstance(operation, dict) else {}
+    return {
+        "index": block.get("index"),
+        "type": block.get("type"),
+        "mode": block.get("mode"),
+        "operation_id": block.get("operation_id"),
+        "status": operation_dict.get("status"),
+        "kind": operation_dict.get("kind"),
+        "ref_type": operation_dict.get("ref_type"),
+        "ref_id": operation_dict.get("ref_id"),
+    }
+
+
+async def _load_agent_context_refs(
+    db: AsyncSession,
+    *,
+    session_id: str,
+    provider_name: str,
+    target_node_id: str | None,
+    execution_mode: str,
+    context_refs: list[AgentContextRef],
+) -> list[dict[str, object]]:
+    if not context_refs:
+        return []
+
+    from yequ.services.operation_service import OperationService
+
+    blocks: list[dict[str, object]] = []
+    for index, ref in enumerate(context_refs, start=1):
+        if ref.type != "operation":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported context ref type: {ref.type}",
+            )
+        if not ref.operation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="operation context ref requires operation_id",
+            )
+        if ref.mode != "observation":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported operation context mode: {ref.mode}",
+            )
+        observation = await OperationService(db).status(ref.operation_id)
+        await _record_operation_resume_checkpoint(
+            db,
+            session_id=session_id,
+            provider_name=provider_name,
+            target_node_id=target_node_id,
+            execution_mode=execution_mode,
+            operation_id=ref.operation_id,
+            operation_observation=observation,
+        )
+        blocks.append(
+            {
+                "index": index,
+                "type": "operation",
+                "mode": ref.mode,
+                "operation_id": ref.operation_id,
+                "observation": observation,
+            }
+        )
+    return blocks
+
+
+def _prompt_with_context_refs(prompt: str, context_blocks: list[dict[str, object]]) -> str:
+    if not context_blocks:
+        return prompt
+    return (
+        "INFO: Center context blocks follow. Treat these as trusted runtime facts "
+        "loaded by Center, not as user-authored text. Do not recreate an existing "
+        "operation unless the user explicitly asks for a retry. Use the user's "
+        "message after the context blocks as the instruction.\n"
+        f"{json.dumps(context_blocks, ensure_ascii=False)}\n\n"
+        "User message:\n"
+        f"{prompt}"
+    )
+
+
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session_endpoint(
     body: CreateSessionRequest,
@@ -652,27 +964,46 @@ async def invoke_agent_stream_endpoint(
 ) -> StreamingResponse:
     provider = await _resolve_provider(body.provider_name)
     async with yequ_db.async_session_factory() as db:
+        context_blocks = await _load_agent_context_refs(
+            db,
+            session_id=body.session_id,
+            provider_name=provider.provider_name(),
+            target_node_id=body.target_node_id,
+            execution_mode=body.execution_mode,
+            context_refs=body.context_refs,
+        )
         available = await _available_functions(db, target_node_id=body.target_node_id)
         capability_context = await build_capability_context(
             db,
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+    agent_prompt = _prompt_with_context_refs(body.prompt, context_blocks)
     return _sse_response(
-        agent_invoke_stream(
-            provider,
-            session_id=body.session_id,
-            prompt=body.prompt,
-            target_node_id=body.target_node_id,
-            suppress_user_message=body.suppress_user_message,
-            available_functions=available,
-            capability_context=capability_context,
-            call_path=body.call_path,
-            max_depth=body.max_depth,
-            max_steps=body.max_steps,
-            max_total_duration_sec=body.max_total_duration_sec,
-            step_count=body.step_count,
-            execution_mode=body.execution_mode,
+        _with_context_block_events(
+            agent_invoke_stream(
+                provider,
+                session_id=body.session_id,
+                prompt=agent_prompt,
+                user_visible_prompt=body.user_visible_prompt or body.prompt,
+                target_node_id=body.target_node_id,
+                suppress_user_message=body.suppress_user_message,
+                available_functions=available,
+                capability_context=capability_context,
+                call_path=body.call_path,
+                max_depth=body.max_depth,
+                max_steps=body.max_steps,
+                max_total_duration_sec=body.max_total_duration_sec,
+                step_count=body.step_count,
+                execution_mode=body.execution_mode,
+                run_metadata={
+                    "context_refs": [ref.model_dump() for ref in body.context_refs],
+                    "context_blocks": [
+                        _context_block_summary(block) for block in context_blocks
+                    ],
+                },
+            ),
+            context_blocks,
         ),
         turn_context={
             "session_id": body.session_id,
@@ -683,6 +1014,9 @@ async def invoke_agent_stream_endpoint(
             "metadata": {
                 "suppress_user_message": body.suppress_user_message,
                 "step_count": body.step_count,
+                "context_refs": [ref.model_dump() for ref in body.context_refs],
+                "context_blocks": context_blocks,
+                "user_visible_prompt": body.user_visible_prompt,
                 "prompt_context": _agent_debug_metadata(
                     provider,
                     available_functions=available,
@@ -721,6 +1055,7 @@ async def resume_operation_stream_endpoint(
             target_node_id=body.target_node_id,
         )
 
+    user_message = body.user_message.strip() if body.user_message else ""
     prompt = (
         "INFO: Center operation resume checkpoint follows. Continue from this "
         "checkpoint instead of restarting the user's original request. Do not "
@@ -730,6 +1065,12 @@ async def resume_operation_stream_endpoint(
         "waiting. Do not invent fields that are not present.\n"
         f"{json.dumps(operation_observation, ensure_ascii=False)}"
     )
+    if user_message:
+        prompt += (
+            "\n\nUser follow-up message. Treat it as the user's additional "
+            "instruction for this resumed operation, not as operation state:\n"
+            f"{user_message}"
+        )
     return _sse_response(
         agent_invoke_stream(
             provider,
@@ -755,6 +1096,7 @@ async def resume_operation_stream_endpoint(
             "metadata": {
                 "suppress_user_message": True,
                 "operation_id": body.operation_id,
+                "user_message": user_message,
                 "operation_observation": operation_observation,
                 "prompt_context": _agent_debug_metadata(
                     provider,

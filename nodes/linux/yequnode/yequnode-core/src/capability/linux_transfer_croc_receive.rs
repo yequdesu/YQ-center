@@ -56,6 +56,11 @@ impl Capability for LinuxTransferCrocReceive {
                         "type": ["string", "null"],
                         "description": "Optional expected SHA256 for verification."
                     },
+                    "expected_size_bytes": {
+                        "type": ["integer", "null"],
+                        "minimum": 0,
+                        "description": "Optional expected total byte size for progress projection."
+                    },
                     "transfer_id": {
                         "type": ["string", "null"],
                         "description": "Optional transfer ID for idempotency."
@@ -75,6 +80,15 @@ impl Capability for LinuxTransferCrocReceive {
             })),
             resource_keys: Some(vec!["node.transfer".into()]),
             conflict_policy: Some("serialize".into()),
+            supports_progress: true,
+            supports_cancel: true,
+            supports_resume: true,
+            progress_contract: Some("transfer_progress_v1".into()),
+            preconditions: vec![
+                json!({"fact": "target.parent_exists", "capability": "linux.transfer.local.stat"}),
+                json!({"fact": "target.writable", "capability": "linux.transfer.local.stat"}),
+            ],
+            required_intent_slots: vec!["code".into(), "target_output_dir_or_target_path".into()],
         }
     }
 
@@ -130,6 +144,7 @@ impl Capability for LinuxTransferCrocReceive {
             .unwrap_or("resume");
 
         let expected_sha256 = input.get("expected_sha256").and_then(|v| v.as_str());
+        let expected_size_bytes = input.get("expected_size_bytes").and_then(|v| v.as_u64());
 
         let transfer_id = input
             .get("transfer_id")
@@ -205,6 +220,7 @@ impl Capability for LinuxTransferCrocReceive {
 
         // Detect existing partial file before starting
         let partial_path = find_partial_file(out_path);
+        let progress_start_size = directory_size(out_path);
 
         // Check idempotency
         if let Some(existing) = ledger
@@ -294,6 +310,7 @@ impl Capability for LinuxTransferCrocReceive {
                     "output_dir": output_dir,
                     "resume_mode": resume_mode_str,
                     "partial_path": partial_path,
+                    "total_bytes": expected_size_bytes,
                 }),
             )
             .await;
@@ -376,6 +393,7 @@ impl Capability for LinuxTransferCrocReceive {
         let progress_interval = Duration::from_secs(30);
         let mut last_lease = tokio::time::Instant::now();
         let mut last_progress = tokio::time::Instant::now();
+        let progress_started = tokio::time::Instant::now();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
 
         let result = loop {
@@ -482,12 +500,39 @@ impl Capability for LinuxTransferCrocReceive {
                         })?;
 
                         if let Some(ref ctx) = ctx {
+                            let bytes_transferred =
+                                directory_size(out_path).saturating_sub(progress_start_size);
+                            let elapsed = progress_started.elapsed().as_secs().max(1);
+                            let rate_bytes_per_sec = if bytes_transferred > 0 {
+                                Some(bytes_transferred / elapsed)
+                            } else {
+                                None
+                            };
+                            let progress_pct = expected_size_bytes
+                                .filter(|total| *total > 0)
+                                .map(|total| ((bytes_transferred * 100) / total).min(100));
+                            let eta_sec = match (expected_size_bytes, rate_bytes_per_sec) {
+                                (Some(total), Some(rate))
+                                    if total > bytes_transferred && rate > 0 =>
+                                {
+                                    Some((total - bytes_transferred) / rate)
+                                }
+                                _ => None,
+                            };
                             ctx.report_progress(
                                 "transfer_progress",
                                 json!({
                                     "transfer_id": transfer_id,
                                     "pid": pid,
                                     "status": "running",
+                                    "role": "receiver",
+                                    "phase": "receiving",
+                                    "bytes_transferred": bytes_transferred,
+                                    "total_bytes": expected_size_bytes,
+                                    "progress_pct": progress_pct,
+                                    "rate_bytes_per_sec": rate_bytes_per_sec,
+                                    "eta_sec": eta_sec,
+                                    "progress_source": "receiver_output_size",
                                 }),
                             )
                             .await;
@@ -799,6 +844,25 @@ fn find_newest_file(dir: &std::path::Path) -> Option<String> {
         }
     }
     newest.map(|(_, p)| p)
+}
+
+fn directory_size(dir: &std::path::Path) -> u64 {
+    let mut total = 0;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_file() {
+            total += meta.len();
+        } else if meta.is_dir() {
+            total += directory_size(&path);
+        }
+    }
+    total
 }
 
 fn compute_code_hash(code: &str) -> String {

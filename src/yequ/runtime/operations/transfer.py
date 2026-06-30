@@ -35,9 +35,18 @@ class TransferOperationHandler:
     @staticmethod
     def sync_operation(operation: Operation, transfer: dict[str, object]) -> bool:
         next_status = operation_status_from_transfer(transfer.get("status"))
-        changed = operation.status != next_status
+        progress = _transfer_progress(transfer)
+        progress_pct = progress.get("pct")
+        progress_message = optional_str(progress.get("message"))
+        changed = (
+            operation.status != next_status
+            or operation.progress_pct != progress_pct
+            or operation.progress_message != progress_message
+        )
         operation.status = next_status
-        operation.output_data = {"transfer": transfer}
+        operation.progress_pct = progress_pct if isinstance(progress_pct, int) else None
+        operation.progress_message = progress_message
+        operation.output_data = {"transfer": transfer, "progress_detail": progress}
         operation.error_code = optional_str(transfer.get("error_code"))
         operation.error_message = optional_str(transfer.get("error_message"))
         if next_status in TERMINAL_OPERATION_STATUSES:
@@ -71,3 +80,24 @@ def transfer_title(transfer: dict[str, object] | object) -> str:
 
 def optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _transfer_progress(transfer: dict[str, object]) -> dict[str, object]:
+    summary = transfer.get("summary")
+    if isinstance(summary, dict):
+        progress = summary.get("progress")
+        if isinstance(progress, dict):
+            return progress
+
+    status = str(transfer.get("status") or "created")
+    if status == "succeeded":
+        return {"pct": 100, "message": "Transfer completed"}
+    if status == "failed":
+        return {"pct": None, "message": "Transfer failed"}
+    if status == "cancelled":
+        return {"pct": None, "message": "Transfer cancelled"}
+    if status == "timeout":
+        return {"pct": None, "message": "Transfer timed out"}
+    if status in {"created", "queued"}:
+        return {"pct": None, "message": "Waiting for transfer jobs"}
+    return {"pct": None, "message": "Transfer is running"}

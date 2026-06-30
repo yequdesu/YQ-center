@@ -60,6 +60,16 @@ import {
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
+const OPERATION_CONTEXT_STORAGE_PREFIX = "yequ_agent_operation_context:";
+const DEFAULT_AGENT_MAX_STEPS = 40;
+const AGENT_MAX_STEP_OPTIONS = [40, 60, 80, 100] as const;
+
+interface OperationContextChip {
+  operationId: string;
+  kind: string;
+  status: string;
+  title?: string;
+}
 
 export function AgentChatPage() {
   const [sessionId, setSessionId] = useState<string>(() => {
@@ -68,6 +78,7 @@ export function AgentChatPage() {
   const [prompt, setPrompt] = useState("");
   const [executionMode, setExecutionMode] = useState("auto");
   const [providerName, setProviderName] = useState("deepseek");
+  const [maxSteps, setMaxSteps] = useState<number>(DEFAULT_AGENT_MAX_STEPS);
   const [autoPlan, setAutoPlan] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [editingSessId, setEditingSessId] = useState<string | null>(null);
@@ -82,6 +93,9 @@ export function AgentChatPage() {
   const [autoContinuing, setAutoContinuing] = useState(false);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
+  const [operationContext, setOperationContext] = useState<OperationContextChip | null>(() =>
+    readStoredOperationContext(sessionId),
+  );
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
   const refreshSessionHistory = useCallback(() => {
@@ -114,7 +128,6 @@ export function AgentChatPage() {
     planSteps,
     sendInvoke,
     sendPlan,
-    resumeOperation,
     resumeLastRun,
     cancel,
     detach,
@@ -149,6 +162,10 @@ export function AgentChatPage() {
     }
     setSessionId(nextSession);
   }, [clearBlocks, queryClient, sessionId, sessionsQuery.data, sessionsQuery.isSuccess]);
+
+  useEffect(() => {
+    setOperationContext(readStoredOperationContext(sessionId));
+  }, [sessionId]);
 
   // Load persisted messages into blocks when session data arrives
   useEffect(() => {
@@ -226,6 +243,7 @@ export function AgentChatPage() {
     const wasActive = id === sessionId;
     const nextSession = (sessionsQuery.data ?? []).find((s) => s.session_id !== id)?.session_id ?? "";
     await deleteSession(id);
+    writeStoredOperationContext(id, null);
     queryClient.setQueryData<AgentSessionSummary[]>(["agent-sessions"], (old) =>
       (old ?? []).filter((session) => session.session_id !== id),
     );
@@ -244,11 +262,35 @@ export function AgentChatPage() {
   };
 
   const handleSend = () => {
-    if (!sessionId || !prompt.trim() || isStreaming) return;
-    if (autoPlan) {
+    const trimmedPrompt = prompt.trim();
+    if (!sessionId || isStreaming) return;
+    if (operationContext) {
+      const operationPrompt = trimmedPrompt || "Continue from the latest operation status.";
+      const visibleMessage = operationContextVisibleMessage(operationContext, operationPrompt);
+      sendInvoke(operationPrompt, "", providerName, executionMode, {
+        visiblePrompt: visibleMessage,
+        maxSteps,
+        contextRefs: [
+          {
+            type: "operation",
+            operation_id: operationContext.operationId,
+            mode: "observation",
+          },
+        ],
+      });
+      setContinuedOperationIds((prev) => {
+        const next = new Set(prev);
+        next.add(operationContext.operationId);
+        return next;
+      });
+      setOperationContext(null);
+      writeStoredOperationContext(sessionId, null);
+    } else if (trimmedPrompt && autoPlan) {
       sendPlan(prompt.trim(), "", providerName);
+    } else if (trimmedPrompt) {
+      sendInvoke(prompt.trim(), "", providerName, executionMode, { maxSteps });
     } else {
-      sendInvoke(prompt.trim(), "", providerName, executionMode);
+      return;
     }
     setPrompt("");
   };
@@ -309,11 +351,12 @@ export function AgentChatPage() {
       sendInvoke(buildApprovalContinuationPromptV2(outcomes), "", providerName, executionMode, {
         visible: false,
         suppressUserMessage: true,
+        maxSteps,
       });
     } finally {
       setAutoContinuing(false);
     }
-  }, [autoContinuing, executionMode, providerName, sendInvoke, sessionId]);
+  }, [autoContinuing, executionMode, maxSteps, providerName, sendInvoke, sessionId]);
 
   const pendingApprovals = useMemo(
     () =>
@@ -548,13 +591,6 @@ export function AgentChatPage() {
     ],
   );
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const handleApproveAndRun = useCallback(
     (planId: string, onRunStarted: (runId: string) => void) => {
       approvePlan(planId).then(() => {
@@ -568,19 +604,19 @@ export function AgentChatPage() {
   );
   const handleResumeOperation = useCallback(
     (operationId: string) => {
-      setContinuedOperationIds((prev) => {
-        if (prev.has(operationId)) return prev;
-        const next = new Set(prev);
-        next.add(operationId);
-        return next;
-      });
-      resumeOperation(operationId, providerName, executionMode);
+      const nextContext = {
+        operationId,
+        kind: "operation",
+        status: "selected",
+      };
+      setOperationContext(nextContext);
+      writeStoredOperationContext(sessionId, nextContext);
     },
-    [executionMode, providerName, resumeOperation],
+    [sessionId],
   );
   const handleResumeLastRun = useCallback(() => {
-    resumeLastRun(providerName, executionMode);
-  }, [executionMode, providerName, resumeLastRun]);
+    resumeLastRun(providerName, executionMode, maxSteps);
+  }, [executionMode, maxSteps, providerName, resumeLastRun]);
 
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
@@ -613,9 +649,10 @@ export function AgentChatPage() {
         .find(
           (operation) =>
             isOperationTerminal(operation.status) &&
-            !continuedOperationIds.has(operation.operationId),
+            !continuedOperationIds.has(operation.operationId) &&
+            operationContext?.operationId !== operation.operationId,
         ),
-    [continuedOperationIds, operationBlocks],
+    [continuedOperationIds, operationBlocks, operationContext],
   );
 
   return (
@@ -808,7 +845,7 @@ export function AgentChatPage() {
                   onClick={() => handleResumeOperation(latestContinuableOperation.operationId)}
                 >
                   <Bot size={13} />
-                  <span className="ml-1">Continue</span>
+                  <span className="ml-1">Append</span>
                 </Button>
               </div>
             )}
@@ -847,6 +884,22 @@ export function AgentChatPage() {
                 Plan
               </label>
 
+              <label className="flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+                <span>Steps</span>
+                <select
+                  value={maxSteps}
+                  onChange={(e) => setMaxSteps(Number(e.target.value))}
+                  className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-2 py-1.5 text-[12px] text-[var(--text)] outline-none"
+                  title="Maximum ReAct steps for this turn"
+                >
+                  {AGENT_MAX_STEP_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <span className="flex-1" />
 
               {isStreaming && (
@@ -863,20 +916,23 @@ export function AgentChatPage() {
             </div>
 
             <div className="flex items-end gap-2">
-              <textarea
+              <PromptComposerInput
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={!sessionId ? "Create a session to start..." : autoPlan ? "Describe maintenance task..." : "Ask the agent..."}
-                rows={2}
-                className="flex-1 resize-none rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-3 py-2 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--text-subtle)]"
+                onChange={setPrompt}
+                operationContext={operationContext}
+                onRemoveOperationContext={() => {
+                  setOperationContext(null);
+                  writeStoredOperationContext(sessionId, null);
+                }}
+                onSubmit={handleSend}
+                placeholder={!sessionId ? "Create a session to start..." : operationContext ? "Add an instruction for this operation context..." : autoPlan ? "Describe maintenance task..." : "Ask the agent..."}
                 disabled={!sessionId || isStreaming}
               />
               <Button
                 variant="primary"
                 size="md"
                 onClick={handleSend}
-                disabled={!sessionId || !prompt.trim() || isStreaming}
+                disabled={!sessionId || (!prompt.trim() && !operationContext) || isStreaming}
               >
                 {isStreaming ? (
                   <Loader2 size={16} className="animate-spin" />
@@ -888,6 +944,97 @@ export function AgentChatPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PromptComposerInput({
+  value,
+  onChange,
+  operationContext,
+  onRemoveOperationContext,
+  onSubmit,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  operationContext: OperationContextChip | null;
+  onRemoveOperationContext: () => void;
+  onSubmit: () => void;
+  placeholder: string;
+  disabled: boolean;
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const contextId = operationContext?.operationId ?? "";
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const renderedContextId = editor.dataset.operationContextId ?? "";
+    const renderedText = readPromptComposerText(editor);
+    if (renderedContextId === contextId && renderedText === value) return;
+    renderPromptComposerContent(editor, value, operationContext);
+    if (document.activeElement === editor) {
+      placeCaretAtEnd(editor);
+    }
+  }, [contextId, operationContext, value]);
+
+  const handleInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const hasChip = Boolean(editor.querySelector("[data-operation-chip='true']"));
+    if (operationContext && !hasChip) {
+      onRemoveOperationContext();
+    }
+    onChange(readPromptComposerText(editor));
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      onSubmit();
+      return;
+    }
+    if (event.key === "Backspace" && operationContext) {
+      const editor = editorRef.current;
+      if (editor && !readPromptComposerText(editor).trim()) {
+        event.preventDefault();
+        onRemoveOperationContext();
+      }
+    }
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const text = event.clipboardData.getData("text/plain");
+    document.execCommand("insertText", false, text);
+  };
+
+  const empty = !value.trim() && !operationContext;
+
+  return (
+    <div className="relative flex-1">
+      {empty && (
+        <span className="pointer-events-none absolute left-3 top-2 text-[14px] text-[var(--text-subtle)]">
+          {placeholder}
+        </span>
+      )}
+      <div
+        ref={editorRef}
+        role="textbox"
+        aria-label="Agent prompt"
+        aria-multiline="true"
+        aria-disabled={disabled}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        className={`min-h-[42px] max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-3 py-2 text-[14px] text-[var(--text)] outline-none ${
+          disabled ? "cursor-not-allowed opacity-60" : "focus:border-[var(--accent)]"
+        }`}
+      />
     </div>
   );
 }
@@ -1158,7 +1305,10 @@ function OperationCard({
   const errorMessage = operation?.error_message ?? block.errorMessage;
   const canCancel = Boolean(operation?.cancel_supported ?? block.waitHandle?.cancel_supported);
   const terminal = isOperationTerminal(status);
-  const message = operationStatusMessage(status, block.message);
+  const progressPct = operation?.progress_pct ?? block.progressPct ?? null;
+  const progressMessage = operation?.progress_message ?? block.progressMessage ?? null;
+  const message = progressMessage ?? operationStatusMessage(status, block.message);
+  const transferSummary = getTransferSummary(operationQuery.data?.transfer);
   const compact = surface === "panel";
 
   const handleCancel = async () => {
@@ -1195,6 +1345,8 @@ function OperationCard({
           {refType && refId && <p className="font-mono">{refType}: {refId}</p>}
           <p>{message}</p>
         </div>
+        <OperationProgressBar progressPct={progressPct} terminal={terminal} />
+        {transferSummary && <TransferOperationSummary summary={transferSummary} />}
         {errorMessage && (
           <p className="mt-2 rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
             {errorMessage}
@@ -1227,13 +1379,312 @@ function OperationCard({
           {terminal && onResume && (
             <Button variant="primary" size="sm" onClick={() => onResume(block.operationId)}>
               <Bot size={13} />
-              <span className="ml-1">Continue</span>
+              <span className="ml-1">Append</span>
             </Button>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+interface TransferSummaryView {
+  sourceNodeId: string | null;
+  sourcePath: string | null;
+  sourceStatus: string | null;
+  targetNodeId: string | null;
+  targetPath: string | null;
+  targetOutputDir: string | null;
+  targetStatus: string | null;
+  sizeBytes: number | null;
+  phase: string | null;
+  bytesTransferred: number | null;
+  rateBytesPerSec: number | null;
+  etaSec: number | null;
+  lastProgressAt: string | null;
+  progressSource: string | null;
+  sha256Match: boolean | null;
+  sizeMatch: boolean | null;
+}
+
+function TransferOperationSummary({ summary }: { summary: TransferSummaryView }) {
+  return (
+    <div className="mt-3 grid gap-1.5 text-[11px] text-[var(--text-subtle)]">
+      <TransferSummaryRow
+        label="From"
+        nodeId={summary.sourceNodeId}
+        path={summary.sourcePath}
+        status={summary.sourceStatus}
+      />
+      <TransferSummaryRow
+        label="To"
+        nodeId={summary.targetNodeId}
+        path={summary.targetPath ?? summary.targetOutputDir}
+        status={summary.targetStatus}
+      />
+      {summary.phase && (
+        <div className="flex">
+          <span className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-subtle)]">
+            {formatPhase(summary.phase)}
+          </span>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {summary.bytesTransferred !== null && (
+          <span>
+            {formatBytes(summary.bytesTransferred)}
+            {summary.sizeBytes !== null ? ` / ${formatBytes(summary.sizeBytes)}` : ""}
+          </span>
+        )}
+        {summary.bytesTransferred === null && summary.sizeBytes !== null && (
+          <span>{formatBytes(summary.sizeBytes)}</span>
+        )}
+        {summary.rateBytesPerSec !== null && (
+          <span>{formatBytes(summary.rateBytesPerSec)}/s</span>
+        )}
+        {summary.etaSec !== null && <span>ETA {formatDuration(summary.etaSec)}</span>}
+        {summary.sizeMatch !== null && (
+          <span>size {summary.sizeMatch ? "verified" : "mismatch"}</span>
+        )}
+        {summary.sha256Match !== null && (
+          <span>sha256 {summary.sha256Match ? "verified" : "mismatch"}</span>
+        )}
+      </div>
+      {(summary.lastProgressAt || summary.progressSource) && (
+        <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-muted)]">
+          {summary.lastProgressAt && <span>updated {formatTimestamp(summary.lastProgressAt)}</span>}
+          {summary.progressSource && <span>{summary.progressSource}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TransferSummaryRow({
+  label,
+  nodeId,
+  path,
+  status,
+}: {
+  label: string;
+  nodeId: string | null;
+  path: string | null;
+  status: string | null;
+}) {
+  return (
+    <div className="grid grid-cols-[34px_minmax(0,1fr)] items-start gap-2">
+      <span className="text-[var(--text-muted)]">{label}</span>
+      <span className="min-w-0">
+        {nodeId && <span className="font-mono text-[var(--text)]">{nodeId}</span>}
+        {path && (
+          <span className="ml-1 break-all font-mono text-[var(--text-subtle)]">
+            {fileName(path)}
+          </span>
+        )}
+        {status && <StatusBadge status={status} />}
+      </span>
+    </div>
+  );
+}
+
+function OperationProgressBar({
+  progressPct,
+  terminal,
+}: {
+  progressPct: number | null;
+  terminal: boolean;
+}) {
+  if (progressPct === null && terminal) return null;
+  const safePct =
+    progressPct === null ? null : Math.max(0, Math.min(100, Math.round(progressPct)));
+  return (
+    <div className="mt-3">
+      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+        {safePct === null ? (
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-[var(--accent)]/60" />
+        ) : (
+          <div
+            className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-300"
+            style={{ width: `${safePct}%` }}
+          />
+        )}
+      </div>
+      {safePct !== null && (
+        <div className="mt-1 text-right font-mono text-[10px] text-[var(--text-subtle)]">
+          {safePct}%
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getTransferSummary(transfer: Record<string, unknown> | undefined): TransferSummaryView | null {
+  const summary = recordValue(transfer?.summary);
+  if (!summary) return null;
+  const source = recordValue(summary.source);
+  const target = recordValue(summary.target);
+  const verification = recordValue(summary.verification);
+  const progress = recordValue(summary.progress);
+  if (!source && !target) return null;
+  return {
+    sourceNodeId: stringValue(source?.node_id),
+    sourcePath: stringValue(source?.path),
+    sourceStatus: stringValue(source?.status),
+    targetNodeId: stringValue(target?.node_id),
+    targetPath: stringValue(target?.path),
+    targetOutputDir: stringValue(target?.output_dir),
+    targetStatus: stringValue(target?.status),
+    sizeBytes: numberValue(source?.size_bytes ?? target?.size_bytes),
+    phase: stringValue(progress?.phase),
+    bytesTransferred: numberValue(progress?.bytes_transferred),
+    rateBytesPerSec: numberValue(progress?.rate_bytes_per_sec),
+    etaSec: numberValue(progress?.eta_sec),
+    lastProgressAt: stringValue(progress?.last_progress_at),
+    progressSource: stringValue(
+      recordValue(progress?.source)?.progress_source ?? recordValue(progress?.target)?.progress_source,
+    ),
+    sha256Match: booleanValue(verification?.sha256_match),
+    sizeMatch: booleanValue(verification?.size_match),
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function fileName(path: string) {
+  return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+}
+
+function formatBytes(value: number) {
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatPhase(value: string) {
+  return value.replace(/_/g, " ");
+}
+
+function formatDuration(seconds: number) {
+  const safe = Math.max(0, Math.round(seconds));
+  if (safe < 60) return `${safe}s`;
+  const minutes = Math.floor(safe / 60);
+  const rest = safe % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const minuteRest = minutes % 60;
+  return minuteRest ? `${hours}h ${minuteRest}m` : `${hours}h`;
+}
+
+function formatTimestamp(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Date(timestamp).toLocaleTimeString();
+}
+
+function readPromptComposerText(editor: HTMLElement) {
+  const clone = editor.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("[data-operation-chip='true']").forEach((node) => node.remove());
+  const text = (clone.textContent ?? "").replace(/\u00a0/g, " ");
+  return text.startsWith(" ") ? text.slice(1) : text;
+}
+
+function renderPromptComposerContent(
+  editor: HTMLElement,
+  value: string,
+  operationContext: OperationContextChip | null,
+) {
+  editor.replaceChildren();
+  editor.dataset.operationContextId = operationContext?.operationId ?? "";
+
+  if (operationContext) {
+    const chip = document.createElement("span");
+    chip.dataset.operationChip = "true";
+    chip.contentEditable = "false";
+    chip.title = "Operation context. Press Backspace on an empty prompt to remove it.";
+    chip.className = [
+      "mr-1 inline-flex max-w-full select-none items-center rounded-[var(--radius-sm)]",
+      "border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5",
+      "align-baseline font-mono text-[12px] text-[var(--text)]",
+    ].join(" ");
+    chip.textContent = `Operation ${operationContext.operationId} (${operationContext.status})`;
+    editor.appendChild(chip);
+    editor.appendChild(document.createTextNode(" "));
+  }
+
+  if (value) {
+    editor.appendChild(document.createTextNode(value));
+  }
+}
+
+function placeCaretAtEnd(element: HTMLElement) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function operationContextVisibleMessage(context: OperationContextChip, userMessage: string) {
+  const prefix = `[Operation ${context.operationId}]`;
+  return userMessage ? `${prefix} ${userMessage}` : `${prefix} Continue from latest status.`;
+}
+
+function operationContextStorageKey(sessionId: string) {
+  return `${OPERATION_CONTEXT_STORAGE_PREFIX}${sessionId}`;
+}
+
+function readStoredOperationContext(sessionId: string): OperationContextChip | null {
+  if (!sessionId) return null;
+  try {
+    const raw = sessionStorage.getItem(operationContextStorageKey(sessionId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<OperationContextChip>;
+    if (typeof value.operationId !== "string" || !value.operationId.trim()) return null;
+    return {
+      operationId: value.operationId,
+      kind: typeof value.kind === "string" && value.kind ? value.kind : "operation",
+      status: typeof value.status === "string" && value.status ? value.status : "selected",
+      title: typeof value.title === "string" && value.title ? value.title : undefined,
+    };
+  } catch {
+    sessionStorage.removeItem(operationContextStorageKey(sessionId));
+    return null;
+  }
+}
+
+function writeStoredOperationContext(
+  sessionId: string,
+  context: OperationContextChip | null,
+) {
+  if (!sessionId) return;
+  const key = operationContextStorageKey(sessionId);
+  if (!context) {
+    sessionStorage.removeItem(key);
+    return;
+  }
+  sessionStorage.setItem(key, JSON.stringify(context));
 }
 
 function isOperationTerminal(status: string) {

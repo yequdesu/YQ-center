@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import CursorResult, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -288,6 +288,15 @@ async def search_meta_capabilities(
     platform_os: str | None = None,
     effect: str | None = None,
     risk: str | None = None,
+    runtime_kind: str | None = None,
+    runtime_labels: list[str] = Query(default_factory=list),
+    supports_progress: bool | None = None,
+    supports_cancel: bool | None = None,
+    supports_resume: bool | None = None,
+    preflight_supported: bool | None = None,
+    artifact_input: bool | None = None,
+    artifact_output: bool | None = None,
+    projection: str = "summary",
     capability_type: str = "function",
     include_inactive: bool = False,
     limit: int = 20,
@@ -302,6 +311,15 @@ async def search_meta_capabilities(
         platform_os=platform_os,
         effect=effect,
         risk=risk,
+        runtime_kind=runtime_kind,
+        runtime_labels=runtime_labels or None,
+        supports_progress=supports_progress,
+        supports_cancel=supports_cancel,
+        supports_resume=supports_resume,
+        preflight_supported=preflight_supported,
+        artifact_input=artifact_input,
+        artifact_output=artifact_output,
+        projection=projection,
         capability_type=capability_type,
         include_inactive=include_inactive,
         limit=limit,
@@ -312,6 +330,8 @@ async def search_meta_capabilities(
 async def describe_meta_capability(
     capability_ref: str,
     node_id: str | None = None,
+    sections: list[str] = Query(default_factory=list),
+    projection: str = "detail",
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     _token: dict[str, str] = Depends(get_admin_token),
@@ -322,6 +342,8 @@ async def describe_meta_capability(
             db,
             capability_ref,
             node_id=node_id,
+            sections=sections or None,
+            projection=projection,
             include_inactive=include_inactive,
         )
     except ValueError as exc:

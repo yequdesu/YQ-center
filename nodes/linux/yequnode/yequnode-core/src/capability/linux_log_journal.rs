@@ -13,7 +13,7 @@ impl Capability for LinuxLogJournal {
             name: "linux.log.journal".into(),
             description: "Query system journal with optional filters.".into(),
             agent_description: Some(
-                "Inspect systemd journal entries filtered by unit, priority, or time range.".into()
+                "Inspect systemd journal entries filtered by unit, priority, or time range.".into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -51,11 +51,18 @@ impl Capability for LinuxLogJournal {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let lines = input.get("lines")
+        let lines = input
+            .get("lines")
             .and_then(|v| v.as_u64())
             .unwrap_or(50)
             .min(500) as usize;

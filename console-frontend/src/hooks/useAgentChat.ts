@@ -47,6 +47,15 @@ interface UseAgentChatOptions {
 interface SendInvokeOptions {
   visible?: boolean;
   suppressUserMessage?: boolean;
+  visiblePrompt?: string;
+  contextRefs?: AgentContextRef[];
+  maxSteps?: number;
+}
+
+interface AgentContextRef {
+  type: "operation";
+  operation_id: string;
+  mode: "observation";
 }
 
 export function useAgentChat({
@@ -203,7 +212,12 @@ export function useAgentChat({
         const eventId = crypto.randomUUID();
         const timestamp = new Date().toISOString();
         setTranscript((prev) =>
-          appendOptimisticUserPrompt(prev, prompt, eventId, timestamp),
+          appendOptimisticUserPrompt(
+            prev,
+            (options.visiblePrompt ?? prompt).trim(),
+            eventId,
+            timestamp,
+          ),
         );
       }
       setTranscript((prev) =>
@@ -223,8 +237,11 @@ export function useAgentChat({
           session_id: sessionId,
           provider_name: providerName,
           prompt,
+          user_visible_prompt: options.visiblePrompt,
+          context_refs: options.contextRefs,
           target_node_id: targetNodeId || undefined,
           execution_mode: executionMode,
+          max_steps: options.maxSteps,
           suppress_user_message: suppressUserMessage,
         },
         handleInvokeEvent,
@@ -267,7 +284,25 @@ export function useAgentChat({
   );
 
   const resumeOperation = useCallback(
-    (operationId: string, providerName: string, executionMode: string) => {
+    (
+      operationId: string,
+      providerName: string,
+      executionMode: string,
+      userMessage = "",
+      visibleMessage?: string,
+      maxSteps?: number,
+    ) => {
+      const displayMessage =
+        visibleMessage ?? (
+          userMessage.trim() || `[Operation ${operationId}] Continue from latest status.`
+        );
+      if (displayMessage.trim()) {
+        const eventId = crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+        setTranscript((prev) =>
+          appendOptimisticUserPrompt(prev, displayMessage.trim(), eventId, timestamp),
+        );
+      }
       setTranscript((prev) =>
         reduceSseEvent(prev, {
           event_id: crypto.randomUUID(),
@@ -280,12 +315,20 @@ export function useAgentChat({
       );
 
       startStream(
-        "/agent/resume-operation/stream",
+        "/agent/invoke/stream",
         {
           session_id: sessionId,
           provider_name: providerName,
-          operation_id: operationId,
+          prompt: displayMessage.trim(),
+          context_refs: [
+            {
+              type: "operation",
+              operation_id: operationId,
+              mode: "observation",
+            },
+          ],
           execution_mode: executionMode,
+          max_steps: maxSteps,
         },
         handleInvokeEvent,
       );
@@ -294,7 +337,7 @@ export function useAgentChat({
   );
 
   const resumeLastRun = useCallback(
-    (providerName: string, executionMode: string) => {
+    (providerName: string, executionMode: string, maxSteps?: number) => {
       setTranscript((prev) =>
         reduceSseEvent(prev, {
           event_id: crypto.randomUUID(),
@@ -312,6 +355,7 @@ export function useAgentChat({
           session_id: sessionId,
           provider_name: providerName,
           execution_mode: executionMode,
+          max_steps: maxSteps,
         },
         handleInvokeEvent,
       );

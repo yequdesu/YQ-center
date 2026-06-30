@@ -33,6 +33,12 @@ impl Capability for LinuxTransferCrocReconcile {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -40,15 +46,19 @@ impl Capability for LinuxTransferCrocReconcile {
         let config = crate::config::Config::load()
             .map_err(|e| CapabilityError::Internal(format!("config load failed: {}", e)))?;
 
-        let ledger_path = config.db_path.parent()
+        let ledger_path = config
+            .db_path
+            .parent()
             .unwrap_or(std::path::Path::new("."))
             .join("transfers.db");
 
-        let ledger = crate::transfer_ledger::TransferLedger::open(&ledger_path)
-            .map_err(|e| CapabilityError::Internal(format!("failed to open transfer ledger: {}", e)))?;
+        let ledger = crate::transfer_ledger::TransferLedger::open(&ledger_path).map_err(|e| {
+            CapabilityError::Internal(format!("failed to open transfer ledger: {}", e))
+        })?;
 
         // Get all transfers
-        let all = ledger.list(None)
+        let all = ledger
+            .list(None)
             .map_err(|e| CapabilityError::Internal(format!("ledger list failed: {}", e)))?;
 
         // Categorize by status
@@ -99,12 +109,14 @@ impl Capability for LinuxTransferCrocReconcile {
             if entry.status == crate::transfer_ledger::TransferStatus::Running {
                 let pid_alive = entry.pid.map(|p| is_pid_alive(p)).unwrap_or(false);
                 if !pid_alive {
-                    ledger.update_status(
-                        &entry.transfer_id,
-                        crate::transfer_ledger::TransferStatus::Interrupted,
-                        None,
-                        None,
-                    ).ok();
+                    ledger
+                        .update_status(
+                            &entry.transfer_id,
+                            crate::transfer_ledger::TransferStatus::Interrupted,
+                            None,
+                            None,
+                        )
+                        .ok();
                 }
             }
         }

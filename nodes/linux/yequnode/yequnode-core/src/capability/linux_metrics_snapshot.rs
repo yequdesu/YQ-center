@@ -29,6 +29,12 @@ impl Capability for LinuxMetricsSnapshot {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -74,7 +80,8 @@ fn memory_info() -> Value {
         Err(_) => return json!({}),
     };
     let get_kb = |key: &str| -> Option<u64> {
-        content.lines()
+        content
+            .lines()
             .find(|l| l.starts_with(key))
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|v| v.parse::<u64>().ok())
@@ -82,7 +89,11 @@ fn memory_info() -> Value {
     let total = get_kb("MemTotal").unwrap_or(0);
     let available = get_kb("MemAvailable").unwrap_or(0);
     let used = total.saturating_sub(available);
-    let percent = if total > 0 { (used as f64 / total as f64) * 100.0 } else { 0.0 };
+    let percent = if total > 0 {
+        (used as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
     json!({
         "total_kb": total,
         "available_kb": available,
@@ -109,7 +120,8 @@ fn disk_usage_root() -> Value {
         Ok(c) => c,
         Err(_) => return json!({}),
     };
-    let root_device = mounts.lines()
+    let root_device = mounts
+        .lines()
         .find(|l| l.split_whitespace().nth(1) == Some("/"))
         .and_then(|l| l.split_whitespace().next())
         .unwrap_or("/dev/root");

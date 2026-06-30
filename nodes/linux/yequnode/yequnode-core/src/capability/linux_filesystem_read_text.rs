@@ -39,19 +39,29 @@ impl Capability for LinuxFilesystemReadText {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let path = input.get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput { field: "path".into(), message: "missing required field: path".into() })?;
+        let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
+                field: "path".into(),
+                message: "missing required field: path".into(),
+            }
+        })?;
 
         let path_clone = path.to_string();
 
         let (content, size_bytes, truncated) = tokio::task::spawn_blocking(move || {
-            let data = std::fs::read(&path_clone)
-                .map_err(|e| CapabilityError::Internal(format!("read '{}' failed: {}", path_clone, e)))?;
+            let data = std::fs::read(&path_clone).map_err(|e| {
+                CapabilityError::Internal(format!("read '{}' failed: {}", path_clone, e))
+            })?;
 
             let size = data.len();
             let truncated = size > MAX_READ_BYTES;

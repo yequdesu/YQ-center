@@ -29,6 +29,12 @@ impl Capability for LinuxNetworkRoutes {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -78,34 +84,42 @@ fn parse_json_routes(data: &Value) -> Vec<Value> {
         None => return Vec::new(),
     };
 
-    arr.iter().map(|route| {
-        let dst = route.get("dst").and_then(|v| v.as_str()).unwrap_or("default");
-        let dev = route.get("dev").and_then(|v| v.as_str()).unwrap_or("");
-        let proto = route.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
-        let scope = route.get("scope").and_then(|v| v.as_str()).unwrap_or("");
-        let table = route.get("table").and_then(|v| v.as_str()).unwrap_or("main");
-        let prefsrc = route.get("prefsrc").and_then(|v| v.as_str()).unwrap_or("");
-        let metric = route.get("metric").and_then(|v| v.as_u64());
-        let gateway = route.get("gateway").and_then(|v| v.as_str()).unwrap_or("");
+    arr.iter()
+        .map(|route| {
+            let dst = route
+                .get("dst")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default");
+            let dev = route.get("dev").and_then(|v| v.as_str()).unwrap_or("");
+            let proto = route.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
+            let scope = route.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+            let table = route
+                .get("table")
+                .and_then(|v| v.as_str())
+                .unwrap_or("main");
+            let prefsrc = route.get("prefsrc").and_then(|v| v.as_str()).unwrap_or("");
+            let metric = route.get("metric").and_then(|v| v.as_u64());
+            let gateway = route.get("gateway").and_then(|v| v.as_str()).unwrap_or("");
 
-        let mut entry = json!({
-            "destination": dst,
-            "device": dev,
-            "protocol": proto,
-            "scope": scope,
-            "table": table,
-        });
+            let mut entry = json!({
+                "destination": dst,
+                "device": dev,
+                "protocol": proto,
+                "scope": scope,
+                "table": table,
+            });
 
-        if !prefsrc.is_empty() {
-            entry["prefsrc"] = json!(prefsrc);
-        }
-        if let Some(m) = metric {
-            entry["metric"] = json!(m);
-        }
-        if !gateway.is_empty() {
-            entry["gateway"] = json!(gateway);
-        }
+            if !prefsrc.is_empty() {
+                entry["prefsrc"] = json!(prefsrc);
+            }
+            if let Some(m) = metric {
+                entry["metric"] = json!(m);
+            }
+            if !gateway.is_empty() {
+                entry["gateway"] = json!(gateway);
+            }
 
-        entry
-    }).collect()
+            entry
+        })
+        .collect()
 }

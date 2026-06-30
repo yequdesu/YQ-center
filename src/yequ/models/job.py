@@ -42,6 +42,7 @@ class Job(Base, TimestampMixin):
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     progress_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     progress_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    progress_detail: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Job(job_id={self.job_id!r}, status={self.status!r}, node={self.node_id!r})>"

@@ -1,5 +1,5 @@
-use std::time::Duration;
 use crate::yqp::envelope::YqpError;
+use std::time::Duration;
 
 pub struct RetryConfig {
     pub max_attempts: u32,

@@ -151,6 +151,126 @@ def capabilities_list(node_id: str | None) -> None:
         sys.exit(1)
 
 
+@capabilities.command("lint")
+@click.option("--node", "-n", "node_id", default=None, help="Filter by node_id")
+@click.option("--platform", "platform_os", default=None, help="Filter by platform_os")
+@click.option("--include-inactive", is_flag=True, help="Include inactive capability sources")
+@click.option("--warnings-as-errors", is_flag=True, help="Return non-zero when warnings exist")
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
+def capabilities_lint(
+    node_id: str | None,
+    platform_os: str | None,
+    include_inactive: bool,
+    warnings_as_errors: bool,
+    output_format: str,
+) -> None:
+    """Lint registered capability contracts using Center diagnostics."""
+    try:
+        with _get_client() as c:
+            params: dict[str, object] = {
+                "projection": "diagnostics",
+                "capability_type": "function",
+                "limit": 50,
+                "include_inactive": include_inactive,
+            }
+            if node_id:
+                params["node_id"] = node_id
+            if platform_os:
+                params["platform_os"] = platform_os
+            r = c.get("/admin/meta/capabilities/search", params=params)
+            r.raise_for_status()
+        report = _capability_contract_lint_report(r.json())
+        if output_format == "json":
+            _print_json(report)
+        else:
+            _print_capability_contract_lint_report(report)
+        if report["error_count"] > 0 or (
+            warnings_as_errors and report["warning_count"] > 0
+        ):
+            sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        click.secho(f"Error: {e}", fg="red")
+        sys.exit(1)
+
+
+def _capability_contract_lint_report(capabilities: object) -> dict[str, object]:
+    """Build a stable lint report from capability diagnostics projection."""
+    if not isinstance(capabilities, list):
+        raise ValueError("capability diagnostics response must be a list")
+
+    issues: list[dict[str, object]] = []
+    for capability in capabilities:
+        if not isinstance(capability, dict):
+            continue
+        canonical_name = str(capability.get("canonical_name") or "")
+        for source in capability.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            for issue in source.get("contract_issues") or []:
+                if not isinstance(issue, dict):
+                    continue
+                severity = str(issue.get("severity") or "warning")
+                issues.append(
+                    {
+                        "severity": severity,
+                        "code": str(issue.get("code") or "unknown_issue"),
+                        "message": str(issue.get("message") or ""),
+                        "canonical_name": canonical_name,
+                        "registered_name": str(source.get("registered_name") or ""),
+                        "node_id": str(source.get("node_id") or ""),
+                        "source_id": str(source.get("source_id") or ""),
+                    }
+                )
+
+    error_count = sum(1 for issue in issues if issue["severity"] == "error")
+    warning_count = sum(1 for issue in issues if issue["severity"] != "error")
+    return {
+        "status": "failed" if error_count else "passed",
+        "checked_capability_count": len(capabilities),
+        "issue_count": len(issues),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "issues": issues,
+    }
+
+
+def _print_capability_contract_lint_report(report: dict[str, object]) -> None:
+    error_count = int(report.get("error_count") or 0)
+    warning_count = int(report.get("warning_count") or 0)
+    issue_count = int(report.get("issue_count") or 0)
+    checked = int(report.get("checked_capability_count") or 0)
+    if issue_count == 0:
+        click.secho(f"Capability contract lint passed: {checked} capabilities checked.", fg="green")
+        return
+    color = "red" if error_count else "yellow"
+    click.secho(
+        (
+            "Capability contract lint found "
+            f"{error_count} errors and {warning_count} warnings "
+            f"across {checked} capabilities."
+        ),
+        fg=color,
+    )
+    for issue in report.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity") or "warning")
+        issue_color = "red" if severity == "error" else "yellow"
+        location = (
+            f"{issue.get('node_id') or '-'} "
+            f"{issue.get('registered_name') or issue.get('canonical_name') or '-'}"
+        )
+        click.secho(
+            f"[{severity}] {issue.get('code')}: {location}",
+            fg=issue_color,
+        )
+        message = str(issue.get("message") or "").strip()
+        if message:
+            click.echo(f"  {message}")
+
+
 # ── invoke ──
 
 
@@ -388,8 +508,9 @@ def agent_session(create: bool, mode: str, actor: str) -> None:
 def agent_invoke(session_id: str, prompt: str, provider: str, mode: str) -> None:
     """Invoke an Agent Provider through the streaming Agent path."""
     try:
-        with _get_client() as c:
-            with c.stream(
+        with (
+            _get_client() as c,
+            c.stream(
                 "POST",
                 "/agent/invoke/stream",
                 json={
@@ -399,13 +520,14 @@ def agent_invoke(session_id: str, prompt: str, provider: str, mode: str) -> None
                     "execution_mode": mode,
                 },
                 timeout=300,
-            ) as r:
-                r.raise_for_status()
-                for line in r.iter_lines():
-                    if line.startswith("data: "):
-                        payload = line.removeprefix("data: ").strip()
-                        if payload:
-                            click.echo(payload)
+            ) as r,
+        ):
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if line.startswith("data: "):
+                    payload = line.removeprefix("data: ").strip()
+                    if payload:
+                        click.echo(payload)
     except Exception as e:
         click.secho(f"Error: {e}", fg="red")
         sys.exit(1)

@@ -167,6 +167,15 @@ async def capability_search(
     platform_os: str | None = None,
     effect: str | None = None,
     risk: str | None = None,
+    runtime_kind: str | None = None,
+    runtime_labels: list[str] | None = None,
+    supports_progress: bool | None = None,
+    supports_cancel: bool | None = None,
+    supports_resume: bool | None = None,
+    preflight_supported: bool | None = None,
+    artifact_input: bool | None = None,
+    artifact_output: bool | None = None,
+    projection: str = "summary",
     capability_type: str = "function",
     include_inactive: bool = False,
     limit: int = 20,
@@ -178,6 +187,7 @@ async def capability_search(
         .options(joinedload(CapabilityDefinition.sources).joinedload(CapabilitySource.node))
         .where(CapabilityDefinition.capability_type == capability_type)
         .order_by(CapabilityDefinition.canonical_name)
+        .execution_options(populate_existing=True)
     )
     if effect:
         stmt = stmt.where(CapabilityDefinition.effect == effect)
@@ -190,6 +200,10 @@ async def capability_search(
     matches: list[JsonObject] = []
 
     for definition in definitions:
+        if artifact_input is not None and bool(definition.artifact_inputs) != artifact_input:
+            continue
+        if artifact_output is not None and bool(definition.artifact_outputs) != artifact_output:
+            continue
         sources = [
             source
             for source in definition.sources
@@ -197,6 +211,12 @@ async def capability_search(
                 source,
                 node_id=node_id,
                 platform_os=platform_os,
+                runtime_kind=runtime_kind,
+                runtime_labels=runtime_labels,
+                supports_progress=supports_progress,
+                supports_cancel=supports_cancel,
+                supports_resume=supports_resume,
+                preflight_supported=preflight_supported,
                 include_inactive=include_inactive,
             )
         ]
@@ -204,8 +224,29 @@ async def capability_search(
             continue
         if terms and not _definition_matches(definition, sources, terms):
             continue
-        matches.append(_definition_search_summary(definition, sources))
-        if len(matches) >= limit:
+        matches.append(
+            _definition_search_summary(
+                definition,
+                sources,
+                projection=projection,
+                terms=terms,
+                filters={
+                    "node_id": node_id,
+                    "platform_os": platform_os,
+                    "effect": effect,
+                    "risk": risk,
+                    "runtime_kind": runtime_kind,
+                    "runtime_labels": runtime_labels,
+                    "supports_progress": supports_progress,
+                    "supports_cancel": supports_cancel,
+                    "supports_resume": supports_resume,
+                    "preflight_supported": preflight_supported,
+                    "artifact_input": artifact_input,
+                    "artifact_output": artifact_output,
+                },
+            )
+        )
+        if len(matches) >= _bounded_limit(limit):
             break
 
     return matches
@@ -216,6 +257,8 @@ async def capability_describe(
     capability_ref: str,
     *,
     node_id: str | None = None,
+    sections: list[str] | None = None,
+    projection: str = "detail",
     include_inactive: bool = False,
 ) -> JsonObject:
     """Describe one capability definition by ID, canonical name, or alias."""
@@ -227,13 +270,14 @@ async def capability_describe(
             (CapabilityDefinition.capability_id == capability_ref)
             | (CapabilityDefinition.canonical_name == capability_ref)
         )
+        .execution_options(populate_existing=True)
     )
     definition = result.unique().scalar_one_or_none()
     if definition is None:
         alias_result = await db.execute(
-            select(CapabilityDefinition).options(
-                joinedload(CapabilityDefinition.sources).joinedload(CapabilitySource.node)
-            )
+            select(CapabilityDefinition)
+            .options(joinedload(CapabilityDefinition.sources).joinedload(CapabilitySource.node))
+            .execution_options(populate_existing=True)
         )
         for candidate in alias_result.unique().scalars().all():
             if capability_ref in (candidate.aliases or []):
@@ -250,10 +294,16 @@ async def capability_describe(
             source,
             node_id=node_id,
             platform_os=None,
+            runtime_kind=None,
+            runtime_labels=None,
+            supports_progress=None,
+            supports_cancel=None,
+            supports_resume=None,
+            preflight_supported=None,
             include_inactive=include_inactive,
         )
     ]
-    return _definition_detail(definition, sources)
+    return _definition_detail(definition, sources, sections=sections, projection=projection)
 
 
 async def resolve_capability_invoke_target(
@@ -386,6 +436,14 @@ async def _upsert_source(
         or manifest.get("dry_run_supported")
         or "dry_run" in (manifest.get("input_schema") or {}).get("properties", {})
     )
+    source.supports_progress = bool(manifest.get("supports_progress"))
+    source.supports_cancel = bool(manifest.get("supports_cancel"))
+    source.supports_resume = bool(manifest.get("supports_resume"))
+    source.progress_contract = _string_or_none(manifest.get("progress_contract"))
+    source.preconditions = _list_of_dicts_or_none(manifest.get("preconditions"))
+    source.required_intent_slots = _list_of_strings_or_none(
+        manifest.get("required_intent_slots")
+    )
     source.scope = _string_or_none(manifest.get("scope"))
     source.ttl_sec = _int_or_none(manifest.get("ttl_sec"))
     source.registered_at = now
@@ -489,59 +547,110 @@ async def _refresh_definition_statuses(
 def _definition_search_summary(
     definition: CapabilityDefinition,
     sources: list[CapabilitySource],
+    *,
+    projection: str = "summary",
+    terms: list[str] | None = None,
+    filters: dict[str, object] | None = None,
 ) -> JsonObject:
-    return {
+    projection = _normalize_projection(projection, default="summary")
+    data: JsonObject = {
         "capability_id": definition.capability_id,
         "canonical_name": definition.canonical_name,
-        "display_name": definition.display_name,
         "capability_type": definition.capability_type,
-        "description": definition.description,
         "risk": definition.risk,
         "effect": definition.effect,
-        "tags": list(definition.tags or []),
-        "aliases": list(definition.aliases or []),
         "source_count": len(sources),
+        "match_reasons": _definition_match_reasons(
+            definition,
+            sources,
+            terms or [],
+            filters or {},
+        ),
         "sources": [
-            {
-                "source_id": source.source_id,
-                "node_id": source.node.node_id if source.node else "",
-                "registered_name": source.registered_name,
-                "platform_os": source.platform_os,
-                "runtime_id": source.runtime_id,
-                "status": source.status,
-            }
+            _source_projection(source, definition, projection=projection)
             for source in sources
         ],
     }
+    if projection in {"summary", "invoke_ready", "schema", "diagnostics"}:
+        data.update(
+            {
+                "display_name": definition.display_name,
+                "description": definition.description,
+                "tags": list(definition.tags or []),
+            }
+        )
+    if projection in {"invoke_ready", "schema", "diagnostics"}:
+        data["aliases"] = list(definition.aliases or [])
+    if projection == "schema":
+        data.update(
+            {
+                "agent_description": definition.agent_description,
+                "input_schema": definition.input_schema,
+                "output_schema": definition.output_schema,
+                "value_schema": definition.value_schema,
+                "artifact_inputs": list(definition.artifact_inputs or []),
+                "artifact_outputs": list(definition.artifact_outputs or []),
+            }
+        )
+    if projection == "diagnostics":
+        data.update(
+            {
+                "status": definition.status,
+                "failure_modes": _merge_source_failure_modes(sources),
+                "preconditions": _merge_source_preconditions(sources),
+            }
+        )
+    return data
 
 
 def _definition_detail(
     definition: CapabilityDefinition,
     sources: list[CapabilitySource],
+    *,
+    sections: list[str] | None = None,
+    projection: str = "detail",
 ) -> JsonObject:
-    data = _definition_search_summary(definition, sources)
-    data.update(
-        {
-            "agent_description": definition.agent_description,
-            "input_schema": definition.input_schema,
-            "output_schema": definition.output_schema,
-            "value_schema": definition.value_schema,
-            "artifact_inputs": list(definition.artifact_inputs or []),
-            "artifact_outputs": list(definition.artifact_outputs or []),
-            "examples": list(definition.examples or []),
-            "status": definition.status,
-            "sources": [
-                _source_summary(source, definition, source.node)
-                for source in sorted(
-                    sources,
-                    key=lambda item: (
-                        item.node.node_id if item.node else "",
-                        item.registered_name,
-                    ),
-                )
-            ],
-        }
+    requested = {section.strip() for section in sections or [] if section.strip()}
+    include_all = not requested
+    projection = _normalize_projection(projection, default="detail")
+    base_projection = "summary" if requested and projection == "detail" else projection
+    data = _definition_search_summary(
+        definition,
+        sources,
+        projection="schema" if base_projection in {"detail", "schema"} else base_projection,
     )
+    data["status"] = definition.status
+    if include_all or "schema" in requested:
+        data.update(
+            {
+                "agent_description": definition.agent_description,
+                "input_schema": definition.input_schema,
+                "output_schema": definition.output_schema,
+                "value_schema": definition.value_schema,
+                "artifact_inputs": list(definition.artifact_inputs or []),
+                "artifact_outputs": list(definition.artifact_outputs or []),
+            }
+        )
+    if include_all or "examples" in requested:
+        data["examples"] = list(definition.examples or [])
+    if include_all or "preconditions" in requested:
+        data["preconditions"] = _merge_source_preconditions(sources)
+        data["required_intent_slots"] = _merge_source_required_slots(sources)
+    if include_all or "diagnostics" in requested:
+        data["failure_modes"] = _merge_source_failure_modes(sources)
+    if include_all or "sources" in requested or "runtime" in requested:
+        data["sources"] = [
+            _source_summary(source, definition, source.node)
+            for source in sorted(
+                sources,
+                key=lambda item: (
+                    item.node.node_id if item.node else "",
+                    item.registered_name,
+                ),
+            )
+        ]
+    elif requested:
+        data.pop("sources", None)
     return data
 
 
@@ -585,6 +694,8 @@ def _source_summary(
         "platform_os": source.platform_os,
         "platform_arch": source.platform_arch,
         "status": source.status,
+        "dispatchable": _source_dispatchable(source),
+        "unavailable_reasons": _source_unavailable_reasons(source),
         "is_active": source.is_active,
         "unavailable_reason": source.unavailable_reason,
         "execution_requirements": source.execution_requirements,
@@ -594,8 +705,65 @@ def _source_summary(
         "resource_keys": list(source.resource_keys or []),
         "conflict_policy": source.conflict_policy,
         "preflight_supported": source.preflight_supported,
+        "supports_progress": source.supports_progress,
+        "supports_cancel": source.supports_cancel,
+        "supports_resume": source.supports_resume,
+        "progress_contract": source.progress_contract,
+        "preconditions": list(source.preconditions or []),
+        "required_intent_slots": list(source.required_intent_slots or []),
         "hidden_input_fields": list(source.hidden_input_fields or []),
+        "contract_issues": _capability_contract_issues(definition, source),
     }
+
+
+def _source_projection(
+    source: CapabilitySource,
+    definition: CapabilityDefinition,
+    *,
+    projection: str,
+) -> JsonObject:
+    data: JsonObject = {
+        "source_id": source.source_id,
+        "node_id": source.node.node_id if source.node else "",
+        "registered_name": source.registered_name,
+        "platform_os": source.platform_os,
+        "status": source.status,
+        "dispatchable": _source_dispatchable(source),
+    }
+    if projection in {"invoke_ready", "schema", "diagnostics"}:
+        data.update(
+            {
+                "capability_id": definition.capability_id,
+                "canonical_name": definition.canonical_name,
+                "runtime_id": source.runtime_id,
+                "execution_requirements": source.execution_requirements,
+                "timeout_sec": source.timeout_sec,
+                "resource_keys": list(source.resource_keys or []),
+                "conflict_policy": source.conflict_policy,
+                "preflight_supported": source.preflight_supported,
+                "supports_progress": source.supports_progress,
+                "supports_cancel": source.supports_cancel,
+                "supports_resume": source.supports_resume,
+                "progress_contract": source.progress_contract,
+                "required_intent_slots": list(source.required_intent_slots or []),
+            }
+        )
+    if projection in {"schema", "diagnostics"}:
+        data["preconditions"] = list(source.preconditions or [])
+        data["hidden_input_fields"] = list(source.hidden_input_fields or [])
+    if projection == "diagnostics":
+        data.update(
+            {
+                "is_active": source.is_active,
+                "unavailable_reason": source.unavailable_reason,
+                "unavailable_reasons": _source_unavailable_reasons(source),
+                "failure_modes": list(source.failure_modes or []),
+                "contract_issues": _capability_contract_issues(definition, source),
+            }
+        )
+    elif projection in {"invoke_ready", "schema"}:
+        data["unavailable_reasons"] = _source_unavailable_reasons(source)
+    return data
 
 
 def _source_visible(
@@ -603,13 +771,35 @@ def _source_visible(
     *,
     node_id: str | None,
     platform_os: str | None,
+    runtime_kind: str | None,
+    runtime_labels: list[str] | None,
+    supports_progress: bool | None,
+    supports_cancel: bool | None,
+    supports_resume: bool | None,
+    preflight_supported: bool | None,
     include_inactive: bool,
 ) -> bool:
     if not include_inactive and not source.is_active:
         return False
     if node_id and (source.node is None or source.node.node_id != node_id):
         return False
-    return not (platform_os and (source.platform_os or "").lower() != platform_os.lower())
+    if platform_os and (source.platform_os or "").lower() != platform_os.lower():
+        return False
+    requirements = source.execution_requirements or {}
+    if runtime_kind and not _runtime_kind_matches(requirements, runtime_kind):
+        return False
+    if runtime_labels and not _runtime_labels_match(requirements, runtime_labels):
+        return False
+    if supports_progress is not None and source.supports_progress != supports_progress:
+        return False
+    if supports_cancel is not None and source.supports_cancel != supports_cancel:
+        return False
+    if supports_resume is not None and source.supports_resume != supports_resume:
+        return False
+    return not (
+        preflight_supported is not None
+        and source.preflight_supported != preflight_supported
+    )
 
 
 def _definition_matches(
@@ -630,6 +820,319 @@ def _definition_matches(
     ]
     haystack = " ".join(haystack_parts).lower()
     return all(term in haystack for term in terms)
+
+
+def _definition_match_reasons(
+    definition: CapabilityDefinition,
+    sources: list[CapabilitySource],
+    terms: list[str],
+    filters: dict[str, object],
+) -> list[str]:
+    reasons: list[str] = []
+    for term in terms:
+        reason = _term_match_reason(definition, sources, term)
+        if reason:
+            reasons.append(reason)
+    for key, value in filters.items():
+        if value is None or value == []:
+            continue
+        reasons.append(f"filter:{key}={value}")
+    if not reasons:
+        reasons.append("registry:active_capability")
+    return reasons[:12]
+
+
+def _term_match_reason(
+    definition: CapabilityDefinition,
+    sources: list[CapabilitySource],
+    term: str,
+) -> str | None:
+    fields = {
+        "canonical_name": definition.canonical_name,
+        "display_name": definition.display_name or "",
+        "description": definition.description or "",
+        "agent_description": definition.agent_description or "",
+        "aliases": " ".join(definition.aliases or []),
+        "tags": " ".join(definition.tags or []),
+        "registered_name": " ".join(source.registered_name for source in sources),
+        "node_id": " ".join(source.node.node_id for source in sources if source.node),
+        "platform_os": " ".join(source.platform_os or "" for source in sources),
+    }
+    for field, value in fields.items():
+        if term in value.lower():
+            return f"query:{term}:{field}"
+    return None
+
+
+def _source_dispatchable(source: CapabilitySource) -> bool:
+    return not _source_unavailable_reasons(source)
+
+
+def _source_unavailable_reasons(source: CapabilitySource) -> list[JsonObject]:
+    reasons: list[JsonObject] = []
+    if not source.is_active:
+        reasons.append(
+            {
+                "code": "source_inactive",
+                "message": "Capability source is not active.",
+            }
+        )
+    if source.unavailable_reason:
+        reasons.append(
+            {
+                "code": "source_unavailable",
+                "message": source.unavailable_reason,
+            }
+        )
+    if source.status not in {"loaded", "active", "online"}:
+        reasons.append(
+            {
+                "code": "source_status_not_loaded",
+                "message": f"Capability source status is {source.status}.",
+            }
+        )
+    node = source.node
+    if node is None:
+        reasons.append(
+            {
+                "code": "node_missing",
+                "message": "Capability source has no node record.",
+            }
+        )
+    elif node.status != NodeStatus.ONLINE:
+        reasons.append(
+            {
+                "code": "node_offline",
+                "message": f"Node {node.node_id} is {node.status}.",
+                "node_id": node.node_id,
+                "node_status": node.status,
+            }
+        )
+    return reasons
+
+
+def _normalize_projection(value: str | None, *, default: str) -> str:
+    projection = (value or default).strip()
+    allowed = {"summary", "invoke_ready", "schema", "diagnostics", "detail"}
+    return projection if projection in allowed else default
+
+
+def _bounded_limit(value: int) -> int:
+    return max(1, min(int(value), 50))
+
+
+def _runtime_kind_matches(requirements: JsonObject, runtime_kind: str) -> bool:
+    desired = runtime_kind.strip().lower()
+    if not desired:
+        return True
+    actual = str(requirements.get("runtime_kind") or "").lower()
+    allowed = [
+        str(item).lower()
+        for item in requirements.get("allowed_runtime_kinds", [])
+        if isinstance(item, str)
+    ]
+    return actual == desired or desired in allowed
+
+
+def _runtime_labels_match(requirements: JsonObject, runtime_labels: list[str]) -> bool:
+    desired = {label.strip().lower() for label in runtime_labels if label.strip()}
+    if not desired:
+        return True
+    actual = {
+        str(label).lower()
+        for label in requirements.get("labels", [])
+        if isinstance(label, str)
+    }
+    return desired.issubset(actual)
+
+
+def _merge_source_preconditions(sources: list[CapabilitySource]) -> list[JsonObject]:
+    merged: list[JsonObject] = []
+    seen: set[str] = set()
+    for source in sources:
+        for item in source.preconditions or []:
+            key = repr(sorted(item.items()))
+            if key not in seen:
+                seen.add(key)
+                merged.append(dict(item))
+    return merged
+
+
+def _merge_source_required_slots(sources: list[CapabilitySource]) -> list[str]:
+    return sorted(
+        {
+            slot
+            for source in sources
+            for slot in (source.required_intent_slots or [])
+            if slot
+        }
+    )
+
+
+def _merge_source_failure_modes(sources: list[CapabilitySource]) -> list[JsonObject]:
+    merged: list[JsonObject] = []
+    seen: set[str] = set()
+    for source in sources:
+        for item in source.failure_modes or []:
+            key = repr(sorted(item.items()))
+            if key not in seen:
+                seen.add(key)
+                merged.append(dict(item))
+    return merged
+
+
+def _capability_contract_issues(
+    definition: CapabilityDefinition,
+    source: CapabilitySource,
+) -> list[JsonObject]:
+    if definition.capability_type != "function":
+        return []
+
+    issues: list[JsonObject] = []
+    registered_name = source.registered_name
+    canonical_name = definition.canonical_name
+    platform_os = (source.platform_os or "").lower()
+    effect = (definition.effect or "").lower()
+    risk = (definition.risk or "").lower()
+    requirements = source.execution_requirements or {}
+    input_schema = definition.input_schema or {}
+    output_schema = definition.output_schema or {}
+    resource_keys = list(source.resource_keys or [])
+    timeout_sec = int(source.timeout_sec or 0)
+    is_transfer_operation = canonical_name in {
+        "transfer.croc.send",
+        "transfer.croc.receive",
+    }
+    is_artifact_download = canonical_name == "artifact.download_file"
+    is_long_task = timeout_sec > 60 or effect == "external" or is_transfer_operation
+
+    def add(code: str, message: str, *, severity: str = "warning") -> None:
+        issues.append({"severity": severity, "code": code, "message": message})
+
+    if platform_os in {"linux", "windows"} and not registered_name.startswith(
+        f"{platform_os}."
+    ):
+        add(
+            "platform_prefix_mismatch",
+            f"{platform_os} capability should be registered with '{platform_os}.' prefix.",
+        )
+    if risk not in {"safe", "maintenance", "destructive", "catastrophic"}:
+        add("missing_or_invalid_risk", "Function capability must declare a valid risk.")
+    if effect not in {"read", "write", "destructive", "external"}:
+        add("missing_or_invalid_effect", "Function capability must declare a valid effect.")
+    if not definition.description or len(definition.description.strip()) < 24:
+        add(
+            "description_too_short",
+            "Capability description must explain the operational boundary.",
+        )
+    if not definition.agent_description:
+        add(
+            "missing_agent_description",
+            "Capability should provide a concise agent_description for tool selection.",
+        )
+    if not isinstance(input_schema, dict) or input_schema.get("type") != "object":
+        add(
+            "invalid_input_schema",
+            "Function input_schema must be a JSON object schema.",
+            severity="error",
+        )
+    elif "additionalProperties" not in input_schema:
+        add(
+            "input_schema_allows_implicit_fields",
+            "Function input_schema should declare additionalProperties explicitly.",
+        )
+    if not isinstance(output_schema, dict) or not output_schema:
+        add(
+            "missing_output_schema",
+            "Function output_schema must describe stable result fields.",
+            severity="error",
+        )
+    if effect in {"write", "destructive", "external"} and not resource_keys:
+        add(
+            "missing_resource_keys",
+            "Write/destructive/external capability must declare resource_keys.",
+            severity="error",
+        )
+    if source.conflict_policy in {"serialize", "reject_if_running"} and not resource_keys:
+        add(
+            "conflict_policy_without_resource_keys",
+            "Serialized/rejected concurrency policy requires resource_keys.",
+            severity="error",
+        )
+    if not requirements:
+        add(
+            "missing_execution_requirements",
+            "Capability must declare execution_requirements or execution_context.",
+        )
+    if is_long_task:
+        if not source.supports_progress:
+            add(
+                "long_task_missing_progress",
+                "Long/external capability should declare supports_progress.",
+            )
+        if not source.supports_cancel:
+            add(
+                "long_task_missing_cancel",
+                "Long/external capability should declare supports_cancel.",
+            )
+        if source.supports_progress and not source.progress_contract:
+            add(
+                "missing_progress_contract",
+                "Progress-capable capability must declare progress_contract.",
+            )
+    if is_transfer_operation:
+        if not source.preflight_supported:
+            add(
+                "transfer_missing_preflight",
+                "Transfer capability must support preflight or be covered by transfer.preflight.",
+                severity="error",
+            )
+        if not source.preconditions:
+            add(
+                "transfer_missing_preconditions",
+                "Transfer capability must declare preconditions.",
+            )
+        if not source.required_intent_slots:
+            add(
+                "transfer_missing_intent_slots",
+                "Transfer capability must declare required_intent_slots.",
+            )
+        if source.supports_resume is False:
+            add(
+                "transfer_missing_resume",
+                "croc transfer capability should declare supports_resume.",
+            )
+    if is_artifact_download:
+        if effect != "write":
+            add(
+                "artifact_download_effect_must_be_write",
+                "Artifact download writes Center artifact bytes to a Node path.",
+                severity="error",
+            )
+        required_slots = set(source.required_intent_slots or [])
+        missing_slots = sorted({"artifact_id", "output_path"} - required_slots)
+        if missing_slots:
+            add(
+                "artifact_download_missing_intent_slots",
+                "Artifact download must declare artifact_id and output_path intent slots.",
+                severity="error",
+            )
+        if not source.preconditions:
+            add(
+                "artifact_download_missing_preconditions",
+                (
+                    "Artifact download must declare target path and artifact "
+                    "availability preconditions."
+                ),
+            )
+        if source.supports_resume:
+            add(
+                "artifact_download_resume_not_supported",
+                "Artifact download must not declare supports_resume until resumable fetch exists.",
+                severity="error",
+            )
+
+    return issues
 
 
 def _matches_capability_ref(

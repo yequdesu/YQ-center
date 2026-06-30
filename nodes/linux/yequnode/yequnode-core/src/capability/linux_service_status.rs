@@ -34,14 +34,22 @@ impl Capability for LinuxServiceStatus {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let name = input
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput { field: "name".into(), message: "missing required field: name".into() })?;
+        let name = input.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
+                field: "name".into(),
+                message: "missing required field: name".into(),
+            }
+        })?;
 
         let name = name.to_owned();
 

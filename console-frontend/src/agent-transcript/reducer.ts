@@ -42,6 +42,15 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
     case "agent.prompt_context":
       return { ...state, promptContext: promptContextFromData(data) };
 
+    case "agent.context_block.loaded": {
+      const blocks = Array.isArray(data.context_blocks) ? data.context_blocks.length : 0;
+      return appendSystemEvent(
+        state,
+        event,
+        blocks > 0 ? `Loaded ${blocks} context block(s)` : "Loaded context",
+      );
+    }
+
     case "agent.prompt.received": {
       if (data.internal === true) return state;
       const content = String(data.prompt ?? "");
@@ -440,6 +449,8 @@ function upsertOperationCard(
       ? asRecord(data.wait_handle)
       : existing?.waitHandle,
     message: optionalString(data.message) ?? existing?.message,
+    progressPct: optionalNumber(data.progress_pct) ?? existing?.progressPct,
+    progressMessage: optionalString(data.progress_message) ?? existing?.progressMessage,
     errorCode: optionalString(data.error_code) ?? existing?.errorCode,
     errorMessage: optionalString(data.error_message) ?? existing?.errorMessage,
     created_at: existing?.created_at ?? createdAt,
@@ -633,6 +644,11 @@ function parseToolStatus(value: unknown): ToolCallState["status"] {
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   return value.trim() ? value : undefined;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
 }
 
 function nowISO(): string {

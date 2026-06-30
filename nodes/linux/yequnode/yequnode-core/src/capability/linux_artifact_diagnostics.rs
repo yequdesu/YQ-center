@@ -46,6 +46,12 @@ impl Capability for LinuxArtifactDiagnostics {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -134,7 +140,8 @@ impl Capability for LinuxArtifactDiagnostics {
         // Upload via global YQP client
         let client = super::YQP_CLIENT.get().ok_or_else(|| {
             CapabilityError::Internal(
-                "YQP client not initialized; set_yqp_client() must be called at daemon startup".into(),
+                "YQP client not initialized; set_yqp_client() must be called at daemon startup"
+                    .into(),
             )
         })?;
 

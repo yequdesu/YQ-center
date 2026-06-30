@@ -104,6 +104,72 @@ async def _register_linux_system_info(client: AsyncClient, node_id: str, token: 
     assert resp.status_code == 200, resp.text
 
 
+async def _register_linux_transfer_capability(
+    client: AsyncClient,
+    node_id: str,
+    token: str,
+) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.transfer",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.transfer.croc.receive",
+                                "description": "Receive files with croc.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {"type": "string"},
+                                        "output_dir": {"type": "string"},
+                                    },
+                                    "required": ["code", "output_dir"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "external",
+                                "timeout_sec": 3600,
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "transfer"],
+                                },
+                                "resource_keys": ["node.transfer"],
+                                "conflict_policy": "serialize",
+                                "preflight_supported": True,
+                                "supports_progress": True,
+                                "supports_cancel": True,
+                                "supports_resume": True,
+                                "progress_contract": "transfer_progress_v1",
+                                "preconditions": [
+                                    {
+                                        "fact": "target.output_dir_writable",
+                                        "source": "preflight",
+                                    }
+                                ],
+                                "required_intent_slots": [
+                                    "source_node",
+                                    "target_node",
+                                    "target_output_dir",
+                                ],
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 async def _register_artifact_output_capability(
     client: AsyncClient,
     node_id: str,
@@ -383,6 +449,54 @@ async def test_capability_describe_infers_artifact_outputs_from_schema(
 
 
 @pytest.mark.asyncio
+async def test_capability_search_filters_by_artifact_contract(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_artifact_output_capability(client, node.node_id, token)
+
+    output_result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "query": "screen capture",
+                "artifact_output": True,
+                "projection": "summary",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert output_result.status == "succeeded"
+    assert output_result.output_data is not None
+    assert [
+        item["canonical_name"] for item in output_result.output_data["capabilities"]
+    ] == ["screen.capture"]
+
+    input_result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "query": "screen capture",
+                "artifact_input": True,
+                "projection": "summary",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert input_result.status == "succeeded"
+    assert input_result.output_data is not None
+    assert input_result.output_data["capabilities"] == []
+
+
+@pytest.mark.asyncio
 async def test_center_meta_tool_executes_without_node_job(
     client: AsyncClient,
     db_session,
@@ -409,6 +523,287 @@ async def test_center_meta_tool_executes_without_node_job(
     assert result.job_id is None
     assert result.output_data is not None
     assert result.output_data["capabilities"][0]["canonical_name"] == "system.info"
+
+
+@pytest.mark.asyncio
+async def test_capability_search_supports_structured_filters_and_projection(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_system_info(client, node.node_id, token)
+    await _register_linux_transfer_capability(client, node.node_id, token)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "query": "transfer receive",
+                "platform_os": "linux",
+                "effect": "external",
+                "runtime_kind": "privileged",
+                "runtime_labels": ["transfer"],
+                "supports_progress": True,
+                "preflight_supported": True,
+                "projection": "invoke_ready",
+                "limit": 5,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    capabilities = result.output_data["capabilities"]
+    assert len(capabilities) == 1
+    capability = capabilities[0]
+    assert capability["canonical_name"] == "transfer.croc.receive"
+    assert "query:transfer" in " ".join(capability["match_reasons"])
+    assert "filter:platform_os=linux" in capability["match_reasons"]
+    assert "input_schema" not in capability
+    source = capability["sources"][0]
+    assert source["node_id"] == node.node_id
+    assert source["dispatchable"] is True
+    assert source["unavailable_reasons"] == []
+    assert source["execution_requirements"]["labels"] == ["linux", "transfer"]
+    assert source["supports_progress"] is True
+    assert source["supports_cancel"] is True
+    assert source["supports_resume"] is True
+    assert source["required_intent_slots"] == [
+        "source_node",
+        "target_node",
+        "target_output_dir",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capability_search_reports_unavailable_reasons_for_offline_node(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.models.node import Node
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_transfer_capability(client, node.node_id, token)
+
+    node_result = await db_session.execute(select(Node).where(Node.node_id == node.node_id))
+    node_model = node_result.scalar_one()
+    node_model.status = "offline"
+    await db_session.commit()
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "query": "transfer receive",
+                "projection": "diagnostics",
+                "include_inactive": True,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    source = result.output_data["capabilities"][0]["sources"][0]
+    assert source["dispatchable"] is False
+    assert source["unavailable_reasons"] == [
+        {
+            "code": "node_offline",
+            "message": f"Node {node.node_id} is offline.",
+            "node_id": node.node_id,
+            "node_status": "offline",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capability_describe_sections_return_only_requested_detail(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_transfer_capability(client, node.node_id, token)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "transfer.croc.receive",
+                "node_id": node.node_id,
+                "sections": ["preconditions"],
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    capability = result.output_data["capability"]
+    assert capability["canonical_name"] == "transfer.croc.receive"
+    assert capability["preconditions"] == [
+        {"fact": "target.output_dir_writable", "source": "preflight"}
+    ]
+    assert capability["required_intent_slots"] == [
+        "source_node",
+        "target_node",
+        "target_output_dir",
+    ]
+    assert "input_schema" not in capability
+    assert "sources" not in capability
+
+
+@pytest.mark.asyncio
+async def test_capability_describe_diagnostics_reports_contract_issues(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_system_info(client, node.node_id, token)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "system.info",
+                "node_id": node.node_id,
+                "projection": "diagnostics",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    source = result.output_data["capability"]["sources"][0]
+    issue_codes = {item["code"] for item in source["contract_issues"]}
+    assert "missing_agent_description" in issue_codes
+    assert "input_schema_allows_implicit_fields" in issue_codes
+
+
+@pytest.mark.asyncio
+async def test_capability_diagnostics_reports_artifact_download_contract_issues(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.artifact",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.artifact.download_file",
+                                "description": "Download a Center artifact to a Linux file path.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "artifact_id": {"type": "string"},
+                                        "output_path": {"type": "string"},
+                                    },
+                                    "required": ["artifact_id", "output_path"],
+                                    "additionalProperties": False,
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 300,
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "artifact"],
+                                },
+                                "resource_keys": ["node.filesystem", "center.artifact"],
+                                "conflict_policy": "serialize",
+                                "supports_resume": True,
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert registered.status_code == 200, registered.text
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "artifact.download_file",
+                "node_id": node.node_id,
+                "projection": "diagnostics",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    source = result.output_data["capability"]["sources"][0]
+    issue_codes = {item["code"] for item in source["contract_issues"]}
+    assert "artifact_download_missing_intent_slots" in issue_codes
+    assert "artifact_download_missing_preconditions" in issue_codes
+    assert "artifact_download_resume_not_supported" in issue_codes
+
+
+@pytest.mark.asyncio
+async def test_admin_meta_capability_diagnostics_exposes_contract_issues(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_system_info(client, node.node_id, token)
+
+    response = await client.get(
+        "/admin/meta/capabilities/system.info",
+        params={
+            "node_id": node.node_id,
+            "projection": "diagnostics",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    source = response.json()["sources"][0]
+    issue_codes = {item["code"] for item in source["contract_issues"]}
+    assert "missing_agent_description" in issue_codes
 
 
 @pytest.mark.asyncio

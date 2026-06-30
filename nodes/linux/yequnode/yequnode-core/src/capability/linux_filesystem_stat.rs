@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use serde_json::{json, Value};
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
+use async_trait::async_trait;
+use serde_json::{json, Value};
 
 pub struct LinuxFilesystemStat;
 
@@ -31,16 +31,22 @@ impl Capability for LinuxFilesystemStat {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let path = input.get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "path".into(),
                 message: "path is required".into(),
-            })?;
+            }
+        })?;
 
         // OS permission gate only — no allowlist
         match std::fs::metadata(path) {
@@ -64,12 +70,10 @@ impl Capability for LinuxFilesystemStat {
                     "readonly": meta.permissions().readonly(),
                 }))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(json!({
-                    "path": path,
-                    "exists": false,
-                }))
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({
+                "path": path,
+                "exists": false,
+            })),
             Err(e) => Err(CapabilityError::PermissionDenied {
                 path: Some(path.into()),
                 detail: format!("cannot stat: {}", e),

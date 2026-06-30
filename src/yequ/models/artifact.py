@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,3 +63,30 @@ class ArtifactBlob(Base, TimestampMixin):
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     artifact: Mapped[Artifact] = relationship("Artifact", back_populates="blobs")
+
+
+class ArtifactDeployPreflight(Base, TimestampMixin):
+    """Persisted preflight facts for deploying one Center artifact to one Node path."""
+
+    __tablename__ = "artifact_deploy_preflights"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    preflight_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, default=generate_uuid, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    intent_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    artifact_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    output_path: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="fail_if_exists")
+
+    artifact_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    target_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    failed_preconditions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

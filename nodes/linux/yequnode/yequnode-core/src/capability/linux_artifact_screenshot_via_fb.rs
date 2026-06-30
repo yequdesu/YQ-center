@@ -44,6 +44,12 @@ impl Capability for LinuxArtifactScreenshotViaFb {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -100,7 +106,8 @@ impl Capability for LinuxArtifactScreenshotViaFb {
         // Upload via global YQP client
         let client = super::YQP_CLIENT.get().ok_or_else(|| {
             CapabilityError::Internal(
-                "YQP client not initialized; set_yqp_client() must be called at daemon startup".into(),
+                "YQP client not initialized; set_yqp_client() must be called at daemon startup"
+                    .into(),
             )
         })?;
 
@@ -137,8 +144,14 @@ fn read_fb_dimensions() -> Result<(u32, u32), String> {
     if let Ok(content) = std::fs::read_to_string("/sys/class/graphics/fb0/virtual_size") {
         let trimmed = content.trim();
         if let Some((w, h)) = trimmed.split_once(',') {
-            let width = w.trim().parse::<u32>().map_err(|e| format!("invalid width: {}", e))?;
-            let height = h.trim().parse::<u32>().map_err(|e| format!("invalid height: {}", e))?;
+            let width = w
+                .trim()
+                .parse::<u32>()
+                .map_err(|e| format!("invalid width: {}", e))?;
+            let height = h
+                .trim()
+                .parse::<u32>()
+                .map_err(|e| format!("invalid height: {}", e))?;
             return Ok((width, height));
         }
     }
@@ -151,8 +164,12 @@ fn read_fb_dimensions() -> Result<(u32, u32), String> {
                 // rest may contain "p-" suffix; extract before any non-digit
                 let h_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
                 if !h_str.is_empty() {
-                    let width = w_str.parse::<u32>().map_err(|e| format!("invalid width: {}", e))?;
-                    let height = h_str.parse::<u32>().map_err(|e| format!("invalid height: {}", e))?;
+                    let width = w_str
+                        .parse::<u32>()
+                        .map_err(|e| format!("invalid width: {}", e))?;
+                    let height = h_str
+                        .parse::<u32>()
+                        .map_err(|e| format!("invalid height: {}", e))?;
                     return Ok((width, height));
                 }
             }

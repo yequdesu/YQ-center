@@ -306,6 +306,14 @@ Node 是 runtime 权限声明的事实来源。Node 只能上报自己已经本�
 | `execution_requirements` | 否 | 推荐使用。匹配 runtime 的平台无关要求。 |
 | `hidden_input_fields` | 否 | 不暴露给 Agent 的内部字段。 |
 | `preflight_supported` | 否 | 是否支持 dry-run/preflight。 |
+| `supports_progress` | 否 | 长任务是否能通过 `job.event` 上报进度。 |
+| `supports_cancel` | 否 | 是否能响应 Center 取消并尽快进入终态。 |
+| `supports_resume` | 否 | 是否支持本地恢复或断点续传。 |
+| `progress_contract` | 否 | 进度事件合同名称，例如 `transfer_progress_v1`。 |
+| `error_contract` | 否 | 错误结构合同名称，例如 `node_error_v1`。 |
+| `preconditions` | 否 | 执行前必须满足的事实列表，例如 `source_path.readable`。 |
+| `required_intent_slots` | 否 | 调用前必须由用户意图或上层 planner 给出的语义槽位。 |
+| `examples` | 否 | 面向 Agent/开发者的输入输出示例摘要。 |
 
 `execution_context` 映射：
 
@@ -519,7 +527,10 @@ Node 开始执行 Job 前必须发送 `job.accepted`。
 }
 ```
 
-当前 Center 将该事件写入 Timeline，不改变 Job 状态。状态变化必须通过 `job.accepted` 或 `job.finished`。
+当前 Center 将该事件写入 Timeline，不改变 Job 终态。状态变化必须通过 `job.accepted` 或 `job.finished`。
+如果事件包含 `progress_pct`、`bytes_transferred`/`total_bytes`、`progress_message`、`message`
+或传输类 `transfer_progress` 事实，Center 会同步更新 `Job.progress_pct` / `Job.progress_message`
+作为最新进度 read model，供 Operation 和 Console 展示。
 
 建议事件类型：
 
@@ -528,6 +539,29 @@ Node 开始执行 Job 前必须发送 `job.accepted`。
 - `job.log`
 - `job.cancelling`
 - `job.timeout`
+
+长任务建议使用结构化进度字段。无法准确计算百分比时，不得伪造 `progress_pct`：
+
+```json
+{
+  "message_type": "job.event",
+  "node_id": "linuxServer",
+  "payload": {
+    "job_id": "job_01H...",
+    "event_type": "job.progress",
+    "sequence": 12,
+    "data": {
+      "phase": "transferring",
+      "message": "transferring file",
+      "progress_pct": 42,
+      "bytes_transferred": 52428800,
+      "total_bytes": 120945608,
+      "rate_bytes_per_sec": 4194304,
+      "eta_sec": 16
+    }
+  }
+}
+```
 
 响应：
 
@@ -791,14 +825,16 @@ Node 实现原则：
 
 - 不支持 WebSocket job push。
 - 不支持 Node 主动自动注册到 Center，必须先由 Admin provisioning 创建 node/token。
-- YQP `artifact.upload` 已支持轻量二进制 artifact 上传；但不支持分片、断点续传或跨 Node 大文件传输。
+- YQP `artifact.upload` 已支持轻量二进制 artifact 上传；`GET /yqp/artifacts/{artifact_id}/download` 已支持 Node Bearer token 下载 Center artifact；但不支持分片、断点续传或跨 Node 大文件传输。
 - Center Execution Runtime v2 / Operation Bus 是 Center 侧调度层，不改变 YQP 第一版合同。Node 仍只通过 `job.*`、`artifact.upload`、`signal.report`、`node.reconcile_jobs` 等协议消息执行与上报；Node 不直接感知 Operation。
 - 不支持按 Signal stale 自动把 Node 标记为 degraded；当前调度主要看 heartbeat liveness。
 - 不支持在 YQP payload 中传 node token。
 
-## 附录：`artifact.upload` 当前合同
+## 附录：Artifact 当前合同
 
-本附录记录当前 Node 到 Center 的 artifact 上传合同，并取代早期“暂不支持通用二进制 artifact 上传”的旧说明。
+本附录记录当前 Node 与 Center artifact store 的上传/下载合同，并取代早期“暂不支持通用二进制 artifact 上传”的旧说明。
+
+### `artifact.upload`
 
 `artifact.upload` 使用普通 `/yqp/` envelope 和 Bearer token 认证。它适用于截图、小文件、命令输出、摄像头采集，以及其他应存入 Center artifact store、而不应直接嵌入 `job.finished.output` 的二进制或文本产物。
 
@@ -848,4 +884,36 @@ Node 实现原则：
 - 上传大小受 `YEQU_ARTIFACT_MAX_UPLOAD_BYTES` 限制。
 - 当前初始后端将 blob 存储在 Center 本地磁盘的 `YEQU_ARTIFACT_STORAGE_DIR` 下。
 - 当 Job 输出较大或包含二进制内容时，Job output 应引用返回的 `artifact_id`。
-- 当前切片尚未实现分片上传、签名 Node 下载授权、保留期清理和跨 Node 传输。
+- 当前切片尚未实现分片上传、签名 URL 下载授权、保留期清理和跨 Node 传输。
+
+### Node-auth artifact download
+
+Node 下载 Center artifact 使用普通 HTTP GET，不使用 YQP JSON envelope：
+
+```http
+GET /yqp/artifacts/{artifact_id}/download
+Authorization: Bearer <node-token>
+```
+
+响应：
+
+- `200`：响应体为 artifact bytes；
+- `401`：缺少或无效 Node token；
+- `404`：artifact 不存在、不可用或 blob 缺失。
+
+响应头：
+
+| Header | 说明 |
+|---|---|
+| `X-YeQu-Artifact-Id` | artifact id。 |
+| `X-YeQu-Artifact-Sha256` | Center 记录的 blob SHA-256。 |
+| `X-YeQu-Artifact-Size` | Center 记录的 blob size。 |
+| `X-YeQu-Node-Id` | 认证通过的 Node id。 |
+
+规则：
+
+- Node 必须使用自己的 Bearer token，不得使用 admin token。
+- Node capability 必须把响应体流式写入本地文件，不得把 bytes 放入 `job.finished.output`。
+- Node 必须校验 `X-YeQu-Artifact-Sha256`，不一致时上报 `integrity_mismatch` 或等价稳定错误。
+- 该端点是 Center -> Node artifact 下发的底层数据通道；它本身不创建 Job、Operation 或 workflow。
+- 该端点不支持断点续传。需要大文件或跨 Node 传输时，优先使用 `transfer.create` + croc。

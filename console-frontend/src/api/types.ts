@@ -400,6 +400,7 @@ export interface OperationDetail {
     title: string | null;
     progress_pct: number | null;
     progress_message: string | null;
+    progress_detail?: Record<string, unknown> | null;
     error_code: string | null;
     error_message: string | null;
     wait_policy: string;
@@ -422,6 +423,7 @@ export type SseEventType =
   | "stream.heartbeat"
   | "stream.close"
   | "agent.prompt_context"
+  | "agent.context_block.loaded"
   | "agent.session.resolved"
   | "agent.prompt.received"
   | "agent.run.created"

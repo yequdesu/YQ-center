@@ -92,6 +92,15 @@ async def test_yqp_artifact_upload_creates_downloadable_artifact(
     assert downloaded.status_code == 200, downloaded.text
     assert downloaded.content == payload
 
+    node_downloaded = await client.get(
+        f"/yqp/artifacts/{artifact_id}/download",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert node_downloaded.status_code == 200, node_downloaded.text
+    assert node_downloaded.content == payload
+    assert node_downloaded.headers["x-yequ-artifact-id"] == artifact_id
+    assert node_downloaded.headers["x-yequ-node-id"] == node.node_id
+
 
 @pytest.mark.asyncio
 async def test_yqp_artifact_upload_rejects_invalid_base64(
@@ -205,6 +214,249 @@ async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
     assert presented_artifacts[0]["download_url"] == (
         f"/admin/artifacts/{artifact.artifact_id}/download"
     )
+
+
+@pytest.mark.asyncio
+async def test_artifact_deploy_requires_preflight_before_job(db_session) -> None:
+    from sqlalchemy import select
+
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.models.job import Job
+    from yequ.models.operation import Operation
+    from yequ.runtime import CenterExecutionRuntime
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="artifact.deploy",
+            input_data={
+                "artifact_id": "id_test",
+                "target_node_id": "linux-node-01",
+                "output_path": "/tmp/yequ-transfer/a.bin",
+                "mode": "overwrite",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "preflight_required"
+    assert result.error_details["required_facts"] == ["artifact.deploy.preflight"]
+    assert result.risk == "maintenance"
+    assert result.effect == "write"
+    job_count = await db_session.execute(select(Job))
+    assert job_count.scalars().all() == []
+    operation_count = await db_session.execute(select(Operation))
+    assert operation_count.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_artifact_deploy_delegates_to_node_download_job(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import select
+
+    from yequ.application.artifact_deploy import ArtifactDeployApplicationService
+    from yequ.application.schemas import ExecuteToolCommand, ExecuteToolResult
+    from yequ.config import get_settings
+    from yequ.models.approval import ApprovalRequest
+    from yequ.models.artifact import ArtifactDeployPreflight
+    from yequ.models.job import Job
+    from yequ.runtime import CenterExecutionRuntime
+    from yequ.services.approval_service import approve_approval
+    from yequ.services.artifact_service import ArtifactPayload, create_artifact
+
+    node, token = provisioned_node
+    hello = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={
+                "daemon_version": "0.2.0",
+                "platform": {"os": "linux", "arch": "x86_64"},
+                "runtimes": [
+                    {
+                        "runtime_id": "sudo-limited",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "root",
+                        "labels": ["linux", "artifact", "filesystem"],
+                    }
+                ],
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert hello.status_code == 200, hello.text
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.artifact",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.artifact.download_file",
+                                "description": "Download a Center artifact to Linux.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "artifact_id": {"type": "string"},
+                                        "output_path": {"type": "string"},
+                                        "mode": {"type": "string"},
+                                    },
+                                    "required": ["artifact_id", "output_path"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 300,
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "artifact"],
+                                },
+                                "resource_keys": ["node.filesystem", "center.artifact"],
+                                "conflict_policy": "serialize",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert registered.status_code == 200, registered.text
+
+    artifact = await create_artifact(
+        db_session,
+        ArtifactPayload(
+            data=b"deploy me",
+            artifact_type="file",
+            content_type="application/octet-stream",
+            title="deploy.bin",
+        ),
+        settings=get_settings(),
+    )
+    await db_session.commit()
+
+    async def fake_target_stat(self, command):
+        del self
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            target_node_id=command.target_node_id,
+            output_data={
+                "path": command.output_path,
+                "found": False,
+                "parent_exists": True,
+                "writable": True,
+                "free_bytes": 4096,
+            },
+        )
+
+    monkeypatch.setattr(
+        ArtifactDeployApplicationService,
+        "_invoke_target_stat",
+        fake_target_stat,
+    )
+    service = CenterExecutionRuntime(db_session)
+    preflight_result = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.deploy.preflight",
+            input_data={
+                "artifact_id": artifact.artifact_id,
+                "target_node_id": node.node_id,
+                "output_path": "/tmp/yequ-transfer/deploy.bin",
+                "mode": "overwrite",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+            session_id="sess_artifact_deploy",
+        )
+    )
+    assert preflight_result.status == "succeeded"
+    assert preflight_result.output_data is not None
+    preflight = preflight_result.output_data["preflight"]
+    assert preflight["allowed"] is True
+    assert preflight["preflight_id"].startswith("apf_")
+    preflight_record_result = await db_session.execute(select(ArtifactDeployPreflight))
+    preflight_record = preflight_record_result.scalar_one()
+    assert preflight_record.preflight_id == preflight["preflight_id"]
+
+    command = ExecuteToolCommand(
+        function_name="artifact.deploy",
+        input_data={
+            "artifact_id": artifact.artifact_id,
+            "target_node_id": node.node_id,
+            "output_path": "/tmp/yequ-transfer/deploy.bin",
+            "mode": "overwrite",
+            "preflight_id": preflight["preflight_id"],
+        },
+        actor_type="agent",
+        actor_id="test-agent",
+        session_id="sess_artifact_deploy",
+        wait_for_result=False,
+    )
+    approval_required = await service.execute(command)
+
+    assert approval_required.status == "approval_required"
+    assert approval_required.approval_id
+    approval_result = await db_session.execute(
+        select(ApprovalRequest).where(
+            ApprovalRequest.approval_id == approval_required.approval_id
+        )
+    )
+    approval = approval_result.scalar_one()
+    assert approval.function_name == "linux.artifact.download_file"
+    await approve_approval(db_session, approval, approved_by="test-admin")
+
+    result = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.deploy",
+            input_data={
+                "artifact_id": artifact.artifact_id,
+                "target_node_id": node.node_id,
+                "output_path": "/tmp/yequ-transfer/deploy.bin",
+                "mode": "overwrite",
+                "preflight_id": preflight["preflight_id"],
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+            session_id="sess_artifact_deploy",
+            wait_for_result=False,
+            approval_id=approval.approval_id,
+        )
+    )
+
+    assert result.status == "waiting_operation"
+    assert result.function_name == "artifact.deploy"
+    assert result.operation_id
+    assert result.output_data["artifact_deploy"] == {
+        "artifact_id": artifact.artifact_id,
+        "target_node_id": node.node_id,
+        "output_path": "/tmp/yequ-transfer/deploy.bin",
+        "mode": "overwrite",
+        "preflight_id": preflight["preflight_id"],
+        "node_capability_ref": "artifact.download_file",
+    }
+
+    job_result = await db_session.execute(select(Job).where(Job.job_id == result.job_id))
+    job = job_result.scalar_one()
+    assert job.node_id == node.node_id
+    assert job.function_name == "linux.artifact.download_file"
+    assert job.input_payload["artifact_id"] == artifact.artifact_id
+    assert job.input_payload["output_path"] == "/tmp/yequ-transfer/deploy.bin"
+    assert job.input_payload["mode"] == "overwrite"
 
 
 @pytest.mark.asyncio

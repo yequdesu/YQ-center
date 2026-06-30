@@ -4,6 +4,7 @@ import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from yequ.logconfig import get_logger
 from yequ.protocol import MessageType
 from yequ.protocol.envelope import YqpEnvelope
 from yequ.protocol.errors import ErrorCode, YqpError
+from yequ.services.artifact_service import resolve_download
 from yequ.services.message_dedup import check_and_record_message
 from yequ.services.node_auth import authenticate_node, verify_node_id_binding
 from yequ.services.node_service import (
@@ -32,6 +34,39 @@ from yequ.services.node_service import (
 
 router = APIRouter(prefix="/yqp", tags=["yqp"])
 log = get_logger(__name__)
+
+
+@router.get("/artifacts/{artifact_id}/download")
+async def yqp_artifact_download(
+    artifact_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    """Allow authenticated Nodes to download Center artifacts.
+
+    This endpoint is intentionally separate from the JSON YQP envelope path:
+    artifact bytes should not be tunneled through LLM/tool JSON payloads, and
+    Nodes must not require an admin token to materialize Center-owned blobs.
+    """
+
+    node = await authenticate_node(db, request.headers.get("Authorization"))
+    try:
+        download = await resolve_download(db, artifact_id, settings=settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    filename = download.artifact.title or download.artifact.artifact_id
+    return FileResponse(
+        download.path,
+        media_type=download.blob.content_type or "application/octet-stream",
+        filename=filename,
+        headers={
+            "X-YeQu-Artifact-Id": download.artifact.artifact_id,
+            "X-YeQu-Artifact-Sha256": download.blob.sha256,
+            "X-YeQu-Artifact-Size": str(download.blob.size_bytes),
+            "X-YeQu-Node-Id": node.node_id,
+        },
+    )
 
 
 def _response_type(

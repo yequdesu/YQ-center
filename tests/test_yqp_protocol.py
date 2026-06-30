@@ -494,6 +494,77 @@ async def test_job_accepted_transitions_to_running(client: AsyncClient, node_wit
 
 
 @pytest.mark.asyncio
+async def test_job_event_projects_progress_to_job_read_model(
+    client: AsyncClient,
+    node_with_hello,
+    db_session,
+):
+    """job.event keeps Timeline as event log and updates Job progress projection."""
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+
+    node, token = node_with_hello
+    auth = {"Authorization": f"Bearer {token}"}
+    await _create_queued_job(node.node_id)
+
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.poll",
+            node.node_id,
+            payload={"capacity": 1},
+        ),
+        headers=auth,
+    )
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.accepted",
+            node.node_id,
+            payload={"job_id": "job_test_001"},
+        ),
+        headers=auth,
+    )
+
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "job.event",
+            node.node_id,
+            payload={
+                "job_id": "job_test_001",
+                "event_type": "transfer_progress",
+                "sequence": 3,
+                "data": {
+                    "transfer_id": "trf_test",
+                    "role": "sender",
+                    "status": "running",
+                    "bytes_transferred": 25,
+                    "total_bytes": 100,
+                },
+            },
+        ),
+        headers=auth,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["payload"]["event_type"] == "transfer_progress"
+
+    await db_session.rollback()
+    job_result = await db_session.execute(select(Job).where(Job.job_id == "job_test_001"))
+    job = job_result.scalar_one()
+    assert job.status == "running"
+    assert job.progress_pct == 25.0
+    assert job.progress_message == "sender running"
+    assert job.progress_detail
+    assert job.progress_detail["bytes_transferred"] == 25.0
+    assert job.progress_detail["total_bytes"] == 100.0
+    assert job.progress_detail["transfer_id"] == "trf_test"
+    assert job.progress_detail["last_progress_at"]
+
+
+@pytest.mark.asyncio
 async def test_job_finished_terminal(client: AsyncClient, node_with_hello):
     """Finishing a running job enters terminal state."""
     node, token = node_with_hello

@@ -36,20 +36,29 @@ impl ExecutionContext {
 
     /// Get the next event sequence number.
     pub fn next_sequence(&self) -> u32 {
-        self.sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Send a progress event to Center.
     pub async fn report_progress(&self, event_type: &str, data: serde_json::Value) {
         let seq = self.next_sequence();
-        if let Err(e) = self.yqp.job_event(&self.job_id, event_type, seq, data).await {
+        if let Err(e) = self
+            .yqp
+            .job_event(&self.job_id, event_type, seq, data)
+            .await
+        {
             tracing::warn!(job_id = %self.job_id, error = ?e, "job.event failed");
         }
     }
 
     /// Renew the job lease to prevent timeout.
     pub async fn renew_lease(&self, lease_extend_sec: u32) {
-        if let Err(e) = self.yqp.job_lease_renew(&self.job_id, lease_extend_sec).await {
+        if let Err(e) = self
+            .yqp
+            .job_lease_renew(&self.job_id, lease_extend_sec)
+            .await
+        {
             tracing::warn!(job_id = %self.job_id, error = ?e, "job.lease_renew failed");
         }
     }

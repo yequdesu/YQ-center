@@ -12,9 +12,7 @@ impl Capability for LinuxDmesg {
         CapabilityManifest {
             name: "linux.dmesg".into(),
             description: "Return kernel ring buffer messages.".into(),
-            agent_description: Some(
-                "Read kernel ring buffer messages via dmesg.".into()
-            ),
+            agent_description: Some("Read kernel ring buffer messages via dmesg.".into()),
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -31,6 +29,12 @@ impl Capability for LinuxDmesg {
             })),
             resource_keys: None,
             conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
@@ -38,7 +42,10 @@ impl Capability for LinuxDmesg {
         let content = tokio::task::spawn_blocking(|| {
             // Prefer dmesg command; fallback to /dev/kmsg is unreliable (reads once, clears)
             let output = std::process::Command::new("dmesg")
-                .args(["--level=emerg,alert,crit,err,warning,notice,info", "--no-namespace"])
+                .args([
+                    "--level=emerg,alert,crit,err,warning,notice,info",
+                    "--no-namespace",
+                ])
                 .output()
                 .map_err(|e| CapabilityError::Internal(format!("dmesg execution failed: {}", e)))?;
 

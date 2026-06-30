@@ -15,6 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import yequ.db as yequ_db
+from yequ.agent.limits import (
+    DEFAULT_AGENT_MAX_DEPTH,
+    DEFAULT_AGENT_MAX_STEPS,
+    DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
+)
 from yequ.agent.provider import (
     AgentFunction,
     AgentMessage,
@@ -43,9 +48,9 @@ async def create_agent_session(
     *,
     actor_id: str,
     execution_mode: str = "auto",
-    max_depth: int = 5,
-    max_steps: int = 20,
-    max_total_duration_sec: int = 300,
+    max_depth: int = DEFAULT_AGENT_MAX_DEPTH,
+    max_steps: int = DEFAULT_AGENT_MAX_STEPS,
+    max_total_duration_sec: int = DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
 ) -> dict[str, object]:
     """Create an Agent Session.  Uses a self-managed short-lived DB session."""
     from yequ.models.session import Session

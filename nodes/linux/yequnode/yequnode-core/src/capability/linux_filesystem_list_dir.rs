@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use serde_json::{json, Value};
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
+use async_trait::async_trait;
+use serde_json::{json, Value};
 
 pub struct LinuxFilesystemListDir;
 
@@ -35,12 +35,21 @@ impl Capability for LinuxFilesystemListDir {
             idempotency: Some("idempotent".into()),
             execution_requirements: Some(json!({"runtime_kind": "privileged", "labels": ["linux"]})),
             resource_keys: None, conflict_policy: None,
+            supports_progress: false,
+            supports_cancel: false,
+            supports_resume: false,
+            progress_contract: None,
+            preconditions: vec![],
+            required_intent_slots: vec![],
         }
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("/");
-        let pattern = input.get("pattern").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let pattern = input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let dir = std::fs::read_dir(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -54,20 +63,34 @@ impl Capability for LinuxFilesystemListDir {
         })?;
 
         let match_pattern = |name: &str| -> bool {
-            pattern.as_ref().map_or(true, |pat| {
-                glob_match::glob_match(pat, name)
-            })
+            pattern
+                .as_ref()
+                .map_or(true, |pat| glob_match::glob_match(pat, name))
         };
 
         let mut entries = Vec::new();
         for entry in dir.take(500) {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let name = entry.file_name().to_string_lossy().to_string();
-            if !match_pattern(&name) { continue; }
+            if !match_pattern(&name) {
+                continue;
+            }
             let meta = entry.metadata().ok();
-            let file_type = meta.as_ref().map(|m| {
-                if m.is_dir() { "dir" } else if m.is_symlink() { "symlink" } else { "file" }
-            }).unwrap_or("unknown");
+            let file_type = meta
+                .as_ref()
+                .map(|m| {
+                    if m.is_dir() {
+                        "dir"
+                    } else if m.is_symlink() {
+                        "symlink"
+                    } else {
+                        "file"
+                    }
+                })
+                .unwrap_or("unknown");
             entries.push(json!({
                 "name": name,
                 "type": file_type,

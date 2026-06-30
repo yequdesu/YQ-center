@@ -27,10 +27,10 @@ macro_rules! register {
 
 #[cfg(test)]
 mod tests {
+    use crate::capability::manifest::{CapabilityError, CapabilityManifest};
+    use crate::capability::Capability;
     use async_trait::async_trait;
     use serde_json::Value;
-    use crate::capability::Capability;
-    use crate::capability::manifest::{CapabilityError, CapabilityManifest};
 
     struct TestCapA;
     struct TestCapB;
@@ -51,6 +51,12 @@ mod tests {
                 execution_requirements: None,
                 resource_keys: None,
                 conflict_policy: None,
+                supports_progress: false,
+                supports_cancel: false,
+                supports_resume: false,
+                progress_contract: None,
+                preconditions: vec![],
+                required_intent_slots: vec![],
             }
         }
 
@@ -75,6 +81,12 @@ mod tests {
                 execution_requirements: None,
                 resource_keys: None,
                 conflict_policy: None,
+                supports_progress: false,
+                supports_cancel: false,
+                supports_resume: false,
+                progress_contract: None,
+                preconditions: vec![],
+                required_intent_slots: vec![],
             }
         }
 
@@ -118,44 +130,54 @@ mod tests {
 
 // Real capability registration -- add new capabilities here.
 pub mod production {
-    use crate::capability::linux_system_info::LinuxSystemInfo;
-    use crate::capability::linux_metrics_snapshot::LinuxMetricsSnapshot;
-    use crate::capability::linux_process_list::LinuxProcessList;
-    use crate::capability::linux_filesystem_stat::LinuxFilesystemStat;
-    use crate::capability::linux_disk_detail::LinuxDiskDetail;
-    use crate::capability::linux_network_interfaces::LinuxNetworkInterfaces;
-    use crate::capability::linux_network_routes::LinuxNetworkRoutes;
-    use crate::capability::linux_network_connections::LinuxNetworkConnections;
-    use crate::capability::linux_service_list::LinuxServiceList;
-    use crate::capability::linux_service_status::LinuxServiceStatus;
-    use crate::capability::linux_log_journal::LinuxLogJournal;
-    use crate::capability::linux_user_list::LinuxUserList;
-    use crate::capability::linux_package_list::LinuxPackageList;
-    use crate::capability::linux_dmesg::LinuxDmesg;
-    use crate::capability::linux_filesystem_read_text::LinuxFilesystemReadText;
-    use crate::capability::linux_filesystem_find::LinuxFilesystemFind;
-    use crate::capability::linux_filesystem_list_dir::LinuxFilesystemListDir;
-    use crate::capability::linux_service_restart::LinuxServiceRestart;
+    use crate::capability::linux_artifact_diagnostics::LinuxArtifactDiagnostics;
+    use crate::capability::linux_artifact_download_file::LinuxArtifactDownloadFile;
+    use crate::capability::linux_artifact_screenshot_via_fb::LinuxArtifactScreenshotViaFb;
     use crate::capability::linux_artifact_upload_file::LinuxArtifactUploadFile;
     use crate::capability::linux_artifact_upload_log::LinuxArtifactUploadLog;
-    use crate::capability::linux_artifact_diagnostics::LinuxArtifactDiagnostics;
     use crate::capability::linux_artifact_upload_proc::LinuxArtifactUploadProc;
-    use crate::capability::linux_artifact_screenshot_via_fb::LinuxArtifactScreenshotViaFb;
-    use crate::capability::linux_transfer_croc_status::LinuxTransferCrocStatus;
-    use crate::capability::linux_transfer_croc_send::LinuxTransferCrocSend;
+    use crate::capability::linux_disk_detail::LinuxDiskDetail;
+    use crate::capability::linux_dmesg::LinuxDmesg;
+    use crate::capability::linux_filesystem_disk_usage::LinuxFilesystemDiskUsage;
+    use crate::capability::linux_filesystem_find::LinuxFilesystemFind;
+    use crate::capability::linux_filesystem_hash::LinuxFilesystemHash;
+    use crate::capability::linux_filesystem_list_dir::LinuxFilesystemListDir;
+    use crate::capability::linux_filesystem_mkdir::LinuxFilesystemMkdir;
+    use crate::capability::linux_filesystem_read_text::LinuxFilesystemReadText;
+    use crate::capability::linux_filesystem_stat::LinuxFilesystemStat;
+    use crate::capability::linux_log_journal::LinuxLogJournal;
+    use crate::capability::linux_metrics_snapshot::LinuxMetricsSnapshot;
+    use crate::capability::linux_network_connections::LinuxNetworkConnections;
+    use crate::capability::linux_network_dns_lookup::LinuxNetworkDnsLookup;
+    use crate::capability::linux_network_interfaces::LinuxNetworkInterfaces;
+    use crate::capability::linux_network_port_check::LinuxNetworkPortCheck;
+    use crate::capability::linux_network_routes::LinuxNetworkRoutes;
+    use crate::capability::linux_package_list::LinuxPackageList;
+    use crate::capability::linux_process_list::LinuxProcessList;
+    use crate::capability::linux_service_list::LinuxServiceList;
+    use crate::capability::linux_service_restart::LinuxServiceRestart;
+    use crate::capability::linux_service_status::LinuxServiceStatus;
+    use crate::capability::linux_system_info::LinuxSystemInfo;
     use crate::capability::linux_transfer_croc_receive::LinuxTransferCrocReceive;
-    use crate::capability::linux_transfer_local_stat::LinuxTransferLocalStat;
     use crate::capability::linux_transfer_croc_reconcile::LinuxTransferCrocReconcile;
+    use crate::capability::linux_transfer_croc_send::LinuxTransferCrocSend;
+    use crate::capability::linux_transfer_croc_status::LinuxTransferCrocStatus;
+    use crate::capability::linux_transfer_local_stat::LinuxTransferLocalStat;
+    use crate::capability::linux_user_list::LinuxUserList;
 
     register!(
         LinuxSystemInfo,
         LinuxMetricsSnapshot,
         LinuxProcessList,
         LinuxFilesystemStat,
+        LinuxFilesystemHash,
+        LinuxFilesystemDiskUsage,
         LinuxDiskDetail,
         LinuxNetworkInterfaces,
         LinuxNetworkRoutes,
         LinuxNetworkConnections,
+        LinuxNetworkDnsLookup,
+        LinuxNetworkPortCheck,
         LinuxServiceList,
         LinuxServiceStatus,
         LinuxLogJournal,
@@ -165,8 +187,10 @@ pub mod production {
         LinuxFilesystemReadText,
         LinuxFilesystemFind,
         LinuxFilesystemListDir,
+        LinuxFilesystemMkdir,
         LinuxServiceRestart,
         LinuxArtifactUploadFile,
+        LinuxArtifactDownloadFile,
         LinuxArtifactUploadLog,
         LinuxArtifactDiagnostics,
         LinuxArtifactUploadProc,

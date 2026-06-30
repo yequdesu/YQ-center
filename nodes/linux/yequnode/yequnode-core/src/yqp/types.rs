@@ -73,8 +73,8 @@ impl std::fmt::Display for MessageType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSnapshot {
     pub runtime_id: String,
-    pub kind: String,                        // privileged | interactive | wasm | docker
-    pub status: String,                      // online | degraded | offline
+    pub kind: String,   // privileged | interactive | wasm | docker
+    pub status: String, // online | degraded | offline
     #[serde(default)]
     pub interactive: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,20 +180,20 @@ pub struct FunctionManifest {
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
-    pub risk: String,                        // safe | maintenance | destructive | catastrophic
-    pub effect: String,                      // read | write | destructive | external
+    pub risk: String,   // safe | maintenance | destructive | catastrophic
+    pub effect: String, // read | write | destructive | external
     #[serde(default = "default_timeout_sec")]
     pub timeout_sec: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idempotency: Option<String>,         // idempotent | non_idempotent | transactional
+    pub idempotency: Option<String>, // idempotent | non_idempotent | transactional
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_context: Option<String>,   // system | user | hybrid
+    pub execution_context: Option<String>, // system | user | hybrid
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_requirements: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_keys: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub conflict_policy: Option<String>,     // allow_parallel | serialize | reject_if_running
+    pub conflict_policy: Option<String>, // allow_parallel | serialize | reject_if_running
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_input_fields: Option<Vec<String>>,
     #[serde(default)]
@@ -204,7 +204,7 @@ pub struct FunctionManifest {
 pub struct SignalManifest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,               // node | plugin | resource
+    pub scope: Option<String>, // node | plugin | resource
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_sec: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -284,7 +284,7 @@ pub struct JobAcceptedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobFinishedPayload {
     pub job_id: String,
-    pub status: String,                      // succeeded | failed | cancelled | timeout
+    pub status: String, // succeeded | failed | cancelled | timeout
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,7 +338,7 @@ pub struct ReconcilePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownJob {
     pub job_id: String,
-    pub local_status: String,                // running | succeeded | failed | cancelled | timeout
+    pub local_status: String, // running | succeeded | failed | cancelled | timeout
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -355,7 +355,7 @@ pub struct ReconciliationPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconciliationAction {
     pub job_id: String,
-    pub action: String,                      // continue | cancel | accept_result | discard_result | forget
+    pub action: String, // continue | cancel | accept_result | discard_result | forget
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_sec: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -425,8 +425,14 @@ mod tests {
         assert_eq!(MessageType::JobPoll.as_str(), "job.poll");
         assert_eq!(MessageType::JobEmpty.as_str(), "job.empty");
         assert_eq!(MessageType::RegistryAccepted.as_str(), "registry.accepted");
-        assert_eq!(MessageType::NodeReconcileJobs.as_str(), "node.reconcile_jobs");
-        assert_eq!(MessageType::JobReconciliation.as_str(), "job.reconciliation");
+        assert_eq!(
+            MessageType::NodeReconcileJobs.as_str(),
+            "node.reconcile_jobs"
+        );
+        assert_eq!(
+            MessageType::JobReconciliation.as_str(),
+            "job.reconciliation"
+        );
     }
 
     #[test]
@@ -477,7 +483,10 @@ mod tests {
 
     #[test]
     fn test_platform_info_no_extras() {
-        let p = PlatformInfo { os: "linux".into(), arch: "x86_64".into() };
+        let p = PlatformInfo {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(v.as_object().unwrap().len(), 2);
     }
@@ -549,7 +558,9 @@ mod tests {
             timeout_sec: 5,
             idempotency: Some("idempotent".into()),
             execution_context: None,
-            execution_requirements: Some(json!({"runtime_kind": "privileged", "labels": ["linux"]})),
+            execution_requirements: Some(
+                json!({"runtime_kind": "privileged", "labels": ["linux"]}),
+            ),
             resource_keys: None,
             conflict_policy: None,
             hidden_input_fields: None,
