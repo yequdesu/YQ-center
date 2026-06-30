@@ -63,6 +63,21 @@ where
 
     while let Ok(Some(line)) = line_stream.next_line().await {
         let redacted = redact(&line);
+        if let Some(ctx) = ctx.as_ref() {
+            if is_sender_ready_line(&line) {
+                let mut payload = base_payload.as_object().cloned().unwrap_or_default();
+                payload.insert("status".into(), json!("running"));
+                payload.insert("phase".into(), json!("sender_ready"));
+                payload.insert("progress_source".into(), json!("croc_sender_ready"));
+                payload.insert("progress_message".into(), json!("sender room is ready"));
+                payload.insert(
+                    "last_progress_at".into(),
+                    json!(chrono::Utc::now().to_rfc3339()),
+                );
+                ctx.report_progress("transfer_progress", Value::Object(payload))
+                    .await;
+            }
+        }
         if let (Some(ctx), Some(progress)) = (ctx.as_ref(), parse_croc_progress_line(&line)) {
             let now = tokio::time::Instant::now();
             let is_final = progress.progress_pct == Some(100);
@@ -106,6 +121,10 @@ where
     }
 
     lines
+}
+
+fn is_sender_ready_line(line: &str) -> bool {
+    line.trim_start().starts_with("Code is:")
 }
 
 fn parse_percent(line: &str) -> Option<u64> {

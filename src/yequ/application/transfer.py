@@ -24,7 +24,7 @@ TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
 TRANSFER_SENDER_START_WAIT_SEC = 8.0
-TRANSFER_SENDER_ROOM_GRACE_SEC = 2.0
+TRANSFER_SENDER_READY_WAIT_SEC = 120.0
 
 
 @dataclass(slots=True)
@@ -320,7 +320,41 @@ class TransferApplicationService:
             )
             await self.db.commit()
             return self._session_dict(session, source_job=sender_start, send_result=send_result)
-        await self._wait_for_sender_room_grace()
+        sender_ready = await self._wait_for_sender_ready(session.source_job_id)
+        if sender_ready is None:
+            await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
+            session.status = "failed"
+            session.error_code = "sender_room_ready_timeout"
+            session.error_message = (
+                "sender job disappeared before reporting croc_sender_ready"
+            )
+            await self.db.commit()
+            return self._session_dict(session, send_result=send_result)
+        if sender_ready.status in {
+            "succeeded",
+            "failed",
+            "timeout",
+            "cancelled",
+        }:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                sender_ready.error_code or "sender_job_finished_before_receiver",
+                sender_ready.error_message,
+            )
+            session.error_message = sender_ready.error_message or (
+                "sender job reached terminal state before receiver was started"
+            )
+            await self.db.commit()
+            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
+        if not _job_has_sender_ready(sender_ready):
+            await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
+            session.status = "failed"
+            session.error_code = "sender_room_ready_timeout"
+            session.error_message = (
+                "sender did not report croc_sender_ready before receiver startup"
+            )
+            await self.db.commit()
+            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
 
         receive_input: dict[str, object] = {
             "transfer_id": session.transfer_id,
@@ -425,13 +459,6 @@ class TransferApplicationService:
         except ValueError:
             return
 
-    async def _wait_for_sender_room_grace(self) -> None:
-        from yequ.config import get_settings
-
-        if get_settings().test_mode:
-            return
-        await asyncio.sleep(TRANSFER_SENDER_ROOM_GRACE_SEC)
-
     async def _wait_for_job_start(self, job_id: str | None) -> Job | None:
         if not job_id:
             return None
@@ -450,6 +477,29 @@ class TransferApplicationService:
                 if last_job is None:
                     return None
                 if last_job.status not in {"created", "queued"}:
+                    return last_job
+            await asyncio.sleep(0.5)
+        return last_job
+
+    async def _wait_for_sender_ready(self, job_id: str | None) -> Job | None:
+        if not job_id:
+            return None
+        from yequ.config import get_settings
+        from yequ.db import async_session_factory
+
+        if get_settings().test_mode:
+            return None
+
+        deadline = datetime.now(UTC) + timedelta(seconds=TRANSFER_SENDER_READY_WAIT_SEC)
+        last_job: Job | None = None
+        terminal = {"succeeded", "failed", "timeout", "cancelled"}
+        while datetime.now(UTC) < deadline:
+            async with async_session_factory() as db:
+                result = await db.execute(select(Job).where(Job.job_id == job_id))
+                last_job = result.scalar_one_or_none()
+                if last_job is None:
+                    return None
+                if _job_has_sender_ready(last_job) or last_job.status in terminal:
                     return last_job
             await asyncio.sleep(0.5)
         return last_job
@@ -1079,6 +1129,18 @@ def _job_progress(job: dict[str, object] | None) -> dict[str, object]:
         "progress_source": _first_str(detail_dict.get("progress_source")),
         "phase": _first_str(detail_dict.get("phase")),
     }
+
+
+def _job_has_sender_ready(job: Job | None) -> bool:
+    if job is None:
+        return False
+    detail = job.progress_detail
+    if not isinstance(detail, dict):
+        return False
+    return (
+        detail.get("progress_source") == "croc_sender_ready"
+        or detail.get("phase") == "sender_ready"
+    )
 
 
 def _transfer_progress_message(
