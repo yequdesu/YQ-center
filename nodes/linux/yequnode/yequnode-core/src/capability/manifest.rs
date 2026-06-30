@@ -25,10 +25,25 @@ pub struct CapabilityManifest {
 
 #[derive(Debug, Clone)]
 pub enum CapabilityError {
-    PermissionDenied { path: Option<String>, detail: String },
-    FunctionExecutionFailed { message: String, exit_code: Option<i32>, stderr: Option<String> },
-    InvalidInput { field: String, message: String },
-    Timeout { timeout_sec: u32 },
+    PermissionDenied {
+        path: Option<String>,
+        detail: String,
+    },
+    FunctionExecutionFailed {
+        message: String,
+        exit_code: Option<i32>,
+        stderr: Option<String>,
+    },
+    Cancelled {
+        message: String,
+    },
+    InvalidInput {
+        field: String,
+        message: String,
+    },
+    Timeout {
+        timeout_sec: u32,
+    },
     UnknownFunction(String),
     Internal(String),
 }
@@ -38,6 +53,7 @@ impl CapabilityError {
         match self {
             CapabilityError::PermissionDenied { .. } => "permission_denied",
             CapabilityError::FunctionExecutionFailed { .. } => "function_execution_failed",
+            CapabilityError::Cancelled { .. } => "cancelled",
             CapabilityError::InvalidInput { .. } => "invalid_input",
             CapabilityError::Timeout { .. } => "timeout",
             CapabilityError::UnknownFunction(_) => "unknown_function",
@@ -55,6 +71,7 @@ impl CapabilityError {
                 }
             }
             CapabilityError::FunctionExecutionFailed { message, .. } => message.clone(),
+            CapabilityError::Cancelled { message } => message.clone(),
             CapabilityError::InvalidInput { field, message } => {
                 format!("invalid input for {}: {}", field, message)
             }
@@ -79,9 +96,12 @@ impl CapabilityError {
             CapabilityError::PermissionDenied { path, .. } => {
                 serde_json::json!({ "path": path })
             }
-            CapabilityError::FunctionExecutionFailed { exit_code, stderr, .. } => {
+            CapabilityError::FunctionExecutionFailed {
+                exit_code, stderr, ..
+            } => {
                 serde_json::json!({ "exit_code": exit_code, "stderr": stderr })
             }
+            CapabilityError::Cancelled { .. } => serde_json::json!({ "cancelled": true }),
             _ => Value::Null,
         }
     }

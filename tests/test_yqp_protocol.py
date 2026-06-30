@@ -718,6 +718,59 @@ async def test_reconcile_running_returns_continue(client: AsyncClient, node_with
 
 
 @pytest.mark.asyncio
+async def test_reconcile_center_cancelling_returns_cancel(
+    client: AsyncClient,
+    node_with_hello,
+    db_session,
+):
+    """A daemon running job must stop when Center has moved it to cancelling."""
+    from sqlalchemy import select
+
+    from yequ.models.job import Job
+    from yequ.protocol import JobStatus
+
+    node, token = node_with_hello
+    auth = {"Authorization": f"Bearer {token}"}
+    job = Job(
+        job_id="job_rec_cancelling_001",
+        invocation_id="inv_rec_cancelling_001",
+        node_id=node.node_id,
+        function_name="test.function",
+        input_payload={},
+        status=JobStatus.CANCELLING,
+        timeout_sec=30,
+        lease_sec=10,
+    )
+    db_session.add(job)
+    await db_session.commit()
+
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.reconcile_jobs",
+            node.node_id,
+            payload={
+                "known_jobs": [
+                    {"job_id": "job_rec_cancelling_001", "local_status": "running"}
+                ]
+            },
+        ),
+        headers=auth,
+    )
+    assert resp.status_code == 200
+    action = resp.json()["payload"]["actions"][0]
+    assert action["action"] == "cancel"
+    assert action["reason"] == "center_cancelling"
+
+    await db_session.rollback()
+    result = await db_session.execute(
+        select(Job).where(Job.job_id == "job_rec_cancelling_001")
+    )
+    stored = result.scalar_one()
+    assert stored.status == JobStatus.CANCELLING
+
+
+@pytest.mark.asyncio
 async def test_reconcile_center_terminal_discards_late_daemon_result(
     client: AsyncClient,
     node_with_hello,

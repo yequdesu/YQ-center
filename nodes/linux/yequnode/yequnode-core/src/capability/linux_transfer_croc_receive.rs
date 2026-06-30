@@ -22,7 +22,8 @@ impl Capability for LinuxTransferCrocReceive {
                 "Receive a file or directory using croc. \
                  Supports resume_mode: resume (default), overwrite, fail_if_exists. \
                  Reports progress via job.event and supports cancellation. \
-                 Returns transfer_id, received path, size, and sha256 on completion.".into()
+                 Returns transfer_id, received path, size, and sha256 on completion."
+                    .into(),
             ),
             input_schema: json!({
                 "type": "object",
@@ -98,36 +99,40 @@ impl Capability for LinuxTransferCrocReceive {
             });
         }
 
-        let code = input.get("code")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let code = input.get("code").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "code".into(),
                 message: "code is required".into(),
-            })?;
+            }
+        })?;
 
-        let output_dir = input.get("output_dir")
+        let output_dir = input
+            .get("output_dir")
             .and_then(|v| v.as_str())
             .ok_or_else(|| CapabilityError::InvalidInput {
                 field: "output_dir".into(),
                 message: "output_dir is required".into(),
             })?;
 
-        let relay_url = input.get("relay_url")
+        let relay_url = input
+            .get("relay_url")
             .and_then(|v| v.as_str())
             .or(croc_config.relay_url.as_deref());
 
-        let _timeout_sec = input.get("timeout_sec")
+        let timeout_sec = input
+            .get("timeout_sec")
             .and_then(|v| v.as_u64())
             .unwrap_or(3600);
 
-        let resume_mode_str = input.get("resume_mode")
+        let resume_mode_str = input
+            .get("resume_mode")
             .and_then(|v| v.as_str())
             .unwrap_or("resume");
 
-        let expected_sha256 = input.get("expected_sha256")
-            .and_then(|v| v.as_str());
+        let expected_sha256 = input.get("expected_sha256").and_then(|v| v.as_str());
 
-        let transfer_id = input.get("transfer_id")
+        let transfer_id = input
+            .get("transfer_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -137,21 +142,24 @@ impl Capability for LinuxTransferCrocReceive {
             "resume" => crate::transfer_ledger::ResumeMode::Resume,
             "overwrite" => crate::transfer_ledger::ResumeMode::Overwrite,
             "fail_if_exists" => crate::transfer_ledger::ResumeMode::FailIfExists,
-            _ => return Err(CapabilityError::InvalidInput {
-                field: "resume_mode".into(),
-                message: format!("unknown resume_mode: {}", resume_mode_str),
-            }),
+            _ => {
+                return Err(CapabilityError::InvalidInput {
+                    field: "resume_mode".into(),
+                    message: format!("unknown resume_mode: {}", resume_mode_str),
+                })
+            }
         };
 
         // Validate output directory
         let out_path = std::path::Path::new(output_dir);
         if !out_path.exists() {
-            std::fs::create_dir_all(out_path)
-                .map_err(|e| CapabilityError::FunctionExecutionFailed {
+            std::fs::create_dir_all(out_path).map_err(|e| {
+                CapabilityError::FunctionExecutionFailed {
                     message: format!("failed to create output directory: {}", e),
                     exit_code: None,
                     stderr: Some(e.to_string()),
-                })?;
+                }
+            })?;
         }
 
         // Check for existing files based on resume_mode
@@ -163,7 +171,10 @@ impl Capability for LinuxTransferCrocReceive {
                     .collect();
                 if !entries.is_empty() {
                     return Err(CapabilityError::FunctionExecutionFailed {
-                        message: format!("output directory {} is not empty and resume_mode is fail_if_exists", output_dir),
+                        message: format!(
+                            "output directory {} is not empty and resume_mode is fail_if_exists",
+                            output_dir
+                        ),
                         exit_code: None,
                         stderr: None,
                     });
@@ -181,11 +192,14 @@ impl Capability for LinuxTransferCrocReceive {
         let code_hash = compute_code_hash(code);
 
         // Initialize transfer ledger
-        let ledger_path = config.db_path.parent()
+        let ledger_path = config
+            .db_path
+            .parent()
             .unwrap_or(std::path::Path::new("."))
             .join("transfers.db");
-        let ledger = crate::transfer_ledger::TransferLedger::open(&ledger_path)
-            .map_err(|e| CapabilityError::Internal(format!("failed to open transfer ledger: {}", e)))?;
+        let ledger = crate::transfer_ledger::TransferLedger::open(&ledger_path).map_err(|e| {
+            CapabilityError::Internal(format!("failed to open transfer ledger: {}", e))
+        })?;
 
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -193,7 +207,8 @@ impl Capability for LinuxTransferCrocReceive {
         let partial_path = find_partial_file(out_path);
 
         // Check idempotency
-        if let Some(existing) = ledger.get(&transfer_id)
+        if let Some(existing) = ledger
+            .get(&transfer_id)
             .map_err(|e| CapabilityError::Internal(format!("ledger lookup failed: {}", e)))?
         {
             match existing.status {
@@ -211,12 +226,16 @@ impl Capability for LinuxTransferCrocReceive {
                 }
                 crate::transfer_ledger::TransferStatus::Failed
                 | crate::transfer_ledger::TransferStatus::Cancelled => {
-                    ledger.increment_attempt(&transfer_id)
-                        .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                    ledger.increment_attempt(&transfer_id).map_err(|e| {
+                        CapabilityError::Internal(format!("ledger update failed: {}", e))
+                    })?;
                 }
                 _ => {
                     return Err(CapabilityError::FunctionExecutionFailed {
-                        message: format!("transfer {} is already in state {:?}", transfer_id, existing.status),
+                        message: format!(
+                            "transfer {} is already in state {:?}",
+                            transfer_id, existing.status
+                        ),
                         exit_code: None,
                         stderr: None,
                     });
@@ -247,7 +266,8 @@ impl Capability for LinuxTransferCrocReceive {
                 created_at: now.clone(),
                 updated_at: now.clone(),
             };
-            ledger.insert(&entry)
+            ledger
+                .insert(&entry)
                 .map_err(|e| CapabilityError::Internal(format!("ledger insert failed: {}", e)))?;
         }
 
@@ -255,27 +275,37 @@ impl Capability for LinuxTransferCrocReceive {
         let ctx = crate::execution_context::try_current();
 
         // Update status to running
-        ledger.update_status(&transfer_id, crate::transfer_ledger::TransferStatus::Running, None, None)
+        ledger
+            .update_status(
+                &transfer_id,
+                crate::transfer_ledger::TransferStatus::Running,
+                None,
+                None,
+            )
             .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
 
         // Report initial progress
         if let Some(ref ctx) = ctx {
-            ctx.report_progress("transfer_started", json!({
-                "transfer_id": transfer_id,
-                "role": "receiver",
-                "output_dir": output_dir,
-                "resume_mode": resume_mode_str,
-                "partial_path": partial_path,
-            })).await;
+            ctx.report_progress(
+                "transfer_started",
+                json!({
+                    "transfer_id": transfer_id,
+                    "role": "receiver",
+                    "output_dir": output_dir,
+                    "resume_mode": resume_mode_str,
+                    "partial_path": partial_path,
+                }),
+            )
+            .await;
         }
 
         // Build croc command
         // croc v10.4.4 requires CROC_SECRET env var for receive mode
         // Passing code as positional arg doesn't work for receiving
         let binary_path = &croc_config.binary_path;
+        ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes")
-           .arg("--quiet");   // reduce output noise
+        cmd.arg("--yes").arg("--quiet"); // reduce output noise
 
         if let Some(relay) = relay_url {
             cmd.arg("--relay").arg(relay);
@@ -289,9 +319,10 @@ impl Capability for LinuxTransferCrocReceive {
 
         // Spawn as background process
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| CapabilityError::FunctionExecutionFailed {
                 message: format!("failed to spawn croc: {}", e),
                 exit_code: None,
@@ -301,7 +332,13 @@ impl Capability for LinuxTransferCrocReceive {
         let pid = child.id().unwrap_or(0);
 
         // Update ledger with PID
-        ledger.update_status(&transfer_id, crate::transfer_ledger::TransferStatus::Running, Some(pid), None)
+        ledger
+            .update_status(
+                &transfer_id,
+                crate::transfer_ledger::TransferStatus::Running,
+                Some(pid),
+                None,
+            )
             .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
 
         let started_at = chrono::Utc::now().to_rfc3339();
@@ -339,6 +376,7 @@ impl Capability for LinuxTransferCrocReceive {
         let progress_interval = Duration::from_secs(30);
         let mut last_lease = tokio::time::Instant::now();
         let mut last_progress = tokio::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
 
         let result = loop {
             // Check for cancellation
@@ -352,23 +390,29 @@ impl Capability for LinuxTransferCrocReceive {
                     let stdout_text = truncate_tail(&stdout_lines.join("\n"));
                     let stderr_text = truncate_tail(&stderr_lines.join("\n"));
 
-                    ledger.update_status(
-                        &transfer_id,
-                        crate::transfer_ledger::TransferStatus::Cancelled,
-                        None,
-                        Some(("cancelled", "job cancelled by center")),
-                    ).map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                    ledger
+                        .update_status(
+                            &transfer_id,
+                            crate::transfer_ledger::TransferStatus::Cancelled,
+                            None,
+                            Some(("cancelled", "job cancelled by center")),
+                        )
+                        .map_err(|e| {
+                            CapabilityError::Internal(format!("ledger update failed: {}", e))
+                        })?;
 
-                    ctx.report_progress("transfer_cancelled", json!({
-                        "transfer_id": transfer_id,
-                        "stdout": stdout_text,
-                        "stderr": stderr_text,
-                    })).await;
+                    ctx.report_progress(
+                        "transfer_cancelled",
+                        json!({
+                            "transfer_id": transfer_id,
+                            "stdout": stdout_text,
+                            "stderr": stderr_text,
+                        }),
+                    )
+                    .await;
 
-                    return Err(CapabilityError::FunctionExecutionFailed {
-                        message: "transfer cancelled".into(),
-                        exit_code: None,
-                        stderr: Some(stderr_text),
+                    return Err(CapabilityError::Cancelled {
+                        message: format!("transfer cancelled: {}", stderr_text),
                     });
                 }
             }
@@ -388,6 +432,43 @@ impl Capability for LinuxTransferCrocReceive {
                 Ok(None) => {
                     let now = tokio::time::Instant::now();
 
+                    if now >= deadline {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        let stdout_lines = stdout_handle.await.unwrap_or_default();
+                        let stderr_lines = stderr_handle.await.unwrap_or_default();
+                        let stdout_text = truncate_tail(&stdout_lines.join("\n"));
+                        let stderr_text = truncate_tail(&stderr_lines.join("\n"));
+
+                        ledger
+                            .update_status(
+                                &transfer_id,
+                                crate::transfer_ledger::TransferStatus::Failed,
+                                None,
+                                Some(("timeout", "transfer timed out")),
+                            )
+                            .map_err(|e| {
+                                CapabilityError::Internal(format!("ledger update failed: {}", e))
+                            })?;
+
+                        if let Some(ref ctx) = ctx {
+                            ctx.report_progress(
+                                "transfer_timeout",
+                                json!({
+                                    "transfer_id": transfer_id,
+                                    "timeout_sec": timeout_sec,
+                                    "stdout": stdout_text,
+                                    "stderr": stderr_text,
+                                }),
+                            )
+                            .await;
+                        }
+
+                        return Err(CapabilityError::Timeout {
+                            timeout_sec: timeout_sec as u32,
+                        });
+                    }
+
                     if now.duration_since(last_lease) >= lease_interval {
                         if let Some(ref ctx) = ctx {
                             ctx.renew_lease(120).await;
@@ -396,15 +477,20 @@ impl Capability for LinuxTransferCrocReceive {
                     }
 
                     if now.duration_since(last_progress) >= progress_interval {
-                        ledger.record_progress(&transfer_id)
-                            .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                        ledger.record_progress(&transfer_id).map_err(|e| {
+                            CapabilityError::Internal(format!("ledger update failed: {}", e))
+                        })?;
 
                         if let Some(ref ctx) = ctx {
-                            ctx.report_progress("transfer_progress", json!({
-                                "transfer_id": transfer_id,
-                                "pid": pid,
-                                "status": "running",
-                            })).await;
+                            ctx.report_progress(
+                                "transfer_progress",
+                                json!({
+                                    "transfer_id": transfer_id,
+                                    "pid": pid,
+                                    "status": "running",
+                                }),
+                            )
+                            .await;
                         }
                         last_progress = now;
                     }
@@ -426,14 +512,19 @@ impl Capability for LinuxTransferCrocReceive {
                         // croc returned success but no file was received
                         let _stdout_text = truncate_tail(&stdout_lines.join("\n"));
                         let stderr_text = truncate_tail(&stderr_lines.join("\n"));
-                        let error_message = "croc returned success but no file found in output directory";
+                        let error_message =
+                            "croc returned success but no file found in output directory";
 
-                        ledger.update_status(
-                            &transfer_id,
-                            crate::transfer_ledger::TransferStatus::Failed,
-                            None,
-                            Some(("received_file_missing", error_message)),
-                        ).map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                        ledger
+                            .update_status(
+                                &transfer_id,
+                                crate::transfer_ledger::TransferStatus::Failed,
+                                None,
+                                Some(("received_file_missing", error_message)),
+                            )
+                            .map_err(|e| {
+                                CapabilityError::Internal(format!("ledger update failed: {}", e))
+                            })?;
 
                         return Err(CapabilityError::FunctionExecutionFailed {
                             message: error_message.into(),
@@ -464,22 +555,39 @@ impl Capability for LinuxTransferCrocReceive {
                                 let _stdout_text = truncate_tail(&stdout_lines.join("\n"));
                                 let stderr_text = truncate_tail(&stderr_lines.join("\n"));
 
-                                ledger.update_status(
-                                    &transfer_id,
-                                    crate::transfer_ledger::TransferStatus::Failed,
-                                    None,
-                                    Some(("checksum_mismatch", &format!("expected {}, got {}", expected, actual))),
-                                ).map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                                ledger
+                                    .update_status(
+                                        &transfer_id,
+                                        crate::transfer_ledger::TransferStatus::Failed,
+                                        None,
+                                        Some((
+                                            "checksum_mismatch",
+                                            &format!("expected {}, got {}", expected, actual),
+                                        )),
+                                    )
+                                    .map_err(|e| {
+                                        CapabilityError::Internal(format!(
+                                            "ledger update failed: {}",
+                                            e
+                                        ))
+                                    })?;
 
                                 if let Some(ref ctx) = ctx {
-                                    ctx.report_progress("transfer_failed", json!({
-                                        "transfer_id": transfer_id,
-                                        "error_code": "checksum_mismatch",
-                                    })).await;
+                                    ctx.report_progress(
+                                        "transfer_failed",
+                                        json!({
+                                            "transfer_id": transfer_id,
+                                            "error_code": "checksum_mismatch",
+                                        }),
+                                    )
+                                    .await;
                                 }
 
                                 return Err(CapabilityError::FunctionExecutionFailed {
-                                    message: format!("checksum mismatch: expected {}, got {}", expected, actual),
+                                    message: format!(
+                                        "checksum mismatch: expected {}, got {}",
+                                        expected, actual
+                                    ),
                                     exit_code: None,
                                     stderr: Some(stderr_text),
                                 });
@@ -490,20 +598,32 @@ impl Capability for LinuxTransferCrocReceive {
                 }
 
                 // Update ledger to succeeded
-                ledger.update_status(&transfer_id, crate::transfer_ledger::TransferStatus::Succeeded, None, None)
-                    .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                ledger
+                    .update_status(
+                        &transfer_id,
+                        crate::transfer_ledger::TransferStatus::Succeeded,
+                        None,
+                        None,
+                    )
+                    .map_err(|e| {
+                        CapabilityError::Internal(format!("ledger update failed: {}", e))
+                    })?;
 
                 let completed_at = chrono::Utc::now().to_rfc3339();
 
                 if let Some(ref ctx) = ctx {
-                    ctx.report_progress("transfer_completed", json!({
-                        "transfer_id": transfer_id,
-                        "status": "succeeded",
-                        "received_path": received_path,
-                        "received_kind": received_kind,
-                        "size_bytes": received_meta.size_bytes,
-                        "sha256": received_meta.sha256,
-                    })).await;
+                    ctx.report_progress(
+                        "transfer_completed",
+                        json!({
+                            "transfer_id": transfer_id,
+                            "status": "succeeded",
+                            "received_path": received_path,
+                            "received_kind": received_kind,
+                            "size_bytes": received_meta.size_bytes,
+                            "sha256": received_meta.sha256,
+                        }),
+                    )
+                    .await;
                 }
 
                 Ok(json!({
@@ -525,19 +645,27 @@ impl Capability for LinuxTransferCrocReceive {
                 let stderr_text = truncate_tail(&stderr_lines.join("\n"));
                 let error_message = format!("croc receive failed with exit code {:?}", exit_code);
 
-                ledger.update_status(
-                    &transfer_id,
-                    crate::transfer_ledger::TransferStatus::Failed,
-                    None,
-                    Some(("croc_failed", &error_message)),
-                ).map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+                ledger
+                    .update_status(
+                        &transfer_id,
+                        crate::transfer_ledger::TransferStatus::Failed,
+                        None,
+                        Some(("croc_failed", &error_message)),
+                    )
+                    .map_err(|e| {
+                        CapabilityError::Internal(format!("ledger update failed: {}", e))
+                    })?;
 
                 if let Some(ref ctx) = ctx {
-                    ctx.report_progress("transfer_failed", json!({
-                        "transfer_id": transfer_id,
-                        "error_code": "croc_failed",
-                        "error_message": error_message,
-                    })).await;
+                    ctx.report_progress(
+                        "transfer_failed",
+                        json!({
+                            "transfer_id": transfer_id,
+                            "error_code": "croc_failed",
+                            "error_message": error_message,
+                        }),
+                    )
+                    .await;
                 }
 
                 // Build structured error details per contract
@@ -599,7 +727,8 @@ fn truncate_tail(text: &str) -> String {
     } else {
         let start = text.len() - MAX_OUTPUT_TAIL;
         // Find a valid char boundary
-        let start = text[start..].char_indices()
+        let start = text[start..]
+            .char_indices()
             .nth(1)
             .map(|(i, _)| start + i)
             .unwrap_or(start);
@@ -676,4 +805,30 @@ fn compute_code_hash(code: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(code.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+async fn ensure_croc_executable(binary_path: &str) -> Result<(), CapabilityError> {
+    if !std::path::Path::new(binary_path).exists() {
+        return Err(CapabilityError::InvalidInput {
+            field: "binary_path".into(),
+            message: format!("croc binary not found at {}", binary_path),
+        });
+    }
+
+    match tokio::process::Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(CapabilityError::FunctionExecutionFailed {
+            message: format!("croc --version failed with {:?}", output.status.code()),
+            exit_code: output.status.code(),
+            stderr: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+        }),
+        Err(e) => Err(CapabilityError::PermissionDenied {
+            path: Some(binary_path.into()),
+            detail: format!("croc is not executable by daemon user: {}", e),
+        }),
+    }
 }

@@ -50,13 +50,12 @@ impl Capability for LinuxServiceRestart {
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let name = input
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let name = input.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "name".into(),
                 message: "name must be a non-empty string".into(),
-            })?;
+            }
+        })?;
 
         let output = tokio::process::Command::new("sudo")
             .args(["systemctl", "restart", name])
@@ -81,11 +80,11 @@ impl Capability for LinuxServiceRestart {
                 "output": combined,
             }))
         } else {
-            Ok(json!({
-                "name": name,
-                "status": "failed",
-                "output": combined,
-            }))
+            Err(CapabilityError::FunctionExecutionFailed {
+                message: format!("systemctl restart {} failed", name),
+                exit_code: output.status.code(),
+                stderr: Some(combined),
+            })
         }
     }
 }

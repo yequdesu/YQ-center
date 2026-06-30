@@ -55,13 +55,12 @@ impl Capability for LinuxArtifactUploadFile {
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let path = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput {
+        let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
                 field: "path".into(),
                 message: "path must be a non-empty string".into(),
-            })?;
+            }
+        })?;
 
         let title = input
             .get("title")
@@ -76,27 +75,48 @@ impl Capability for LinuxArtifactUploadFile {
             })
             .to_string();
 
-        // Read the file
-        let data = std::fs::read(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                CapabilityError::InvalidInput {
+        // Read directly when possible; fall back to sudo because the manifest
+        // declares root privilege and Center may route this to sudo-limited runtime.
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CapabilityError::InvalidInput {
                     field: "path".into(),
                     message: format!("file not found: {}", path),
-                }
-            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                CapabilityError::PermissionDenied {
-                    path: Some(path.to_string()),
-                    detail: e.to_string(),
-                }
-            } else {
-                CapabilityError::Internal(format!("failed to read {}: {}", path, e))
+                });
             }
-        })?;
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let output = tokio::process::Command::new("sudo")
+                    .args(["cat", "--", path])
+                    .output()
+                    .await
+                    .map_err(|sudo_err| CapabilityError::PermissionDenied {
+                        path: Some(path.to_string()),
+                        detail: format!("direct read failed: {}; sudo failed: {}", e, sudo_err),
+                    })?;
+
+                if output.status.success() {
+                    output.stdout
+                } else {
+                    return Err(CapabilityError::PermissionDenied {
+                        path: Some(path.to_string()),
+                        detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                    });
+                }
+            }
+            Err(e) => {
+                return Err(CapabilityError::Internal(format!(
+                    "failed to read {}: {}",
+                    path, e
+                )))
+            }
+        };
 
         // Upload via global YQP client
         let client = super::YQP_CLIENT.get().ok_or_else(|| {
             CapabilityError::Internal(
-                "YQP client not initialized; set_yqp_client() must be called at daemon startup".into(),
+                "YQP client not initialized; set_yqp_client() must be called at daemon startup"
+                    .into(),
             )
         })?;
 
@@ -106,9 +126,9 @@ impl Capability for LinuxArtifactUploadFile {
                 "application/octet-stream",
                 &title,
                 &data,
-                None,  // summary
-                None,  // metadata
-                None,  // job_id
+                None, // summary
+                None, // metadata
+                None, // job_id
             )
             .await
             .map_err(|e| CapabilityError::Internal(format!("artifact upload failed: {}", e)))?;

@@ -1022,6 +1022,17 @@ async def handle_reconcile_jobs(
 
         center_status = job.status
 
+        # Center-side cancellation is authoritative for a still-running daemon.
+        if center_status == JobStatus.CANCELLING and local_status == "running":
+            actions.append(
+                {
+                    "job_id": job_id,
+                    "action": ReconciliationAction.CANCEL,
+                    "reason": "center_cancelling",
+                }
+            )
+            continue
+
         # Rule 1: Center has terminal state, Daemon completed.
         # Center is authoritative once a Job reaches terminal state; late daemon results are
         # intentionally discarded to preserve terminal immutability and avoid result drift.
@@ -1055,7 +1066,9 @@ async def handle_reconcile_jobs(
 
         # Rule 3: Center is non-terminal (running/claimed/queued/created),
         # Daemon completed — accept the result and sync Center state
-        if center_status in non_terminal_statuses and local_status in daemon_terminal:
+        if (
+            center_status in non_terminal_statuses or center_status == JobStatus.CANCELLING
+        ) and local_status in daemon_terminal:
             raw_error = kj.get("error")
             if isinstance(raw_error, dict):
                 error_code = raw_error.get("code") or kj.get("error_code")

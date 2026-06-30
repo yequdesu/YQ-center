@@ -61,21 +61,22 @@ impl Capability for LinuxFilesystemFind {
     }
 
     async fn execute(input: Value) -> Result<Value, CapabilityError> {
-        let name = input.get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CapabilityError::InvalidInput { field: "name".into(), message: "missing required field: name".into() })?;
+        let name = input.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            CapabilityError::InvalidInput {
+                field: "name".into(),
+                message: "missing required field: name".into(),
+            }
+        })?;
 
-        let path = input.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("/");
+        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("/");
 
-        let max_depth = input.get("max_depth")
+        let max_depth = input
+            .get("max_depth")
             .and_then(|v| v.as_u64())
             .unwrap_or(4)
             .min(20) as u64;
 
-        let min_size_kb = input.get("min_size_kb")
-            .and_then(|v| v.as_u64());
+        let min_size_kb = input.get("min_size_kb").and_then(|v| v.as_u64());
 
         let path = path.to_string();
         let name = name.to_string();
@@ -83,7 +84,8 @@ impl Capability for LinuxFilesystemFind {
         let results = tokio::task::spawn_blocking(move || {
             let mut args: Vec<String> = Vec::new();
             args.push(path);
-            args.push(format!("-maxdepth {}", max_depth));
+            args.push("-maxdepth".into());
+            args.push(max_depth.to_string());
             args.push("-name".into());
             args.push(name);
             args.push("-type".into());
@@ -103,8 +105,12 @@ impl Capability for LinuxFilesystemFind {
                 .output()
                 .map_err(|e| CapabilityError::Internal(format!("find execution failed: {}", e)))?;
 
-            if !output.status.success() {
-                // find exits with partial results on permission errors — still parse what we got
+            if !output.status.success() && output.stdout.is_empty() {
+                return Err(CapabilityError::FunctionExecutionFailed {
+                    message: format!("find exited with {:?}", output.status.code()),
+                    exit_code: output.status.code(),
+                    stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+                });
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -137,6 +143,8 @@ impl Capability for LinuxFilesystemFind {
         .await
         .map_err(|e| CapabilityError::Internal(format!("spawn blocking failed: {}", e)))??;
 
-        Ok(json!({ "files": results, "count": results.len(), "truncated": results.len() >= MAX_RESULTS }))
+        Ok(
+            json!({ "files": results, "count": results.len(), "truncated": results.len() >= MAX_RESULTS }),
+        )
     }
 }

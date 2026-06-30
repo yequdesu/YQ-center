@@ -39,6 +39,42 @@ async fn probe_supported_flags(binary_path: &str) -> Vec<String> {
     supported
 }
 
+async fn probe_version(binary_path: &str) -> (bool, Option<String>, Option<String>) {
+    if !std::path::Path::new(binary_path).exists() {
+        return (
+            false,
+            None,
+            Some(format!("croc binary not found at {}", binary_path)),
+        );
+    }
+
+    match tokio::process::Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => (
+            true,
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            None,
+        ),
+        Ok(output) => (
+            false,
+            None,
+            Some(format!(
+                "croc --version exited with {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        ),
+        Err(e) => (
+            false,
+            None,
+            Some(format!("croc is not executable by daemon user: {}", e)),
+        ),
+    }
+}
+
 pub struct LinuxTransferCrocStatus;
 
 #[async_trait]
@@ -76,31 +112,12 @@ impl Capability for LinuxTransferCrocStatus {
 
         let croc_config = &config.transfer.croc;
 
-        // Probe croc binary
         let binary_path = &croc_config.binary_path;
         let installed = std::path::Path::new(binary_path).exists();
-
-        let version = if installed {
-            match tokio::process::Command::new(binary_path)
-                .arg("--version")
-                .output()
-                .await
-            {
-                Ok(output) => {
-                    if output.status.success() {
-                        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        let (executable, version, executable_error) = probe_version(binary_path).await;
 
         // Probe supported flags via --help
-        let supported_flags = if installed {
+        let supported_flags = if executable {
             probe_supported_flags(binary_path).await
         } else {
             vec![]
@@ -115,6 +132,7 @@ impl Capability for LinuxTransferCrocStatus {
 
         Ok(json!({
             "installed": installed,
+            "executable": executable,
             "binary_path": binary_path,
             "version": version,
             "supported_flags": supported_flags,
@@ -131,6 +149,8 @@ impl Capability for LinuxTransferCrocStatus {
             },
             "error": if !installed {
                 Some(format!("croc binary not found at {}", binary_path))
+            } else if !executable {
+                executable_error
             } else if !croc_config.enabled {
                 Some("croc transfer is disabled in config".to_string())
             } else {

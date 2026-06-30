@@ -16,20 +16,19 @@ use crate::registry;
 use crate::shutdown;
 use crate::yqp::client::YqpClient;
 use crate::yqp::types::{
-    AcceptedPayload, JobDescriptor, JobErrorDetail, JobFinishedPayload,
-    PluginManifest, ReconciliationAction, RuntimePrivilege, RuntimeSnapshot,
+    AcceptedPayload, JobDescriptor, JobErrorDetail, JobFinishedPayload, KnownJob, PluginManifest,
+    ReconciliationAction, RuntimePrivilege, RuntimeSnapshot,
 };
 
 /// Long-running capabilities that need progress reporting and cancellation.
-const LONG_RUNNING_CAPABILITIES: &[&str] = &[
-    "linux.transfer.croc.send",
-    "linux.transfer.croc.receive",
-];
+const LONG_RUNNING_CAPABILITIES: &[&str] =
+    &["linux.transfer.croc.send", "linux.transfer.croc.receive"];
 
 // ---------------------------------------------------------------------------
 // Daemon
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Daemon {
     #[allow(dead_code)]
     config: Config,
@@ -39,6 +38,7 @@ pub struct Daemon {
     heartbeat_interval_sec: u64,
     poll_interval_sec: u64,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    running_jobs: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl Daemon {
@@ -109,12 +109,16 @@ impl Daemon {
 
         // Collect capability manifests and filter by probe results
         let all_manifests = registry::production::collect_manifests();
-        let all_function_names: Vec<String> = all_manifests.iter().map(|m| m.name.clone()).collect();
-        let passed_functions = permissions::filter_passed_functions(&probe_results, &all_function_names);
+        let all_function_names: Vec<String> =
+            all_manifests.iter().map(|m| m.name.clone()).collect();
+        let passed_functions =
+            permissions::filter_passed_functions(&probe_results, &all_function_names);
 
         let filtered_manifests: Vec<&CapabilityManifest> = all_manifests
             .iter()
-            .filter(|m| passed_functions.contains(&m.name))
+            .filter(|m| {
+                passed_functions.contains(&m.name) && manifest_runtime_satisfied(m, &runtimes)
+            })
             .collect();
 
         // Convert CapabilityManifests to PluginManifests for the protocol
@@ -187,7 +191,11 @@ impl Daemon {
                         // Center confirms the result — mark as confirmed
                         store.update_job_status(
                             &action.job_id,
-                            &unconfirmed.iter().find(|j| j.job_id == action.job_id).map(|j| j.status.clone()).unwrap_or_default(),
+                            &unconfirmed
+                                .iter()
+                                .find(|j| j.job_id == action.job_id)
+                                .map(|j| j.status.clone())
+                                .unwrap_or_default(),
                             None,
                             None,
                             true,
@@ -198,6 +206,10 @@ impl Daemon {
                         // Center doesn't know about this job — mark as cancelled
                         store.update_job_status(&action.job_id, "cancelled", None, None, true)?;
                         info!(job_id = %action.job_id, "reconciliation: forgot job");
+                    }
+                    "cancel" => {
+                        store.update_job_status(&action.job_id, "cancelled", None, None, true)?;
+                        info!(job_id = %action.job_id, "reconciliation: cancelled stale local job");
                     }
                     other => {
                         warn!(job_id = %action.job_id, action = %other, "reconciliation: unknown action");
@@ -215,6 +227,7 @@ impl Daemon {
             heartbeat_interval_sec,
             poll_interval_sec,
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            running_jobs: Arc::new(RwLock::new(HashMap::new())),
         };
 
         daemon.main_loop().await;
@@ -231,7 +244,8 @@ impl Daemon {
     // -----------------------------------------------------------------------
 
     async fn main_loop(&self) {
-        let mut heartbeat_ticker = tokio::time::interval(Duration::from_secs(self.heartbeat_interval_sec));
+        let mut heartbeat_ticker =
+            tokio::time::interval(Duration::from_secs(self.heartbeat_interval_sec));
         let mut poll_ticker = tokio::time::interval(Duration::from_secs(self.poll_interval_sec));
 
         // Tick immediately on first iteration
@@ -278,8 +292,13 @@ impl Daemon {
     async fn do_heartbeat(&self) {
         let uptime = self.started_at.elapsed().as_secs();
         let runtimes = build_all_runtimes();
+        let running_jobs = self.running_job_ids().await;
 
-        match self.yqp.heartbeat(uptime, &[], 1, &runtimes).await {
+        match self
+            .yqp
+            .heartbeat(uptime, &running_jobs, 1, &runtimes)
+            .await
+        {
             Ok(resp) => {
                 info!(
                     uptime_sec = uptime,
@@ -291,6 +310,10 @@ impl Daemon {
                 warn!(error = ?e, "heartbeat failed");
             }
         }
+
+        if !running_jobs.is_empty() {
+            self.reconcile_running_jobs(&running_jobs).await;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -298,7 +321,13 @@ impl Daemon {
     // -----------------------------------------------------------------------
 
     async fn do_poll_cycle(&self) {
-        match self.yqp.job_poll(4, &[]).await {
+        let running_jobs = self.running_job_ids().await;
+        let capacity = 4_u32;
+        if running_jobs.len() >= capacity as usize {
+            return;
+        }
+
+        match self.yqp.job_poll(capacity, &running_jobs).await {
             Ok(resp) => {
                 let jobs: Vec<JobDescriptor> = resp
                     .payload
@@ -310,8 +339,11 @@ impl Daemon {
                     info!(count = jobs.len(), "jobs received from poll");
                 }
 
-                for job in &jobs {
-                    self.execute_job(job).await;
+                for job in jobs {
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.execute_job(job).await;
+                    });
                 }
             }
             Err(e) => {
@@ -325,10 +357,15 @@ impl Daemon {
     // Job execution pipeline
     // -----------------------------------------------------------------------
 
-    async fn execute_job(&self, job: &JobDescriptor) {
+    async fn execute_job(&self, job: JobDescriptor) {
         let job_id = &job.job_id;
         let function_name = &job.function;
         info!(job_id = %job_id, function = %function_name, "executing job");
+
+        {
+            let mut running = self.running_jobs.write().await;
+            running.insert(job_id.clone(), function_name.clone());
+        }
 
         // 1. Insert job record (status=claimed)
         let record = JobRecord {
@@ -347,6 +384,7 @@ impl Daemon {
 
         if let Err(e) = self.store.insert_job(&record) {
             error!(job_id = %job_id, error = %e, "failed to insert job record");
+            self.running_jobs.write().await.remove(job_id);
             return;
         }
         info!(job_id = %job_id, "job record inserted (claimed)");
@@ -358,13 +396,10 @@ impl Daemon {
         }
 
         // 3. Update status to running
-        if let Err(e) = self.store.update_job_status(
-            job_id,
-            "running",
-            None,
-            None,
-            false,
-        ) {
+        if let Err(e) = self
+            .store
+            .update_job_status(job_id, "running", None, None, false)
+        {
             error!(job_id = %job_id, error = %e, "failed to update job status to running");
         }
         info!(job_id = %job_id, "job status set to running");
@@ -372,13 +407,17 @@ impl Daemon {
         // 4. Execute function — long-running vs standard
         let is_long_running = LONG_RUNNING_CAPABILITIES.contains(&function_name.as_str());
 
-        let result: Result<Value, crate::capability::manifest::CapabilityError> = if is_long_running {
+        let result: Result<Value, crate::capability::manifest::CapabilityError> = if is_long_running
+        {
             // Create execution context with cancel token
             let ctx = Arc::new(ExecutionContext::new(job_id.clone(), self.yqp.clone()));
 
             // Register cancel token for this job
             {
-                let mut tokens: tokio::sync::RwLockWriteGuard<'_, HashMap<String, CancellationToken>> = self.cancel_tokens.write().await;
+                let mut tokens: tokio::sync::RwLockWriteGuard<
+                    '_,
+                    HashMap<String, CancellationToken>,
+                > = self.cancel_tokens.write().await;
                 tokens.insert(job_id.clone(), ctx.cancel.clone());
             }
 
@@ -386,7 +425,8 @@ impl Daemon {
             let result = crate::execution_context::with_context(
                 ctx.clone(),
                 registry::production::dispatch(function_name, job.input.clone()),
-            ).await;
+            )
+            .await;
 
             // Remove cancel token
             {
@@ -421,13 +461,10 @@ impl Daemon {
                 }
 
                 // Update store: succeeded, confirmed
-                if let Err(e) = self.store.update_job_status(
-                    job_id,
-                    "succeeded",
-                    Some(&output),
-                    None,
-                    true,
-                ) {
+                if let Err(e) =
+                    self.store
+                        .update_job_status(job_id, "succeeded", Some(&output), None, true)
+                {
                     error!(job_id = %job_id, error = %e, "failed to update job record on success");
                 }
 
@@ -437,6 +474,13 @@ impl Daemon {
                 let error_code = cap_err.error_code();
                 let error_message = cap_err.error_message();
                 let error_details = Some(cap_err.to_job_error());
+                let job_status = if error_code == "cancelled" {
+                    "cancelled"
+                } else if error_code == "timeout" {
+                    "timeout"
+                } else {
+                    "failed"
+                };
 
                 info!(
                     job_id = %job_id,
@@ -454,7 +498,7 @@ impl Daemon {
                 // Build finished payload with status="failed"
                 let job_result = JobFinishedPayload {
                     job_id: job_id.clone(),
-                    status: "failed".into(),
+                    status: job_status.into(),
                     output: None,
                     error_code: Some(error_code.into()),
                     error_message: Some(error_message.clone()),
@@ -469,7 +513,7 @@ impl Daemon {
                 // Update store: failed, confirmed, with error details
                 if let Err(e) = self.store.update_job_status(
                     job_id,
-                    "failed",
+                    job_status,
                     None,
                     Some((error_code, &error_message, error_details.as_ref())),
                     true,
@@ -478,6 +522,43 @@ impl Daemon {
                 }
 
                 info!(job_id = %job_id, "job completed with failure");
+            }
+        }
+
+        self.running_jobs.write().await.remove(job_id);
+    }
+
+    async fn running_job_ids(&self) -> Vec<String> {
+        self.running_jobs.read().await.keys().cloned().collect()
+    }
+
+    async fn reconcile_running_jobs(&self, running_jobs: &[String]) {
+        let known_jobs: Vec<KnownJob> = running_jobs
+            .iter()
+            .map(|job_id| KnownJob {
+                job_id: job_id.clone(),
+                local_status: "running".into(),
+                started_at: None,
+                updated_at: Some(chrono::Utc::now().to_rfc3339()),
+                output: None,
+            })
+            .collect();
+
+        match self.yqp.reconcile_jobs(&known_jobs).await {
+            Ok(resp) => {
+                let actions: Vec<ReconciliationAction> = resp
+                    .payload
+                    .get("actions")
+                    .and_then(|a| serde_json::from_value(a.clone()).ok())
+                    .unwrap_or_default();
+                for action in actions {
+                    if action.action == "cancel" {
+                        self.cancel_job(&action.job_id).await;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = ?e, "running job reconciliation failed");
             }
         }
     }
@@ -522,14 +603,18 @@ fn build_sudo_runtime() -> RuntimeSnapshot {
         status: "online".into(),
         interactive: false,
         privilege: Some(RuntimePrivilege::Root),
-        labels: Some(vec!["linux".into(), "sudoers:yequnode".into(), "filesystem:host".into()]),
+        labels: Some(vec![
+            "linux".into(),
+            "sudoers:yequnode".into(),
+            "filesystem:host".into(),
+        ]),
         owner: None,
         metadata: Some(serde_json::json!({"sudoers_file": "/etc/sudoers.d/yequnode"})),
     }
 }
 
 /// Build a RuntimeSnapshot for the transfer runtime (croc enabled).
-/// Returns None if croc is disabled in config or the binary is not available.
+/// Returns None if croc is disabled or the daemon user cannot execute croc.
 fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
     let croc_config = &config.transfer.croc;
 
@@ -537,9 +622,8 @@ fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
         return None;
     }
 
-    // Probe croc binary existence
     let binary_path = &croc_config.binary_path;
-    if !std::path::Path::new(binary_path).exists() {
+    if !croc_is_executable(binary_path) {
         return None;
     }
 
@@ -559,4 +643,62 @@ fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
             "relay_url": croc_config.relay_url,
         })),
     })
+}
+
+fn croc_is_executable(binary_path: &str) -> bool {
+    if !std::path::Path::new(binary_path).exists() {
+        return false;
+    }
+    std::process::Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn manifest_runtime_satisfied(manifest: &CapabilityManifest, runtimes: &[RuntimeSnapshot]) -> bool {
+    let Some(requirements) = &manifest.execution_requirements else {
+        return true;
+    };
+
+    runtimes.iter().any(|runtime| {
+        if runtime.status != "online" {
+            return false;
+        }
+
+        if let Some(kind) = requirements.get("runtime_kind").and_then(|v| v.as_str()) {
+            if runtime.kind != kind {
+                return false;
+            }
+        }
+
+        if let Some(privilege) = requirements.get("privilege").and_then(|v| v.as_str()) {
+            if runtime_privilege(runtime) != Some(privilege) {
+                return false;
+            }
+        }
+
+        if let Some(required_labels) = requirements.get("labels").and_then(|v| v.as_array()) {
+            let runtime_labels = runtime.labels.as_deref().unwrap_or(&[]);
+            for label in required_labels.iter().filter_map(|v| v.as_str()) {
+                if !runtime_labels
+                    .iter()
+                    .any(|runtime_label| runtime_label == label)
+                {
+                    return false;
+                }
+            }
+        }
+
+        true
+    })
+}
+
+fn runtime_privilege(runtime: &RuntimeSnapshot) -> Option<&str> {
+    match runtime.privilege.as_ref()? {
+        RuntimePrivilege::User => Some("user"),
+        RuntimePrivilege::Admin => Some("admin"),
+        RuntimePrivilege::Root => Some("root"),
+        RuntimePrivilege::Custom(value) => Some(value.as_str()),
+    }
 }
