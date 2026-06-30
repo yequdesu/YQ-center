@@ -166,6 +166,7 @@ impl Capability for LinuxTransferCrocReceive {
                 })
             }
         };
+        let should_overwrite = resume_mode == crate::transfer_ledger::ResumeMode::Overwrite;
 
         // Validate output directory
         let out_path = std::path::Path::new(output_dir);
@@ -330,7 +331,7 @@ impl Capability for LinuxTransferCrocReceive {
             cmd.arg("--disable-clipboard");
         }
 
-        if resume_mode == crate::transfer_ledger::ResumeMode::Overwrite {
+        if should_overwrite {
             require_croc_flag(binary_path, "--overwrite").await?;
             cmd.arg("--overwrite");
         }
