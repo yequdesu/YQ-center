@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use super::croc_progress::collect_stderr_lines_with_progress;
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
 
@@ -252,12 +253,12 @@ impl Capability for LinuxTransferCrocSend {
 
         // Build croc command
         // croc v10.4.4: use CROC_SECRET env var for custom code
-        // CROC_SECRET=<code> croc --yes --quiet send <file>
+        // CROC_SECRET=<code> croc --yes send <file>
+        // Do not use --quiet: croc's byte-level progress is emitted on stderr.
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
         cmd.arg("--yes") // auto-accept (global)
-            .arg("--quiet") // reduce output noise (global)
             .arg("send")
             .arg(path_str);
 
@@ -310,16 +311,27 @@ impl Capability for LinuxTransferCrocSend {
             lines
         });
 
+        let stderr_ctx = ctx.clone();
+        let stderr_progress_payload = json!({
+            "transfer_id": transfer_id.clone(),
+            "role": "sender",
+            "phase": "transferring",
+            "pid": pid,
+            "total_bytes": source_metadata.size_bytes,
+            "progress_source": "croc_stderr",
+        });
         let stderr_handle = tokio::spawn(async move {
-            let mut lines = Vec::new();
             if let Some(stderr) = stderr {
-                let reader = BufReader::new(stderr);
-                let mut line_stream = reader.lines();
-                while let Ok(Some(line)) = line_stream.next_line().await {
-                    lines.push(redact_sensitive(&line));
-                }
+                collect_stderr_lines_with_progress(
+                    stderr,
+                    stderr_ctx,
+                    stderr_progress_payload,
+                    redact_sensitive,
+                )
+                .await
+            } else {
+                Vec::new()
             }
-            lines
         });
 
         // Monitor loop: check for completion, cancellation, and send periodic updates

@@ -194,13 +194,14 @@ ExecutionGate.evaluate(command)
 - keepalive 事件必须标记 `progress_source="process_keepalive"`，并尽量携带 `process_pid`、`phase`、`role`、`transfer_id`；
 - 不得伪造百分比。
 
-croc receive 第一版允许使用接收端输出目录大小估算进度：
+croc 传输真实进度合同：
 
-- `progress_source="receiver_output_size"`；
-- 必须携带 `bytes_transferred`；
-- 如果 Center 提供 `expected_size_bytes`，可以计算 `total_bytes`、`progress_pct` 和 `eta_sec`；
-- 如果只知道已增长字节，不知道总大小，只能上报 `bytes_transferred` 和 `rate_bytes_per_sec`，不得伪造百分比；
-- sender 端没有稳定机器可读输出时，只上报 keepalive / total size，不得伪造发送进度。
+- Node 必须优先使用 croc 自身的传输进度输出作为真实进度源，标记 `progress_source="croc_stderr"`；
+- `croc_stderr` 进度事件应尽量携带 `progress_pct`、`bytes_transferred`、`total_bytes`、`rate_bytes_per_sec`、`eta_sec`；
+- `total_bytes` 应优先使用 Node/Center 预检得到的精确 stat 值，不得用 croc 终端显示中的四舍五入大小覆盖精确字节数；
+- `process_keepalive` 只表示子进程仍在运行，不得携带 `progress_pct`；
+- 接收端输出目录大小不等价于已传输字节。croc 可能提前创建或扩展目标文件，因此目录大小只能作为 observation 上报，必须标记 `progress_source="receiver_output_size_observation"`，不得携带 `bytes_transferred` / `progress_pct` / `eta_sec`；
+- 如果当前 croc 版本或平台无法提供可解析的真实进度，Node 只能上报 keepalive，Console 显示不确定进度条。
 
 Center 行为：
 

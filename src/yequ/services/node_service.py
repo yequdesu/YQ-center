@@ -1210,6 +1210,14 @@ def _apply_job_event_projection(job: "Job", event_type: str, data: JsonObject) -
 
 
 def _event_progress_pct(data: JsonObject) -> float | None:
+    progress_source = data.get("progress_source")
+    if progress_source in {
+        "receiver_output_size",
+        "receiver_output_size_observation",
+        "partial_file_probe",
+    }:
+        return None
+
     direct = _number_value(data.get("progress_pct"))
     if direct is not None:
         return max(0.0, min(100.0, direct))

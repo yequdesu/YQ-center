@@ -252,8 +252,8 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - [x] Linux Node send/receive 实现已发送 `transfer_started`、`transfer_progress`、`transfer_cancelled` 等 `job.event`，并执行 lease renew/cancel；
 - [x] Linux Node Rust `CapabilityManifest` 顶层字段已结构化声明 `supports_progress`、`supports_cancel`、`supports_resume`、`progress_contract`、`preconditions`、`required_intent_slots`；
 - [x] Windows Node 运行时已把 croc 子进程 keepalive 通过 `job.progress` 上报为统一 progress event；
-- [x] Windows / Linux Node 已补齐第一版 receiver output-size 字节级进度、速度和 ETA；
-  sender 端在 croc 无稳定机器可读输出时继续只上报 keepalive/total size，不伪造百分比。
+- [x] Windows / Linux Node 已改为解析 croc stderr 终端进度条，使用 `progress_source="croc_stderr"` 上报真实传输进度；
+- [x] receiver output-size 方案经实测存在假进度风险，已降级为 observation，不再生成 `progress_pct`。
 
 ```json
 {
@@ -262,7 +262,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
   "role": "sender | receiver",
   "status": "running",
   "process_pid": 1234,
-  "progress_source": "process_keepalive | partial_file_probe | croc_output",
+  "progress_source": "process_keepalive | croc_stderr | receiver_output_size_observation",
   "bytes_transferred": 60000000,
   "total_bytes": 120945608,
   "rate_bytes_per_sec": 5242880,
@@ -275,7 +275,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - Node 仍必须上报 keepalive 型 `transfer_progress`；
 - Center 只能显示不确定进度条；
 - 不得伪造百分比；
-- Node 可在 receive 侧探测 `.partial` / `.croc` 临时文件大小作为 best-effort，但必须标记 `progress_source="partial_file_probe"`。
+- Node 可在 receive 侧探测输出目录变化作为 observation，但必须标记 `progress_source="receiver_output_size_observation"`，且不得携带 `bytes_transferred`、`progress_pct`、`eta_sec` 这类会被 Center 解释为真实进度的字段。
 
 ### 5.5 Console 实现任务
 

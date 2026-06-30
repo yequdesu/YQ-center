@@ -101,7 +101,7 @@ tool call
 
 当前进入阶段 6 前，必须先完成：
 
-1. Operation 进度透明：基础 `progress_pct/progress_message`、字节级 read model、Console 进度条、Node keepalive progress 和 receiver output-size 字节进度已落地；sender 端在 croc 无稳定机器可读输出时不伪造百分比。
+1. Operation 进度透明：基础 `progress_pct/progress_message`、字节级 read model、Console 进度条、Node keepalive progress 已落地；croc 传输已改为解析 stderr 真实进度，receiver output-size 仅作为 observation，不再伪造百分比。
 2. `ExecutionGuard` / `ExecutionGate`：`transfer.create` 缺槽位硬阻断已落地，路径权限、croc runtime status preflight 和 30-300 秒 fact freshness 策略已接入。
 3. transfer preflight：Center meta tool、`TransferPreflight` 持久事实、`preflight_id` 强制绑定和 runtime status 校验已落地。
 4. capability search / describe 的结构化筛选和 projection 诊断增强已完成基础闭环：支持按 node/platform/risk/effect/runtime/progress/preflight/artifact 输入输出筛选，按 projection 控制返回量，并返回 `match_reasons`、`dispatchable`、`unavailable_reasons`。

@@ -566,7 +566,43 @@ receive 输出中的 `size_bytes` 和 `sha256` 必须来自实际接收的文件
 
 Node 必须在启动时或 `*.transfer.croc.status` 中探测本机 croc 版本和支持的 flags。不得硬编码当前二进制不支持的参数。
 
-已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。如果需要减少输出，应优先使用当前版本支持的 `--quiet`；如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+
+### croc 真实进度上报
+
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须实时读取 croc stderr，解析类似如下的进度行：
+
+```text
+src.bin  92% |██████████████████  | (7.7/8.4 MB, 524 kB/s) [13s:1s]
+```
+
+解析成功时必须上报 `job.event`：
+
+```json
+{
+  "event_type": "transfer_progress",
+  "data": {
+    "transfer_id": "trf_x",
+    "role": "sender",
+    "phase": "transferring",
+    "status": "running",
+    "progress_source": "croc_stderr",
+    "progress_pct": 92,
+    "bytes_transferred": 7700000,
+    "total_bytes": 8388608,
+    "rate_bytes_per_sec": 524000,
+    "eta_sec": 1
+  }
+}
+```
+
+规则：
+
+- 上报频率应节流到约 1 秒一次，完成时允许立即上报 100；
+- `total_bytes` 优先使用 `transfer.local.stat` 或 Center 传入的 `expected_size_bytes`，不得被 croc 显示用的四舍五入大小覆盖；
+- stderr 摘要仍需脱敏保存，用于失败诊断；
+- 如果 stderr 中没有可解析进度，只允许上报 `process_keepalive`；
+- 接收目录大小只能作为 `receiver_output_size_observation` 观察值，不能作为真实进度。croc 可能提前创建完整大小的目标文件，目录大小会产生假进度。
 
 ### 取消语义
 

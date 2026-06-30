@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use super::croc_progress::collect_stderr_lines_with_progress;
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
 
@@ -220,7 +221,6 @@ impl Capability for LinuxTransferCrocReceive {
 
         // Detect existing partial file before starting
         let partial_path = find_partial_file(out_path);
-        let progress_start_size = directory_size(out_path);
 
         // Check idempotency
         if let Some(existing) = ledger
@@ -318,11 +318,12 @@ impl Capability for LinuxTransferCrocReceive {
 
         // Build croc command
         // croc v10.4.4 requires CROC_SECRET env var for receive mode
-        // Passing code as positional arg doesn't work for receiving
+        // Passing code as positional arg doesn't work for receiving.
+        // Do not use --quiet: croc's byte-level progress is emitted on stderr.
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes").arg("--quiet"); // reduce output noise
+        cmd.arg("--yes");
 
         if let Some(relay) = relay_url {
             cmd.arg("--relay").arg(relay);
@@ -376,16 +377,27 @@ impl Capability for LinuxTransferCrocReceive {
             lines
         });
 
+        let stderr_ctx = ctx.clone();
+        let stderr_progress_payload = json!({
+            "transfer_id": transfer_id.clone(),
+            "role": "receiver",
+            "phase": "receiving",
+            "pid": pid,
+            "total_bytes": expected_size_bytes,
+            "progress_source": "croc_stderr",
+        });
         let stderr_handle = tokio::spawn(async move {
-            let mut lines = Vec::new();
             if let Some(stderr) = stderr {
-                let reader = BufReader::new(stderr);
-                let mut line_stream = reader.lines();
-                while let Ok(Some(line)) = line_stream.next_line().await {
-                    lines.push(redact_sensitive(&line));
-                }
+                collect_stderr_lines_with_progress(
+                    stderr,
+                    stderr_ctx,
+                    stderr_progress_payload,
+                    redact_sensitive,
+                )
+                .await
+            } else {
+                Vec::new()
             }
-            lines
         });
 
         // Monitor loop
@@ -393,7 +405,6 @@ impl Capability for LinuxTransferCrocReceive {
         let progress_interval = Duration::from_secs(30);
         let mut last_lease = tokio::time::Instant::now();
         let mut last_progress = tokio::time::Instant::now();
-        let progress_started = tokio::time::Instant::now();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
 
         let result = loop {
@@ -500,25 +511,6 @@ impl Capability for LinuxTransferCrocReceive {
                         })?;
 
                         if let Some(ref ctx) = ctx {
-                            let bytes_transferred =
-                                directory_size(out_path).saturating_sub(progress_start_size);
-                            let elapsed = progress_started.elapsed().as_secs().max(1);
-                            let rate_bytes_per_sec = if bytes_transferred > 0 {
-                                Some(bytes_transferred / elapsed)
-                            } else {
-                                None
-                            };
-                            let progress_pct = expected_size_bytes
-                                .filter(|total| *total > 0)
-                                .map(|total| ((bytes_transferred * 100) / total).min(100));
-                            let eta_sec = match (expected_size_bytes, rate_bytes_per_sec) {
-                                (Some(total), Some(rate))
-                                    if total > bytes_transferred && rate > 0 =>
-                                {
-                                    Some((total - bytes_transferred) / rate)
-                                }
-                                _ => None,
-                            };
                             ctx.report_progress(
                                 "transfer_progress",
                                 json!({
@@ -527,12 +519,8 @@ impl Capability for LinuxTransferCrocReceive {
                                     "status": "running",
                                     "role": "receiver",
                                     "phase": "receiving",
-                                    "bytes_transferred": bytes_transferred,
                                     "total_bytes": expected_size_bytes,
-                                    "progress_pct": progress_pct,
-                                    "rate_bytes_per_sec": rate_bytes_per_sec,
-                                    "eta_sec": eta_sec,
-                                    "progress_source": "receiver_output_size",
+                                    "progress_source": "process_keepalive",
                                 }),
                             )
                             .await;
@@ -844,25 +832,6 @@ fn find_newest_file(dir: &std::path::Path) -> Option<String> {
         }
     }
     newest.map(|(_, p)| p)
-}
-
-fn directory_size(dir: &std::path::Path) -> u64 {
-    let mut total = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if meta.is_file() {
-            total += meta.len();
-        } else if meta.is_dir() {
-            total += directory_size(&path);
-        }
-    }
-    total
 }
 
 fn compute_code_hash(code: &str) -> String {
