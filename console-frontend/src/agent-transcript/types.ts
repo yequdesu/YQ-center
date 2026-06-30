@@ -44,23 +44,49 @@ export interface ArtifactPresentationBlock {
   created_at: string;
 }
 
+export interface OperationCardBlock {
+  type: "operation_card";
+  id: string;
+  operationId: string;
+  kind: string;
+  status: string;
+  title?: string;
+  refType?: string;
+  refId?: string;
+  waitHandle?: Record<string, unknown>;
+  message?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  created_at: string;
+}
+
 export type ChatBlock =
   | UserBlock
   | AssistantTextBlock
   | ToolGroupBlock
   | SystemEventBlock
   | RunStatusBlock
-  | ArtifactPresentationBlock;
+  | ArtifactPresentationBlock
+  | OperationCardBlock;
 
 export interface ToolCallState {
   callId: string;
   name: string;
   input: Record<string, unknown>;
-  status: "pending" | "running" | "succeeded" | "failed" | "waiting_approval" | "denied";
+  status:
+    | "pending"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "waiting_approval"
+    | "waiting_operation"
+    | "denied";
   targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
   approvalId?: string;
+  operationId?: string;
+  waitHandle?: Record<string, unknown>;
   result?: Record<string, unknown>;
   errorCode?: string;
   errorMessage?: string;
@@ -73,6 +99,8 @@ export interface ToolCallPatch {
   targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
+  operationId?: string;
+  waitHandle?: Record<string, unknown>;
   result?: Record<string, unknown>;
   errorCode?: string | null;
   errorMessage?: string | null;

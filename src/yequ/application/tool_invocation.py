@@ -40,6 +40,8 @@ CENTER_META_TOOLS = {
     "artifact.list",
     "artifact.get",
     "artifact.present",
+    "operation.status",
+    "operation.cancel",
     "transfer.create",
     "transfer.status",
     "transfer.cancel",
@@ -54,10 +56,17 @@ class ToolInvocationApplicationService:
 
     async def execute(self, command: ExecuteToolCommand) -> ExecuteToolResult:
         """Execute or stage a function invocation through the Center pipeline."""
+        from yequ.runtime.admission import ExecutionAdmissionService
+
+        admission_plan = ExecutionAdmissionService().plan(command)
         if command.function_name in CENTER_META_TOOLS:
-            return await self._execute_center_meta_tool(command)
+            result = await self._execute_center_meta_tool(command)
+            result.execution_plan = admission_plan.to_dict()
+            return result
         if command.function_name == "capability.invoke":
-            return await self._execute_capability_invoke(command)
+            result = await self._execute_capability_invoke(command)
+            result.execution_plan = admission_plan.to_dict()
+            return result
 
         input_data = dict(command.input_data)
         approval_id = command.approval_id or _string_or_none(input_data.get("approval_id"))
@@ -252,7 +261,9 @@ class ToolInvocationApplicationService:
             inv.invocation_id,
             command.deadline,
         )
-        return await self._collect_terminal_result(result, final_status)
+        final_result = await self._collect_terminal_result(result, final_status)
+        final_result.execution_plan = admission_plan.to_dict()
+        return final_result
 
     async def execute_stream(
         self,
@@ -338,6 +349,7 @@ class ToolInvocationApplicationService:
             node_list,
             node_status,
         )
+        from yequ.services.operation_service import OperationService, wait_handle_for_operation
 
         input_data = dict(command.input_data)
         try:
@@ -437,43 +449,66 @@ class ToolInvocationApplicationService:
                     },
                 }
             elif command.function_name == "transfer.create":
-                output = {
-                    "transfer": await TransferApplicationService(self.db).create(
-                        TransferCreateCommand(
-                            source_node_id=_required_string(
-                                input_data.get("source_node_id"),
-                                "source_node_id",
-                            ),
-                            target_node_id=_required_string(
-                                input_data.get("target_node_id"),
-                                "target_node_id",
-                            ),
-                            source_path=_required_string(
-                                input_data.get("source_path"),
-                                "source_path",
-                            ),
-                            target_output_dir=_string_or_none(
-                                input_data.get("target_output_dir")
-                            ),
-                            target_path=_string_or_none(input_data.get("target_path")),
-                            code=_string_or_none(input_data.get("code")),
-                            relay_url=_string_or_none(input_data.get("relay_url")),
-                            resume_mode=_string_or_none(input_data.get("resume_mode"))
-                            or "resume",
-                            timeout_sec=_int_or_default(
-                                input_data.get("timeout_sec"),
-                                3600,
-                            ),
-                            expected_sha256=_string_or_none(
-                                input_data.get("expected_sha256")
-                            ),
-                            actor_type=command.actor_type,
-                            actor_id=command.actor_id,
-                            session_id=command.session_id,
-                            execution_mode=command.execution_mode,
-                        )
+                transfer = await TransferApplicationService(self.db).create(
+                    TransferCreateCommand(
+                        source_node_id=_required_string(
+                            input_data.get("source_node_id"),
+                            "source_node_id",
+                        ),
+                        target_node_id=_required_string(
+                            input_data.get("target_node_id"),
+                            "target_node_id",
+                        ),
+                        source_path=_required_string(
+                            input_data.get("source_path"),
+                            "source_path",
+                        ),
+                        target_output_dir=_string_or_none(input_data.get("target_output_dir")),
+                        target_path=_string_or_none(input_data.get("target_path")),
+                        code=_string_or_none(input_data.get("code")),
+                        relay_url=_string_or_none(input_data.get("relay_url")),
+                        resume_mode=_string_or_none(input_data.get("resume_mode")) or "resume",
+                        timeout_sec=_int_or_default(
+                            input_data.get("timeout_sec"),
+                            3600,
+                        ),
+                        expected_sha256=_string_or_none(input_data.get("expected_sha256")),
+                        actor_type=command.actor_type,
+                        actor_id=command.actor_id,
+                        session_id=command.session_id,
+                        execution_mode=command.execution_mode,
                     )
-                }
+                )
+                operation = await OperationService(self.db).create_for_transfer(
+                    transfer,
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                )
+                wait_handle = wait_handle_for_operation(operation)
+                return ExecuteToolResult(
+                    status="waiting_operation",
+                    function_name=command.function_name,
+                    target_node_id=command.target_node_id,
+                    risk="maintenance",
+                    effect="external",
+                    output_data={
+                        "transfer": transfer,
+                        "operation": operation,
+                        "wait_handle": wait_handle,
+                    },
+                    operation_id=str(operation["operation_id"]),
+                    wait_handle=wait_handle,
+                )
+            elif command.function_name == "operation.status":
+                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
+                output = await OperationService(self.db).status(operation_id)
+            elif command.function_name == "operation.cancel":
+                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
+                output = await OperationService(self.db).cancel(
+                    operation_id,
+                    reason=_string_or_none(input_data.get("reason")) or "operation_cancelled",
+                )
             elif command.function_name == "transfer.status":
                 transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
                 output = {

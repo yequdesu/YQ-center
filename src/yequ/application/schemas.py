@@ -11,6 +11,7 @@ ToolExecutionStatus = Literal[
     "unavailable",
     "denied",
     "approval_required",
+    "waiting_operation",
     "created",
     "running",
     "succeeded",
@@ -74,6 +75,9 @@ class ExecuteToolResult:
     risk: str = "safe"
     effect: str = "read"
     output_data: dict[str, object] | None = None
+    operation_id: str | None = None
+    wait_handle: dict[str, object] | None = None
+    execution_plan: dict[str, object] | None = None
     error_code: str | None = None
     error_message: str | None = None
     error_details: dict[str, object] | None = None
@@ -94,6 +98,7 @@ class ExecuteToolResult:
             "unavailable",
             "not_found",
             "approval_required",
+            "waiting_operation",
         }
 
 

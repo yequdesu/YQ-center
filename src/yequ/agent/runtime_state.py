@@ -20,6 +20,7 @@ AgentRunStatus = Literal[
     "validating_tools",
     "preflighting",
     "waiting_approval",
+    "waiting_operation",
     "executing_tools",
     "observing",
     "synthesizing",
@@ -30,11 +31,18 @@ AgentRunStatus = Literal[
 
 TERMINAL_AGENT_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 
-RuntimeDecisionKind = Literal["continue", "final", "failure", "waiting_approval"]
+RuntimeDecisionKind = Literal[
+    "continue",
+    "final",
+    "failure",
+    "waiting_approval",
+    "waiting_operation",
+]
 ToolObservationEventType = Literal[
     "agent.tool_call.completed",
     "agent.tool_call.failed",
     "agent.tool_call.waiting_approval",
+    "agent.tool_call.waiting_operation",
 ]
 
 
@@ -154,6 +162,10 @@ class AgentRuntimeController:
         self.status = "waiting_approval"
         return AgentRuntimeDecision(kind="waiting_approval", status=self.status)
 
+    def waiting_operation(self) -> AgentRuntimeDecision:
+        self.status = "waiting_operation"
+        return AgentRuntimeDecision(kind="waiting_operation", status=self.status)
+
     def missing_final_answer(self) -> AgentRuntimeFailure:
         self.status = "failed"
         return AgentRuntimeFailure(
@@ -167,12 +179,14 @@ class AgentToolObservationCollector:
         self._provider_call_order = dict(provider_call_order)
         self._results: list[dict[str, object]] = []
         self.has_waiting_approval = False
+        self.has_waiting_operation = False
 
     def record_event(self, event_type: str, data: dict[str, object]) -> bool:
         if event_type not in {
             "agent.tool_call.completed",
             "agent.tool_call.failed",
             "agent.tool_call.waiting_approval",
+            "agent.tool_call.waiting_operation",
         }:
             return False
 
@@ -198,6 +212,20 @@ class AgentToolObservationCollector:
                     "error": data.get("message"),
                     "error_code": data.get("error_code"),
                     "error_details": data.get("details"),
+                    "target_node_id": data.get("target_node_id"),
+                }
+            )
+            return True
+
+        if event_type == "agent.tool_call.waiting_operation":
+            self.has_waiting_operation = True
+            self._results.append(
+                {
+                    "name": name,
+                    "call_id": call_id,
+                    "status": "waiting_operation",
+                    "operation_id": data.get("operation_id"),
+                    "wait_handle": data.get("wait_handle"),
                     "target_node_id": data.get("target_node_id"),
                 }
             )
@@ -235,6 +263,13 @@ def status_for_stream_event(event_type: str, error_code: str | None = None) -> s
         return "executing_tools"
     if event_type in {"agent.approval.required", "agent.tool_call.waiting_approval"}:
         return "waiting_approval"
+    if event_type in {
+        "agent.operation.created",
+        "agent.operation.waiting",
+        "agent.run.waiting",
+        "agent.tool_call.waiting_operation",
+    }:
+        return "waiting_operation"
     if event_type == "agent.observing":
         return "observing"
     if event_type in {"agent.output.delta", "agent.synthesizing"}:

@@ -19,6 +19,7 @@ from yequ.models.maintenance_plan import (
     RollbackHint,
 )
 from yequ.models.node import Node
+from yequ.models.operation import Operation, OperationEvent
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
@@ -47,6 +48,8 @@ __all__ = [
     "MaintenanceRun",
     "MaintenanceStep",
     "Node",
+    "Operation",
+    "OperationEvent",
     "ResourceLock",
     "RollbackHint",
     "RuntimeInstance",

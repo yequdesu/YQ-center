@@ -437,6 +437,8 @@ async def agent_invoke_stream(
                         and observation_collector.has_waiting_approval
                     ):
                         loop_state = runtime.waiting_approval().status
+                    if observation_collector.has_waiting_operation:
+                        loop_state = runtime.waiting_operation().status
 
             for tc_result in observation_collector.ordered_results():
                 all_tool_results.append(tc_result)
@@ -449,14 +451,16 @@ async def agent_invoke_stream(
                 )
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = runtime.waiting_approval().status
+                if tc_result.get("status") == "waiting_operation":
+                    loop_state = runtime.waiting_operation().status
 
             yield _event(
                 "agent.observing", session_id, trace_id, {"tool_count": len(executable_calls)}
             )
-            if loop_state == "waiting_approval":
+            if loop_state in {"waiting_approval", "waiting_operation"}:
                 break
         if not final_message:
-            if loop_state == "waiting_approval":
+            if loop_state in {"waiting_approval", "waiting_operation"}:
                 history_to_persist = (
                     [message for message in history if message is not user_message]
                     if suppress_user_message

@@ -25,6 +25,7 @@ import yequ.models.maintenance_plan  # noqa: F401
 
 # Import all models so Base.metadata is populated
 import yequ.models.node  # noqa: F401
+import yequ.models.operation  # noqa: F401
 import yequ.models.resource_lock  # noqa: F401
 import yequ.models.runtime_instance  # noqa: F401
 import yequ.models.session  # noqa: F401

@@ -191,6 +191,36 @@ def _center_meta_functions() -> list[AgentFunction]:
             timeout_sec=5,
         ),
         AgentFunction(
+            name="operation.status",
+            description=(
+                "Inspect one Center Operation and its referenced domain state. "
+                "Use this for wait handles returned by long-running operations."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"operation_id": {"type": "string"}},
+                "required": ["operation_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="operation.cancel",
+            description="Cancel one waitable Center Operation if it supports cancellation.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["operation_id"],
+            },
+            risk="maintenance",
+            effect="write",
+            timeout_sec=5,
+        ),
+        AgentFunction(
             name="transfer.create",
             description=(
                 "Create a Center-managed croc TransferSession between two nodes. "
@@ -475,6 +505,17 @@ class AgentPlanRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     target_node_id: str | None = Field(default=None)
     execution_mode: str = Field(default="auto")
+    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+
+
+class ResumeOperationRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    provider_name: str = Field(default="deepseek")
+    operation_id: str = Field(..., min_length=1)
+    target_node_id: str | None = Field(default=None)
+    execution_mode: str = Field(default="auto")
+    max_depth: int = Field(default=5, ge=1, le=20)
+    max_steps: int = Field(default=20, ge=1, le=100)
     max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
 
 
@@ -869,6 +910,121 @@ async def invoke_agent_stream_endpoint(
             },
         },
     )
+
+
+@router.post("/resume-operation/stream")
+async def resume_operation_stream_endpoint(
+    body: ResumeOperationRequest,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> StreamingResponse:
+    provider = await _resolve_provider(body.provider_name)
+    async with yequ_db.async_session_factory() as db:
+        from yequ.services.operation_service import OperationService
+
+        operation_observation = await OperationService(db).status(body.operation_id)
+        await _record_operation_resume_checkpoint(
+            db,
+            session_id=body.session_id,
+            provider_name=provider.provider_name(),
+            target_node_id=body.target_node_id,
+            execution_mode=body.execution_mode,
+            operation_id=body.operation_id,
+            operation_observation=operation_observation,
+        )
+        available = await _available_functions(db, target_node_id=body.target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=body.target_node_id,
+        )
+
+    prompt = (
+        "INFO: Center operation observation follows. Use these facts to continue "
+        "the previous task. Do not invent fields that are not present.\n"
+        f"{json.dumps(operation_observation, ensure_ascii=False)}"
+    )
+    return _sse_response(
+        agent_invoke_stream(
+            provider,
+            session_id=body.session_id,
+            prompt=prompt,
+            target_node_id=body.target_node_id,
+            suppress_user_message=True,
+            available_functions=available,
+            capability_context=capability_context,
+            call_path=[],
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+            step_count=0,
+            execution_mode=body.execution_mode,
+        ),
+        turn_context={
+            "session_id": body.session_id,
+            "prompt": prompt,
+            "provider_name": provider.provider_name(),
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "metadata": {
+                "suppress_user_message": True,
+                "operation_id": body.operation_id,
+                "operation_observation": operation_observation,
+                "prompt_context": _agent_debug_metadata(
+                    provider,
+                    available_functions=available,
+                    target_node_id=body.target_node_id,
+                    execution_mode=body.execution_mode,
+                    capability_context=capability_context,
+                ),
+            },
+        },
+    )
+
+
+async def _record_operation_resume_checkpoint(
+    db: AsyncSession,
+    *,
+    session_id: str,
+    provider_name: str,
+    target_node_id: str | None,
+    execution_mode: str,
+    operation_id: str,
+    operation_observation: dict[str, object],
+) -> None:
+    from datetime import UTC, datetime
+
+    from yequ.models.agent_run import AgentRun, AgentRunStep
+
+    now = datetime.now(UTC)
+    run = AgentRun(
+        session_id=session_id,
+        provider_name=provider_name,
+        status="observing",
+        execution_mode=execution_mode,
+        target_node_id=target_node_id,
+        user_message=None,
+        started_at=now,
+        metadata_json={
+            "source": "resume_operation",
+            "operation_id": operation_id,
+        },
+    )
+    db.add(run)
+    await db.flush()
+    db.add(
+        AgentRunStep(
+            run_record_id=run.id,
+            step_index=1,
+            step_type="operation_observation",
+            status="succeeded",
+            input_data={"operation_id": operation_id},
+            output_data=operation_observation,
+            started_at=now,
+            completed_at=now,
+            metadata_json={"source": "operation.status"},
+        )
+    )
+    await db.commit()
 
 
 @router.post("/plan")

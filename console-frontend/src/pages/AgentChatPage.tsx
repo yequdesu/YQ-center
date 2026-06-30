@@ -14,6 +14,8 @@ import {
   deleteSession,
   getApproval,
   getJob,
+  getOperation,
+  cancelOperation,
   denyApproval,
   approveAndRunApproval,
 } from "@/api/admin";
@@ -24,6 +26,7 @@ import {
   type ChatBlock,
   type RunStatusBlock,
   type SystemEventBlock,
+  type OperationCardBlock,
   type ToolCallState,
   type ToolGroupBlock,
   type UserBlock,
@@ -52,6 +55,7 @@ import {
   Check,
   Search,
   Info,
+  RefreshCw,
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
@@ -108,6 +112,7 @@ export function AgentChatPage() {
     planSteps,
     sendInvoke,
     sendPlan,
+    resumeOperation,
     cancel,
     detach,
     clearBlocks,
@@ -764,6 +769,9 @@ export function AgentChatPage() {
                   key={block.id}
                   block={block}
                   onApproveAndRun={handleApproveAndRun}
+                  onResumeOperation={(operationId) =>
+                    resumeOperation(operationId, providerName, executionMode)
+                  }
                 />
               ))}
               {activeRunId && (
@@ -871,9 +879,11 @@ export function AgentChatPage() {
 function ChatTimelineBlock({
   block,
   onApproveAndRun,
+  onResumeOperation,
 }: {
   block: ChatBlock;
   onApproveAndRun?: (planId: string, onRunStarted: (runId: string) => void) => void;
+  onResumeOperation?: (operationId: string) => void;
 }) {
   switch (block.type) {
     case "user":
@@ -884,6 +894,8 @@ function ChatTimelineBlock({
       return <ToolGroupBubble block={block} />;
     case "artifact_presentation":
       return <ArtifactPresentationBubble block={block} />;
+    case "operation_card":
+      return <OperationCard block={block} onResume={onResumeOperation} />;
     case "system_event":
       return <SystemEventBubble block={block} />;
     case "run_status":
@@ -1001,6 +1013,106 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
   );
 }
 
+function OperationCard({
+  block,
+  onResume,
+}: {
+  block: OperationCardBlock;
+  onResume?: (operationId: string) => void;
+}) {
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const operationQuery = useQuery({
+    queryKey: ["operation", block.operationId],
+    queryFn: () => getOperation(block.operationId),
+    refetchInterval: (queryResult) => {
+      const status = queryResult.state.data?.operation.status ?? block.status;
+      return isOperationTerminal(status) ? false : 2000;
+    },
+  });
+
+  const operation = operationQuery.data?.operation;
+  const status = operation?.status ?? block.status;
+  const title = operation?.title ?? block.title ?? `${block.kind} operation`;
+  const refType = operation?.ref_type ?? block.refType;
+  const refId = operation?.ref_id ?? block.refId;
+  const errorMessage = operation?.error_message ?? block.errorMessage;
+  const canCancel = Boolean(operation?.cancel_supported ?? block.waitHandle?.cancel_supported);
+  const terminal = isOperationTerminal(status);
+
+  const handleCancel = async () => {
+    setCancelBusy(true);
+    setCancelError(null);
+    try {
+      await cancelOperation(block.operationId, "cancelled_from_agent_chat");
+      queryClient.invalidateQueries({ queryKey: ["operation", block.operationId] });
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex gap-3">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
+        {terminal ? <CheckCircle size={14} /> : <RefreshCw size={14} className="animate-spin" />}
+      </div>
+      <div className="w-full max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 shadow-sm">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-semibold text-[var(--text)]">{title}</span>
+          <span className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-subtle)]">
+            {block.kind}
+          </span>
+          <span className="flex-1" />
+          <StatusBadge status={status} />
+        </div>
+        <div className="mt-2 grid gap-1 text-[11px] text-[var(--text-subtle)]">
+          <p className="font-mono">operation: {block.operationId}</p>
+          {refType && refId && <p className="font-mono">{refType}: {refId}</p>}
+          {block.message && <p>{block.message}</p>}
+        </div>
+        {errorMessage && (
+          <p className="mt-2 rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
+            {errorMessage}
+          </p>
+        )}
+        {cancelError && <p className="mt-2 text-[12px] text-[var(--danger)]">{cancelError}</p>}
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              queryClient.invalidateQueries({ queryKey: ["operation", block.operationId] })
+            }
+            disabled={operationQuery.isFetching}
+          >
+            <RefreshCw size={13} />
+            <span className="ml-1">Refresh</span>
+          </Button>
+          {canCancel && !terminal && (
+            <Button variant="ghost" size="sm" onClick={handleCancel} disabled={cancelBusy}>
+              {cancelBusy ? <Loader2 size={13} className="animate-spin" /> : <XCircle size={13} />}
+              <span className="ml-1">Cancel</span>
+            </Button>
+          )}
+          {terminal && onResume && (
+            <Button variant="primary" size="sm" onClick={() => onResume(block.operationId)}>
+              <Bot size={13} />
+              <span className="ml-1">Continue</span>
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function isOperationTerminal(status: string) {
+  return ["succeeded", "failed", "cancelled", "timeout"].includes(status);
+}
+
 // ── Tool Group Bubble ──
 
 function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
@@ -1009,7 +1121,9 @@ function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
   const running = block.tool_calls.filter(
     (t) => t.status === "running" || t.status === "pending",
   ).length;
-  const waiting = block.tool_calls.filter((t) => t.status === "waiting_approval").length;
+  const waiting = block.tool_calls.filter(
+    (t) => t.status === "waiting_approval" || t.status === "waiting_operation",
+  ).length;
 
   return (
     <div className="flex gap-3">
@@ -1109,8 +1223,10 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
       toolCall.invocationId ||
       toolCall.jobId ||
       toolCall.targetNodeId ||
+      toolCall.operationId ||
       Object.keys(toolCall.input).length > 0 ||
-      toolCall.status === "waiting_approval",
+      toolCall.status === "waiting_approval" ||
+      toolCall.status === "waiting_operation",
   );
   const statusIcon = {
     pending: <Loader2 size={14} className="animate-spin" />,
@@ -1118,6 +1234,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
     succeeded: <CheckCircle size={14} className="text-[var(--success)]" />,
     failed: <XCircle size={14} className="text-[var(--danger)]" />,
     waiting_approval: <AlertTriangle size={14} className="text-[var(--warning)]" />,
+    waiting_operation: <RefreshCw size={14} className="text-[var(--info)]" />,
     denied: <XCircle size={14} className="text-[var(--danger)]" />,
   }[toolCall.status];
 
@@ -1169,6 +1286,11 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
           {toolCall.jobId && (
             <p className="text-[11px] font-mono text-[var(--text-subtle)]">job: {toolCall.jobId}</p>
           )}
+          {toolCall.operationId && (
+            <p className="text-[11px] font-mono text-[var(--text-subtle)]">
+              operation: {toolCall.operationId}
+            </p>
+          )}
           {Object.keys(toolCall.input).length > 0 && (
             <div>
               <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Input</p>
@@ -1193,6 +1315,19 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
                   approval: {toolCall.approvalId}
                 </p>
               )}
+            </div>
+          )}
+          {toolCall.status === "waiting_operation" && toolCall.operationId && (
+            <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] p-2.5">
+              <div className="flex items-center gap-1.5">
+                <RefreshCw size={14} className="text-[var(--info)]" />
+                <span className="text-[12px] font-medium text-[var(--text)]">
+                  Waiting for Center Operation
+                </span>
+              </div>
+              <p className="text-[11px] font-mono text-[var(--text-subtle)]">
+                operation: {toolCall.operationId}
+              </p>
             </div>
           )}
           {toolCall.result && (

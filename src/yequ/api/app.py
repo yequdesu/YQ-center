@@ -16,6 +16,7 @@ from yequ.api.routes.admin_approvals import router as admin_approvals_router
 from yequ.api.routes.admin_artifacts import router as admin_artifacts_router
 from yequ.api.routes.admin_invocations import router as admin_invocations_router
 from yequ.api.routes.admin_nodes import router as admin_nodes_router
+from yequ.api.routes.admin_operations import router as admin_operations_router
 from yequ.api.routes.admin_provisioning import router as admin_provisioning_router
 from yequ.api.routes.admin_sessions import router as admin_sessions_router
 from yequ.api.routes.agent import router as agent_router
@@ -216,6 +217,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_artifacts_router)
     app.include_router(admin_invocations_router)
     app.include_router(admin_nodes_router)
+    app.include_router(admin_operations_router)
     app.include_router(admin_provisioning_router)
     app.include_router(admin_sessions_router)
     app.include_router(maintenance_router)

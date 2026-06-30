@@ -101,9 +101,20 @@ def test_runtime_waiting_approval_is_explicit_nonterminal_pause():
     assert runtime.status == "waiting_approval"
 
 
+def test_runtime_waiting_operation_is_explicit_nonterminal_pause():
+    runtime = AgentRuntimeController()
+
+    decision = runtime.waiting_operation()
+
+    assert decision.kind == "waiting_operation"
+    assert decision.status == "waiting_operation"
+    assert runtime.status == "waiting_operation"
+
+
 def test_turn_status_mapping_uses_runtime_state_names():
     assert status_for_stream_event("agent.completed") == "succeeded"
     assert status_for_stream_event("agent.tool_call.waiting_approval") == "waiting_approval"
+    assert status_for_stream_event("agent.operation.waiting") == "waiting_operation"
     assert status_for_stream_event("agent.provider.failed") == "failed"
 
 
@@ -160,5 +171,32 @@ def test_tool_observation_collector_tracks_waiting_approval():
             "status": "waiting_approval",
             "approval_id": "ap_1",
             "target_node_id": "winClient",
+        }
+    ]
+
+
+def test_tool_observation_collector_tracks_waiting_operation():
+    collector = AgentToolObservationCollector({"call_1": 0})
+
+    collector.record_event(
+        "agent.tool_call.waiting_operation",
+        {
+            "call_id": "call_1",
+            "name": "transfer.create",
+            "operation_id": "op_1",
+            "wait_handle": {"operation_id": "op_1"},
+            "target_node_id": None,
+        },
+    )
+
+    assert collector.has_waiting_operation
+    assert collector.ordered_results() == [
+        {
+            "name": "transfer.create",
+            "call_id": "call_1",
+            "status": "waiting_operation",
+            "operation_id": "op_1",
+            "wait_handle": {"operation_id": "op_1"},
+            "target_node_id": None,
         }
     ]

@@ -12,6 +12,7 @@ import type {
   MaintenanceRunDetail,
   NodeDetail,
   NodeSummary,
+  OperationDetail,
   TimelineSummary,
 } from "./types";
 
@@ -133,6 +134,17 @@ export function deleteSession(sessionId: string) {
 }
 
 // ── Approvals ──
+
+export function getOperation(operationId: string) {
+  return api.get<OperationDetail>(`/admin/operations/${encodeURIComponent(operationId)}`);
+}
+
+export function cancelOperation(operationId: string, reason?: string) {
+  return api.post<OperationDetail>(
+    `/admin/operations/${encodeURIComponent(operationId)}/cancel`,
+    { reason: reason ?? "operation_cancelled" },
+  );
+}
 
 export function listApprovals(params?: { status?: string; limit?: number }) {
   return api.get<ApprovalDetail[]>("/admin/approvals", {

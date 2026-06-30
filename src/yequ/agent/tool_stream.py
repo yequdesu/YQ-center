@@ -405,6 +405,60 @@ async def _execute_and_stream(
         )
         return
 
+    if result.status == "waiting_operation":
+        output = result.output_data or {}
+        operation = _as_object_dict(output.get("operation"))
+        wait_handle = result.wait_handle or _as_object_dict(output.get("wait_handle"))
+        operation_id = result.operation_id or str(operation.get("operation_id") or "")
+        yield make_event(
+            "agent.operation.created",
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "operation_id": operation_id,
+                "kind": operation.get("kind"),
+                "status": operation.get("status"),
+                "ref_type": operation.get("ref_type"),
+                "ref_id": operation.get("ref_id"),
+                "title": operation.get("title"),
+                "target_node_id": result.target_node_id,
+            },
+        )
+        yield make_event(
+            "agent.operation.waiting",
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "operation_id": operation_id,
+                "kind": operation.get("kind"),
+                "status": operation.get("status"),
+                "wait_handle": wait_handle,
+                "resume_policy": wait_handle.get("resume_policy") or "manual",
+                "message": "Operation is running in Center runtime.",
+                "target_node_id": result.target_node_id,
+            },
+        )
+        yield make_event(
+            "agent.run.waiting",
+            {
+                "reason": "waiting_operation",
+                "operation_id": operation_id,
+                "wait_handle": wait_handle,
+            },
+        )
+        yield make_event(
+            "agent.tool_call.waiting_operation",
+            {
+                "call_id": call_id,
+                "name": tc_name,
+                "operation_id": operation_id,
+                "wait_handle": wait_handle,
+                "result": output,
+                "target_node_id": result.target_node_id,
+            },
+        )
+        return
+
     if result.status == "succeeded" and not result.job_id:
         yield make_event(
             "agent.tool_call.completed",

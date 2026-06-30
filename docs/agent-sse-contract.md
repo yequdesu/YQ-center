@@ -42,11 +42,12 @@ Agent 流式事件通过 `POST /agent/invoke/stream` 和
 | `agent.tool_call.completed` | 成功工具 | `call_id`, `name`, `result` | 工具成功并返回结果。 |
 | `agent.tool_call.failed` | 失败工具 | `call_id`, `name`, `error_code`, `message` | 工具失败。 |
 | `agent.tool_call.waiting_approval` | 需要审批的工具 | `call_id`, `name`, `approval_id`, `status`, `message` | 写操作需要审批。前端必须渲染交互式 ApprovalCard。 |
+| `agent.tool_call.waiting_operation` | 工具已创建可等待 Operation | `call_id`, `name`, `operation_id`, `wait_handle`, `result` | 调试轨迹事件。前端可在 tool-call 块内保留，但用户主要视图必须是独立 OperationCard。 |
 | `agent.approval.required` | 每个审批 | `call_id`, `name`, `approval_id`, `target_node_id` | 审批请求已创建。 |
 | `agent.operation.created` | Center 创建可等待 Operation | `operation_id`, `kind`, `status`, `ref_type`, `ref_id`, `title` | Execution Runtime v2 事件。用于长任务、复合任务和 future workflow 的可恢复投影。 |
 | `agent.operation.waiting` | AgentRun 暂停等待 Operation | `operation_id`, `kind`, `status`, `wait_handle`, `resume_policy`, `message` | 前端必须渲染独立 OperationCard，不得放进 tool-call 结果块作为唯一展示。 |
 | `agent.operation.completed` | Operation 进入终态 | `operation_id`, `kind`, `status`, `summary`, `error_code`, `message` | 前端更新 OperationCard；是否恢复 Agent 由 resume 策略或用户动作决定。 |
-| `agent.run.waiting` | AgentRun 已挂起 | `run_id`, `wait_handle`, `status` | 表示本轮 ReAct loop 正常暂停，不是失败。 |
+| `agent.run.waiting` | AgentRun 已挂起 | `reason`, `operation_id`, `wait_handle` | 表示本轮 ReAct loop 正常暂停，不是失败。 |
 | `agent.observing` | 本轮所有工具结束后 | `tool_count` | 工具完成，Agent 正在观察结果。 |
 | `agent.synthesizing` | 最后一轮后 | `source` | Agent 已收到 provider 最终文本。 |
 | `agent.completed` | 成功结束 | `status`, `message` | 流正常完成。前端必须渲染为 `system_event`，不能渲染成大气泡。 |

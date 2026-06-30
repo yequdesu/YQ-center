@@ -390,6 +390,29 @@ export interface AgentSessionSummary {
 
 // ── SSE Event types ──
 
+export interface OperationDetail {
+  operation: {
+    operation_id: string;
+    kind: string;
+    status: string;
+    ref_type: string;
+    ref_id: string;
+    title: string | null;
+    progress_pct: number | null;
+    progress_message: string | null;
+    error_code: string | null;
+    error_message: string | null;
+    wait_policy: string;
+    resume_policy: string;
+    cancel_supported: boolean;
+    started_at: string | null;
+    completed_at: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+  };
+  transfer?: Record<string, unknown>;
+}
+
 export type SseEventType =
   | "stream.open"
   | "stream.heartbeat"
@@ -409,6 +432,11 @@ export type SseEventType =
   | "agent.tool_call.completed"
   | "agent.tool_call.failed"
   | "agent.tool_call.waiting_approval"
+  | "agent.tool_call.waiting_operation"
+  | "agent.operation.created"
+  | "agent.operation.waiting"
+  | "agent.operation.completed"
+  | "agent.run.waiting"
   | "agent.output.delta"
   | "agent.plan.step.created"
   | "agent.plan.created"

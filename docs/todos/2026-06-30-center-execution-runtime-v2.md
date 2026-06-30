@@ -5,6 +5,28 @@
 取代范围：`2026-06-28-center-capability-runtime-v1.md` 的后续主线  
 适用阶段：WinNode + LinuxNode 已稳定接入，croc 跨 Node 传输已跑通之后
 
+## 0. 2026-06-30 实施记录
+
+本轮已经完成到阶段 4 的第一版闭环：
+
+- 新增 `ExecutionAdmissionService`，第一版能从结构化函数名判定 `inline`、`sync_wait`、`workflow_operation`，其中 `transfer.create` 固定进入 `workflow_operation`。
+- 新增 `Operation` / `OperationEvent` 数据模型、Alembic migration、`OperationService`、`operation.status` / `operation.cancel` Center meta tool 和 `/admin/operations/{operation_id}` API。
+- `transfer.create` 现在创建 `TransferSession` 后同步创建 `Operation(kind=transfer)`，返回 `wait_handle`，状态为 `waiting_operation`。
+- Agent stream 对 `waiting_operation` 发出 `agent.operation.created`、`agent.operation.waiting`、`agent.run.waiting`、`agent.tool_call.waiting_operation`，并正常关闭本轮流，不再让 LLM 轮询 `transfer.status`。
+- Console 新增独立 `OperationCard`，支持状态轮询、取消、终态后 Continue。
+- 新增 `/agent/resume-operation/stream`，将 `operation.status` 的事实 observation 注入下一轮 Agent，由 LLM 生成自然语言总结；Center 不生成伪 assistant fallback。
+- 已更新 `docs/agent-sse-contract.md` 中 Operation 相关事件合同。
+
+本轮验证：
+
+```text
+.\.venv\Scripts\python.exe -m pytest tests/test_execution_admission.py tests/test_agent_runtime_state.py tests/test_transfer_session.py -q
+npm run build
+.\.venv\Scripts\python.exe -m ruff check <本轮后端修改文件与相关测试>
+```
+
+验收结果：20 个后端窄测试通过；前端 typecheck + production build 通过；ruff 通过。
+
 ## 1. 结论
 
 项目当前需要把主架构从 **Center Capability Runtime v1** 升级为 **Center Execution Runtime v2**。
@@ -597,4 +619,3 @@ parent AgentRun
 - 自动 resume；
 - 历史耗时统计 admission；
 - 复杂 workflow DSL。
-

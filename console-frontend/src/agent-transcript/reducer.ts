@@ -3,6 +3,7 @@ import type {
   ArtifactPresentationBlock,
   AssistantTextBlock,
   ChatBlock,
+  OperationCardBlock,
   PersistedTranscriptInput,
   PromptContextData,
   SystemEventBlock,
@@ -126,6 +127,16 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
 
+    case "agent.tool_call.waiting_operation":
+      return patchToolCall(state, data, (tool) => ({
+        ...tool,
+        status: "waiting_operation",
+        operationId: optionalString(data.operation_id) ?? tool.operationId,
+        waitHandle: asRecord(data.wait_handle),
+        result: asRecord(data.result),
+        targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
+      }));
+
     case "agent.tool_call.failed":
       return patchToolCall(state, data, (tool) => ({
         ...tool,
@@ -155,6 +166,21 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         event,
         `Approval required: ${String(data.message ?? "")}`,
       );
+
+    case "agent.operation.created":
+      return upsertOperationCard(state, data, createdAt);
+
+    case "agent.operation.waiting":
+      return upsertOperationCard(state, data, createdAt);
+
+    case "agent.operation.completed":
+      return upsertOperationCard(state, data, createdAt);
+
+    case "agent.run.waiting":
+      if (String(data.reason ?? "") === "waiting_operation") {
+        return finishStreaming(removeRunStatus(state));
+      }
+      return state;
 
     case "stream.close":
       return finishStreaming(removeRunStatus(state));
@@ -194,6 +220,8 @@ export function applyToolPatch(state: TranscriptState, patch: {
   targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
+  operationId?: string;
+  waitHandle?: Record<string, unknown>;
   result?: Record<string, unknown>;
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -214,6 +242,8 @@ export function applyToolPatch(state: TranscriptState, patch: {
           ...(patch.targetNodeId !== undefined ? { targetNodeId: patch.targetNodeId } : {}),
           ...(patch.invocationId !== undefined ? { invocationId: patch.invocationId } : {}),
           ...(patch.jobId !== undefined ? { jobId: patch.jobId } : {}),
+          ...(patch.operationId !== undefined ? { operationId: patch.operationId } : {}),
+          ...(patch.waitHandle !== undefined ? { waitHandle: patch.waitHandle } : {}),
           ...(patch.result !== undefined ? { result: patch.result } : {}),
           ...(patch.errorCode !== undefined ? { errorCode: patch.errorCode ?? undefined } : {}),
           ...(patch.errorMessage !== undefined
@@ -389,6 +419,43 @@ function appendArtifactPresentation(
   } as ArtifactPresentationBlock);
 }
 
+function upsertOperationCard(
+  state: TranscriptState,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const operationId = optionalString(data.operation_id);
+  if (!operationId) return state;
+  const id = `operation:${operationId}`;
+  const patch = (existing?: OperationCardBlock): OperationCardBlock => ({
+    type: "operation_card",
+    id,
+    operationId,
+    kind: optionalString(data.kind) ?? existing?.kind ?? "operation",
+    status: optionalString(data.status) ?? existing?.status ?? "running",
+    title: optionalString(data.title) ?? existing?.title,
+    refType: optionalString(data.ref_type) ?? existing?.refType,
+    refId: optionalString(data.ref_id) ?? existing?.refId,
+    waitHandle: Object.keys(asRecord(data.wait_handle)).length
+      ? asRecord(data.wait_handle)
+      : existing?.waitHandle,
+    message: optionalString(data.message) ?? existing?.message,
+    errorCode: optionalString(data.error_code) ?? existing?.errorCode,
+    errorMessage: optionalString(data.error_message) ?? existing?.errorMessage,
+    created_at: existing?.created_at ?? createdAt,
+  });
+
+  const blocks = state.blocks.map((block) =>
+    block.type === "operation_card" && block.operationId === operationId
+      ? patch(block)
+      : block,
+  );
+  if (blocks.some((block) => block.type === "operation_card" && block.operationId === operationId)) {
+    return { ...state, blocks };
+  }
+  return { ...state, blocks: [...removeRunStatus(state).blocks, patch()] };
+}
+
 function replaceOptimisticUserPrompt(
   state: TranscriptState,
   content: string,
@@ -554,6 +621,7 @@ function parseToolStatus(value: unknown): ToolCallState["status"] {
     value === "succeeded" ||
     value === "failed" ||
     value === "waiting_approval" ||
+    value === "waiting_operation" ||
     value === "denied"
   ) {
     return value;
