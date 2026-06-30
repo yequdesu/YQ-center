@@ -1,3 +1,4 @@
+mod croc_command;
 mod croc_progress;
 pub mod linux_artifact_diagnostics;
 pub mod linux_artifact_download_file;

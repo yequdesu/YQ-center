@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use super::croc_command::croc_supports_flag;
 use super::croc_progress::collect_stderr_lines_with_progress;
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
@@ -258,10 +259,13 @@ impl Capability for LinuxTransferCrocSend {
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes") // auto-accept (global)
-            .arg("--disable-clipboard")
-            .arg("send")
-            .arg(path_str);
+        cmd.arg("--yes"); // auto-accept (global)
+
+        if croc_supports_flag(binary_path, "--disable-clipboard").await {
+            cmd.arg("--disable-clipboard");
+        }
+
+        cmd.arg("send").arg(path_str);
 
         if let Some(relay) = relay_url {
             cmd.arg("--relay").arg(relay);

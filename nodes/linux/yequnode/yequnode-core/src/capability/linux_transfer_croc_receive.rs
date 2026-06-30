@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use super::croc_command::{croc_supports_flag, require_croc_flag};
 use super::croc_progress::collect_stderr_lines_with_progress;
 use super::manifest::{CapabilityError, CapabilityManifest};
 use super::Capability;
@@ -323,9 +324,14 @@ impl Capability for LinuxTransferCrocReceive {
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes").arg("--disable-clipboard");
+        cmd.arg("--yes");
+
+        if croc_supports_flag(binary_path, "--disable-clipboard").await {
+            cmd.arg("--disable-clipboard");
+        }
 
         if resume_mode == crate::transfer_ledger::ResumeMode::Overwrite {
+            require_croc_flag(binary_path, "--overwrite").await?;
             cmd.arg("--overwrite");
         }
 

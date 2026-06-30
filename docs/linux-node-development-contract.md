@@ -566,7 +566,7 @@ receive 输出中的 `size_bytes` 和 `sha256` 必须来自实际接收的文件
 
 Node 必须在启动时或 `*.transfer.croc.status` 中探测本机 croc 版本和支持的 flags。不得硬编码当前二进制不支持的参数。
 
-已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。daemon 环境必须传 `--disable-clipboard`，并将 stdin 设为 null，避免 croc 在无交互环境中读取 stdin 或访问剪贴板。如果某个 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。daemon 环境必须将 stdin 设为 null，避免 croc 在无交互环境中读取 stdin。`--disable-clipboard` 属于可选兼容 flag：Node 必须先探测，支持则传，不支持不得让传输因此失败。如果某个必需 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
 
 `resume_mode` 到 croc 参数的映射必须明确：
 
