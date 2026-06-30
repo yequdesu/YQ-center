@@ -27,6 +27,27 @@ npm run build
 
 验收结果：20 个后端窄测试通过；前端 typecheck + production build 通过；ruff 通过。
 
+阶段 4.5 体验与事实层修补：
+
+- Console 将 OperationCard 从聊天流中抽出到右侧 Activity 面板，Prompt Context / System Prompt 调试信息也移动到该面板中，避免长对话时运行态信息被聊天记录冲走。
+- 输入框上方新增可继续 Operation 提示条；断点恢复走显式 Continue / `resume-operation`，不把用户普通输入的“继续”硬编码解释为断点恢复。
+- OperationCard 的状态文案改为按真实状态展示，终态不再继续显示 running 文案。
+- `transfer.status` 新增 `summary.source` / `summary.target` / `summary.verification`，把源/目标路径、Job、size、sha256 和比对结果集中给 Agent，减少 resume 后乱猜底层工具。
+- croc 常见连接失败归一为稳定错误码，例如 `croc_secure_channel_failed`、`croc_secure_channel_not_ready`、`croc_peer_disconnected`、`croc_relay_unreachable`。
+- `/agent/resume-operation/stream` 的 INFO prompt 明确要求从 checkpoint 继续，不重建原 Operation，不重复调用 `transfer.create`，终态时只基于事实总结。
+
+仍需后续单独设计：普通 ReAct Loop 因 provider 错误、网络中断或用户手动取消而中止时，不能靠用户输入“继续”恢复断点。普通输入仍应视为新的用户请求；真正的通用断点恢复需要基于 `AgentRun` / `AgentRunStep` checkpoint 建立 `resume-last-run` 或 `resume-run` 语义，不能用自然语言关键词硬编码。
+
+阶段 4.5 验证：
+
+```text
+.\.venv\Scripts\python.exe -m pytest tests\test_transfer_session.py tests\test_execution_admission.py -q
+.\.venv\Scripts\python.exe -m ruff check src\yequ\application\transfer.py src\yequ\api\routes\agent.py src\yequ\services\operation_service.py
+cd console-frontend && npm run build
+```
+
+验收结果：9 个后端窄测试通过；ruff 通过；前端 typecheck + production build 通过。
+
 ## 1. 结论
 
 项目当前需要把主架构从 **Center Capability Runtime v1** 升级为 **Center Execution Runtime v2**。

@@ -939,8 +939,12 @@ async def resume_operation_stream_endpoint(
         )
 
     prompt = (
-        "INFO: Center operation observation follows. Use these facts to continue "
-        "the previous task. Do not invent fields that are not present.\n"
+        "INFO: Center operation resume checkpoint follows. Continue from this "
+        "checkpoint instead of restarting the user's original request. Do not "
+        "call transfer.create or recreate the operation unless the user asks for "
+        "a retry. If the operation is terminal, summarize the outcome from these "
+        "facts. If it is still running or queued, explain that it is still "
+        "waiting. Do not invent fields that are not present.\n"
         f"{json.dumps(operation_observation, ensure_ascii=False)}"
     )
     return _sse_response(

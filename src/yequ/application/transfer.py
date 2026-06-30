@@ -100,7 +100,10 @@ class TransferApplicationService:
         )
         if receive_result.status not in {"created", "running"}:
             session.status = "failed"
-            session.error_code = receive_result.error_code or "receiver_job_failed"
+            session.error_code = _classify_transfer_error(
+                receive_result.error_code or "receiver_job_failed",
+                receive_result.error_message,
+            )
             session.error_message = receive_result.error_message
             await self.db.commit()
             return self._session_dict(session, receive_result=receive_result)
@@ -126,7 +129,10 @@ class TransferApplicationService:
         if send_result.status not in {"created", "running"}:
             await self._cancel_job_id(session.target_job_id, reason="sender_job_failed")
             session.status = "failed"
-            session.error_code = send_result.error_code or "sender_job_failed"
+            session.error_code = _classify_transfer_error(
+                send_result.error_code or "sender_job_failed",
+                send_result.error_message,
+            )
             session.error_message = send_result.error_message
             await self.db.commit()
             return self._session_dict(
@@ -295,7 +301,10 @@ class TransferApplicationService:
 
         failed_job = next((job for job in jobs if job.status in {"failed", "timeout"}), None)
         if failed_job is not None:
-            session.error_code = failed_job.error_code
+            session.error_code = _classify_transfer_error(
+                failed_job.error_code,
+                failed_job.error_message,
+            )
             session.error_message = failed_job.error_message
             session.completed_at = session.completed_at or datetime.now(UTC)
 
@@ -357,6 +366,7 @@ class TransferApplicationService:
             data["source_job"] = _job_dict(source_job)
         if target_job is not None:
             data["target_job"] = _job_dict(target_job)
+        data["summary"] = _transfer_summary(data)
         return data
 
 
@@ -386,6 +396,114 @@ def _job_dict(job: Job) -> dict[str, object]:
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
+
+
+def _transfer_summary(data: dict[str, object]) -> dict[str, object]:
+    source_job = data.get("source_job")
+    target_job = data.get("target_job")
+    source_output = (
+        source_job.get("output") if isinstance(source_job, dict) else None
+    )
+    target_output = (
+        target_job.get("output") if isinstance(target_job, dict) else None
+    )
+    source_output_dict = source_output if isinstance(source_output, dict) else {}
+    target_output_dict = target_output if isinstance(target_output, dict) else {}
+    source_size = _first_int(
+        data.get("size_bytes"),
+        source_output_dict.get("size_bytes"),
+        source_output_dict.get("size"),
+    )
+    target_size = _first_int(
+        target_output_dict.get("size_bytes"),
+        target_output_dict.get("size"),
+    )
+    source_sha256 = _first_str(
+        data.get("sha256"),
+        source_output_dict.get("sha256"),
+        source_output_dict.get("hash_sha256"),
+    )
+    target_sha256 = _first_str(
+        target_output_dict.get("sha256"),
+        target_output_dict.get("hash_sha256"),
+    )
+    target_path = _first_str(
+        data.get("target_path"),
+        target_output_dict.get("path"),
+        target_output_dict.get("target_path"),
+        target_output_dict.get("output_path"),
+    )
+    if not target_path:
+        target_output_dir = _first_str(data.get("target_output_dir"))
+        source_path = _first_str(data.get("source_path"))
+        if target_output_dir and source_path:
+            source_name = source_path.replace("\\", "/").rstrip("/").split("/")[-1]
+            target_path = (
+                f"{target_output_dir.rstrip('/')}/{source_name}"
+                if source_name
+                else target_output_dir
+            )
+
+    return {
+        "source": {
+            "node_id": data.get("source_node_id"),
+            "path": data.get("source_path"),
+            "job_id": data.get("source_job_id"),
+            "status": source_job.get("status") if isinstance(source_job, dict) else None,
+            "size_bytes": source_size,
+            "sha256": source_sha256,
+        },
+        "target": {
+            "node_id": data.get("target_node_id"),
+            "path": target_path,
+            "output_dir": data.get("target_output_dir"),
+            "job_id": data.get("target_job_id"),
+            "status": target_job.get("status") if isinstance(target_job, dict) else None,
+            "size_bytes": target_size,
+            "sha256": target_sha256,
+        },
+        "verification": {
+            "size_match": (
+                source_size == target_size
+                if source_size is not None and target_size is not None
+                else None
+            ),
+            "sha256_match": (
+                source_sha256 == target_sha256
+                if source_sha256 and target_sha256
+                else None
+            ),
+        },
+    }
+
+
+def _classify_transfer_error(error_code: str | None, error_message: str | None) -> str | None:
+    message = (error_message or "").lower()
+    if "could not secure channel" in message:
+        return "croc_secure_channel_failed"
+    if "secure channel" in message and "not ready" in message:
+        return "croc_secure_channel_not_ready"
+    if "peer disconnected" in message or "maybe peer disconnected" in message:
+        return "croc_peer_disconnected"
+    if "relay" in message and ("unreachable" in message or "connect" in message):
+        return "croc_relay_unreachable"
+    return error_code
+
+
+def _first_int(*values: object) -> int | None:
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _first_str(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _generate_croc_code() -> str:

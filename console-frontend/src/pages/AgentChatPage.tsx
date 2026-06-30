@@ -27,6 +27,7 @@ import {
   type RunStatusBlock,
   type SystemEventBlock,
   type OperationCardBlock,
+  type PromptContextData,
   type ToolCallState,
   type ToolGroupBlock,
   type UserBlock,
@@ -80,6 +81,7 @@ export function AgentChatPage() {
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
+  const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
   const refreshSessionHistory = useCallback(() => {
@@ -152,6 +154,7 @@ export function AgentChatPage() {
     if (sessionQuery.data && sessionId) {
       reconciledApprovalIdsRef.current.clear();
       setDismissedApprovalIds(new Set());
+      setContinuedOperationIds(new Set());
       loadPersistedSession(sessionQuery.data);
     }
   }, [loadPersistedSession, sessionId, sessionQuery.data]);
@@ -562,6 +565,18 @@ export function AgentChatPage() {
     },
     [],
   );
+  const handleResumeOperation = useCallback(
+    (operationId: string) => {
+      setContinuedOperationIds((prev) => {
+        if (prev.has(operationId)) return prev;
+        const next = new Set(prev);
+        next.add(operationId);
+        return next;
+      });
+      resumeOperation(operationId, providerName, executionMode);
+    },
+    [executionMode, providerName, resumeOperation],
+  );
 
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
@@ -579,6 +594,25 @@ export function AgentChatPage() {
     const bTime = b.updated_at ?? b.started_at ?? "";
     return bTime.localeCompare(aTime);
   });
+  const operationBlocks = useMemo(
+    () => blocks.filter((block): block is OperationCardBlock => block.type === "operation_card"),
+    [blocks],
+  );
+  const conversationBlocks = useMemo(
+    () => blocks.filter((block) => block.type !== "operation_card"),
+    [blocks],
+  );
+  const latestContinuableOperation = useMemo(
+    () =>
+      [...operationBlocks]
+        .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))
+        .find(
+          (operation) =>
+            isOperationTerminal(operation.status) &&
+            !continuedOperationIds.has(operation.operationId),
+        ),
+    [continuedOperationIds, operationBlocks],
+  );
 
   return (
     <div className="flex h-[calc(100vh-var(--topbar-height))]">
@@ -704,85 +738,43 @@ export function AgentChatPage() {
 
       {/* Conversation area */}
       <div className="flex flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto p-6">
-          {/* Prompt context debug panel */}
-          {promptContext && (
-            <details className="mx-auto mb-4 max-w-3xl rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-[12px]">
-              <summary className="cursor-pointer font-medium text-[var(--text-muted)]">
-                Context — {promptContext.provider_name} / {promptContext.execution_mode}
-                {promptContext.routing_mode && ` / ${promptContext.routing_mode}`}
-                {promptContext.target_node_id && ` @ ${promptContext.target_node_id}`}
-                <span className="ml-2 text-[var(--text-subtle)]">({promptContext.available_functions.length} tools)</span>
-              </summary>
-              <div className="mt-2 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <span className="font-semibold text-[var(--text-subtle)]">
-                      Capability Context
-                    </span>
-                    <JsonView data={promptContext.capability_context ?? {}} />
-                  </div>
-                  <div>
-                    <span className="font-semibold text-[var(--text-subtle)]">
-                      Tool Count By Node
-                    </span>
-                    <JsonView data={promptContext.tool_count_by_node ?? {}} />
-                  </div>
-                </div>
-                <div>
-                  <span className="font-semibold text-[var(--text-subtle)]">System Prompt</span>
-                  <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-2 text-[11px] leading-relaxed text-[var(--text)]">
-                    {promptContext.system_prompt}
-                  </pre>
-                </div>
-                <div>
-                  <span className="font-semibold text-[var(--text-subtle)]">
-                    Tools ({promptContext.available_functions.length})
-                  </span>
-                  <div className="mt-1 max-h-48 overflow-y-auto space-y-0.5">
-                    {promptContext.available_functions.map((f) => (
-                      <div key={f.name} className="flex items-center gap-1.5">
-                        <span className="font-mono text-[var(--text)]">{f.name}</span>
-                        <span className="text-[var(--text-subtle)]">— {f.description}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1 overflow-y-auto p-6">
+            {conversationBlocks.length === 0 ? (
+              <EmptyState
+                icon={<Bot size={36} />}
+                title={sessionId ? "YeQu Agent" : "No Session"}
+                description={
+                  sessionId
+                    ? "Input a prompt to start. The Agent will reason about your request and execute tools accordingly."
+                    : "Create a session with the plus button to start a conversation."
+                }
+              />
+            ) : (
+              <div className="mx-auto max-w-3xl space-y-3">
+                {conversationBlocks.map((block) => (
+                  <ChatTimelineBlock
+                    key={block.id}
+                    block={block}
+                    onApproveAndRun={handleApproveAndRun}
+                    onResumeOperation={handleResumeOperation}
+                  />
+                ))}
+                {activeRunId && (
+                  <RunProgressCard
+                    runId={activeRunId}
+                    onComplete={() => setActiveRunId(null)}
+                  />
+                )}
+                <div ref={chatEndRef} />
               </div>
-            </details>
-          )}
-
-          {blocks.length === 0 ? (
-            <EmptyState
-              icon={<Bot size={36} />}
-              title={sessionId ? "YeQu Agent" : "No Session"}
-              description={
-                sessionId
-                  ? "Input a prompt to start. The Agent will reason about your request and execute tools accordingly."
-                  : "Create a session with the plus button to start a conversation."
-              }
-            />
-          ) : (
-            <div className="mx-auto max-w-3xl space-y-3">
-              {blocks.map((block) => (
-                <ChatTimelineBlock
-                  key={block.id}
-                  block={block}
-                  onApproveAndRun={handleApproveAndRun}
-                  onResumeOperation={(operationId) =>
-                    resumeOperation(operationId, providerName, executionMode)
-                  }
-                />
-              ))}
-              {activeRunId && (
-                <RunProgressCard
-                  runId={activeRunId}
-                  onComplete={() => setActiveRunId(null)}
-                />
-              )}
-              <div ref={chatEndRef} />
-            </div>
-          )}
+            )}
+          </div>
+          <ActivityPanel
+            operations={operationBlocks}
+            promptContext={promptContext}
+            onResumeOperation={handleResumeOperation}
+          />
         </div>
 
         {/* Prompt Composer */}
@@ -799,6 +791,22 @@ export function AgentChatPage() {
                 onApprove={() => handleToolApprovalDecision(pendingApprovals[0], "approve")}
                 onDeny={() => handleToolApprovalDecision(pendingApprovals[0], "deny")}
               />
+            )}
+            {latestContinuableOperation && !isStreaming && (
+              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px]">
+                <Info size={14} className="text-[var(--info)]" />
+                <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">
+                  Operation {latestContinuableOperation.operationId} is {latestContinuableOperation.status}.
+                </span>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => handleResumeOperation(latestContinuableOperation.operationId)}
+                >
+                  <Bot size={13} />
+                  <span className="ml-1">Continue</span>
+                </Button>
+              </div>
             )}
             {autoContinuing && (
               <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
@@ -1013,12 +1021,111 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
   );
 }
 
+function ActivityPanel({
+  operations,
+  promptContext,
+  onResumeOperation,
+}: {
+  operations: OperationCardBlock[];
+  promptContext: PromptContextData | null;
+  onResumeOperation: (operationId: string) => void;
+}) {
+  const latestOperations = [...operations].sort((a, b) =>
+    (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+  );
+
+  return (
+    <aside className="hidden w-[360px] flex-shrink-0 overflow-y-auto border-l border-[var(--border)] bg-[var(--surface-muted)] p-3 xl:block">
+      <div className="space-y-3">
+        <section>
+          <div className="mb-2 flex items-center gap-2">
+            <RefreshCw size={14} className="text-[var(--text-muted)]" />
+            <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+              Operations
+            </h2>
+            <span className="flex-1" />
+            <span className="text-[11px] text-[var(--text-subtle)]">{latestOperations.length}</span>
+          </div>
+          {latestOperations.length === 0 ? (
+            <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px] text-[var(--text-subtle)]">
+              No waitable operation in this session.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {latestOperations.map((operation) => (
+                <OperationCard
+                  key={operation.id}
+                  block={operation}
+                  onResume={onResumeOperation}
+                  surface="panel"
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {promptContext && <PromptContextPanel promptContext={promptContext} />}
+      </div>
+    </aside>
+  );
+}
+
+function PromptContextPanel({ promptContext }: { promptContext: PromptContextData }) {
+  return (
+    <details className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px]">
+      <summary className="cursor-pointer font-medium text-[var(--text-muted)]">
+        Context — {promptContext.provider_name} / {promptContext.execution_mode}
+        {promptContext.routing_mode && ` / ${promptContext.routing_mode}`}
+        {promptContext.target_node_id && ` @ ${promptContext.target_node_id}`}
+        <span className="ml-2 text-[var(--text-subtle)]">
+          ({promptContext.available_functions.length} tools)
+        </span>
+      </summary>
+      <div className="mt-2 space-y-2">
+        <div>
+          <span className="font-semibold text-[var(--text-subtle)]">
+            Capability Context
+          </span>
+          <JsonView data={promptContext.capability_context ?? {}} />
+        </div>
+        <div>
+          <span className="font-semibold text-[var(--text-subtle)]">
+            Tool Count By Node
+          </span>
+          <JsonView data={promptContext.tool_count_by_node ?? {}} />
+        </div>
+        <div>
+          <span className="font-semibold text-[var(--text-subtle)]">System Prompt</span>
+          <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] p-2 text-[11px] leading-relaxed text-[var(--text)]">
+            {promptContext.system_prompt}
+          </pre>
+        </div>
+        <div>
+          <span className="font-semibold text-[var(--text-subtle)]">
+            Tools ({promptContext.available_functions.length})
+          </span>
+          <div className="mt-1 max-h-64 overflow-y-auto space-y-0.5">
+            {promptContext.available_functions.map((f) => (
+              <div key={f.name} className="grid gap-0.5">
+                <span className="font-mono text-[var(--text)]">{f.name}</span>
+                <span className="text-[var(--text-subtle)]">{f.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function OperationCard({
   block,
   onResume,
+  surface = "timeline",
 }: {
   block: OperationCardBlock;
   onResume?: (operationId: string) => void;
+  surface?: "timeline" | "panel";
 }) {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -1040,6 +1147,8 @@ function OperationCard({
   const errorMessage = operation?.error_message ?? block.errorMessage;
   const canCancel = Boolean(operation?.cancel_supported ?? block.waitHandle?.cancel_supported);
   const terminal = isOperationTerminal(status);
+  const message = operationStatusMessage(status, block.message);
+  const compact = surface === "panel";
 
   const handleCancel = async () => {
     setCancelBusy(true);
@@ -1055,11 +1164,13 @@ function OperationCard({
   };
 
   return (
-    <div className="flex gap-3">
-      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
-        {terminal ? <CheckCircle size={14} /> : <RefreshCw size={14} className="animate-spin" />}
-      </div>
-      <div className="w-full max-w-[75%] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 shadow-sm">
+    <div className={compact ? "" : "flex gap-3"}>
+      {!compact && (
+        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
+          {terminal ? <CheckCircle size={14} /> : <RefreshCw size={14} className="animate-spin" />}
+        </div>
+      )}
+      <div className={`${compact ? "w-full" : "w-full max-w-[75%]"} rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 shadow-sm`}>
         <div className="flex items-center gap-2">
           <span className="text-[13px] font-semibold text-[var(--text)]">{title}</span>
           <span className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-subtle)]">
@@ -1071,7 +1182,7 @@ function OperationCard({
         <div className="mt-2 grid gap-1 text-[11px] text-[var(--text-subtle)]">
           <p className="font-mono">operation: {block.operationId}</p>
           {refType && refId && <p className="font-mono">{refType}: {refId}</p>}
-          {block.message && <p>{block.message}</p>}
+          <p>{message}</p>
         </div>
         {errorMessage && (
           <p className="mt-2 rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
@@ -1111,6 +1222,25 @@ function OperationCard({
 
 function isOperationTerminal(status: string) {
   return ["succeeded", "failed", "cancelled", "timeout"].includes(status);
+}
+
+function operationStatusMessage(status: string, fallback?: string) {
+  switch (status) {
+    case "succeeded":
+      return "Operation completed.";
+    case "failed":
+      return "Operation failed.";
+    case "cancelled":
+      return "Operation cancelled.";
+    case "timeout":
+      return "Operation timed out.";
+    case "queued":
+      return "Operation is queued in Center runtime.";
+    case "running":
+      return "Operation is running in Center runtime.";
+    default:
+      return fallback || "Operation is tracked by Center runtime.";
+  }
 }
 
 // ── Tool Group Bubble ──
