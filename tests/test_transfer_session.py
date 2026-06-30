@@ -203,18 +203,18 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
 
     jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
     jobs = list(jobs_result.scalars().all())
-    assert [job.node_id for job in jobs] == ["linux-node-01", "winClient"]
+    assert [job.node_id for job in jobs] == ["winClient", "linux-node-01"]
     assert [job.function_name for job in jobs] == [
-        "linux.transfer.croc.receive",
         "windows.transfer.croc.send",
+        "linux.transfer.croc.receive",
     ]
     assert jobs[0].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[1].input_payload["transfer_id"] == transfer["transfer_id"]
 
     session_result = await db_session.execute(select(TransferSession))
     session = session_result.scalar_one()
-    assert session.target_job_id == jobs[0].job_id
-    assert session.source_job_id == jobs[1].job_id
+    assert session.source_job_id == jobs[0].job_id
+    assert session.target_job_id == jobs[1].job_id
     operation_result = await db_session.execute(select(Operation))
     operation_model = operation_result.scalar_one()
     assert operation_model.ref_type == "transfer_session"
@@ -279,7 +279,7 @@ async def test_transfer_operation_projects_job_progress(
     assert created.operation_id
 
     jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
-    target_job, source_job = list(jobs_result.scalars().all())
+    source_job, target_job = list(jobs_result.scalars().all())
     source_job.status = "running"
     source_job.progress_pct = 60
     source_job.progress_message = "Sending file"
@@ -397,6 +397,38 @@ async def test_transfer_create_guard_requires_preflight_or_explicit_skip(
 
 
 @pytest.mark.asyncio
+async def test_transfer_create_guard_requires_explicit_resume_mode(
+    db_session: AsyncSession,
+) -> None:
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "timeout_sec": 600,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "needs_input"
+    assert result.error_details is not None
+    assert result.error_details["missing_slots"] == ["resume_mode"]
+
+    transfer_count = await db_session.execute(select(TransferSession))
+    assert transfer_count.scalars().all() == []
+    operation_count = await db_session.execute(select(Operation))
+    assert operation_count.scalars().all() == []
+    job_count = await db_session.execute(select(Job))
+    assert job_count.scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_transfer_preflight_aggregates_local_stat_without_creating_transfer(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -445,6 +477,7 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
                 "include_sha256": True,
                 "ttl_sec": 999,
             },
@@ -481,6 +514,35 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
     assert record.allowed is True
     assert record.source_fact["observed_at"] == preflight["observed_at"]
     assert record.target_fact["observed_at"] == preflight["observed_at"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_preflight_requires_explicit_resume_mode(
+    db_session: AsyncSession,
+) -> None:
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.preflight",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    preflight = result.output_data["preflight"]
+    assert preflight["allowed"] is False
+    assert preflight["decision"] == "needs_input"
+    assert preflight["missing_slots"] == ["resume_mode"]
+
+    preflight_records = await db_session.execute(select(TransferPreflight))
+    assert preflight_records.scalars().all() == []
 
 
 @pytest.mark.asyncio
@@ -524,6 +586,7 @@ async def test_transfer_preflight_reports_target_not_writable(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/root",
+                "resume_mode": "resume",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -586,6 +649,7 @@ async def test_transfer_preflight_reports_target_receive_disabled(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -638,6 +702,7 @@ async def test_transfer_create_rejects_mismatched_preflight(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -654,6 +719,7 @@ async def test_transfer_create_rejects_mismatched_preflight(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\different.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
                 "preflight_id": preflight_id,
             },
             actor_type="agent",
@@ -721,6 +787,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -737,6 +804,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
                 "preflight_id": preflight_id,
             },
             actor_type="agent",
@@ -745,8 +813,8 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
     )
 
     assert result.status == "waiting_operation"
-    assert captured_inputs[0]["expected_size_bytes"] == 12345
-    assert "expected_size_bytes" not in captured_inputs[1]
+    assert "expected_size_bytes" not in captured_inputs[0]
+    assert captured_inputs[1]["expected_size_bytes"] == 12345
 
 
 @pytest.mark.asyncio
@@ -807,8 +875,8 @@ async def test_transfer_create_returns_structured_conflict_when_transfer_lock_is
     assert isinstance(transfer, dict)
     assert transfer["status"] == "failed"
     assert transfer["error_code"] == "resource_lock_conflict"
-    assert "receive_result" in transfer
-    assert transfer["receive_result"]["error_code"] == "resource_lock_conflict"
+    assert "send_result" in transfer
+    assert transfer["send_result"]["error_code"] == "resource_lock_conflict"
 
 
 @pytest.mark.asyncio
@@ -971,6 +1039,7 @@ async def test_agent_transfer_create_emits_waiting_operation_events(
                         "target_node_id": "linux-node-01",
                         "source_path": "E:\\test\\1.mp3",
                         "target_output_dir": "/tmp/yequ-transfer",
+                        "resume_mode": "resume",
                         "skip_preflight": True,
                         "skip_reason": "test exercises waiting operation events",
                     },
@@ -1014,6 +1083,7 @@ async def test_resume_operation_stream_injects_operation_observation(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
                 "skip_preflight": True,
                 "skip_reason": "test exercises resume operation",
             },
@@ -1105,6 +1175,7 @@ async def test_invoke_stream_loads_operation_context_refs(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
                 "skip_preflight": True,
                 "skip_reason": "test exercises context refs",
             },

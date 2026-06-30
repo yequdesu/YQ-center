@@ -7,6 +7,7 @@ def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> N
 
     assert "capability.search and capability.describe" in prompt
     assert "do not guess the source node" in prompt
+    assert "resume_mode is user intent" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt
     assert "Before artifact.deploy, use artifact.deploy.preflight" in prompt
     assert "dispatchable=false" in prompt

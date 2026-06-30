@@ -355,7 +355,11 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "resume_mode": {
                         "type": "string",
                         "enum": ["resume", "overwrite", "fail_if_exists"],
-                        "default": "resume",
+                        "description": (
+                            "Required user intent. Do not choose a value by default: "
+                            "ask the user when overwrite/resume/conflict behavior is "
+                            "not explicit."
+                        ),
                     },
                     "include_sha256": {"type": "boolean", "default": False},
                     "timeout_sec": {"type": "integer", "default": 20},
@@ -368,7 +372,16 @@ def _center_meta_functions() -> list[AgentFunction]:
                         ),
                     },
                 },
-                "required": ["source_node_id", "target_node_id", "source_path"],
+                "required": [
+                    "source_node_id",
+                    "target_node_id",
+                    "source_path",
+                    "resume_mode",
+                ],
+                "anyOf": [
+                    {"required": ["target_output_dir"]},
+                    {"required": ["target_path"]},
+                ],
             },
             risk="safe",
             effect="read",
@@ -394,7 +407,11 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "resume_mode": {
                         "type": "string",
                         "enum": ["resume", "overwrite", "fail_if_exists"],
-                        "default": "resume",
+                        "description": (
+                            "Required user intent. Do not choose a value by default: "
+                            "ask the user when overwrite/resume/conflict behavior is "
+                            "not explicit."
+                        ),
                     },
                     "timeout_sec": {"type": "integer", "default": 3600},
                     "expected_sha256": {"type": "string"},
@@ -411,7 +428,16 @@ def _center_meta_functions() -> list[AgentFunction]:
                     },
                     "skip_reason": {"type": "string"},
                 },
-                "required": ["source_node_id", "target_node_id", "source_path"],
+                "required": [
+                    "source_node_id",
+                    "target_node_id",
+                    "source_path",
+                    "resume_mode",
+                ],
+                "anyOf": [
+                    {"required": ["target_output_dir"]},
+                    {"required": ["target_path"]},
+                ],
             },
             risk="maintenance",
             effect="external",

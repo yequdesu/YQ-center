@@ -51,6 +51,8 @@ class ExecutionGuard:
         for slot in ("source_node_id", "target_node_id", "source_path"):
             if not _has_string(input_data.get(slot)):
                 missing.append(slot)
+        if not _has_string(input_data.get("resume_mode")):
+            missing.append("resume_mode")
         if not (
             _has_string(input_data.get("target_output_dir"))
             or _has_string(input_data.get("target_path"))
@@ -62,6 +64,22 @@ class ExecutionGuard:
                 decision="needs_input",
                 reason="transfer.create requires explicit source, target, and landing path",
                 missing_slots=missing,
+            )
+
+        if input_data.get("resume_mode") not in {
+            "resume",
+            "overwrite",
+            "fail_if_exists",
+        }:
+            return GuardDecision(
+                decision="blocked",
+                reason="resume_mode must be resume, overwrite, or fail_if_exists",
+                failed_preconditions=[
+                    {
+                        "fact": "transfer.resume_mode",
+                        "code": "invalid_resume_mode",
+                    }
+                ],
             )
 
         if bool(input_data.get("skip_preflight")) and not _has_string(

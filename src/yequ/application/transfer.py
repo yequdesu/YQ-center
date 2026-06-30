@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -21,6 +22,7 @@ from yequ.services.timeline_writer import add_timeline_event
 TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
+TRANSFER_SENDER_START_WAIT_SEC = 8.0
 
 
 @dataclass(slots=True)
@@ -32,7 +34,7 @@ class TransferCreateCommand:
     target_path: str | None = None
     code: str | None = None
     relay_url: str | None = None
-    resume_mode: str = "resume"
+    resume_mode: str | None = None
     timeout_sec: int = 3600
     expected_sha256: str | None = None
     preflight_id: str | None = None
@@ -51,7 +53,7 @@ class TransferPreflightCommand:
     source_path: str
     target_output_dir: str | None = None
     target_path: str | None = None
-    resume_mode: str = "resume"
+    resume_mode: str | None = None
     include_sha256: bool = False
     timeout_sec: int = 20
     ttl_sec: int = TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
@@ -80,6 +82,9 @@ class TransferApplicationService:
             missing.append("source_path")
         if not command.target_output_dir and not command.target_path:
             missing.append("target_output_dir_or_target_path")
+        resume_mode = command.resume_mode
+        if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
+            missing.append("resume_mode")
         if missing:
             return {
                 "allowed": False,
@@ -135,7 +140,7 @@ class TransferApplicationService:
             source_status=source_status,
             target_status=target_status,
             target_path=command.target_path,
-            resume_mode=command.resume_mode or "resume",
+            resume_mode=resume_mode,
         )
         preflight = TransferPreflight(
             preflight_id=f"tpf_{secrets.token_hex(8)}",
@@ -147,14 +152,14 @@ class TransferApplicationService:
                 source_path=command.source_path,
                 target_output_dir=command.target_output_dir,
                 target_path=command.target_path,
-                resume_mode=command.resume_mode or "resume",
+                resume_mode=resume_mode,
             ),
             source_node_id=command.source_node_id,
             target_node_id=command.target_node_id,
             source_path=command.source_path,
             target_output_dir=command.target_output_dir,
             target_path=command.target_path,
-            resume_mode=command.resume_mode or "resume",
+            resume_mode=resume_mode,
             source_fact=source,
             target_fact=target,
             failed_preconditions=failed,
@@ -174,7 +179,7 @@ class TransferApplicationService:
             "target": target,
             "source_runtime": source_status,
             "target_runtime": target_status,
-            "resume_mode": command.resume_mode or "resume",
+            "resume_mode": resume_mode,
             "observed_at": now.isoformat(),
             "ttl_sec": ttl_sec,
             "expires_at": preflight.expires_at.isoformat(),
@@ -193,7 +198,7 @@ class TransferApplicationService:
             raise ValueError("target_output_dir or target_path is required")
 
         code = command.code or _generate_croc_code()
-        resume_mode = command.resume_mode or "resume"
+        resume_mode = command.resume_mode
         if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
             raise ValueError("resume_mode must be resume, overwrite, or fail_if_exists")
         preflight = await self._verify_preflight(command, resume_mode=resume_mode)
@@ -233,6 +238,52 @@ class TransferApplicationService:
             else None
         )
 
+        send_result = await self._invoke_capability(
+            command,
+            node_id=command.source_node_id,
+            capability_ref="transfer.croc.send",
+            tool_input={
+                "transfer_id": session.transfer_id,
+                "code": code,
+                "path": command.source_path,
+                "relay_url": command.relay_url,
+                "timeout_sec": command.timeout_sec,
+                "expected_receiver_node_id": command.target_node_id,
+            },
+        )
+        if send_result.status not in {"created", "running"}:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                send_result.error_code or "sender_job_failed",
+                send_result.error_message,
+            )
+            session.error_message = send_result.error_message
+            await self.db.commit()
+            return self._session_dict(session, send_result=send_result)
+
+        session.source_invocation_id = send_result.invocation_id
+        session.source_job_id = send_result.job_id
+        session.status = "sending"
+        await self.db.commit()
+
+        sender_start = await self._wait_for_job_start(session.source_job_id)
+        if sender_start and sender_start.status in {
+            "succeeded",
+            "failed",
+            "timeout",
+            "cancelled",
+        }:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                sender_start.error_code or "sender_job_finished_before_receiver",
+                sender_start.error_message,
+            )
+            session.error_message = sender_start.error_message or (
+                "sender job reached terminal state before receiver was started"
+            )
+            await self.db.commit()
+            return self._session_dict(session, source_job=sender_start, send_result=send_result)
+
         receive_input: dict[str, object] = {
             "transfer_id": session.transfer_id,
             "code": code,
@@ -253,6 +304,7 @@ class TransferApplicationService:
             tool_input=receive_input,
         )
         if receive_result.status not in {"created", "running"}:
+            await self._cancel_job_id(session.source_job_id, reason="receiver_job_failed")
             session.status = "failed"
             session.error_code = _classify_transfer_error(
                 receive_result.error_code or "receiver_job_failed",
@@ -260,43 +312,14 @@ class TransferApplicationService:
             )
             session.error_message = receive_result.error_message
             await self.db.commit()
-            return self._session_dict(session, receive_result=receive_result)
-
-        session.target_invocation_id = receive_result.invocation_id
-        session.target_job_id = receive_result.job_id
-        session.status = "receiving"
-        await self.db.commit()
-
-        send_result = await self._invoke_capability(
-            command,
-            node_id=command.source_node_id,
-            capability_ref="transfer.croc.send",
-            tool_input={
-                "transfer_id": session.transfer_id,
-                "code": code,
-                "path": command.source_path,
-                "relay_url": command.relay_url,
-                "timeout_sec": command.timeout_sec,
-                "expected_receiver_node_id": command.target_node_id,
-            },
-        )
-        if send_result.status not in {"created", "running"}:
-            await self._cancel_job_id(session.target_job_id, reason="sender_job_failed")
-            session.status = "failed"
-            session.error_code = _classify_transfer_error(
-                send_result.error_code or "sender_job_failed",
-                send_result.error_message,
-            )
-            session.error_message = send_result.error_message
-            await self.db.commit()
             return self._session_dict(
                 session,
                 receive_result=receive_result,
                 send_result=send_result,
             )
 
-        session.source_invocation_id = send_result.invocation_id
-        session.source_job_id = send_result.job_id
+        session.target_invocation_id = receive_result.invocation_id
+        session.target_job_id = receive_result.job_id
         session.status = "running"
         await add_timeline_event(
             self.db,
@@ -363,6 +386,28 @@ class TransferApplicationService:
             await cancel_job(self.db, job, reason=reason, node_id=job.node_id)
         except ValueError:
             return
+
+    async def _wait_for_job_start(self, job_id: str | None) -> Job | None:
+        if not job_id:
+            return None
+        from yequ.config import get_settings
+        from yequ.db import async_session_factory
+
+        if get_settings().test_mode:
+            return None
+
+        deadline = datetime.now(UTC) + timedelta(seconds=TRANSFER_SENDER_START_WAIT_SEC)
+        last_job: Job | None = None
+        while datetime.now(UTC) < deadline:
+            async with async_session_factory() as db:
+                result = await db.execute(select(Job).where(Job.job_id == job_id))
+                last_job = result.scalar_one_or_none()
+                if last_job is None:
+                    return None
+                if last_job.status not in {"created", "queued"}:
+                    return last_job
+            await asyncio.sleep(0.5)
+        return last_job
 
     async def _verify_preflight(
         self,

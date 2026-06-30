@@ -608,6 +608,8 @@ Agent system prompt 必须明确以下规则：
    - `resume_mode`
 
    用户只说“传到 Linux”时，Agent 必须询问目标目录，或者先查询用户常用目录后给出候选，不得直接猜 `/home/user/` 或 `/tmp`。
+   用户没有说明目标冲突处理方式时，Agent 必须询问是覆盖、续传/复用部分文件，还是遇到已有文件就失败；
+   不得把 `resume_mode=fail_if_exists`、`resume` 或 `overwrite` 当作隐式默认值。
 
 2. 执行前先做事实探测。
 
@@ -649,7 +651,7 @@ Prompt 规则必须有 Center 约束配合，否则会变成软建议。
 
 - `target_output_dir` 和 `target_path` 不能同时为空；已完成；
 - `source_node_id`、`target_node_id`、`source_path` 必填；已完成；
-- `resume_mode` 不能为空，默认值只能由 UI 或 Center 明确设定，不能由 Agent 隐式猜测；
+- `resume_mode` 不能为空；已完成。工具 schema、`ExecutionGuard` 和 `transfer.preflight` 均不再接受隐式默认值；
 - 对跨 Node 传输，默认要求 preflight 已通过；已完成 `preflight_id` 绑定；
 - 如果 preflight 未执行或失败，返回 `preflight_required` / `preflight_failed`，不创建 Operation；缺失、过期、intent mismatch、preflight failed 均已阻断；
 - 如果用户显式选择跳过 preflight，必须在 input 中有 `skip_preflight=true` 和 `skip_reason`；第一版已完成 skip reason 约束。

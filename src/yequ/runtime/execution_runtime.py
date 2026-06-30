@@ -258,7 +258,7 @@ class CenterExecutionRuntime:
                     target_path=_string_or_none(input_data.get("target_path")),
                     code=_string_or_none(input_data.get("code")),
                     relay_url=_string_or_none(input_data.get("relay_url")),
-                    resume_mode=_string_or_none(input_data.get("resume_mode")) or "resume",
+                    resume_mode=_string_or_none(input_data.get("resume_mode")),
                     timeout_sec=_int_or_default(input_data.get("timeout_sec"), 3600),
                     expected_sha256=_string_or_none(input_data.get("expected_sha256")),
                     preflight_id=_string_or_none(input_data.get("preflight_id")),
@@ -476,8 +476,7 @@ class CenterExecutionRuntime:
                                 input_data.get("target_output_dir")
                             ),
                             target_path=_string_or_none(input_data.get("target_path")),
-                            resume_mode=_string_or_none(input_data.get("resume_mode"))
-                            or "resume",
+                            resume_mode=_string_or_none(input_data.get("resume_mode")),
                             include_sha256=bool(input_data.get("include_sha256", False)),
                             timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
                             ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
