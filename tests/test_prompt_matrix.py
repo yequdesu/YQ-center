@@ -635,7 +635,7 @@ async def test_prompt_matrix_unknown_function_rejected(
     )
     register_provider(provider)
 
-    # system.reboot is not in _default_functions(), so it should be rejected
+    # system.reboot is not in the registered fake tool set, so it should be rejected
     # at the L1 gate (function_not_available). The invoke should return quickly
     # without creating any jobs, so we can call it synchronously.
     r = await client.post(

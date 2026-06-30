@@ -41,11 +41,11 @@ pytestmark = pytest.mark.skipif(
 )
 async def test_deepseek_tool_selection(prompt, expected_function, expected_input):
     """DeepSeek selects the right function for each prompt."""
+    from tests.fakes.agent_functions import default_agent_functions
     from yequ.agent.deepseek_provider import DeepSeekProvider
-    from yequ.api.routes.agent import _default_functions
 
     provider = DeepSeekProvider()
-    funcs = _default_functions()
+    funcs = default_agent_functions()
 
     result = await provider.invoke(prompt, available_functions=funcs)
 

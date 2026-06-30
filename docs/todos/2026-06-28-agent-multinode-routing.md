@@ -362,7 +362,7 @@ src/yequ/agent/capability_context.py
 or a broader:
 
 ```text
-src/yequ/agent/context_engine.py
+src/yequ/runtime/capability_context.py
 ```
 
 The broader name is preferred if implementation also includes runtime state,

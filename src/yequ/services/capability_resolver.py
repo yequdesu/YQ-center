@@ -51,7 +51,7 @@ def _requirements_from_context(context: str | None) -> JsonObject | None:
     if context == "user":
         return {"runtime_kind": "interactive", "interactive": True}
     if context == "hybrid":
-        return {"runtime_kind": "interactive", "fallback_runtime_kind": "privileged"}
+        return {"allowed_runtime_kinds": ["interactive", "privileged"]}
     return None
 
 
@@ -66,9 +66,15 @@ def _runtime_matches(runtime: RuntimeInstance, requirements: JsonObject) -> bool
     if runtime.status not in ("online", "degraded"):
         return False
 
+    allowed_runtime_kinds = requirements.get("allowed_runtime_kinds")
+    allowed_kinds = (
+        {str(kind) for kind in allowed_runtime_kinds}
+        if isinstance(allowed_runtime_kinds, list)
+        else set()
+    )
     kind = requirements.get("runtime_kind")
-    fallback_kind = requirements.get("fallback_runtime_kind")
-    allowed_kinds = {str(k) for k in (kind, fallback_kind) if k}
+    if kind:
+        allowed_kinds.add(str(kind))
     if allowed_kinds and runtime.kind not in allowed_kinds:
         return False
 

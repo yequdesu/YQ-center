@@ -6,11 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
-from yequ.application import ExecuteToolCommand, ToolInvocationApplicationService
+from yequ.application import ExecuteToolCommand
 from yequ.models.api_token import ApiToken
 from yequ.models.approval import ApprovalRequest
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
+from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 from yequ.services.token_auth import hash_token as hash_api_token
 from yequ.shared_types import JsonObject
 
@@ -262,17 +263,18 @@ async def approve_and_run_endpoint(
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
 
-    app_result = await ToolInvocationApplicationService(db).execute(
-        ExecuteToolCommand(
-            actor_type="agent",
-            actor_id=a.actor_id,
-            session_id=a.session_id,
-            function_name=a.function_name,
-            input_data=a.input_snapshot or {},
-            target_node_id=a.target_node_id,
-            execution_mode="auto",
-            approval_id=a.approval_id,
-            allow_unregistered_function=True,
+    app_result = await CenterExecutionRuntime(db).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type="agent",
+                actor_id=a.actor_id,
+                session_id=a.session_id,
+                function_name=a.function_name,
+                input_data=a.input_snapshot or {},
+                target_node_id=a.target_node_id,
+                execution_mode="auto",
+                approval_id=a.approval_id,
+            )
         )
     )
     if app_result.status in {"denied", "unavailable", "not_found", "failed"}:

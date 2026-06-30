@@ -17,11 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.agent.provider import AgentFunction
 from yequ.application import (
     ExecuteToolCommand,
-    ToolInvocationApplicationService,
     ToolPreflightApplicationService,
     ToolPreflightCommand,
 )
 from yequ.logconfig import get_logger
+from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 
 StreamEvent = dict[str, object]
 EventFactory = Callable[[str, dict[str, object] | None], StreamEvent]
@@ -339,8 +339,9 @@ async def _execute_and_stream(
     target_node_id: str | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     func_meta = next((f for f in available_functions if f.name == tc_name), None)
-    result = await ToolInvocationApplicationService(db).execute(
-        ExecuteToolCommand(
+    result = await CenterExecutionRuntime(db).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
             actor_type="agent",
             actor_id=actor_id,
             session_id=session_id,
@@ -353,6 +354,7 @@ async def _execute_and_stream(
             wait_for_result=False,
             declared_risk=func_meta.risk if func_meta else None,
             declared_effect=func_meta.effect if func_meta else None,
+            )
         )
     )
 
@@ -383,12 +385,46 @@ async def _execute_and_stream(
         return
 
     if result.status == "approval_required":
+        output = result.output_data or {}
+        operation = _as_object_dict(output.get("operation"))
+        wait_handle = result.wait_handle or _as_object_dict(output.get("wait_handle"))
+        operation_id = result.operation_id or str(operation.get("operation_id") or "")
+        if operation_id:
+            yield make_event(
+                "agent.operation.created",
+                {
+                    "call_id": call_id,
+                    "name": tc_name,
+                    "operation_id": operation_id,
+                    "kind": operation.get("kind"),
+                    "status": operation.get("status"),
+                    "ref_type": operation.get("ref_type"),
+                    "ref_id": operation.get("ref_id"),
+                    "title": operation.get("title"),
+                    "target_node_id": result.target_node_id,
+                },
+            )
+            yield make_event(
+                "agent.operation.waiting",
+                {
+                    "call_id": call_id,
+                    "name": tc_name,
+                    "operation_id": operation_id,
+                    "kind": operation.get("kind"),
+                    "status": operation.get("status"),
+                    "wait_handle": wait_handle,
+                    "resume_policy": wait_handle.get("resume_policy") or "manual",
+                    "message": "Approval is waiting in Center runtime.",
+                    "target_node_id": result.target_node_id,
+                },
+            )
         yield make_event(
             "agent.approval.required",
             {
                 "call_id": call_id,
                 "name": tc_name,
                 "approval_id": result.approval_id,
+                "operation_id": operation_id,
                 "target_node_id": result.target_node_id,
             },
         )

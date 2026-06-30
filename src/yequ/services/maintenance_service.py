@@ -197,18 +197,6 @@ async def run_plan(
     plan.status = "running"
     plan.started_at = now
 
-    # Consume approval if plan has one
-    if plan.approval_id:
-        from yequ.models.approval import ApprovalRequest
-        from yequ.services.approval_service import consume_approval
-
-        apv_result = await db.execute(
-            select(ApprovalRequest).where(ApprovalRequest.approval_id == plan.approval_id)
-        )
-        approval = apv_result.scalar_one_or_none()
-        if approval:
-            await consume_approval(db, approval, invocation_id=run.run_id)
-
     await db.commit()
     return run
 

@@ -15,8 +15,8 @@ from typing import Any
 from sqlalchemy import func, select
 
 from yequ import db as yequ_db
-from yequ.agent.runtime_state import TERMINAL_AGENT_RUN_STATUSES, status_for_stream_event
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
+from yequ.runtime.agent_status import TERMINAL_AGENT_RUN_STATUSES, status_for_stream_event
 
 
 def make_turn_id() -> str:

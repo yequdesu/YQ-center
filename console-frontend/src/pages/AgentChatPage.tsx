@@ -115,6 +115,7 @@ export function AgentChatPage() {
     sendInvoke,
     sendPlan,
     resumeOperation,
+    resumeLastRun,
     cancel,
     detach,
     clearBlocks,
@@ -577,6 +578,9 @@ export function AgentChatPage() {
     },
     [executionMode, providerName, resumeOperation],
   );
+  const handleResumeLastRun = useCallback(() => {
+    resumeLastRun(providerName, executionMode);
+  }, [executionMode, providerName, resumeLastRun]);
 
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
@@ -848,6 +852,12 @@ export function AgentChatPage() {
               {isStreaming && (
                 <Button variant="ghost" size="sm" onClick={cancel}>
                   Cancel
+                </Button>
+              )}
+              {!isStreaming && sessionId && (
+                <Button variant="ghost" size="sm" onClick={handleResumeLastRun}>
+                  <RefreshCw size={13} />
+                  <span className="ml-1">Resume</span>
                 </Button>
               )}
             </div>
@@ -1140,6 +1150,7 @@ function OperationCard({
   });
 
   const operation = operationQuery.data?.operation;
+  const artifacts = operationQuery.data?.artifacts ?? [];
   const status = operation?.status ?? block.status;
   const title = operation?.title ?? block.title ?? `${block.kind} operation`;
   const refType = operation?.ref_type ?? block.refType;
@@ -1188,6 +1199,11 @@ function OperationCard({
           <p className="mt-2 rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
             {errorMessage}
           </p>
+        )}
+        {artifacts.length > 0 && (
+          <div className="mt-3">
+            <ArtifactList artifacts={artifacts} />
+          </div>
         )}
         {cancelError && <p className="mt-2 text-[12px] text-[var(--danger)]">{cancelError}</p>}
         <div className="mt-3 flex items-center gap-2">

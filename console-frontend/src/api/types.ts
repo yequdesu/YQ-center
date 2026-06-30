@@ -411,6 +411,10 @@ export interface OperationDetail {
     updated_at: string | null;
   };
   transfer?: Record<string, unknown>;
+  job?: Record<string, unknown>;
+  maintenance_run?: Record<string, unknown>;
+  approval?: Record<string, unknown>;
+  artifacts?: CenterArtifactDetail[];
 }
 
 export type SseEventType =
@@ -420,6 +424,7 @@ export type SseEventType =
   | "agent.prompt_context"
   | "agent.session.resolved"
   | "agent.prompt.received"
+  | "agent.run.created"
   | "agent.provider.started"
   | "agent.provider.delta"
   | "agent.planning.summary"
@@ -445,7 +450,6 @@ export type SseEventType =
   | "agent.loop.iteration"
   | "agent.observing"
   | "agent.synthesizing"
-  | "agent.fallback_synthesis"
   | "agent.provider.failed"
   | "agent.completed"
   | "agent.failed";

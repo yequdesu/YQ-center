@@ -293,6 +293,32 @@ export function useAgentChat({
     [handleInvokeEvent, sessionId, startStream],
   );
 
+  const resumeLastRun = useCallback(
+    (providerName: string, executionMode: string) => {
+      setTranscript((prev) =>
+        reduceSseEvent(prev, {
+          event_id: crypto.randomUUID(),
+          event_type: "agent.provider.started",
+          session_id: sessionId,
+          trace_id: "",
+          timestamp: new Date().toISOString(),
+          data: {},
+        }),
+      );
+
+      startStream(
+        "/agent/resume-last-run/stream",
+        {
+          session_id: sessionId,
+          provider_name: providerName,
+          execution_mode: executionMode,
+        },
+        handleInvokeEvent,
+      );
+    },
+    [handleInvokeEvent, sessionId, startStream],
+  );
+
   const cancel = useCallback(() => {
     abortRef.current?.();
     abortRef.current = null;
@@ -322,6 +348,7 @@ export function useAgentChat({
     sendInvoke,
     sendPlan,
     resumeOperation,
+    resumeLastRun,
     cancel,
     detach,
     clearBlocks,

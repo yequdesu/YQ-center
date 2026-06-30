@@ -1,4 +1,9 @@
-"""Application service for executing registered Center functions."""
+"""Center Execution Runtime v2.
+
+This module is the execution boundary after admission.  Agent, admin, CLI and
+workflow code should enter here instead of calling application-layer legacy
+tool execution services.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,8 @@ from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
+from yequ.runtime.admission import ExecutionAdmissionService
+from yequ.runtime.command import RuntimeCommand
 from yequ.services.approval_service import (
     consume_approval,
     create_approval,
@@ -48,26 +55,296 @@ CENTER_META_TOOLS = {
 }
 
 
-class ToolInvocationApplicationService:
-    """Use-case boundary for all Center function execution requests."""
+class CenterExecutionRuntime:
+    """Unified execution boundary for Center capabilities and workflows."""
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def execute(self, command: ExecuteToolCommand) -> ExecuteToolResult:
-        """Execute or stage a function invocation through the Center pipeline."""
-        from yequ.runtime.admission import ExecutionAdmissionService
+    async def execute(
+        self,
+        command: RuntimeCommand | ExecuteToolCommand,
+    ) -> ExecuteToolResult:
+        runtime_command = _as_runtime_command(command)
+        execute_command = runtime_command.to_execute_tool_command()
+        admission_plan = ExecutionAdmissionService().plan(execute_command)
 
-        admission_plan = ExecutionAdmissionService().plan(command)
-        if command.function_name in CENTER_META_TOOLS:
-            result = await self._execute_center_meta_tool(command)
-            result.execution_plan = admission_plan.to_dict()
-            return result
-        if command.function_name == "capability.invoke":
-            result = await self._execute_capability_invoke(command)
-            result.execution_plan = admission_plan.to_dict()
-            return result
+        if runtime_command.function_name == "capability.invoke":
+            result = await self._execute_capability_invoke(runtime_command)
+        elif runtime_command.function_name == "transfer.create":
+            result = await self._execute_transfer_create(runtime_command)
+        elif runtime_command.function_name in CENTER_META_TOOLS:
+            result = await self._execute_inline_meta_tool(runtime_command)
+        else:
+            result = await self._execute_node_job(runtime_command)
 
+        result.execution_plan = admission_plan.to_dict()
+        return result
+
+    async def execute_stream(
+        self,
+        command: RuntimeCommand | ExecuteToolCommand,
+    ) -> AsyncIterator[ToolExecutionEvent]:
+        result = await self.execute(command)
+        yield ToolExecutionEvent("tool.execution.result", result)
+
+    async def _execute_capability_invoke(
+        self,
+        command: RuntimeCommand,
+    ) -> ExecuteToolResult:
+        from yequ.services.capability_registry import resolve_capability_invoke_target
+
+        input_data = dict(command.input_data)
+        capability_ref = _string_or_none(input_data.get("capability_ref")) or _string_or_none(
+            input_data.get("capability_id")
+        )
+        source_id = _string_or_none(input_data.get("source_id"))
+        node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
+        tool_input = input_data.get("input")
+        if tool_input is None:
+            tool_input = input_data.get("arguments")
+        if tool_input is None:
+            tool_input = {}
+        if not isinstance(tool_input, dict):
+            return _runtime_error(
+                command,
+                "invalid_input",
+                "capability.invoke input must be an object",
+            )
+
+        try:
+            target = await resolve_capability_invoke_target(
+                self.db,
+                capability_ref=capability_ref,
+                source_id=source_id,
+                node_id=node_id,
+            )
+        except ValueError as exc:
+            return _runtime_error(command, "capability_source_unresolved", str(exc))
+
+        delegated = RuntimeCommand(
+            function_name=target.registered_name,
+            input_data=dict(tool_input),
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+            target_node_id=target.node_id,
+            execution_mode=command.execution_mode,
+            max_depth=command.max_depth,
+            max_steps=command.max_steps,
+            max_total_duration_sec=command.max_total_duration_sec,
+            call_path=list(command.call_path or []) + ["capability.invoke"],
+            approval_id=command.approval_id,
+            dry_run=command.dry_run,
+            wait_for_result=command.wait_for_result,
+            deadline=command.deadline,
+            resource_keys=command.resource_keys,
+            timeout_sec=command.timeout_sec or target.timeout_sec,
+            lease_sec=command.lease_sec,
+            declared_risk=target.risk,
+            declared_effect=target.effect,
+            allow_unregistered_function=False,
+            suppress_operation=command.suppress_operation,
+        )
+        return await self.execute(delegated)
+
+    async def _execute_transfer_create(self, command: RuntimeCommand) -> ExecuteToolResult:
+        from yequ.application.transfer import TransferApplicationService, TransferCreateCommand
+        from yequ.services.operation_service import OperationService, wait_handle_for_operation
+
+        input_data = dict(command.input_data)
+        try:
+            transfer = await TransferApplicationService(self.db).create(
+                TransferCreateCommand(
+                    source_node_id=_required_string(
+                        input_data.get("source_node_id"),
+                        "source_node_id",
+                    ),
+                    target_node_id=_required_string(
+                        input_data.get("target_node_id"),
+                        "target_node_id",
+                    ),
+                    source_path=_required_string(input_data.get("source_path"), "source_path"),
+                    target_output_dir=_string_or_none(input_data.get("target_output_dir")),
+                    target_path=_string_or_none(input_data.get("target_path")),
+                    code=_string_or_none(input_data.get("code")),
+                    relay_url=_string_or_none(input_data.get("relay_url")),
+                    resume_mode=_string_or_none(input_data.get("resume_mode")) or "resume",
+                    timeout_sec=_int_or_default(input_data.get("timeout_sec"), 3600),
+                    expected_sha256=_string_or_none(input_data.get("expected_sha256")),
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                    execution_mode=command.execution_mode,
+                )
+            )
+            operation = await OperationService(self.db).create_for_transfer(
+                transfer,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                session_id=command.session_id,
+            )
+        except ValueError as exc:
+            return _runtime_error(command, "invalid_input", str(exc))
+
+        wait_handle = wait_handle_for_operation(operation)
+        return ExecuteToolResult(
+            status="waiting_operation",
+            function_name=command.function_name,
+            target_node_id=command.target_node_id,
+            risk="maintenance",
+            effect="external",
+            output_data={
+                "transfer": transfer,
+                "operation": operation,
+                "wait_handle": wait_handle,
+            },
+            operation_id=str(operation["operation_id"]),
+            wait_handle=wait_handle,
+        )
+
+    async def _execute_inline_meta_tool(self, command: RuntimeCommand) -> ExecuteToolResult:
+        from yequ.application.transfer import TransferApplicationService
+        from yequ.services.artifact_service import (
+            artifact_to_dict,
+            get_artifact,
+            list_artifacts,
+        )
+        from yequ.services.capability_registry import (
+            capability_describe,
+            capability_search,
+            node_list,
+            node_status,
+        )
+        from yequ.services.operation_service import OperationService
+
+        input_data = dict(command.input_data)
+        try:
+            if command.function_name == "node.list":
+                output = {"nodes": await node_list(self.db)}
+            elif command.function_name == "node.status":
+                node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
+                if not node_id:
+                    return _runtime_error(command, "invalid_input", "node_id is required")
+                output = {"node": await node_status(self.db, node_id)}
+            elif command.function_name == "capability.search":
+                output = {
+                    "capabilities": await capability_search(
+                        self.db,
+                        query=_string_or_none(input_data.get("query"))
+                        or _string_or_none(input_data.get("q")),
+                        node_id=_string_or_none(input_data.get("node_id")),
+                        platform_os=_string_or_none(input_data.get("platform_os")),
+                        effect=_string_or_none(input_data.get("effect")),
+                        risk=_string_or_none(input_data.get("risk")),
+                        capability_type=(
+                            _string_or_none(input_data.get("capability_type")) or "function"
+                        ),
+                        include_inactive=bool(input_data.get("include_inactive", False)),
+                        limit=_int_or_default(input_data.get("limit"), 20),
+                    )
+                }
+            elif command.function_name == "capability.describe":
+                capability_ref = _string_or_none(
+                    input_data.get("capability_ref")
+                ) or _string_or_none(
+                    input_data.get("capability_id"),
+                )
+                if not capability_ref:
+                    return _runtime_error(command, "invalid_input", "capability_ref is required")
+                output = {
+                    "capability": await capability_describe(
+                        self.db,
+                        capability_ref,
+                        node_id=_string_or_none(input_data.get("node_id")),
+                        include_inactive=bool(input_data.get("include_inactive", False)),
+                    )
+                }
+            elif command.function_name == "artifact.list":
+                artifacts = await list_artifacts(
+                    self.db,
+                    session_id=_string_or_none(input_data.get("session_id"))
+                    or command.session_id,
+                    invocation_id=_string_or_none(input_data.get("invocation_id")),
+                    job_id=_string_or_none(input_data.get("job_id")),
+                    node_id=_string_or_none(input_data.get("node_id")),
+                    artifact_type=_string_or_none(input_data.get("artifact_type")),
+                    limit=_int_or_default(input_data.get("limit"), 20),
+                )
+                output = {"artifacts": [artifact_to_dict(artifact) for artifact in artifacts]}
+            elif command.function_name == "artifact.get":
+                artifact_id = _string_or_none(input_data.get("artifact_id"))
+                if not artifact_id:
+                    return _runtime_error(command, "invalid_input", "artifact_id is required")
+                artifact = await get_artifact(self.db, artifact_id)
+                output = {"artifact": artifact_to_dict(artifact)}
+            elif command.function_name == "artifact.present":
+                artifact_ids = _string_list(input_data.get("artifact_ids"))
+                artifact_id = _string_or_none(input_data.get("artifact_id"))
+                if artifact_id:
+                    artifact_ids = [artifact_id, *artifact_ids]
+                artifact_ids = _dedupe_strings(artifact_ids)
+                if not artifact_ids:
+                    return _runtime_error(
+                        command,
+                        "invalid_input",
+                        "artifact_id or artifact_ids is required",
+                    )
+                if len(artifact_ids) > 10:
+                    return _runtime_error(
+                        command,
+                        "invalid_input",
+                        "artifact.present can show at most 10 artifacts",
+                    )
+                artifacts = [
+                    artifact_to_dict(await get_artifact(self.db, artifact_id))
+                    for artifact_id in artifact_ids
+                ]
+                output = {
+                    "artifacts": artifacts,
+                    "presentation": {
+                        "kind": "artifact_gallery",
+                        "count": len(artifacts),
+                    },
+                }
+            elif command.function_name == "operation.status":
+                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
+                output = await OperationService(self.db).status(operation_id)
+            elif command.function_name == "operation.cancel":
+                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
+                output = await OperationService(self.db).cancel(
+                    operation_id,
+                    reason=_string_or_none(input_data.get("reason")) or "operation_cancelled",
+                )
+            elif command.function_name == "transfer.status":
+                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
+                output = {
+                    "transfer": await TransferApplicationService(self.db).status(transfer_id)
+                }
+            elif command.function_name == "transfer.cancel":
+                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
+                output = {
+                    "transfer": await TransferApplicationService(self.db).cancel(
+                        transfer_id,
+                        reason=_string_or_none(input_data.get("reason"))
+                        or "transfer_cancelled",
+                    )
+                }
+            else:
+                return _runtime_error(command, "unknown_meta_tool", command.function_name)
+        except ValueError as exc:
+            return _runtime_error(command, "not_found", str(exc))
+
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name=command.function_name,
+            target_node_id=command.target_node_id,
+            risk="safe",
+            effect="read",
+            output_data=output,
+        )
+
+    async def _execute_node_job(self, command: RuntimeCommand) -> ExecuteToolResult:
         input_data = dict(command.input_data)
         approval_id = command.approval_id or _string_or_none(input_data.get("approval_id"))
 
@@ -97,9 +374,7 @@ class ToolInvocationApplicationService:
         if resolved is None or not resolved.available:
             if command.allow_unregistered_function and command.target_node_id:
                 resolved = await self._resolve_unregistered_admin_function(command)
-            if resolved is not None and resolved.available:
-                pass
-            else:
+            if resolved is None or not resolved.available:
                 return ExecuteToolResult(
                     status="unavailable",
                     function_name=command.function_name,
@@ -115,15 +390,6 @@ class ToolInvocationApplicationService:
                         else f"No online node has capability {command.function_name!r}"
                     ),
                 )
-
-        if resolved is None:
-            return ExecuteToolResult(
-                status="unavailable",
-                function_name=command.function_name,
-                target_node_id=command.target_node_id,
-                error_code="FUNCTION_NOT_AVAILABLE",
-                error_message=f"No online node has capability {command.function_name!r}",
-            )
 
         if command.dry_run and not approval_id:
             return await self._dry_run(command, resolved, input_data)
@@ -244,6 +510,39 @@ class ToolInvocationApplicationService:
 
         await self.db.commit()
 
+        if _should_create_job_operation(command, resolved):
+            from yequ.services.operation_service import OperationService, wait_handle_for_operation
+
+            operation = await OperationService(self.db).create_for_job(
+                job,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                session_id=command.session_id,
+            )
+            wait_handle = wait_handle_for_operation(operation)
+            return ExecuteToolResult(
+                status="waiting_operation",
+                function_name=command.function_name,
+                target_node_id=resolved.node_id,
+                invocation_id=inv.invocation_id,
+                job_id=job.job_id,
+                risk=resolved.risk,
+                effect=resolved.effect,
+                output_data={
+                    "operation": operation,
+                    "wait_handle": wait_handle,
+                    "job": {
+                        "job_id": job.job_id,
+                        "invocation_id": inv.invocation_id,
+                        "node_id": resolved.node_id,
+                        "function_name": command.function_name,
+                        "status": job.status,
+                    },
+                },
+                operation_id=str(operation["operation_id"]),
+                wait_handle=wait_handle,
+            )
+
         result = ExecuteToolResult(
             status="running" if command.wait_for_result else "created",
             function_name=command.function_name,
@@ -257,289 +556,15 @@ class ToolInvocationApplicationService:
         if not command.wait_for_result:
             return result
 
-        final_status = await self.wait_for_invocation(
+        final_status = await self._wait_for_node_invocation_terminal(
             inv.invocation_id,
             command.deadline,
         )
-        final_result = await self._collect_terminal_result(result, final_status)
-        final_result.execution_plan = admission_plan.to_dict()
-        return final_result
-
-    async def execute_stream(
-        self,
-        command: ExecuteToolCommand,
-    ) -> AsyncIterator[ToolExecutionEvent]:
-        """Execute a command and expose a minimal structured event stream."""
-        initial = await self.execute(command)
-        yield ToolExecutionEvent("tool.execution.result", initial)
-
-    async def _execute_capability_invoke(
-        self,
-        command: ExecuteToolCommand,
-    ) -> ExecuteToolResult:
-        from yequ.services.capability_registry import resolve_capability_invoke_target
-
-        input_data = dict(command.input_data)
-        capability_ref = _string_or_none(input_data.get("capability_ref")) or _string_or_none(
-            input_data.get("capability_id")
-        )
-        source_id = _string_or_none(input_data.get("source_id"))
-        node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
-        tool_input = input_data.get("input")
-        if tool_input is None:
-            tool_input = input_data.get("arguments")
-        if tool_input is None:
-            tool_input = {}
-        if not isinstance(tool_input, dict):
-            return _meta_tool_error(
-                command,
-                "invalid_input",
-                "capability.invoke input must be an object",
-            )
-
-        try:
-            target = await resolve_capability_invoke_target(
-                self.db,
-                capability_ref=capability_ref,
-                source_id=source_id,
-                node_id=node_id,
-            )
-        except ValueError as exc:
-            return _meta_tool_error(command, "capability_source_unresolved", str(exc))
-
-        delegated = ExecuteToolCommand(
-            function_name=target.registered_name,
-            input_data=dict(tool_input),
-            actor_type=command.actor_type,
-            actor_id=command.actor_id,
-            session_id=command.session_id,
-            target_node_id=target.node_id,
-            execution_mode=command.execution_mode,
-            max_depth=command.max_depth,
-            max_steps=command.max_steps,
-            max_total_duration_sec=command.max_total_duration_sec,
-            call_path=list(command.call_path or []) + ["capability.invoke"],
-            approval_id=command.approval_id,
-            dry_run=command.dry_run,
-            wait_for_result=command.wait_for_result,
-            deadline=command.deadline,
-            resource_keys=command.resource_keys,
-            timeout_sec=command.timeout_sec or target.timeout_sec,
-            lease_sec=command.lease_sec,
-            declared_risk=target.risk,
-            declared_effect=target.effect,
-            allow_unregistered_function=False,
-        )
-        result = await self.execute(delegated)
-        return result
-
-    async def _execute_center_meta_tool(
-        self,
-        command: ExecuteToolCommand,
-    ) -> ExecuteToolResult:
-        from yequ.application.transfer import TransferApplicationService, TransferCreateCommand
-        from yequ.services.artifact_service import (
-            artifact_to_dict,
-            get_artifact,
-            list_artifacts,
-        )
-        from yequ.services.capability_registry import (
-            capability_describe,
-            capability_search,
-            node_list,
-            node_status,
-        )
-        from yequ.services.operation_service import OperationService, wait_handle_for_operation
-
-        input_data = dict(command.input_data)
-        try:
-            if command.function_name == "node.list":
-                output = {"nodes": await node_list(self.db)}
-            elif command.function_name == "node.status":
-                node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
-                if not node_id:
-                    return _meta_tool_error(command, "invalid_input", "node_id is required")
-                output = {"node": await node_status(self.db, node_id)}
-            elif command.function_name == "capability.search":
-                output = {
-                    "capabilities": await capability_search(
-                        self.db,
-                        query=_string_or_none(input_data.get("query"))
-                        or _string_or_none(input_data.get("q")),
-                        node_id=_string_or_none(input_data.get("node_id")),
-                        platform_os=_string_or_none(input_data.get("platform_os")),
-                        effect=_string_or_none(input_data.get("effect")),
-                        risk=_string_or_none(input_data.get("risk")),
-                        capability_type=(
-                            _string_or_none(input_data.get("capability_type")) or "function"
-                        ),
-                        include_inactive=bool(input_data.get("include_inactive", False)),
-                        limit=_int_or_default(input_data.get("limit"), 20),
-                    )
-                }
-            elif command.function_name == "capability.describe":
-                capability_ref = _string_or_none(
-                    input_data.get("capability_ref")
-                ) or _string_or_none(
-                    input_data.get("capability_id"),
-                )
-                if not capability_ref:
-                    return _meta_tool_error(
-                        command,
-                        "invalid_input",
-                        "capability_ref is required",
-                    )
-                output = {
-                    "capability": await capability_describe(
-                        self.db,
-                        capability_ref,
-                        node_id=_string_or_none(input_data.get("node_id")),
-                        include_inactive=bool(input_data.get("include_inactive", False)),
-                    )
-                }
-            elif command.function_name == "artifact.list":
-                artifacts = await list_artifacts(
-                    self.db,
-                    session_id=_string_or_none(input_data.get("session_id"))
-                    or command.session_id,
-                    invocation_id=_string_or_none(input_data.get("invocation_id")),
-                    job_id=_string_or_none(input_data.get("job_id")),
-                    node_id=_string_or_none(input_data.get("node_id")),
-                    artifact_type=_string_or_none(input_data.get("artifact_type")),
-                    limit=_int_or_default(input_data.get("limit"), 20),
-                )
-                output = {"artifacts": [artifact_to_dict(artifact) for artifact in artifacts]}
-            elif command.function_name == "artifact.get":
-                artifact_id = _string_or_none(input_data.get("artifact_id"))
-                if not artifact_id:
-                    return _meta_tool_error(
-                        command,
-                        "invalid_input",
-                        "artifact_id is required",
-                    )
-                artifact = await get_artifact(self.db, artifact_id)
-                output = {"artifact": artifact_to_dict(artifact)}
-            elif command.function_name == "artifact.present":
-                artifact_ids = _string_list(input_data.get("artifact_ids"))
-                artifact_id = _string_or_none(input_data.get("artifact_id"))
-                if artifact_id:
-                    artifact_ids = [artifact_id, *artifact_ids]
-                artifact_ids = _dedupe_strings(artifact_ids)
-                if not artifact_ids:
-                    return _meta_tool_error(
-                        command,
-                        "invalid_input",
-                        "artifact_id or artifact_ids is required",
-                    )
-                if len(artifact_ids) > 10:
-                    return _meta_tool_error(
-                        command,
-                        "invalid_input",
-                        "artifact.present can show at most 10 artifacts",
-                    )
-                artifacts = [
-                    artifact_to_dict(await get_artifact(self.db, artifact_id))
-                    for artifact_id in artifact_ids
-                ]
-                output = {
-                    "artifacts": artifacts,
-                    "presentation": {
-                        "kind": "artifact_gallery",
-                        "count": len(artifacts),
-                    },
-                }
-            elif command.function_name == "transfer.create":
-                transfer = await TransferApplicationService(self.db).create(
-                    TransferCreateCommand(
-                        source_node_id=_required_string(
-                            input_data.get("source_node_id"),
-                            "source_node_id",
-                        ),
-                        target_node_id=_required_string(
-                            input_data.get("target_node_id"),
-                            "target_node_id",
-                        ),
-                        source_path=_required_string(
-                            input_data.get("source_path"),
-                            "source_path",
-                        ),
-                        target_output_dir=_string_or_none(input_data.get("target_output_dir")),
-                        target_path=_string_or_none(input_data.get("target_path")),
-                        code=_string_or_none(input_data.get("code")),
-                        relay_url=_string_or_none(input_data.get("relay_url")),
-                        resume_mode=_string_or_none(input_data.get("resume_mode")) or "resume",
-                        timeout_sec=_int_or_default(
-                            input_data.get("timeout_sec"),
-                            3600,
-                        ),
-                        expected_sha256=_string_or_none(input_data.get("expected_sha256")),
-                        actor_type=command.actor_type,
-                        actor_id=command.actor_id,
-                        session_id=command.session_id,
-                        execution_mode=command.execution_mode,
-                    )
-                )
-                operation = await OperationService(self.db).create_for_transfer(
-                    transfer,
-                    actor_type=command.actor_type,
-                    actor_id=command.actor_id,
-                    session_id=command.session_id,
-                )
-                wait_handle = wait_handle_for_operation(operation)
-                return ExecuteToolResult(
-                    status="waiting_operation",
-                    function_name=command.function_name,
-                    target_node_id=command.target_node_id,
-                    risk="maintenance",
-                    effect="external",
-                    output_data={
-                        "transfer": transfer,
-                        "operation": operation,
-                        "wait_handle": wait_handle,
-                    },
-                    operation_id=str(operation["operation_id"]),
-                    wait_handle=wait_handle,
-                )
-            elif command.function_name == "operation.status":
-                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
-                output = await OperationService(self.db).status(operation_id)
-            elif command.function_name == "operation.cancel":
-                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
-                output = await OperationService(self.db).cancel(
-                    operation_id,
-                    reason=_string_or_none(input_data.get("reason")) or "operation_cancelled",
-                )
-            elif command.function_name == "transfer.status":
-                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
-                output = {
-                    "transfer": await TransferApplicationService(self.db).status(transfer_id)
-                }
-            elif command.function_name == "transfer.cancel":
-                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
-                output = {
-                    "transfer": await TransferApplicationService(self.db).cancel(
-                        transfer_id,
-                        reason=_string_or_none(input_data.get("reason"))
-                        or "transfer_cancelled",
-                    )
-                }
-            else:
-                return _meta_tool_error(command, "unknown_meta_tool", command.function_name)
-        except ValueError as exc:
-            return _meta_tool_error(command, "not_found", str(exc))
-
-        return ExecuteToolResult(
-            status="succeeded",
-            function_name=command.function_name,
-            target_node_id=command.target_node_id,
-            risk="safe",
-            effect="read",
-            output_data=output,
-        )
+        return await self._collect_terminal_result(result, final_status)
 
     async def _resolve_unregistered_admin_function(
         self,
-        command: ExecuteToolCommand,
+        command: RuntimeCommand,
     ) -> ResolvedCapability:
         node_result = await self.db.execute(
             select(Node).where(Node.node_id == command.target_node_id)
@@ -576,12 +601,11 @@ class ToolInvocationApplicationService:
         )
 
     @staticmethod
-    async def wait_for_invocation(
+    async def _wait_for_node_invocation_terminal(
         invocation_id: str,
         deadline: datetime | None,
         poll_interval: float = 0.5,
     ) -> str:
-        """Wait for an Invocation to reach a terminal status."""
         if deadline is None:
             return "running"
 
@@ -607,7 +631,7 @@ class ToolInvocationApplicationService:
 
     async def _create_approval_result(
         self,
-        command: ExecuteToolCommand,
+        command: RuntimeCommand,
         resolved: ResolvedCapability,
         input_data: dict[str, object],
     ) -> ExecuteToolResult:
@@ -642,6 +666,15 @@ class ToolInvocationApplicationService:
             resource_key_template=resource_key_template,
             invocation_id=inv.invocation_id,
         )
+        from yequ.services.operation_service import OperationService, wait_handle_for_operation
+
+        operation = await OperationService(self.db).create_for_approval(
+            approval,
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+        )
+        wait_handle = wait_handle_for_operation(operation)
 
         details = ApprovalRequiredResult(
             approval_id=approval.approval_id,
@@ -661,11 +694,18 @@ class ToolInvocationApplicationService:
             effect=resolved.effect,
             error_code="approval_required",
             error_message="Write operation requires approval",
+            output_data={
+                "approval_id": approval.approval_id,
+                "operation": operation,
+                "wait_handle": wait_handle,
+            },
+            operation_id=str(operation["operation_id"]),
+            wait_handle=wait_handle,
         )
 
     async def _dry_run(
         self,
-        command: ExecuteToolCommand,
+        command: RuntimeCommand,
         resolved: ResolvedCapability,
         input_data: dict[str, object],
     ) -> ExecuteToolResult:
@@ -749,7 +789,7 @@ class ToolInvocationApplicationService:
 
     async def _write_resource_conflict(
         self,
-        command: ExecuteToolCommand,
+        command: RuntimeCommand,
         *,
         node_id: str,
         invocation_id: str,
@@ -767,6 +807,12 @@ class ToolInvocationApplicationService:
         )
         await add_timeline_event(self.db, event)
         await self.db.commit()
+
+
+def _as_runtime_command(command: RuntimeCommand | ExecuteToolCommand) -> RuntimeCommand:
+    if isinstance(command, RuntimeCommand):
+        return command
+    return RuntimeCommand.from_execute_tool_command(command)
 
 
 def _string_or_none(value: object) -> str | None:
@@ -806,8 +852,8 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return unique
 
 
-def _meta_tool_error(
-    command: ExecuteToolCommand,
+def _runtime_error(
+    command: RuntimeCommand,
     error_code: str,
     error_message: str,
 ) -> ExecuteToolResult:
@@ -823,7 +869,7 @@ def _meta_tool_error(
 
 
 def _resource_keys(
-    command: ExecuteToolCommand,
+    command: RuntimeCommand,
     resolved: ResolvedCapability,
     approval: object,
 ) -> list[str]:
@@ -833,3 +879,17 @@ def _resource_keys(
     if command.resource_keys is not None:
         return list(command.resource_keys)
     return list(resolved.resource_keys or [])
+
+
+def _should_create_job_operation(
+    command: RuntimeCommand,
+    resolved: ResolvedCapability,
+) -> bool:
+    if command.suppress_operation or command.wait_for_result:
+        return False
+    timeout_sec = command.timeout_sec or resolved.timeout_sec or 30
+    if timeout_sec > 60:
+        return True
+    if resolved.effect in {"external", "write"} and timeout_sec > 30:
+        return True
+    return resolved.conflict_policy == "serialize" and timeout_sec > 30

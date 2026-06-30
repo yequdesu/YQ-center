@@ -18,11 +18,12 @@ def _register_fake_provider():
     """Register FakeAgentProvider for plan endpoint so it doesn't 404."""
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from yequ.api.routes.agent import _default_functions, register_provider
+    from tests.fakes.agent_functions import default_agent_functions
+    from yequ.api.routes.agent import register_provider
 
     # Clear any existing provider and create fresh
     provider = FakeAgentProvider(provider_name="fake")
-    for func in _default_functions():
+    for func in default_agent_functions():
         provider.add_function(func)
     # Default is readonly_check
     provider.set_default_result(

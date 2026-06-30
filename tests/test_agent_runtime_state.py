@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from yequ.agent.runtime_state import (
+    AgentRunGraph,
     AgentRuntimeController,
     AgentRuntimeFailure,
     AgentRuntimeIteration,
     AgentRuntimeLimits,
     AgentToolObservationCollector,
-    status_for_stream_event,
 )
+from yequ.runtime.agent_status import status_for_stream_event
 
 
 def test_runtime_rejects_depth_exceeded():
@@ -89,6 +90,32 @@ def test_runtime_keeps_tool_output_in_continue_state():
     assert decision.kind == "continue"
     assert decision.status == "validating_tools"
     assert runtime.status == "validating_tools"
+
+
+def test_agent_run_graph_owns_waiting_and_failure_transitions():
+    graph = AgentRunGraph(AgentRuntimeController())
+
+    iteration = graph.begin_iteration()
+    assert isinstance(iteration, AgentRuntimeIteration)
+    assert graph.loop_state == "model_running"
+
+    decision = graph.decide_provider_output(
+        assistant_text="",
+        tool_calls=[{"name": "transfer.create"}],
+    )
+    assert decision.kind == "continue"
+    assert graph.loop_state == "validating_tools"
+
+    wait = graph.observe_tool_results(
+        [{"status": "waiting_operation", "operation_id": "op_test"}]
+    )
+    assert wait is not None
+    assert wait.status == "waiting_operation"
+    assert graph.loop_state == "waiting_operation"
+
+    failure = graph.missing_final_answer()
+    assert failure.error_code == "agent_protocol_error"
+    assert graph.loop_state == "failed"
 
 
 def test_runtime_waiting_approval_is_explicit_nonterminal_pause():

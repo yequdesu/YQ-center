@@ -11,15 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import yequ.db as yequ_db
-from yequ.agent.agent_service import agent_invoke, agent_plan, create_agent_session
+from yequ.agent.agent_service import agent_plan, create_agent_session
 from yequ.agent.agent_stream import agent_invoke_stream, agent_plan_stream
-from yequ.agent.context_engine import JsonDict, build_capability_context
 from yequ.agent.fake_provider import FakeAgentProvider
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token
 from yequ.models.capability import Capability
 from yequ.models.node import Node
+from yequ.runtime.capability_context import JsonDict, build_capability_context
 from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -279,201 +279,6 @@ def _center_meta_functions() -> list[AgentFunction]:
     ]
 
 
-def _default_functions() -> list[AgentFunction]:
-    """L1 + L2 functions available to the Agent.
-
-    L2 write functions are included for planning/approval workflow.
-    They will require approval before execution.
-    """
-    return [
-        AgentFunction(
-            name="system.metrics.snapshot",
-            description=(
-                "Get current CPU usage (%), memory usage (%), and disk usage (%) "
-                "for the main drive. Use this when asked about system performance, "
-                "load, or resource usage."
-            ),
-            input_schema={"type": "object", "properties": {}},
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.info",
-            description=(
-                "Get basic system information: OS name and version, hostname, "
-                "uptime in seconds, and current user. Use this when asked about "
-                "what machine this is, its OS, or how long it has been running."
-            ),
-            input_schema={"type": "object", "properties": {}},
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.service.status",
-            description=(
-                "Get the current status, startup mode, and display name of a named "
-                "service on a node. Requires the exact service identifier in 'name'. "
-                "Use this when asked about a specific service."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Service identifier as registered on the target node",
-                    }
-                },
-                "required": ["name"],
-            },
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.processes.list",
-            description=(
-                "List running processes with name, PID, memory usage, and CPU time. "
-                "Returns up to 50 processes sorted by memory. Use this when asked "
-                "about running programs, what processes are active, or checking for "
-                "specific processes."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {"limit": {"type": "integer", "default": 50, "maximum": 100}},
-            },
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.disk.detail",
-            description=(
-                "Get detailed disk information for all drives: total capacity (GB), "
-                "used space (GB), free space (GB), usage percentage, and filesystem "
-                "type. Use this when asked about disk space, storage capacity, or "
-                "drive details."
-            ),
-            input_schema={"type": "object", "properties": {}},
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.network.routes",
-            description=(
-                "Get the node network route table: destination network, netmask, "
-                "gateway, interface IP, metric, and route type for each entry. Use "
-                "this when asked about routing table, network routes, next hop, "
-                "interface routes, or how network traffic is routed."
-            ),
-            input_schema={"type": "object", "properties": {}},
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="system.eventlog.query",
-            description=(
-                "Query recent node event log entries. Returns event count, severity "
-                "levels, and recent event summaries. Accepts optional source and "
-                "limit parameters. Use this when asked about system errors, recent "
-                "warnings, or what happened on the machine."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "source": {"type": "string", "enum": ["Application", "System"]},
-                    "limit": {"type": "integer", "default": 50, "maximum": 100},
-                },
-            },
-            risk="safe",
-            effect="read",
-            timeout_sec=10,
-        ),
-        # L2 maintenance write functions — require approval
-        AgentFunction(
-            name="system.service.ensure_running",
-            description=(
-                "Ensure a named service is running. If stopped, start it. Requires "
-                "'name' parameter. Requires approval for write operations."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Service identifier as registered on the target node",
-                    }
-                },
-                "required": ["name"],
-            },
-            risk="maintenance",
-            effect="write",
-            timeout_sec=30,
-        ),
-        AgentFunction(
-            name="system.service.restart",
-            description="Restart a named service. Requires 'name' parameter. Requires approval.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Service identifier as registered on the target node",
-                    }
-                },
-                "required": ["name"],
-            },
-            risk="maintenance",
-            effect="write",
-            timeout_sec=30,
-        ),
-        # Test failure injection functions — for stable L2-C remote verification
-        AgentFunction(
-            name="test.maintenance.repair_fail",
-            description=(
-                "TEST ONLY: Simulates a failed repair step. Always fails with "
-                "error_code=TEST_REPAIR_FAILED. Use to verify rollback_recommended "
-                "flow."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Target service name for context",
-                    }
-                },
-            },
-            risk="maintenance",
-            effect="write",
-            timeout_sec=5,
-        ),
-        AgentFunction(
-            name="test.maintenance.verify_fail",
-            description=(
-                "TEST ONLY: Simulates a failed verify step after a repair. Always "
-                "fails with error_code=TEST_VERIFY_FAILED. Use to verify "
-                "rollback_recommended flow."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Target service name for context",
-                    }
-                },
-            },
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-    ]
-
-
 # -- Request/Response models --
 
 
@@ -519,6 +324,27 @@ class ResumeOperationRequest(BaseModel):
     max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
 
 
+class ResumeAgentRunRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    provider_name: str = Field(default="deepseek")
+    run_id: str = Field(..., min_length=1)
+    target_node_id: str | None = Field(default=None)
+    execution_mode: str = Field(default="auto")
+    max_depth: int = Field(default=5, ge=1, le=20)
+    max_steps: int = Field(default=20, ge=1, le=100)
+    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+
+
+class ResumeLastAgentRunRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    provider_name: str = Field(default="deepseek")
+    target_node_id: str | None = Field(default=None)
+    execution_mode: str = Field(default="auto")
+    max_depth: int = Field(default=5, ge=1, le=20)
+    max_steps: int = Field(default=20, ge=1, le=100)
+    max_total_duration_sec: int = Field(default=300, ge=1, le=3600)
+
+
 # -- Endpoints --
 
 
@@ -528,8 +354,6 @@ async def _resolve_provider(provider_name: str) -> AgentProvider:
         return provider
     if provider_name == "fake":
         provider = FakeAgentProvider()
-        for func in _default_functions():
-            provider.add_function(func)
         register_provider(provider)
         return provider
     if provider_name == "deepseek":
@@ -555,8 +379,7 @@ async def _available_functions(
     remain in Center's registry and are reached through capability.search,
     capability.describe, and capability.invoke.
 
-    Test mode keeps legacy/default tools so older isolated provider tests can
-    exercise planning/streaming without provisioning a Node fixture.
+    Tests that need static tools must register a fake provider explicitly.
     """
     from sqlalchemy.orm import joinedload
 
@@ -568,8 +391,6 @@ async def _available_functions(
     if not settings.test_mode:
         return available
 
-    if settings.test_mode:
-        available.extend(_default_functions())
     existing = {f.name: f for f in available}
 
     cap_result = await db.execute(
@@ -817,49 +638,11 @@ async def invoke_agent_endpoint(
     body: InvokeAgentRequest,
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> AgentInvokeResponse:
-    """Invoke an Agent Provider with a prompt.
-
-    The Agent reasons about the prompt and returns function_calls.
-    Each call is checked against:
-    - Policy (execution mode + risk level)
-    - Call graph constraints (depth, steps, duration, loops)
-
-    Provider "fake" is auto-created if not registered.
-    """
-    provider = await _resolve_provider(body.provider_name)
-    async with yequ_db.async_session_factory() as db:
-        available = await _available_functions(db, target_node_id=body.target_node_id)
-        capability_context = await build_capability_context(
-            db,
-            available_functions=available,
-            target_node_id=body.target_node_id,
-        )
-
-        resp = await agent_invoke(
-            db,
-            provider,
-            session_id=body.session_id,
-            prompt=body.prompt,
-            available_functions=available,
-            call_path=body.call_path,
-            max_depth=body.max_depth,
-            max_steps=body.max_steps,
-            max_total_duration_sec=body.max_total_duration_sec,
-            step_count=body.step_count,
-            execution_mode=body.execution_mode,
-            target_node_id=body.target_node_id,
-            context={"capability_context": capability_context},
-        )
-
-    resp.metadata["prompt_context"] = _agent_debug_metadata(
-        provider,
-        available_functions=available,
-        target_node_id=body.target_node_id,
-        execution_mode=body.execution_mode,
-        capability_context=capability_context,
+    """Reject the removed non-streaming Agent path."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="/agent/invoke has been removed; use /agent/invoke/stream",
     )
-
-    return resp
 
 
 @router.post("/invoke/stream")
@@ -985,6 +768,132 @@ async def resume_operation_stream_endpoint(
     )
 
 
+@router.post("/resume-run/stream")
+async def resume_agent_run_stream_endpoint(
+    body: ResumeAgentRunRequest,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> StreamingResponse:
+    provider = await _resolve_provider(body.provider_name)
+    async with yequ_db.async_session_factory() as db:
+        from yequ.runtime.agent_run_service import get_agent_run_projection
+
+        run_projection = await get_agent_run_projection(db, body.run_id)
+        operation_observation = await _operation_observation_from_run_projection(
+            db, run_projection
+        )
+        available = await _available_functions(db, target_node_id=body.target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=body.target_node_id,
+        )
+
+    prompt = _agent_run_resume_prompt(
+        run_projection,
+        operation_observation=operation_observation,
+    )
+    return _sse_response(
+        agent_invoke_stream(
+            provider,
+            session_id=body.session_id,
+            prompt=prompt,
+            target_node_id=body.target_node_id,
+            suppress_user_message=True,
+            available_functions=available,
+            capability_context=capability_context,
+            call_path=[],
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+            step_count=0,
+            execution_mode=body.execution_mode,
+        ),
+        turn_context={
+            "session_id": body.session_id,
+            "prompt": prompt,
+            "provider_name": provider.provider_name(),
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "metadata": {
+                "suppress_user_message": True,
+                "resume_run_id": body.run_id,
+                "run_checkpoint": run_projection,
+                "operation_observation": operation_observation,
+                "prompt_context": _agent_debug_metadata(
+                    provider,
+                    available_functions=available,
+                    target_node_id=body.target_node_id,
+                    execution_mode=body.execution_mode,
+                    capability_context=capability_context,
+                ),
+            },
+        },
+    )
+
+
+@router.post("/resume-last-run/stream")
+async def resume_last_agent_run_stream_endpoint(
+    body: ResumeLastAgentRunRequest,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> StreamingResponse:
+    provider = await _resolve_provider(body.provider_name)
+    async with yequ_db.async_session_factory() as db:
+        from yequ.runtime.agent_run_service import get_last_resumable_agent_run
+
+        run_projection = await get_last_resumable_agent_run(db, session_id=body.session_id)
+        operation_observation = await _operation_observation_from_run_projection(
+            db, run_projection
+        )
+        available = await _available_functions(db, target_node_id=body.target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=body.target_node_id,
+        )
+
+    prompt = _agent_run_resume_prompt(
+        run_projection,
+        operation_observation=operation_observation,
+    )
+    return _sse_response(
+        agent_invoke_stream(
+            provider,
+            session_id=body.session_id,
+            prompt=prompt,
+            target_node_id=body.target_node_id,
+            suppress_user_message=True,
+            available_functions=available,
+            capability_context=capability_context,
+            call_path=[],
+            max_depth=body.max_depth,
+            max_steps=body.max_steps,
+            max_total_duration_sec=body.max_total_duration_sec,
+            step_count=0,
+            execution_mode=body.execution_mode,
+        ),
+        turn_context={
+            "session_id": body.session_id,
+            "prompt": prompt,
+            "provider_name": provider.provider_name(),
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "metadata": {
+                "suppress_user_message": True,
+                "resume_run_id": run_projection.get("run_id"),
+                "run_checkpoint": run_projection,
+                "operation_observation": operation_observation,
+                "prompt_context": _agent_debug_metadata(
+                    provider,
+                    available_functions=available,
+                    target_node_id=body.target_node_id,
+                    execution_mode=body.execution_mode,
+                    capability_context=capability_context,
+                ),
+            },
+        },
+    )
+
+
 async def _record_operation_resume_checkpoint(
     db: AsyncSession,
     *,
@@ -1029,6 +938,41 @@ async def _record_operation_resume_checkpoint(
         )
     )
     await db.commit()
+
+
+async def _operation_observation_from_run_projection(
+    db: AsyncSession,
+    run_projection: dict[str, object],
+) -> dict[str, object] | None:
+    metadata = run_projection.get("metadata")
+    waiting = metadata.get("waiting") if isinstance(metadata, dict) else None
+    operation_id = waiting.get("operation_id") if isinstance(waiting, dict) else None
+    if not operation_id:
+        return None
+    from yequ.services.operation_service import OperationService
+
+    return await OperationService(db).status(str(operation_id))
+
+
+def _agent_run_resume_prompt(
+    run_projection: dict[str, object],
+    *,
+    operation_observation: dict[str, object] | None,
+) -> str:
+    checkpoint = {
+        "agent_run": run_projection,
+        "operation_observation": operation_observation,
+    }
+    return (
+        "INFO: Center AgentRun checkpoint follows. Continue from this structured "
+        "checkpoint instead of restarting the user's original request. Do not "
+        "repeat tool calls whose checkpoint status is succeeded. If the run was "
+        "waiting on an operation, use the supplied operation_observation facts. "
+        "If the previous run failed before any durable tool result, explain the "
+        "failure facts and continue only with actions that are still necessary. "
+        "Do not invent fields that are not present.\n"
+        f"{json.dumps(checkpoint, ensure_ascii=False)}"
+    )
 
 
 @router.post("/plan")
@@ -1101,3 +1045,5 @@ async def agent_plan_stream_endpoint(
             },
         },
     )
+
+

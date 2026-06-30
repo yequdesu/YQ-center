@@ -10,7 +10,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
-from yequ.api.routes.admin import router as admin_router
 from yequ.api.routes.admin_activity import router as admin_activity_router
 from yequ.api.routes.admin_approvals import router as admin_approvals_router
 from yequ.api.routes.admin_artifacts import router as admin_artifacts_router
@@ -132,6 +131,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from yequ.services.approval_service import _scan_expired_approvals
     from yequ.services.message_dedup import get_yqp_message_cleanup_scanner
     from yequ.services.node_liveness_scanner import get_liveness_scanner
+    from yequ.services.operation_scanner import get_operation_consistency_scanner
     from yequ.services.signal_state_scanner import get_signal_state_scanner
     from yequ.services.timeline_writer import get_timeline_writer
     from yequ.services.timeout_scanner import get_scanner
@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     liveness_scanner = get_liveness_scanner()
     signal_state_scanner = get_signal_state_scanner()
     yqp_message_cleanup_scanner = get_yqp_message_cleanup_scanner()
+    operation_consistency_scanner = get_operation_consistency_scanner()
 
     if not settings.test_mode:
         await scanner.start()
@@ -148,6 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await liveness_scanner.start()
         await signal_state_scanner.start()
         await yqp_message_cleanup_scanner.start()
+        await operation_consistency_scanner.start()
         approval_scanner_task = asyncio.create_task(
             _scan_expired_approvals(), name="approval-expiry-scanner"
         )
@@ -159,6 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with suppress(asyncio.CancelledError):
             await approval_scanner_task
         await yqp_message_cleanup_scanner.stop()
+        await operation_consistency_scanner.stop()
         await signal_state_scanner.stop()
         await liveness_scanner.stop()
         await scanner.stop()
@@ -211,7 +214,6 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(agent_router)
-    app.include_router(admin_router)
     app.include_router(admin_activity_router)
     app.include_router(admin_approvals_router)
     app.include_router(admin_artifacts_router)

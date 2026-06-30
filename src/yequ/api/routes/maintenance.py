@@ -20,6 +20,7 @@ from yequ.models.maintenance_plan import (
     MaintenanceStep,
 )
 from yequ.models.node import Node
+from yequ.models.operation import Operation
 from yequ.models.timeline import TimelineEvent
 from yequ.services.maintenance_executor import execute_plan_run, finalize_run
 from yequ.services.maintenance_service import (
@@ -28,6 +29,7 @@ from yequ.services.maintenance_service import (
     get_steps,
     run_plan,
 )
+from yequ.services.operation_service import OperationService
 from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/admin/maintenance", tags=["maintenance"])
@@ -184,8 +186,16 @@ async def run_plan_endpoint(
         )
 
     run = await run_plan(db, plan)
+    operation = await OperationService(db).create_for_maintenance(
+        run,
+        plan,
+        actor_type="admin",
+        actor_id=plan.actor_id,
+        session_id=plan.session_id,
+    )
     run = await execute_plan_run(db, plan, run, approval_id=approval_id, dry_run=dry_run)
     run = await finalize_run(db, plan, run)
+    operation_status = await OperationService(db).status(str(operation["operation_id"]))
 
     steps_result = await db.execute(
         select(MaintenanceStep)
@@ -202,6 +212,15 @@ async def run_plan_endpoint(
         "started_at": run.started_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "steps": [_step_dict(s) for s in steps],
+        "operation": operation_status["operation"],
+        "wait_handle": {
+            "type": "operation",
+            "operation_id": operation_status["operation"]["operation_id"],
+            "kind": operation_status["operation"]["kind"],
+            "status": operation_status["operation"]["status"],
+            "resume_policy": operation_status["operation"].get("resume_policy") or "manual",
+            "cancel_supported": bool(operation_status["operation"].get("cancel_supported")),
+        },
     }
 
 
@@ -238,7 +257,7 @@ async def resume_run_endpoint(
     approval = approval_result.scalar_one_or_none()
     if approval is None:
         raise HTTPException(404, f"Approval {approval_id!r} not found")
-    if approval.status not in ("approved", "consumed"):
+    if approval.status != "approved":
         raise HTTPException(409, f"Approval {approval_id!r} is {approval.status}")
 
     if run.current_step_id:
@@ -261,7 +280,7 @@ async def resume_run_endpoint(
     run = await execute_plan_run(db, plan, run, approval_id=approval_id)
     run = await finalize_run(db, plan, run)
     steps = await get_steps(db, plan.plan_id)
-    return {
+    data = {
         "run_id": run.run_id,
         "plan_id": run.plan_id,
         "status": run.status,
@@ -270,6 +289,10 @@ async def resume_run_endpoint(
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "steps": [_step_dict(s) for s in steps],
     }
+    operation_status = await _operation_status_for_ref(db, "maintenance_run", run.run_id)
+    if operation_status is not None:
+        data["operation"] = operation_status["operation"]
+    return data
 
 
 @router.post("/runs/{run_id}/reject")
@@ -350,7 +373,11 @@ async def reject_run_endpoint(
         ),
     )
     await db.commit()
-    return _run_dict(run)
+    data = _run_dict(run)
+    operation_status = await _operation_status_for_ref(db, "maintenance_run", run.run_id)
+    if operation_status is not None:
+        data["operation"] = operation_status["operation"]
+    return data
 
 
 @router.get("/runs/{run_id}")
@@ -365,6 +392,9 @@ async def get_run(
         raise HTTPException(404)
     data = _run_dict(run)
     data["steps"] = [_step_dict(s) for s in (await get_steps(db, run.plan_id))]
+    operation_status = await _operation_status_for_ref(db, "maintenance_run", run.run_id)
+    if operation_status is not None:
+        data["operation"] = operation_status["operation"]
 
     # Build artifact summary
     art_result = await db.execute(
@@ -589,3 +619,20 @@ def _artifact_dict(a: MaintenanceArtifact) -> JsonObject:
         "data": a.data,
         "created_at": a.created_at.isoformat(),
     }
+
+
+async def _operation_status_for_ref(
+    db: AsyncSession,
+    ref_type: str,
+    ref_id: str,
+) -> dict[str, object] | None:
+    result = await db.execute(
+        select(Operation).where(
+            Operation.ref_type == ref_type,
+            Operation.ref_id == ref_id,
+        )
+    )
+    operation = result.scalar_one_or_none()
+    if operation is None:
+        return None
+    return await OperationService(db).status(operation.operation_id)

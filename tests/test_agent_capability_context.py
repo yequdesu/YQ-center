@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from yequ.agent.context_engine import (
-    build_capability_context,
-    render_capability_context_prompt,
-)
 from yequ.api.routes.agent import _available_functions
 from yequ.models.capability import Capability
 from yequ.models.node import Node
+from yequ.runtime.capability_context import (
+    build_capability_context,
+    render_capability_context_prompt,
+)
 from yequ.services.node_auth import hash_token
 
 
@@ -126,3 +126,4 @@ async def _add_node_capability(
             is_active=True,
         )
     )
+

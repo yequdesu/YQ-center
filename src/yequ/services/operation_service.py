@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import secrets
 from datetime import UTC, datetime
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.models.approval import ApprovalRequest
+from yequ.models.job import Job
+from yequ.models.maintenance_plan import MaintenancePlan, MaintenanceRun
 from yequ.models.operation import Operation, OperationEvent
 from yequ.models.transfer import TransferSession
+from yequ.runtime.operations import OperationHandlerRegistry
+from yequ.runtime.operations.approval import approval_title, operation_status_from_approval
+from yequ.runtime.operations.job import job_title, operation_status_from_job
+from yequ.runtime.operations.maintenance import maintenance_title, operation_status_from_maintenance
+from yequ.runtime.operations.transfer import operation_status_from_transfer, transfer_title
 
 TERMINAL_OPERATION_STATUSES = {"succeeded", "failed", "cancelled", "timeout"}
 
@@ -41,7 +48,7 @@ class OperationService:
         if existing is not None:
             return self.operation_dict(existing)
 
-        status = _operation_status_from_transfer(
+        status = operation_status_from_transfer(
             transfer.status if isinstance(transfer, TransferSession) else transfer.get("status")
         )
         now = datetime.now(UTC)
@@ -54,7 +61,7 @@ class OperationService:
             actor_type=actor_type,
             actor_id=actor_id,
             session_id=session_id,
-            title=_transfer_title(transfer),
+            title=transfer_title(transfer),
             wait_policy="manual",
             resume_policy="manual",
             cancel_supported=True,
@@ -73,16 +80,151 @@ class OperationService:
         await self.db.commit()
         return result
 
+    async def create_for_job(
+        self,
+        job: Job,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, object]:
+        job_id = str(getattr(job, "job_id", "") or "")
+        if not job_id:
+            raise ValueError("job_id is required")
+
+        existing = await self._find_by_ref("job", job_id)
+        if existing is not None:
+            return self.operation_dict(existing)
+
+        status = operation_status_from_job(str(getattr(job, "status", "queued") or "queued"))
+        now = datetime.now(UTC)
+        operation = Operation(
+            operation_id=f"op_{secrets.token_hex(8)}",
+            kind="job",
+            status=status,
+            ref_type="job",
+            ref_id=job_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            session_id=session_id,
+            title=job_title(job),
+            wait_policy="manual",
+            resume_policy="manual",
+            cancel_supported=True,
+            started_at=now,
+            completed_at=now if status in TERMINAL_OPERATION_STATUSES else None,
+            metadata_json={"created_by": "job_execution"},
+        )
+        self.db.add(operation)
+        await self.db.flush()
+        await self._append_event(
+            operation,
+            "operation.created",
+            {"ref_type": operation.ref_type, "ref_id": operation.ref_id},
+        )
+        result = self.operation_dict(operation)
+        await self.db.commit()
+        return result
+
+    async def create_for_approval(
+        self,
+        approval: ApprovalRequest,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, object]:
+        existing = await self._find_by_ref("approval_request", approval.approval_id)
+        if existing is not None:
+            return self.operation_dict(existing)
+
+        status = operation_status_from_approval(approval.status)
+        now = datetime.now(UTC)
+        operation = Operation(
+            operation_id=f"op_{secrets.token_hex(8)}",
+            kind="approval_wait",
+            status=status,
+            ref_type="approval_request",
+            ref_id=approval.approval_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            session_id=session_id,
+            title=approval_title(approval),
+            wait_policy="manual",
+            resume_policy="manual",
+            cancel_supported=True,
+            started_at=now,
+            completed_at=now if status in TERMINAL_OPERATION_STATUSES else None,
+            metadata_json={"created_by": "approval_gate"},
+        )
+        self.db.add(operation)
+        await self.db.flush()
+        await self._append_event(
+            operation,
+            "operation.created",
+            {"ref_type": operation.ref_type, "ref_id": operation.ref_id},
+        )
+        result = self.operation_dict(operation)
+        await self.db.commit()
+        return result
+
+    async def create_for_maintenance(
+        self,
+        run: MaintenanceRun,
+        plan: MaintenancePlan,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, object]:
+        existing = await self._find_by_ref("maintenance_run", run.run_id)
+        if existing is not None:
+            return self.operation_dict(existing)
+
+        status = operation_status_from_maintenance(run.status)
+        now = datetime.now(UTC)
+        operation = Operation(
+            operation_id=f"op_{secrets.token_hex(8)}",
+            kind="maintenance",
+            status=status,
+            ref_type="maintenance_run",
+            ref_id=run.run_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            session_id=session_id,
+            title=maintenance_title(run, plan),
+            wait_policy="manual",
+            resume_policy="manual",
+            cancel_supported=True,
+            started_at=now,
+            completed_at=now if status in TERMINAL_OPERATION_STATUSES else None,
+            metadata_json={"created_by": "maintenance.run"},
+        )
+        self.db.add(operation)
+        await self.db.flush()
+        await self._append_event(
+            operation,
+            "operation.created",
+            {"ref_type": operation.ref_type, "ref_id": operation.ref_id},
+        )
+        result = self.operation_dict(operation)
+        await self.db.commit()
+        return result
+
     async def status(self, operation_id: str) -> dict[str, object]:
         operation = await self._get(operation_id)
-        ref: dict[str, object] = {}
-        if operation.kind == "transfer" and operation.ref_type == "transfer_session":
-            from yequ.application.transfer import TransferApplicationService
-
-            transfer = await TransferApplicationService(self.db).status(operation.ref_id)
-            await self.db.refresh(operation)
-            await self._sync_from_transfer(operation, transfer)
-            ref["transfer"] = transfer
+        handler = OperationHandlerRegistry(self.db).resolve(
+            kind=operation.kind,
+            ref_type=operation.ref_type,
+        )
+        previous_status = operation.status
+        ref = await handler.project(operation)
+        if operation.status != previous_status:
+            await self._append_event(
+                operation,
+                f"operation.{operation.status}",
+                {"ref_type": operation.ref_type, "ref_id": operation.ref_id},
+            )
         result = {"operation": self.operation_dict(operation), **ref}
         await self.db.commit()
         return result
@@ -96,44 +238,15 @@ class OperationService:
         operation = await self._get(operation_id)
         if not operation.cancel_supported:
             raise ValueError(f"Operation {operation_id!r} does not support cancel")
-        ref: dict[str, object] = {}
-        if operation.kind == "transfer" and operation.ref_type == "transfer_session":
-            from yequ.application.transfer import TransferApplicationService
-
-            transfer = await TransferApplicationService(self.db).cancel(
-                operation.ref_id,
-                reason=reason,
-            )
-            await self.db.refresh(operation)
-            await self._sync_from_transfer(operation, transfer)
-            ref["transfer"] = transfer
-        else:
-            operation.status = "cancelled"
-            operation.completed_at = datetime.now(UTC)
-            await self._append_event(operation, "operation.cancelled", {"reason": reason})
+        handler = OperationHandlerRegistry(self.db).resolve(
+            kind=operation.kind,
+            ref_type=operation.ref_type,
+        )
+        ref = await handler.cancel(operation, reason=reason)
+        await self._append_event(operation, "operation.cancelled", {"reason": reason})
         result = {"operation": self.operation_dict(operation), **ref}
         await self.db.commit()
         return result
-
-    async def _sync_from_transfer(
-        self,
-        operation: Operation,
-        transfer: dict[str, object],
-    ) -> None:
-        next_status = _operation_status_from_transfer(transfer.get("status"))
-        changed = operation.status != next_status
-        operation.status = next_status
-        operation.output_data = {"transfer": transfer}
-        operation.error_code = _optional_str(transfer.get("error_code"))
-        operation.error_message = _optional_str(transfer.get("error_message"))
-        if next_status in TERMINAL_OPERATION_STATUSES:
-            operation.completed_at = operation.completed_at or datetime.now(UTC)
-        if changed:
-            await self._append_event(
-                operation,
-                f"operation.{next_status}",
-                {"transfer_id": operation.ref_id, "status": next_status},
-            )
 
     async def _find_by_ref(self, ref_type: str, ref_id: str) -> Operation | None:
         result = await self.db.execute(
@@ -154,6 +267,14 @@ class OperationService:
         return operation
 
     async def _append_event(
+        self,
+        operation: Operation,
+        event_type: str,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        await self.append_event(operation, event_type, data)
+
+    async def append_event(
         self,
         operation: Operation,
         event_type: str,
@@ -214,26 +335,3 @@ def wait_handle_for_operation(operation: dict[str, object]) -> dict[str, object]
         "resume_policy": operation.get("resume_policy") or "manual",
         "cancel_supported": bool(operation.get("cancel_supported", False)),
     }
-
-
-def _operation_status_from_transfer(value: object) -> str:
-    status = str(value or "created")
-    if status in {"created", "queued"}:
-        return "queued"
-    if status in {"receiving", "running"}:
-        return "running"
-    if status in TERMINAL_OPERATION_STATUSES:
-        return status
-    return "running"
-
-
-def _transfer_title(transfer: dict[str, object] | TransferSession) -> str:
-    if isinstance(transfer, TransferSession):
-        return f"Transfer {transfer.source_node_id} -> {transfer.target_node_id}"
-    source = str(transfer.get("source_node_id") or "")
-    target = str(transfer.get("target_node_id") or "")
-    return f"Transfer {source} -> {target}".strip()
-
-
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None

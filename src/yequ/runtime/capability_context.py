@@ -1,4 +1,4 @@
-"""Agent context construction.
+"""Capability context construction.
 
 The Agent should receive structured Center state first and rendered prompt text
 second.  This module builds the node/capability context used by prompt
@@ -8,13 +8,12 @@ generation, SSE diagnostics, and future transcript/run projection.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from yequ.agent.provider import AgentFunction
 from yequ.config import get_settings
 from yequ.models.capability import Capability
 from yequ.models.node import Node
@@ -23,10 +22,15 @@ from yequ.services.node_liveness_service import is_node_schedulable
 JsonDict = dict[str, Any]
 
 
+class ContextFunction(Protocol):
+    name: str
+    source_nodes: list[str]
+
+
 async def build_capability_context(
     db: AsyncSession,
     *,
-    available_functions: list[AgentFunction],
+    available_functions: list[ContextFunction],
     target_node_id: str | None,
 ) -> JsonDict:
     """Build the structured node/capability context for one Agent turn."""
@@ -90,10 +94,6 @@ async def build_capability_context(
             }
         )
 
-    if not nodes and available_functions:
-        nodes.append(_legacy_function_context_node(available_functions))
-        tool_count_by_node["unknown"] = len(available_functions)
-
     same_name_sources = {
         name: sorted(nodes)
         for name, nodes in source_nodes_by_name.items()
@@ -111,12 +111,18 @@ async def build_capability_context(
 
 def render_capability_context_prompt(
     capability_context: JsonDict | None,
-    available_functions: list[AgentFunction],
+    available_functions: list[ContextFunction],
 ) -> str:
     """Render structured capability context into the provider system prompt."""
 
     if not capability_context:
-        return _render_flat_function_fallback(available_functions)
+        capability_context = {
+            "routing_mode": "auto",
+            "target_node_id": None,
+            "nodes": [],
+            "tool_count_by_node": {},
+            "same_name_capabilities": {},
+        }
 
     routing_mode = str(capability_context.get("routing_mode") or "auto")
     target_node_id = capability_context.get("target_node_id")
@@ -186,48 +192,3 @@ def _capability_summary(cap: Capability) -> JsonDict:
         "timeout_sec": cap.timeout_sec or 30,
         "execution_context": cap.execution_context,
     }
-
-
-def _legacy_function_context_node(available_functions: list[AgentFunction]) -> JsonDict:
-    return {
-        "node_id": "unknown",
-        "node_name": "Legacy/Test Function Context",
-        "platform_os": None,
-        "platform_arch": None,
-        "status": "unknown",
-        "schedulable": True,
-        "unavailable_reason": None,
-        "runtime_ids": [],
-        "capabilities": [
-            {
-                "name": func.name,
-                "capability_id": func.name,
-                "plugin_id": "legacy",
-                "plugin_version": "",
-                "description": func.description,
-                "effect": func.effect,
-                "risk": func.risk,
-                "timeout_sec": func.timeout_sec,
-                "execution_context": None,
-            }
-            for func in available_functions
-        ],
-    }
-
-
-def _render_flat_function_fallback(available_functions: list[AgentFunction]) -> str:
-    lines = ["Routing mode: unknown", "", "Nodes and capabilities:"]
-    if not available_functions:
-        lines.append("- No executable node capabilities are currently available.")
-        return "\n".join(lines)
-    lines.append("Node: unknown")
-    lines.append("Platform: unknown")
-    lines.append("Status: unknown")
-    lines.append("Schedulable: true")
-    lines.append("Capabilities:")
-    for func in available_functions:
-        description = func.description or func.name
-        lines.append(
-            f"- {func.name}: {description} (effect={func.effect}, risk={func.risk})"
-        )
-    return "\n".join(lines)

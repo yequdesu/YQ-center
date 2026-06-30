@@ -1,4 +1,4 @@
-﻿"""DeepSeek LLM Provider -- OpenAI-compatible API.
+"""DeepSeek LLM Provider -- OpenAI-compatible API.
 
 Uses the openai SDK pointed at DeepSeek's base URL.
 Converts AgentFunction[] to OpenAI tool definitions.
@@ -13,7 +13,6 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
-from yequ.agent.context_engine import render_capability_context_prompt
 from yequ.agent.provider import (
     AgentFunction,
     AgentMessage,
@@ -23,6 +22,7 @@ from yequ.agent.provider import (
 )
 from yequ.config import get_settings
 from yequ.logconfig import get_logger
+from yequ.runtime.capability_context import render_capability_context_prompt
 
 _log = get_logger("deepseek")
 
@@ -576,3 +576,4 @@ def _system_prompt_text_enhanced(capability_context_text: str) -> str:
         "- State facts directly. Do not cheer, congratulate, or over-explain.\n"
         "- Prefer structured output: status first, then details, then recommendations if any.\n"
     )
+

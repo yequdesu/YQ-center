@@ -389,13 +389,13 @@ async def test_center_meta_tool_executes_without_node_job(
     provisioned_node,
 ) -> None:
     from yequ.application.schemas import ExecuteToolCommand
-    from yequ.application.tool_invocation import ToolInvocationApplicationService
+    from yequ.runtime import CenterExecutionRuntime
 
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_linux_system_info(client, node.node_id, token)
 
-    result = await ToolInvocationApplicationService(db_session).execute(
+    result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="capability.search",
             input_data={"query": "linux system"},
@@ -436,7 +436,7 @@ async def test_capability_invoke_by_source_id_creates_real_node_job(
     provisioned_node,
 ) -> None:
     from yequ.application.schemas import ExecuteToolCommand
-    from yequ.application.tool_invocation import ToolInvocationApplicationService
+    from yequ.runtime import CenterExecutionRuntime
 
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
@@ -447,7 +447,7 @@ async def test_capability_invoke_by_source_id_creates_real_node_job(
     )
     source = source_result.scalar_one()
 
-    result = await ToolInvocationApplicationService(db_session).execute(
+    result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="capability.invoke",
             input_data={"source_id": source.source_id, "input": {}},
@@ -470,7 +470,7 @@ async def test_capability_invoke_requires_disambiguation_for_multiple_sources(
     provisioned_node,
 ) -> None:
     from yequ.application.schemas import ExecuteToolCommand
-    from yequ.application.tool_invocation import ToolInvocationApplicationService
+    from yequ.runtime import CenterExecutionRuntime
 
     node_a, token_a = provisioned_node
     await _provision_node(db_session, node_id="linux-node-b", token="tok-linux-b")
@@ -480,7 +480,7 @@ async def test_capability_invoke_requires_disambiguation_for_multiple_sources(
     await _register_linux_system_info(client, node_a.node_id, token_a)
     await _register_linux_system_info(client, "linux-node-b", "tok-linux-b")
 
-    ambiguous = await ToolInvocationApplicationService(db_session).execute(
+    ambiguous = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="capability.invoke",
             input_data={"capability_ref": "system.info", "input": {}},
@@ -493,7 +493,7 @@ async def test_capability_invoke_requires_disambiguation_for_multiple_sources(
     assert ambiguous.error_code == "capability_source_unresolved"
     assert "ambiguous" in (ambiguous.error_message or "")
 
-    resolved = await ToolInvocationApplicationService(db_session).execute(
+    resolved = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="capability.invoke",
             input_data={

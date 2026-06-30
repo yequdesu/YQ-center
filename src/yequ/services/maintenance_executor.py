@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.approval import ApprovalRequest
 from yequ.models.invocation import Invocation
@@ -17,8 +17,6 @@ from yequ.models.maintenance_plan import (
     RollbackHint,
 )
 from yequ.models.timeline import TimelineEvent
-from yequ.services.invocation_service import create_invocation, start_invocation
-from yequ.services.job_service import create_job
 from yequ.services.timeline_writer import add_timeline_event
 from yequ.shared_types import JsonObject
 
@@ -29,29 +27,6 @@ def _make_artifact_id() -> str:
 
 def _make_hint_id() -> str:
     return f"hint_{uuid.uuid4().hex[:16]}"
-
-
-async def _wait_invocation_terminal_for_plan(
-    session_factory: async_sessionmaker[AsyncSession],
-    invocation_id: str,
-    deadline: datetime,
-    poll_interval: float = 0.5,
-) -> str:
-    """Poll a maintenance step invocation using the caller's DB bind."""
-    import asyncio
-
-    terminal_statuses = {"succeeded", "failed", "timeout", "cancelled", "partial"}
-    while datetime.now(UTC) < deadline:
-        async with session_factory() as poll_db:
-            result = await poll_db.execute(
-                select(Invocation).where(Invocation.invocation_id == invocation_id)
-            )
-            inv = result.scalar_one_or_none()
-            if inv and inv.status in terminal_statuses:
-                return inv.status
-        await asyncio.sleep(poll_interval)
-
-    return "timeout"
 
 
 async def _write_artifact(
@@ -371,11 +346,6 @@ async def execute_plan_run(
                 await db.commit()
                 return run
 
-            if approval.status == "approved":
-                from yequ.services.approval_service import consume_approval
-
-                await consume_approval(db, approval, invocation_id=run.run_id)
-
         # Write step started timeline event
         await _write_maintenance_timeline(
             db,
@@ -391,60 +361,12 @@ async def execute_plan_run(
         step.started_at = datetime.now(UTC)
         run.current_step_id = step.step_id
 
-        # Create invocation + job for this step
+        # Execute this step through CenterExecutionRuntime.
         try:
-            from yequ.config import get_settings
-            from yequ.services.capability_resolver import resolve_function
-
-            resolved = await resolve_function(
-                db,
-                step.function_name,
-                target_node_id=plan.target_node_id,
-                settings=get_settings(),
-            )
-            if resolved is None or not resolved.available:
-                reason = (
-                    resolved.unavailable_reason
-                    if resolved and resolved.unavailable_reason
-                    else f"No online node has capability {step.function_name!r}"
-                )
-                raise RuntimeError(reason)
-
-            inv = await create_invocation(
-                db,
-                actor_type="system",
-                actor_id="maintenance_executor",
-                session_id=plan.session_id,
-                function_name=step.function_name,
-                input_payload=step.input_data or {},
-                target_node_id=plan.target_node_id,
-                execution_mode="auto",
-            )
-            start_invocation(inv)
-
             # Use plan's approval_id if not explicitly passed
             effective_approval_id = approval_id or plan.approval_id or None
             # Repair steps must never be dry_run
             effective_dry_run = False if step.kind == "repair" else dry_run
-
-            job = await create_job(
-                db,
-                invocation_id=inv.invocation_id,
-                node_id=plan.target_node_id,
-                runtime_id=resolved.runtime_id,
-                function_name=step.function_name,
-                input_payload=step.input_data or {},
-                execution_requirements_snapshot=resolved.execution_requirements,
-                timeout_sec=step.timeout_sec,
-                resource_keys=step.resource_keys or [],
-                dry_run=effective_dry_run,
-                approval_id=effective_approval_id,
-            )
-
-            step.invocation_id = inv.invocation_id
-            step.job_id = job.job_id
-            step.status = "running"
-            await db.commit()  # MUST commit before waiting — otherwise poll sees nothing
 
             # --- Test failure injection ---
             # Allows stable remote testing of rollback_recommended / error artifact paths.
@@ -478,10 +400,46 @@ async def execute_plan_run(
                         test_fail_code = "TEST_VERIFY_FAILED"
                         test_fail_message = f"Test-injected verify failure at {step.function_name}"
 
+            from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
+
+            deadline = datetime.now(UTC) + timedelta(seconds=max(1, step.timeout_sec))
+            execution_result = await CenterExecutionRuntime(db).execute(
+                RuntimeCommand(
+                    actor_type="system",
+                    actor_id=plan.actor_id,
+                    session_id=plan.session_id,
+                    function_name=step.function_name,
+                    input_data=step.input_data or {},
+                    target_node_id=plan.target_node_id,
+                    execution_mode="auto",
+                    wait_for_result=not should_test_fail,
+                    deadline=deadline,
+                    resource_keys=step.resource_keys or [],
+                    timeout_sec=step.timeout_sec,
+                    dry_run=effective_dry_run,
+                    approval_id=effective_approval_id,
+                    suppress_operation=True,
+                )
+            )
+            if execution_result.status in {"denied", "unavailable", "not_found"}:
+                raise RuntimeError(execution_result.error_message or execution_result.status)
+            if not execution_result.invocation_id or not execution_result.job_id:
+                raise RuntimeError(
+                    execution_result.error_message
+                    or f"Maintenance step {step.function_name} did not create a job"
+                )
+
+            step.invocation_id = execution_result.invocation_id
+            step.job_id = execution_result.job_id
+            step.status = "running"
+            await db.commit()
+
             if should_test_fail:
                 # Directly mark invocation + job as failed
                 inv_final_result = await db.execute(
-                    select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+                    select(Invocation).where(
+                        Invocation.invocation_id == execution_result.invocation_id
+                    )
                 )
                 inv_to_fail = inv_final_result.scalar_one_or_none()
                 if inv_to_fail:
@@ -501,22 +459,11 @@ async def execute_plan_run(
                 final_status = "failed"
                 inv_final = inv_to_fail
             else:
-                # Wait for step to reach terminal state
-                deadline = datetime.now(UTC) + timedelta(seconds=max(1, step.timeout_sec))
-                wait_session_factory = async_sessionmaker(
-                    db.bind,
-                    class_=AsyncSession,
-                    expire_on_commit=False,
-                )
-                final_status = await _wait_invocation_terminal_for_plan(
-                    wait_session_factory,
-                    inv.invocation_id,
-                    deadline,
-                )
-
-                # Collect result
+                final_status = execution_result.status
                 inv_result = await db.execute(
-                    select(Invocation).where(Invocation.invocation_id == inv.invocation_id)
+                    select(Invocation).where(
+                        Invocation.invocation_id == execution_result.invocation_id
+                    )
                 )
                 inv_final = inv_result.scalar_one_or_none()
 

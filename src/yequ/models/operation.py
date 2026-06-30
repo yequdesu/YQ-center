@@ -60,5 +60,10 @@ class OperationEvent(Base):
     event_type: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    dispatch_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", index=True
+    )
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_dispatch_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-

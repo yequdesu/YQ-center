@@ -9,13 +9,13 @@ from tests.conftest import make_yqp_envelope
 from yequ.agent.provider import AgentFunction
 from yequ.agent.tool_stream import execute_tool_calls_scheduled
 from yequ.application.schemas import ExecuteToolCommand
-from yequ.application.tool_invocation import ToolInvocationApplicationService
 from yequ.models.agent_run import AgentRunStep
 from yequ.models.job import Job
 from yequ.models.node import Node
 from yequ.models.operation import Operation, OperationEvent
 from yequ.models.session import Session
 from yequ.models.transfer import TransferSession
+from yequ.runtime import CenterExecutionRuntime
 from yequ.services.node_auth import hash_token
 
 
@@ -149,7 +149,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
     await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
 
-    result = await ToolInvocationApplicationService(db_session).execute(
+    result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="transfer.create",
             input_data={
@@ -204,7 +204,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     event_result = await db_session.execute(select(OperationEvent))
     assert event_result.scalar_one().event_type == "operation.created"
 
-    status = await ToolInvocationApplicationService(db_session).execute(
+    status = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="transfer.status",
             input_data={"transfer_id": transfer["transfer_id"]},
@@ -215,7 +215,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     assert status.output_data["transfer"]["target_job"]["function_name"] == (
         "linux.transfer.croc.receive"
     )
-    operation_status = await ToolInvocationApplicationService(db_session).execute(
+    operation_status = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="operation.status",
             input_data={"operation_id": operation["operation_id"]},
@@ -239,7 +239,7 @@ async def test_transfer_create_returns_structured_conflict_when_transfer_lock_is
     await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
     await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
 
-    service = ToolInvocationApplicationService(db_session)
+    service = CenterExecutionRuntime(db_session)
     first = await service.execute(
         ExecuteToolCommand(
             function_name="transfer.create",
@@ -297,7 +297,7 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
     await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
     await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
 
-    service = ToolInvocationApplicationService(db_session)
+    service = CenterExecutionRuntime(db_session)
     created = await service.execute(
         ExecuteToolCommand(
             function_name="transfer.create",
@@ -362,7 +362,7 @@ async def test_operation_cancel_cancels_transfer_peer_jobs(
     await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
     await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
 
-    service = ToolInvocationApplicationService(db_session)
+    service = CenterExecutionRuntime(db_session)
     created = await service.execute(
         ExecuteToolCommand(
             function_name="transfer.create",
@@ -474,7 +474,7 @@ async def test_resume_operation_stream_injects_operation_observation(
     await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
     await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
 
-    created = await ToolInvocationApplicationService(db_session).execute(
+    created = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="transfer.create",
             input_data={
@@ -539,7 +539,9 @@ async def test_resume_operation_stream_injects_operation_observation(
     assert "operation" in user_messages[-1]
     assert "transfer" in user_messages[-1]
 
-    step_result = await db_session.execute(select(AgentRunStep))
+    step_result = await db_session.execute(
+        select(AgentRunStep).where(AgentRunStep.step_type == "operation_observation")
+    )
     step = step_result.scalar_one()
     assert step.step_type == "operation_observation"
     assert step.input_data == {"operation_id": created.operation_id}

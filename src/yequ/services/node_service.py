@@ -258,8 +258,7 @@ def _execution_requirements_from_context(context: str | None) -> JsonObject | No
         return {"runtime_kind": "interactive", "interactive": True}
     if context == "hybrid":
         return {
-            "runtime_kind": "interactive",
-            "fallback_runtime_kind": "privileged",
+            "allowed_runtime_kinds": ["interactive", "privileged"],
         }
     return None
 

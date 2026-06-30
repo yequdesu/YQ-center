@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yequ.application.schemas import ExecuteToolCommand, ExecuteToolResult
+from yequ.application.schemas import ExecuteToolResult
 from yequ.models.job import Job
 from yequ.models.timeline import TimelineEvent
 from yequ.models.transfer import TransferSession
@@ -218,13 +218,13 @@ class TransferApplicationService:
         capability_ref: str,
         tool_input: dict[str, object],
     ) -> ExecuteToolResult:
-        from yequ.application.tool_invocation import ToolInvocationApplicationService
         from yequ.db import async_session_factory
+        from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 
         clean_input = {key: value for key, value in tool_input.items() if value is not None}
         async with async_session_factory() as db:
-            return await ToolInvocationApplicationService(db).execute(
-                ExecuteToolCommand(
+            return await CenterExecutionRuntime(db).execute(
+                RuntimeCommand(
                     function_name="capability.invoke",
                     input_data={
                         "capability_ref": capability_ref,
@@ -239,6 +239,7 @@ class TransferApplicationService:
                     timeout_sec=command.timeout_sec,
                     lease_sec=30,
                     resource_keys=[f"node:{node_id}:transfer"],
+                    suppress_operation=True,
                 )
             )
 

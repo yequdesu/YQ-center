@@ -386,32 +386,26 @@ def agent_session(create: bool, mode: str, actor: str) -> None:
 @click.option("--provider", "-p", default="fake", help="Provider name")
 @click.option("--mode", default="auto", help="Execution mode")
 def agent_invoke(session_id: str, prompt: str, provider: str, mode: str) -> None:
-    """Invoke an Agent Provider."""
+    """Invoke an Agent Provider through the streaming Agent path."""
     try:
         with _get_client() as c:
-            r = c.post(
-                "/agent/invoke",
+            with c.stream(
+                "POST",
+                "/agent/invoke/stream",
                 json={
                     "session_id": session_id,
                     "provider_name": provider,
                     "prompt": prompt,
                     "execution_mode": mode,
                 },
-            )
-            r.raise_for_status()
-        data = r.json()
-        if data["success"]:
-            click.secho("Success", fg="green")
-        else:
-            click.secho(
-                f"Error: {data.get('error_code', 'unknown')} - {data.get('error_message', '')}",
-                fg="red",
-            )
-        if data.get("function_calls"):
-            for fc in data["function_calls"]:
-                click.echo(f"  → {fc['name']}")
-        if data.get("output"):
-            _print_json(data["output"])
+                timeout=300,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if line.startswith("data: "):
+                        payload = line.removeprefix("data: ").strip()
+                        if payload:
+                            click.echo(payload)
     except Exception as e:
         click.secho(f"Error: {e}", fg="red")
         sys.exit(1)

@@ -29,8 +29,6 @@ AgentRunStatus = Literal[
     "cancelled",
 ]
 
-TERMINAL_AGENT_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
-
 RuntimeDecisionKind = Literal[
     "continue",
     "final",
@@ -174,6 +172,67 @@ class AgentRuntimeController:
         )
 
 
+@dataclass
+class AgentRunGraph:
+    """Explicit state graph facade for one AgentRun.
+
+    Provider IO and tool IO still live in the stream runner, but all decisions
+    that advance the AgentRun status pass through this object. This keeps the
+    loop from growing hidden side-channel state as resume/subagent support
+    expands.
+    """
+
+    controller: AgentRuntimeController
+    loop_state: AgentRunStatus = "created"
+
+    def begin_iteration(
+        self, now: datetime | None = None
+    ) -> AgentRuntimeIteration | AgentRuntimeFailure:
+        result = self.controller.begin_iteration(now)
+        self.loop_state = self.controller.status
+        return result
+
+    def provider_failed(self, message: str) -> AgentRuntimeFailure:
+        failure = self.controller.provider_failed(message)
+        self.loop_state = failure.status
+        return failure
+
+    def decide_provider_output(
+        self,
+        *,
+        assistant_text: str,
+        tool_calls: Sequence[object],
+    ) -> AgentRuntimeDecision:
+        decision = self.controller.decide_provider_output(
+            assistant_text=assistant_text,
+            tool_calls=tool_calls,
+        )
+        self.loop_state = decision.status
+        return decision
+
+    def observe_tool_results(
+        self,
+        results: Sequence[dict[str, object]],
+    ) -> AgentRuntimeDecision | None:
+        statuses = {str(result.get("status") or "") for result in results}
+        if "waiting_operation" in statuses:
+            decision = self.controller.waiting_operation()
+            self.loop_state = decision.status
+            return decision
+        if "waiting_approval" in statuses:
+            decision = self.controller.waiting_approval()
+            self.loop_state = decision.status
+            return decision
+        self.controller.status = "observing"
+        self.loop_state = "observing"
+        return None
+
+    def missing_final_answer(self) -> AgentRuntimeFailure:
+        failure = self.controller.missing_final_answer()
+        self.loop_state = failure.status
+        return failure
+
+
 class AgentToolObservationCollector:
     def __init__(self, provider_call_order: dict[str, int]) -> None:
         self._provider_call_order = dict(provider_call_order)
@@ -248,36 +307,3 @@ class AgentToolObservationCollector:
             self._results,
             key=lambda result: self._provider_call_order.get(str(result["call_id"]), 999),
         )
-
-
-def status_for_stream_event(event_type: str, error_code: str | None = None) -> str | None:
-    if event_type == "stream.open":
-        return "created"
-    if event_type == "agent.prompt_context":
-        return "building_context"
-    if event_type == "agent.provider.started":
-        return "model_running"
-    if event_type == "agent.tool_call.created":
-        return "validating_tools"
-    if event_type in {"agent.invocation.created", "agent.job.queued", "agent.job.running"}:
-        return "executing_tools"
-    if event_type in {"agent.approval.required", "agent.tool_call.waiting_approval"}:
-        return "waiting_approval"
-    if event_type in {
-        "agent.operation.created",
-        "agent.operation.waiting",
-        "agent.run.waiting",
-        "agent.tool_call.waiting_operation",
-    }:
-        return "waiting_operation"
-    if event_type == "agent.observing":
-        return "observing"
-    if event_type in {"agent.output.delta", "agent.synthesizing"}:
-        return "synthesizing"
-    if event_type == "agent.completed":
-        return "succeeded"
-    if event_type in {"agent.failed", "agent.provider.failed"}:
-        return "failed"
-    if error_code == "cancelled":
-        return "cancelled"
-    return None

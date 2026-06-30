@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.deps import get_admin_token, get_db
-from yequ.application import ExecuteToolCommand, ExecuteToolResult, ToolInvocationApplicationService
+from yequ.application import ExecuteToolCommand, ExecuteToolResult
+from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -99,23 +100,24 @@ async def create_invocation_endpoint(
     _token: dict[str, str] = Depends(get_admin_token),
 ) -> CreateInvocationResponse:
     """Create an Invocation and fan out to a Job on the target Node."""
-    result = await ToolInvocationApplicationService(db).execute(
-        ExecuteToolCommand(
-            actor_type=body.actor_type,
-            actor_id=body.actor_id,
-            session_id=body.session_id,
-            function_name=body.function_name,
-            input_data=body.input_payload,
-            target_node_id=body.target_node_id,
-            execution_mode=body.execution_mode,
-            max_depth=body.max_depth,
-            max_steps=body.max_steps,
-            max_total_duration_sec=body.max_total_duration_sec,
-            approval_id=body.approval_id,
-            dry_run=body.dry_run,
-            timeout_sec=body.timeout_sec,
-            lease_sec=body.lease_sec,
-            allow_unregistered_function=True,
+    result = await CenterExecutionRuntime(db).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type=body.actor_type,
+                actor_id=body.actor_id,
+                session_id=body.session_id,
+                function_name=body.function_name,
+                input_data=body.input_payload,
+                target_node_id=body.target_node_id,
+                execution_mode=body.execution_mode,
+                max_depth=body.max_depth,
+                max_steps=body.max_steps,
+                max_total_duration_sec=body.max_total_duration_sec,
+                approval_id=body.approval_id,
+                dry_run=body.dry_run,
+                timeout_sec=body.timeout_sec,
+                lease_sec=body.lease_sec,
+            )
         )
     )
     if result.status == "denied":

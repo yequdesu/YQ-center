@@ -145,8 +145,8 @@ async def test_yqp_artifact_upload_rejects_overlong_job_id(
 @pytest.mark.asyncio
 async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
     from yequ.application.schemas import ExecuteToolCommand
-    from yequ.application.tool_invocation import ToolInvocationApplicationService
     from yequ.config import get_settings
+    from yequ.runtime import CenterExecutionRuntime
     from yequ.services.artifact_service import ArtifactPayload, create_artifact
 
     artifact = await create_artifact(
@@ -163,7 +163,7 @@ async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
     )
     await db_session.commit()
 
-    service = ToolInvocationApplicationService(db_session)
+    service = CenterExecutionRuntime(db_session)
     listed = await service.execute(
         ExecuteToolCommand(
             function_name="artifact.list",
@@ -205,3 +205,52 @@ async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
     assert presented_artifacts[0]["download_url"] == (
         f"/admin/artifacts/{artifact.artifact_id}/download"
     )
+
+
+@pytest.mark.asyncio
+async def test_job_operation_status_projects_linked_artifacts(db_session) -> None:
+    from yequ.config import get_settings
+    from yequ.models.job import Job
+    from yequ.services.artifact_service import ArtifactPayload, create_artifact
+    from yequ.services.operation_service import OperationService
+
+    job = Job(
+        job_id="job_artifact_projection",
+        invocation_id="inv_artifact_projection",
+        node_id="winClient",
+        function_name="windows.screen.capture",
+        status="succeeded",
+        timeout_sec=30,
+        lease_sec=30,
+        output={"artifacts": [{"artifact_id": "placeholder"}]},
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    artifact = await create_artifact(
+        db_session,
+        ArtifactPayload(
+            data=b"fake screenshot bytes",
+            artifact_type="image",
+            content_type="image/png",
+            title="screen.png",
+            job_id=job.job_id,
+            invocation_id=job.invocation_id,
+            node_id=job.node_id,
+        ),
+        settings=get_settings(),
+    )
+    operation = await OperationService(db_session).create_for_job(
+        job,
+        actor_type="agent",
+        actor_id="test-agent",
+        session_id="sess_artifact_projection",
+    )
+
+    status = await OperationService(db_session).status(str(operation["operation_id"]))
+
+    assert status["operation"]["status"] == "succeeded"
+    artifacts = status["artifacts"]
+    assert isinstance(artifacts, list)
+    assert artifacts[0]["artifact_id"] == artifact.artifact_id
+    assert status["operation"]["progress_message"] == "1 artifact(s) available"

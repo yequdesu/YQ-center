@@ -519,9 +519,6 @@ async def test_no_online_node_produces_explicit_diagnostic(
         term in combined for term in ["no online node", "not available", "function_not_available"]
     ), f"Error should mention node/capability unavailability, got: {combined}"
 
-    assert [e for e in events if e["event_type"] == "agent.fallback_synthesis"] == []
-
-
 @pytest.mark.asyncio
 async def test_tool_lifecycle_events_include_target_node_id(client: AsyncClient):
     """Pinned-node Agent streams expose node identity on visible tool events."""

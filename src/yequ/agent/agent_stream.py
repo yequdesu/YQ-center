@@ -12,9 +12,9 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from yequ.agent.agent_service import _write_timeline
-from yequ.agent.context_engine import JsonDict
 from yequ.agent.provider import AgentFunction, AgentProvider
 from yequ.agent.runtime_state import (
+    AgentRunGraph,
     AgentRuntimeController,
     AgentRuntimeFailure,
     AgentRuntimeLimits,
@@ -23,6 +23,7 @@ from yequ.agent.runtime_state import (
 from yequ.agent.tool_stream import execute_tool_calls_scheduled
 from yequ.application import MaintenancePlanApplicationService
 from yequ.logconfig import get_logger
+from yequ.runtime.capability_context import JsonDict
 
 log = get_logger(__name__)
 
@@ -200,7 +201,9 @@ async def agent_invoke_stream(
         current_step=step_count,
         call_path=list(call_path),
     )
+    run_graph = AgentRunGraph(runtime)
     trace_id = _make_trace_id()
+    agent_run_id: str | None = None
 
     yield _event("stream.open", session_id, trace_id)
     _mark_stream_active(session_id)
@@ -231,6 +234,8 @@ async def agent_invoke_stream(
 
     # -- Block 1: session validation + timeline (short-lived session) --
     async with async_session_factory() as db:
+        from yequ.runtime.agent_run_service import create_agent_run
+
         result = await db.execute(select(Session).where(Session.session_id == session_id))
         session = result.scalar_one_or_none()
         if session is None:
@@ -256,6 +261,23 @@ async def agent_invoke_stream(
             prompt=prompt,
             step=step_count + 1,
         )
+        agent_run = await create_agent_run(
+            db,
+            session_id=session_id,
+            provider_name=provider.provider_name(),
+            execution_mode=execution_mode,
+            target_node_id=target_node_id,
+            user_message=None if suppress_user_message else prompt,
+            trace_id=trace_id,
+            metadata={
+                "source": "agent.invoke.stream",
+                "suppress_user_message": suppress_user_message,
+                "max_depth": max_depth,
+                "max_steps": max_steps,
+                "max_total_duration_sec": max_total_duration_sec,
+            },
+        )
+        agent_run_id = agent_run.run_id
         await db.commit()
 
     yield _event(
@@ -269,6 +291,12 @@ async def agent_invoke_stream(
         session_id,
         trace_id,
         {"prompt": prompt[:500], "step": step_count + 1, "internal": suppress_user_message},
+    )
+    yield _event(
+        "agent.run.created",
+        session_id,
+        trace_id,
+        {"run_id": agent_run_id},
     )
 
     known_functions = {f.name for f in available_functions}
@@ -290,13 +318,14 @@ async def agent_invoke_stream(
     )
 
     final_message = ""
-    loop_state = "running"
+    loop_state = run_graph.loop_state
     all_tool_results: list[dict[str, object]] = []
 
     try:
         while True:
-            iteration = runtime.begin_iteration(datetime.now(UTC))
+            iteration = run_graph.begin_iteration(datetime.now(UTC))
             if isinstance(iteration, AgentRuntimeFailure):
+                loop_state = run_graph.loop_state
                 yield _event(
                     "agent.failed",
                     session_id,
@@ -359,8 +388,23 @@ async def agent_invoke_stream(
                 provider_error = str(e)[:500]
 
             if provider_error:
-                failure = runtime.provider_failed(provider_error)
-                loop_state = failure.status
+                await _record_agent_run_provider_step(
+                    agent_run_id,
+                    step_index=current_step * 100,
+                    assistant_text=assistant_text,
+                    tool_calls=provider_tool_calls,
+                    status="failed",
+                    error_code="llm_error",
+                    error_message=provider_error,
+                )
+                await _update_agent_run_checkpoint(
+                    agent_run_id,
+                    status="failed",
+                    error_code="llm_error",
+                    error_message=provider_error,
+                )
+                failure = run_graph.provider_failed(provider_error)
+                loop_state = run_graph.loop_state
                 yield _event(
                     "agent.provider.failed",
                     session_id,
@@ -370,12 +414,34 @@ async def agent_invoke_stream(
                 break
 
             executable_calls = list(provider_tool_calls)
-            provider_decision = runtime.decide_provider_output(
+            await _record_agent_run_provider_step(
+                agent_run_id,
+                step_index=current_step * 100,
+                assistant_text=assistant_text,
+                tool_calls=provider_tool_calls,
+                status="succeeded",
+            )
+            provider_decision = run_graph.decide_provider_output(
                 assistant_text=assistant_text,
                 tool_calls=executable_calls,
             )
+            loop_state = run_graph.loop_state
 
             if provider_decision.kind == "failure":
+                await _update_agent_run_checkpoint(
+                    agent_run_id,
+                    status="failed",
+                    error_code=(
+                        provider_decision.failure.error_code
+                        if provider_decision.failure
+                        else "agent_protocol_error"
+                    ),
+                    error_message=(
+                        provider_decision.failure.message
+                        if provider_decision.failure
+                        else "Provider output is not executable."
+                    ),
+                )
                 if provider_decision.failure:
                     yield _event(
                         "agent.failed",
@@ -387,6 +453,16 @@ async def agent_invoke_stream(
             if provider_decision.kind == "final":
                 final_message = provider_decision.final_message
                 loop_state = provider_decision.status
+                await _record_agent_run_final_step(
+                    agent_run_id,
+                    step_index=current_step * 100 + 90,
+                    final_message=final_message,
+                )
+                await _update_agent_run_checkpoint(
+                    agent_run_id,
+                    status="succeeded",
+                    final_message=final_message,
+                )
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
@@ -436,11 +512,16 @@ async def agent_invoke_stream(
                         )
                         and observation_collector.has_waiting_approval
                     ):
-                        loop_state = runtime.waiting_approval().status
+                        loop_state = run_graph.observe_tool_results(
+                            [{"status": "waiting_approval"}]
+                        ).status
                     if observation_collector.has_waiting_operation:
-                        loop_state = runtime.waiting_operation().status
+                        loop_state = run_graph.observe_tool_results(
+                            [{"status": "waiting_operation"}]
+                        ).status
 
-            for tc_result in observation_collector.ordered_results():
+            ordered_tool_results = observation_collector.ordered_results()
+            for result_index, tc_result in enumerate(ordered_tool_results, 1):
                 all_tool_results.append(tc_result)
                 history.append(
                     AgentMessage(
@@ -449,14 +530,31 @@ async def agent_invoke_stream(
                         content=_json.dumps(tc_result),
                     )
                 )
+                await _record_agent_run_tool_step(
+                    agent_run_id,
+                    step_index=current_step * 100 + 10 + result_index,
+                    result=tc_result,
+                )
                 if tc_result.get("status") == "waiting_approval":
-                    loop_state = runtime.waiting_approval().status
+                    loop_state = run_graph.observe_tool_results([tc_result]).status
+                    await _update_agent_run_checkpoint(
+                        agent_run_id,
+                        status="waiting_approval",
+                        metadata={"waiting": tc_result},
+                    )
                 if tc_result.get("status") == "waiting_operation":
-                    loop_state = runtime.waiting_operation().status
+                    loop_state = run_graph.observe_tool_results([tc_result]).status
+                    await _update_agent_run_checkpoint(
+                        agent_run_id,
+                        status="waiting_operation",
+                        metadata={"waiting": tc_result},
+                    )
 
             yield _event(
                 "agent.observing", session_id, trace_id, {"tool_count": len(executable_calls)}
             )
+            decision = run_graph.observe_tool_results(ordered_tool_results)
+            loop_state = decision.status if decision is not None else run_graph.loop_state
             if loop_state in {"waiting_approval", "waiting_operation"}:
                 break
         if not final_message:
@@ -472,8 +570,18 @@ async def agent_invoke_stream(
                 _mark_stream_inactive(session_id)
                 yield _event("stream.close", session_id, trace_id)
                 return
-            failure = runtime.missing_final_answer()
-            loop_state = failure.status
+            if loop_state == "failed":
+                _mark_stream_inactive(session_id)
+                yield _event("stream.close", session_id, trace_id)
+                return
+            failure = run_graph.missing_final_answer()
+            loop_state = run_graph.loop_state
+            await _update_agent_run_checkpoint(
+                agent_run_id,
+                status="failed",
+                error_code=failure.error_code,
+                error_message=failure.message,
+            )
             data = failure.as_event_data()
             data["loop_state"] = loop_state
             yield _event(
@@ -511,6 +619,12 @@ async def agent_invoke_stream(
         )
 
     except TimeoutError:
+        await _update_agent_run_checkpoint(
+            agent_run_id,
+            status="failed",
+            error_code="provider_timeout",
+            error_message="Provider timed out",
+        )
         yield _event(
             "agent.failed",
             session_id,
@@ -519,6 +633,12 @@ async def agent_invoke_stream(
         )
     except Exception as e:
         log.exception("agent stream error: session_id=%s", session_id)
+        await _update_agent_run_checkpoint(
+            agent_run_id,
+            status="failed",
+            error_code="internal_error",
+            error_message=str(e)[:500],
+        )
         yield _event(
             "agent.failed",
             session_id,
@@ -528,6 +648,143 @@ async def agent_invoke_stream(
 
     _mark_stream_inactive(session_id)
     yield _event("stream.close", session_id, trace_id)
+
+
+async def _record_agent_run_provider_step(
+    run_id: str | None,
+    *,
+    step_index: int,
+    assistant_text: str,
+    tool_calls: list[dict[str, object]],
+    status: str,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    if not run_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_service import append_agent_run_step
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"AgentRun {run_id!r} not found")
+        await append_agent_run_step(
+            db,
+            run,
+            step_index=step_index,
+            step_type="provider",
+            status=status,
+            output_data={
+                "assistant_text": assistant_text,
+                "tool_calls": tool_calls,
+            },
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await db.commit()
+
+
+async def _record_agent_run_tool_step(
+    run_id: str | None,
+    *,
+    step_index: int,
+    result: dict[str, object],
+) -> None:
+    if not run_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_service import append_agent_run_step
+
+    async with async_session_factory() as db:
+        query_result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = query_result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"AgentRun {run_id!r} not found")
+        status = str(result.get("status") or "succeeded")
+        await append_agent_run_step(
+            db,
+            run,
+            step_index=step_index,
+            step_type="tool_observation",
+            status=status,
+            input_data={
+                "call_id": result.get("call_id"),
+                "name": result.get("name"),
+            },
+            output_data=result,
+            error_code=str(result.get("error_code")) if result.get("error_code") else None,
+            error_message=str(result.get("error")) if result.get("error") else None,
+            metadata={
+                "operation_id": result.get("operation_id"),
+                "approval_id": result.get("approval_id"),
+                "target_node_id": result.get("target_node_id"),
+            },
+        )
+        await db.commit()
+
+
+async def _record_agent_run_final_step(
+    run_id: str | None,
+    *,
+    step_index: int,
+    final_message: str,
+) -> None:
+    if not run_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_service import append_agent_run_step
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"AgentRun {run_id!r} not found")
+        await append_agent_run_step(
+            db,
+            run,
+            step_index=step_index,
+            step_type="final",
+            status="succeeded",
+            output_data={"message": final_message},
+        )
+        await db.commit()
+
+
+async def _update_agent_run_checkpoint(
+    run_id: str | None,
+    *,
+    status: str,
+    final_message: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    if not run_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_service import update_agent_run_status
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"AgentRun {run_id!r} not found")
+        await update_agent_run_status(
+            db,
+            run,
+            status=status,
+            final_message=final_message,
+            error_code=error_code,
+            error_message=error_message,
+            metadata=metadata,
+        )
+        await db.commit()
 
 
 async def agent_plan_stream(
@@ -832,5 +1089,7 @@ async def agent_plan_stream(
     yield _event("agent.completed", session_id, trace_id)
     _mark_stream_inactive(session_id)
     yield _event("stream.close", session_id, trace_id)
+
+
 
 

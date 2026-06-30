@@ -1,4 +1,4 @@
-"""Tests for application-layer tool invocation."""
+"""Tests for CenterExecutionRuntime tool invocation."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import pytest
 from sqlalchemy import select
 
 from tests.conftest import make_yqp_envelope
-from yequ.application import ExecuteToolCommand, ToolInvocationApplicationService
+from yequ.application import ExecuteToolCommand
 from yequ.models.approval import ApprovalRequest
 from yequ.models.job import Job
+from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 
 pytestmark = pytest.mark.asyncio
 
@@ -87,14 +88,16 @@ async def test_execute_safe_function_creates_invocation_and_job(
     await _register_function(client, node.node_id, token, name="test.echo")
     await db_session.rollback()
 
-    result = await ToolInvocationApplicationService(db_session).execute(
-        ExecuteToolCommand(
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
             actor_type="agent",
             actor_id="agent-test",
             session_id="sess-test",
             function_name="test.echo",
             input_data={"value": "ok"},
             target_node_id=node.node_id,
+            )
         )
     )
 
@@ -126,14 +129,16 @@ async def test_execute_write_function_returns_approval_required(
     )
     await db_session.rollback()
 
-    result = await ToolInvocationApplicationService(db_session).execute(
-        ExecuteToolCommand(
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
             actor_type="agent",
             actor_id="agent-test",
             session_id="sess-test",
             function_name="test.write",
             input_data={"name": "demo"},
             target_node_id=node.node_id,
+            )
         )
     )
 
@@ -155,10 +160,12 @@ async def test_execute_unknown_function_returns_unavailable(
 ) -> None:
     node, _token = provisioned_node
 
-    result = await ToolInvocationApplicationService(db_session).execute(
-        ExecuteToolCommand(
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
             function_name="missing.function",
             target_node_id=node.node_id,
+            )
         )
     )
 

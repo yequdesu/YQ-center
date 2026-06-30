@@ -1193,11 +1193,12 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
     # Override provider for check_and_fix
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from yequ.api.routes.agent import _default_functions, register_provider
+    from tests.fakes.agent_functions import default_agent_functions
+    from yequ.api.routes.agent import register_provider
 
     # Always create a fresh provider to avoid cross-test contamination
     prov = FakeAgentProvider(provider_name="fake")
-    for func in _default_functions():
+    for func in default_agent_functions():
         prov.add_function(func)
     prov.add_response("fix", AgentResult(success=True, output={"message": "check_and_fix"}))
     register_provider(prov)
@@ -1233,11 +1234,12 @@ async def test_rollback_hint_for_vague_target_requires_manual_review(
 
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from yequ.api.routes.agent import _default_functions, register_provider
+    from tests.fakes.agent_functions import default_agent_functions
+    from yequ.api.routes.agent import register_provider
 
     # Always create a fresh provider to avoid cross-test contamination
     prov = FakeAgentProvider(provider_name="fake")
-    for func in _default_functions():
+    for func in default_agent_functions():
         prov.add_function(func)
     prov.add_response("fix", AgentResult(success=True, output={"message": "check_and_fix"}))
     register_provider(prov)

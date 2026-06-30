@@ -142,6 +142,22 @@ async def release_lock(
     return locks
 
 
+async def release_locks_for_terminal_jobs(db: AsyncSession) -> int:
+    """Release held locks whose owner job is already terminal."""
+    result = await db.execute(
+        select(ResourceLock)
+        .join(Job, Job.job_id == ResourceLock.job_id)
+        .where(
+            ResourceLock.status == LockStatus.HELD,
+            Job.status.in_(TERMINAL_JOB_VALUES),
+        )
+    )
+    locks = list(result.scalars().all())
+    for lock in locks:
+        await _release_one_lock(db, lock, reason="terminal_owner_scan")
+    return len(locks)
+
+
 def compute_resource_keys(
     function_name: str,
     node_id: str,

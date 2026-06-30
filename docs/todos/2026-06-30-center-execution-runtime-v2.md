@@ -1,6 +1,6 @@
 # Center Execution Runtime v2 待办
 
-状态：active todo  
+状态：阶段 6 前验收通过；阶段 4.6、4.7、5A、5B、5C、5D、5E、5F、5G 已落地，后续可进入阶段 6  
 日期：2026-06-30  
 取代范围：`2026-06-28-center-capability-runtime-v1.md` 的后续主线  
 适用阶段：WinNode + LinuxNode 已稳定接入，croc 跨 Node 传输已跑通之后
@@ -48,6 +48,119 @@ cd console-frontend && npm run build
 
 验收结果：9 个后端窄测试通过；ruff 通过；前端 typecheck + production build 通过。
 
+阶段 4.6 / 4.7 / 5A-5G 推进记录：
+
+- 新增 `CenterExecutionRuntime` 和 `RuntimeCommand`，Agent、Admin、approval
+  approve-and-run、transfer 子 Job 创建均已切到 runtime。
+- 删除 `src/yequ/application/tool_invocation.py` 和 package export，生产与测试不再引用
+  `ToolInvocationApplicationService`。
+- `/agent/invoke` 非流式旧入口改为 410；CLI `agent invoke` 改为消费
+  `/agent/invoke/stream`。
+- `_default_functions()` 从生产 Agent route 删除；静态 `system.*` 测试函数迁移到
+  `tests/fakes/agent_functions.py`。
+- `Capability Context Builder` 删除 legacy unknown node 和 flat function fallback；
+  无能力时输出结构化空事实。
+- `fallback_runtime_kind` 删除，改为 `allowed_runtime_kinds`。
+- `admin.py` 空 compatibility router 删除，`app.py` 只 include 具体 admin routes。
+- `MessageDedup` 内存兼容 helper 删除，保留 DB-backed YQP dedup 和后台 cleanup scanner。
+- `OperationService` 改为通过 `OperationHandlerRegistry` 投影 operation；
+  已有 `transfer`、`job`、`approval_wait` handler。
+- 长 Node Job 会由 runtime 按结构化事实包装为 `Operation(kind=job)`，
+  transfer workflow 内部 send/receive 子 Job 使用 `suppress_operation=True` 避免双 operation。
+- approval required 结果会创建 `Operation(kind=approval_wait)`，Agent SSE 同步发出
+  `agent.operation.created` / `agent.operation.waiting`。
+- `maintenance_executor.py` 不再直接 `create_invocation()` / `create_job()`，
+  step Job 创建与短等待已改走 `CenterExecutionRuntime`。
+- `MaintenanceRun` 已接入 `Operation(kind=maintenance, ref_type=maintenance_run)`；
+  `OperationHandlerRegistry` 新增 maintenance handler，状态投影覆盖
+  `running`、`waiting_approval`、`rollback_recommended`、`succeeded`、`failed`、
+  `cancelled`。
+- `/admin/maintenance/plans/{plan_id}/run` 返回 `operation` 和 `wait_handle`；
+  `/admin/maintenance/runs/{run_id}`、resume、reject 会同步维护 Operation 投影。
+- 新增 runtime 层 `AgentRunService`，流式 Agent 主循环会写入 `AgentRun` / `AgentRunStep`
+  checkpoint：provider 输出、tool observation、waiting_operation、waiting_approval、
+  final 和 failure 均有结构化记录。
+- 新增 `/agent/resume-run/stream` 和 `/agent/resume-last-run/stream`；断点恢复走显式
+  AgentRun checkpoint，不把用户普通输入的“继续”硬编码为恢复语义。
+- 新增 `AgentRunGraph`，provider 输出、provider failure、tool observation、
+  waiting_operation、waiting_approval、missing final 等状态转移统一经 graph facade；
+  SSE generator 只保留 provider/tool IO 和事件输出。
+- 新增 `OperationConsistencyScanner`，生产启动时周期性同步非终态 Operation 投影，并释放
+  owner Job 已终态但仍 held 的 resource lock。
+- artifact-producing capability 不新增独立 ArtifactTask 表；其执行事实仍归属于 Job，
+  `JobOperationHandler` 会把与 `job_id` 关联的 Center artifacts 投影到
+  `operation.status` 结果和 `operation.output_data.artifacts` 中。
+- Console `OperationCard` 会展示 `operation.status` 返回的 artifacts；输入区新增显式
+  `Resume` 操作，调用 `/agent/resume-last-run/stream`，不把普通用户消息伪装为断点恢复。
+- Admin 手动 invocation 与 approval approve-and-run 不再设置
+  `allow_unregistered_function=True`，生产手动执行必须经过 capability registry。
+- 删除 `agent_service.agent_invoke()` 非流式旧 ReAct loop；`agent_service.py` 只保留
+  session、planning、history、timeline helper。生产执行路径只剩
+  `/agent/invoke/stream` / AgentRun checkpoint 主线，CLI 非流式展示也消费 stream。
+- `AgentRunService` 从 `src/yequ/services` 移入 `src/yequ/runtime`；
+  AgentRun 状态投影抽到 `src/yequ/runtime/agent_status.py`，避免 Center service
+  反向依赖 `yequ.agent`。
+- Capability Context Builder 从 `src/yequ/agent/context_engine.py` 移入
+  `src/yequ/runtime/capability_context.py`；runtime 通过结构化 Protocol 接收
+  function facts，不反向依赖 Agent provider 类型。
+
+阶段 4.6-5D 已验证：
+
+```text
+.\.venv\Scripts\python.exe -m ruff check src\yequ\runtime src\yequ\services\operation_service.py src\yequ\agent\tool_stream.py src\yequ\api\routes\agent.py src\yequ\application\transfer.py src\yequ\application\tool_preflight.py
+.\.venv\Scripts\python.exe -m pytest tests\test_transfer_session.py -q
+.\.venv\Scripts\python.exe -m pytest tests\application\test_tool_invocation_application.py tests\test_artifact_api.py::test_agent_artifact_meta_tools_list_and_present tests\test_capability_runtime_registry.py::test_center_meta_tool_executes_without_node_job tests\test_capability_runtime_registry.py::test_capability_invoke_by_source_id_creates_real_node_job tests\test_capability_runtime_registry.py::test_capability_invoke_requires_disambiguation_for_multiple_sources -q
+```
+
+验收结果：ruff 通过；transfer 6 项通过；runtime/meta/capability/artifact 7 项通过。
+
+阶段 5D-5G 本轮补充验证：
+
+```text
+.\.venv\Scripts\python.exe -m ruff check src\yequ\runtime\agent_run_service.py src\yequ\agent\agent_stream.py src\yequ\api\routes\agent.py src\yequ\api\routes\admin_invocations.py src\yequ\api\routes\admin_approvals.py src\yequ\api\routes\maintenance.py src\yequ\runtime\operations src\yequ\services\operation_service.py src\yequ\services\operation_scanner.py src\yequ\services\resource_lock_service.py src\yequ\api\app.py
+.\.venv\Scripts\python.exe -m pytest tests\test_agent_run_resume.py tests\test_transfer_session.py tests\test_l2c.py::test_waiting_approval_run_can_resume_after_approval tests\test_l2c.py::test_waiting_approval_run_reject_cancels_run -q
+.\.venv\Scripts\python.exe -m pytest tests\test_artifact_api.py::test_job_operation_status_projects_linked_artifacts tests\test_artifact_api.py::test_agent_artifact_meta_tools_list_and_present -q
+.\.venv\Scripts\python.exe -m pytest tests\application\test_tool_invocation_application.py tests\test_artifact_api.py::test_agent_artifact_meta_tools_list_and_present tests\test_capability_runtime_registry.py::test_center_meta_tool_executes_without_node_job tests\test_capability_runtime_registry.py::test_capability_invoke_by_source_id_creates_real_node_job tests\test_capability_runtime_registry.py::test_capability_invoke_requires_disambiguation_for_multiple_sources -q
+cd console-frontend && npm run build
+rg "ToolInvocationApplicationService|from yequ\.application\.tool_invocation|_default_functions\(|fallback_runtime_kind|MessageDedup|get_dedup\(" src tests
+rg "allow_unregistered_function=True" src\yequ tests
+rg "consume_approval\(" src\yequ\services\maintenance_executor.py src\yequ\services\maintenance_service.py src\yequ\api\routes\maintenance.py
+.\.venv\Scripts\python.exe -m pytest tests\test_agent.py tests\test_agent_run_resume.py tests\test_agent_runtime_state.py tests\test_import_boundaries.py -q
+```
+
+验收结果：ruff 通过；AgentRun resume / transfer / maintenance approval resume 9 项通过；
+artifact-producing Job Operation projection 2 项通过；runtime/meta/capability/artifact 7 项通过；
+Console typecheck + production build 通过；
+旧执行服务、旧非流式 Agent loop、旧 fallback、生产未注册放行和 maintenance 预消费 approval 均无命中；
+Agent/session/runtime 边界测试 33 项通过。
+
+阶段 5F/边界收口补充验证：
+
+```text
+.\.venv\Scripts\ruff.exe check src\yequ\runtime src\yequ\agent src\yequ\api\routes\agent.py src\yequ\services\agent_turn_service.py src\yequ\services\operation_service.py src\yequ\services\operation_scanner.py tests\test_agent.py tests\test_agent_run_resume.py tests\test_agent_runtime_state.py tests\test_agent_capability_context.py tests\test_import_boundaries.py tests\test_transfer_session.py tests\test_artifact_api.py
+.\.venv\Scripts\python.exe -m pytest tests\test_agent.py tests\test_agent_run_resume.py tests\test_agent_runtime_state.py tests\test_agent_capability_context.py tests\test_import_boundaries.py tests\test_transfer_session.py tests\test_artifact_api.py::test_job_operation_status_projects_linked_artifacts tests\test_artifact_api.py::test_agent_artifact_meta_tools_list_and_present -q
+.\.venv\Scripts\python.exe -m pytest tests\test_operation_event_dispatcher.py -q
+cd console-frontend && npm run build
+```
+
+验收结果：ruff 通过；Agent/session/runtime graph/capability context/import boundary/transfer/artifact
+与 OperationEvent dispatcher/scanner 共 46 项通过；Console typecheck + production build 通过。
+
+阶段 6 前非阻塞后续项：
+
+- 阶段 5E 第一版已完成：artifact-producing capability 不再新增独立
+  `ArtifactTask` 实体，统一归入 Job Operation 投影；后续如果出现非 Job 型离线 artifact
+  处理，再按同一 Operation handler 规则扩展。
+- 阶段 5F 已完成 graph facade 第一版：状态决策已从 SSE generator 收敛到
+  `AgentRunGraph`；已成功 tool call 的“不重放”仍依赖 checkpoint facts 和 resume
+  prompt 约束，后续如要做自动重放跳过，需要把 provider/tool IO 也进一步拆成可持久化
+  graph node。
+- 阶段 5G 仍是 PostgreSQL scanner 第一版：已有 terminal lock cleanup 和 active operation
+  projection sync、OperationEventDispatcher、cancelling 超时专用策略和 startup 恢复报告；
+  外部 MQ backend 仍不是本阶段目标。
+- 部分历史文档仍描述 v1/v1.5 旧路径；不影响当前生产路径，但后续文档整理时应归档
+  或改为历史记录。
+
 ## 1. 结论
 
 项目当前需要把主架构从 **Center Capability Runtime v1** 升级为 **Center Execution Runtime v2**。
@@ -71,51 +184,54 @@ cd console-frontend && npm run build
 
 ## 2. 当前实现形态
 
-当前实现已经有比较强的控制面，但执行运行时语义仍分散在多个模块中。
+当前实现已经从 v1 大入口切到 Center Execution Runtime 主路径。
 
 ```text
 Agent / Console / CLI
   -> API route
-  -> application service
-  -> 各自进入不同执行路径
+  -> CenterExecutionRuntime
+  -> Operation / Job / Approval / Transfer handlers
+  -> YQP Node 或 Center 本地 meta tool
 ```
 
 当前主要路径：
 
 ```text
 Agent
-  -> agent_stream.py / agent_service.py
+  -> agent_stream.py
   -> tool_stream.py
-  -> ToolInvocationApplicationService
-  -> Capability resolver / Policy
-  -> Invocation / Job
+  -> CenterExecutionRuntime
+  -> admission / policy / capability resolver
+  -> inline meta tool 或 Invocation / Job / Operation
   -> YQP Node
 
 Transfer
+  -> CenterExecutionRuntime
   -> TransferApplicationService
   -> TransferSession
-  -> receiver Job + sender Job
-  -> 聚合两端状态
+  -> receiver Job + sender Job via runtime suppress_operation
+  -> Operation(kind=transfer)
 
 Maintenance
   -> maintenance_executor.py
   -> MaintenanceRun / MaintenanceStep
-  -> 自己创建 Invocation / Job
-  -> 自己处理 approval / resume / rollback
+  -> step Job via CenterExecutionRuntime
+  -> 自己保留 step/rollback/artifact 领域逻辑
 
 Approval
   -> approval_service.py
   -> pending / approved / consumed / expired
+  -> Operation(kind=approval_wait)
 
 Artifact
   -> artifact_service.py
   -> upload / list / get / present
 ```
 
-问题不是没有模块，而是：
+当前剩余问题不再是 v1 大入口，而是：
 
 ```text
-每个模块都在自己实现一部分调度语义。
+Operation 泛化、AgentRun checkpoint、outbox/scanner 还没有完全收束。
 ```
 
 典型表现：
@@ -573,20 +689,786 @@ transfer.create
 - transfer 失败后点击继续，Agent 明确报告失败原因；
 - Center 只提供事实，LLM 生成自然语言。
 
-### 阶段 5：扩展到 Maintenance / Approval / 长 Job
+### 阶段 4.6：Runtime v1 遗留审计与入口倒换
 
-接入：
+阶段 4.6 是进入阶段 5 前必须完成的框架倒换阶段。阶段 4.6 的产物不是
+“分析报告”，而是一组代码重构任务。完成后，阶段 5 的新领域接入只能走
+Center Execution Runtime，不再向 v1 入口追加业务分支。
 
-- `MaintenanceRun`；
-- `ApprovalRequest`；
-- 单个长 Job；
-- Artifact 生产型任务。
+#### 4.6.1 审计结论
+
+当前代码中 v1/v1.5 遗留运行时语义分布如下，处理动作固定，不再二次讨论：
+
+| 构件 | 文件 | 当前职责 | 判定 | 阶段 4.6 处理动作 |
+|---|---|---|---|---|
+| `ToolInvocationApplicationService` | `src/yequ/application/tool_invocation.py` | 同时处理 meta tool、capability.invoke、policy、approval、Invocation、Job、resource lock、transfer、operation、同步等待 | v1 大总管 | 阶段 4.6 内缩减为迁移 shim。阶段 4.7 删除生产引用和 shim 本体。新增 `CenterExecutionRuntime` 后，业务逻辑只能存在于 runtime handler。 |
+| `ExecutionAdmissionService` | `src/yequ/runtime/admission/service.py` | 返回 `execution_plan`，但不真正控制执行路由 | v2 骨架未接管入口 | 升级为 runtime 的第一道硬闸门。所有执行必须先产生 `ExecutionPlan`，再由 handler registry 路由。 |
+| `OperationService` | `src/yequ/services/operation_service.py` | 主要处理 transfer 的 create/status/cancel projection | v2 transfer 专用外壳 | 保留表模型与公共序列化，迁移 transfer 逻辑到 `TransferOperationHandler`，本类改为 runtime facade。 |
+| `transfer.create` 分支 | `src/yequ/application/tool_invocation.py` | 在 `_execute_center_meta_tool()` 内创建 `TransferSession` 和 `Operation` | v2 功能挂在 v1 meta tool 分支上 | 必须迁出到 `TransferWorkflowHandler`。`_execute_center_meta_tool()` 不再包含 workflow 创建逻辑。 |
+| 非流式 Agent loop | `src/yequ/agent/agent_service.py` | 旧 ReAct loop、同步 tool 等待、旧 `waiting_approval` 汇总、plan 逻辑 | legacy 路径 | `/agent/invoke` 标记 legacy；阶段 4.6 不再扩展该路径。流式路径是主路径。后续删除前，测试迁移到 stream/runtime。 |
+| 流式 Agent loop | `src/yequ/agent/agent_stream.py` | 当前主 ReAct stream，已支持 `waiting_operation` | v2 主路径但仍直接调 tool stream | 保留。tool 执行入口改为 `CenterExecutionRuntime`，waiting 事件由 runtime result 投影。 |
+| tool stream | `src/yequ/agent/tool_stream.py` | 调用 `ToolInvocationApplicationService` 并翻译 SSE | v1 service 依赖点 | 改为调用 `CenterExecutionRuntime`。SSE 翻译保留在 Agent 层，不承载业务调度。 |
+| Maintenance runtime | `src/yequ/services/maintenance_executor.py`、`src/yequ/api/routes/maintenance.py` | 自有 step workflow、approval waiting、polling、resume、artifact、rollback | 领域逻辑和运行时语义混合 | 阶段 4.6 只标界：step/rollback/artifact 为领域逻辑；waiting/poll/resume/cancel 迁移目标为阶段 5D。 |
+| Approval waiting | `src/yequ/services/approval_service.py`、`src/yequ/api/routes/admin_approvals.py`、`console-frontend/src/pages/AgentChatPage.tsx` | ApprovalRequest、approveAndRun、前端 pending queue、auto continue | 独立等待机制 | 阶段 4.6 只保留现状兼容；阶段 5C 迁移为 `Operation(kind=approval_wait)`。 |
+| capability resolver | `src/yequ/services/capability_resolver.py` | Node/runtime 选择 | 当前可保留 | 保留为 `JobExecutionHandler` 依赖。不得放入 Agent 层或 workflow handler 内重复实现。 |
+| capability registry | `src/yequ/services/capability_registry.py` | capability definition/source/snapshot、meta 查询 | 当前可保留 | 保留为 registry/read model。不得承担 execution routing。 |
+| test-only default functions | `src/yequ/api/routes/agent.py` 的 `_default_functions()` | 为旧测试提供 system.* 工具 | test-only legacy | 保留但改注释为 test-only legacy。生产 `_available_functions()` 不注入该列表。 |
+| Console OperationCard | `console-frontend/src/pages/AgentChatPage.tsx` | Activity 面板展示 Operation | v2 主 UI | 保留。阶段 5C 后 approval queue 不再作为主等待 UI。 |
+
+#### 4.6.2 新目录和新模块
+
+阶段 4.6 必须建立以下目录结构：
+
+```text
+src/yequ/runtime/
+  __init__.py
+  execution_runtime.py
+  command.py
+  result.py
+  handlers/
+    __init__.py
+    base.py
+    inline_meta.py
+    capability_invoke.py
+    job_execution.py
+    approval_gate.py
+    transfer_workflow.py
+    operation_control.py
+  operations/
+    __init__.py
+    registry.py
+    base.py
+    transfer.py
+```
+
+模块职责固定如下：
+
+| 模块 | 职责 | 禁止事项 |
+|---|---|---|
+| `execution_runtime.py` | 唯一新执行入口。调用 Admission，分派 handler，返回统一 runtime result。 | 禁止直接写具体 transfer/maintenance/approval 业务分支。 |
+| `command.py` | 定义 runtime command，承接现有 `ExecuteToolCommand` 字段。 | 禁止绑定 FastAPI 或 Agent SSE。 |
+| `result.py` | 定义 runtime result：inline result、job result、approval wait、operation wait、denied、failed。 | 禁止生成自然语言 assistant 文本。 |
+| `handlers/base.py` | handler interface。 | 禁止依赖具体 Node 平台。 |
+| `handlers/inline_meta.py` | 执行 `node.*`、`capability.search/describe`、`artifact.*`、`operation.status/cancel`、`transfer.status/cancel`。 | 禁止创建新 workflow。 |
+| `handlers/capability_invoke.py` | 解析 `capability.invoke` 为 concrete capability command。 | 禁止创建 Job；解析后交回 runtime。 |
+| `handlers/job_execution.py` | 创建 Invocation/Job、resource lock、短同步等待。 | 禁止处理 approval 创建；禁止处理 workflow fan-out。 |
+| `handlers/approval_gate.py` | policy ask/deny、ApprovalRequest 创建/验证/消费。 | 禁止创建 Node Job。 |
+| `handlers/transfer_workflow.py` | 处理 `transfer.create` workflow。 | 禁止混入 artifact 展示和 Agent resume。 |
+| `handlers/operation_control.py` | 处理 `operation.status`、`operation.cancel`。 | 禁止直接读取 Agent session。 |
+| `operations/registry.py` | operation handler registry。 | 禁止使用 if/elif 扩张 kind。 |
+| `operations/transfer.py` | transfer operation projection/cancel/summary。 | 禁止保存 transfer 领域事实到 Operation 之外。 |
+
+#### 4.6.3 执行步骤
+
+阶段 4.6 按以下顺序执行，不跳步。
+
+1. 建立 runtime command/result 类型
+
+   - 新增 `src/yequ/runtime/command.py`；
+   - 新增 `src/yequ/runtime/result.py`；
+   - `ExecuteToolCommand` 保留在 `src/yequ/application/schemas.py`，但 runtime 内部使用
+     `RuntimeCommand`；
+   - 添加 `RuntimeResult.status` 枚举值：
+     `succeeded`、`failed`、`denied`、`unavailable`、`created`、`running`、
+     `waiting_approval`、`waiting_operation`；
+   - 提供 `RuntimeResult.to_execute_tool_result()`，保证旧调用方可继续收到
+     `ExecuteToolResult`。
+
+2. 建立 `CenterExecutionRuntime`
+
+   - 新增 `src/yequ/runtime/execution_runtime.py`；
+   - 实现 `CenterExecutionRuntime.execute(command: RuntimeCommand)`；
+   - `execute()` 的固定流程：
+
+     ```text
+     normalize command
+       -> admission.plan(command, facts)
+       -> handler_registry.resolve(plan)
+       -> handler.execute(command, plan)
+       -> return RuntimeResult
+     ```
+
+   - `execute()` 内不得出现 `transfer.create`、`maintenance`、`approval` 等具体业务
+     `if/elif` 分支；具体分支只能存在于 handler registry。
+
+3. 建立 handler registry
+
+   - 新增 `src/yequ/runtime/handlers/base.py`；
+   - 新增 handler registry；
+   - 路由表第一版固定为：
+
+     | Admission decision / function | Handler |
+     |---|---|
+     | inline meta tool | `InlineMetaToolHandler` |
+     | `capability.invoke` | `CapabilityInvokeHandler` |
+     | sync node job | `JobExecutionHandler` |
+     | waitable node job | `JobExecutionHandler` + operation wrapping，阶段 5B 完成 |
+     | `transfer.create` workflow | `TransferWorkflowHandler` |
+     | approval ask/deny | `ApprovalGateHandler` |
+     | `operation.status/cancel` | `OperationControlHandler` |
+
+4. 迁移 inline meta tools
+
+   - 从 `ToolInvocationApplicationService._execute_center_meta_tool()` 迁出以下工具到
+     `InlineMetaToolHandler`：
+     - `node.list`
+     - `node.status`
+     - `capability.search`
+     - `capability.describe`
+     - `artifact.list`
+     - `artifact.get`
+     - `artifact.present`
+     - `transfer.status`
+     - `transfer.cancel`
+   - `operation.status`、`operation.cancel` 放入 `OperationControlHandler`；
+   - 迁移后 `_execute_center_meta_tool()` 删除；
+   - 阶段 4.6 内不得留下 `_execute_center_meta_tool()` 到 runtime 的转发函数。
+
+5. 迁移 `capability.invoke`
+
+   - 从 `ToolInvocationApplicationService._execute_capability_invoke()` 迁出到
+     `CapabilityInvokeHandler`；
+   - handler 只负责解析 `capability_ref/source_id/node_id/input`；
+   - 解析结果必须重新进入 `CenterExecutionRuntime.execute()`；
+   - 不允许 handler 直接创建 Invocation/Job。
+
+6. 迁移 Job 执行
+
+   - 从 `ToolInvocationApplicationService.execute()` 迁出以下逻辑到 `JobExecutionHandler`：
+     - `resolve_function()`
+     - `create_invocation()`
+     - `start_invocation()`
+     - `create_job()`
+     - resource lock conflict 处理
+     - 短同步 `wait_for_invocation()`
+     - `_collect_terminal_result()`
+   - `JobExecutionHandler` 只处理已经通过 approval gate 的命令；
+   - `JobExecutionHandler` 不创建 ApprovalRequest。
+
+7. 迁移 approval gate
+
+   - 从 `ToolInvocationApplicationService.execute()` 迁出 policy 与 approval 逻辑到
+     `ApprovalGateHandler`；
+   - `ApprovalGateHandler` 负责：
+     - declared risk/effect policy check；
+     - resolved capability policy check；
+     - `create_approval()`；
+     - `verify_approval()`；
+     - `consume_approval()`；
+   - `ApprovalGateHandler` 对需要审批的命令返回 `waiting_approval`；
+   - 已携带有效 `approval_id` 的命令继续进入 `JobExecutionHandler`。
+
+8. 迁移 transfer workflow
+
+   - 新增 `TransferWorkflowHandler`；
+   - 将 `transfer.create` 从 meta tool 分支迁出；
+   - handler 调用 `TransferApplicationService.create()` 创建 `TransferSession`；
+   - handler 调用 operation runtime 创建 `Operation(kind=transfer, ref_type=transfer_session)`；
+   - handler 返回 `RuntimeResult(status=waiting_operation)`；
+   - `TransferWorkflowHandler` 是阶段 4.6 唯一允许创建 workflow operation 的 handler。
+
+9. 建立 operation handler registry
+
+   - 新增 `src/yequ/runtime/operations/registry.py`；
+   - 新增 `src/yequ/runtime/operations/base.py`；
+   - 新增 `src/yequ/runtime/operations/transfer.py`；
+   - 将 `OperationService._sync_from_transfer()`、`_operation_status_from_transfer()`、
+     `_transfer_title()` 迁入 `TransferOperationHandler`；
+   - `OperationService.status()` 改为：
+
+     ```text
+     operation = load operation
+       -> handler = registry.resolve(operation.kind, operation.ref_type)
+       -> projection = handler.project(operation)
+       -> persist operation shell changes
+       -> return projection
+     ```
+
+10. 倒换生产调用入口
+
+    - `ToolInvocationApplicationService.execute()` 改为：
+
+      ```text
+      runtime = CenterExecutionRuntime(db)
+      result = await runtime.execute(RuntimeCommand.from_execute_tool_command(command))
+      return result.to_execute_tool_result()
+      ```
+
+    - `agent_stream.py` 和 `tool_stream.py` 继续可通过 `ToolInvocationApplicationService`
+      调用，但实际执行已经进入 runtime；
+    - 新代码禁止直接调用 `ToolInvocationApplicationService` 添加业务能力。
+
+11. 标记 legacy Agent 非流式路径
+
+    - `/agent/invoke` 非流式 endpoint 保留，但文档和代码注释标记为 legacy；
+    - `agent_service.agent_invoke()` 不再新增 v2 功能；
+    - 与生产 Console 相关的新能力只走 `/agent/invoke/stream`；
+    - 后续删除条件写入文档：所有 `tests/test_agent.py` 非流式覆盖迁移到 stream 或 runtime 后删除。
+
+12. 标定 maintenance 与 approval 迁移边界
+
+    - 在文档中固定边界：
+      - `MaintenanceRun` / `MaintenanceStep` / rollback / maintenance artifact 是领域逻辑；
+      - waiting、polling、resume、cancel 是 runtime 逻辑，阶段 5D 迁移；
+      - `ApprovalRequest` 是审批事实；
+      - approval waiting、approve 后继续、deny 后终态是 runtime 逻辑，阶段 5C 迁移；
+    - 阶段 4.6 不改 maintenance/approval 行为，只建立迁移入口，避免扩大变更面。
+
+13. 文档状态修正
+
+    - 修正 `docs/todos/2026-06-28-center-capability-runtime-v1.md` 中与顶部状态冲突的文字；
+    - `docs/documentation-index.md` 保持 v2 为当前主线；
+    - `docs/todos/README.md` 保持 v1 为已验收基线；
+    - 新增或更新一节“Runtime v1 遗留处理结果”，列明已迁移和未迁移对象。
+
+#### 4.6.4 删除与迁移规则
+
+阶段 4.6 中每个旧构件按以下规则处理：
+
+| 类型 | 处理 |
+|---|---|
+| 生产路径仍调用，且行为正确 | 阶段 4.6 内迁移到 runtime；阶段 4.7 删除旧生产引用。 |
+| 生产路径仍调用，但职责属于 runtime | 阶段 4.6 迁移到 runtime handler；阶段 4.7 删除原位置转发和旧入口。 |
+| 只被测试调用 | 阶段 4.6 标记 test-only；阶段 4.7 迁移测试并删除 test-only 旧入口。 |
+| 无引用代码 | 同阶段删除，并补最小回归测试或删除过期测试。 |
+| 文档中仍描述为主线的 v1 内容 | 改为历史基线或归档，不保留双主线描述。 |
+| 旧命名但仍对应当前领域事实 | 保留命名，不为“看起来 v1”而重命名。 |
+| 旧命名且表达错误主线 | 重命名或迁移到 legacy 模块。 |
+
+#### 4.6.5 禁止事项
+
+阶段 4.6 期间禁止以下做法：
+
+- 禁止继续向 `ToolInvocationApplicationService._execute_center_meta_tool()` 添加新业务分支；
+- 禁止让 Agent 根据自然语言关键词决定 resume；
+- 禁止让 LLM 决定 sync/async/admission；
+- 禁止在 `OperationService` 中继续用 `if operation.kind == ...` 扩张新领域；
+- 禁止把 `MaintenanceRun`、`ApprovalRequest`、`TransferSession` 的领域字段复制进
+  `Operation` 作为第二事实源；
+- 禁止为修测试保留生产不可达的 silent fallback；
+- 禁止让前端直接根据 tool name 拼业务状态，状态必须来自 runtime/operation facts。
+
+#### 4.6.6 验收
+
+阶段 4.6 只有满足以下条件才算完成：
+
+- `CenterExecutionRuntime` 存在并成为 `ToolInvocationApplicationService.execute()` 的实际执行入口；
+- `transfer.create` 已从 meta tool 分支迁移到 `TransferWorkflowHandler`；
+- `OperationService` 使用 operation handler registry，transfer projection 位于
+  `TransferOperationHandler`；
+- `ToolInvocationApplicationService` 文件行数和职责明显下降，只保留阶段 4.7 要删除的迁移 shim；
+- `agent_stream.py` / `tool_stream.py` 的工具执行最终进入 runtime；
+- 非流式 `/agent/invoke` 被明确标记 legacy，且没有新增 v2 功能依赖它；
+- maintenance/approval 的迁移边界已写入本文档，阶段 5C/5D 不再重新定义边界；
+- v1 文档状态冲突已修正；
+- 窄测试覆盖：
+  - execution admission；
+  - transfer.create waiting_operation；
+  - operation.status/cancel；
+  - approval waiting；
+  - one normal short Job；
+  - Agent stream waiting_operation；
+- `ruff check` 覆盖新增 runtime 模块和被迁移模块；
+- 前端不需要修改即可继续通过现有 OperationCard 验收。
+
+### 阶段 4.7：删除迁移 shim 与统一入口
+
+阶段 4.7 是阶段 5 开始前的强制关口。阶段 4.6 允许短期迁移 shim 是为了控制
+重构半径；阶段 4.7 负责删除这些 shim，消除双入口、双实现、双等待机制和
+test-only 旧能力对架构的污染。阶段 5 不允许在迁移 shim 存在的状态下开始。
+
+#### 4.7.1 逻辑链路审计结论
+
+阶段 4.7 的审计对象不是关键词，而是生产请求从入口到终态的逻辑链。只删除文件名或
+类名不能证明架构收敛；必须证明同一类业务事实不再由两套入口、两套等待机制、两套状态
+投影共同维护。
+
+当前已确认的生产链路如下，处理动作固定：
+
+| 链路 | 当前实际路径 | 架构问题 | 阶段 4.7 固定处理 |
+|---|---|---|---|
+| Agent 工具执行链 | `agent_stream` / `tool_stream` -> `ToolInvocationApplicationService.execute()` -> meta tool / node job / transfer / operation 分支 | Agent 主路径仍穿过 v1 大总管。新增 runtime 后如果只在 service 内转发，就会形成“v2 包 v1”的结构。 | Agent 工具执行必须直接进入 `CenterExecutionRuntime`。SSE 层只翻译事件，不持有调度、审批、Job 创建和等待逻辑。 |
+| Admin 手动执行链 | `/admin/invocations` -> `ToolInvocationApplicationService.execute(allow_unregistered_function=True)` | Admin 路径可绕过 capability registry，和 Agent 路径使用不同约束。 | Admin 手动执行进入 `CenterExecutionRuntime`，未注册能力不得在生产路径执行。测试专用能力必须放在 test helper。 |
+| Approval approve-and-run 链 | `/admin/approvals/{id}/approve-and-run` -> approval 更新 -> `ToolInvocationApplicationService.execute()` | 审批后的继续执行独立于 Operation wait/resume，形成第二套恢复机制。 | approve 只改变 approval fact；后续恢复由 runtime / operation wakeup 接管。旧 approve-and-run 入口删除或改为 Operation resume 的领域动作。 |
+| Transfer 编排链 | `transfer.create` -> `TransferApplicationService` -> `_invoke_capability()` -> `ToolInvocationApplicationService.execute()` -> sender/receiver jobs | Transfer 作为“领域服务”反向调用旧工具执行入口创建 Job，导致 transfer、tool invocation、operation 三层互相调用。 | `TransferWorkflowHandler` 直接通过 runtime 的 Job handler 创建 send/receive Job；`TransferSession` 只保存传输领域事实。 |
+| Operation 投影链 | `OperationService.status()` -> `TransferApplicationService.status()` -> 根据 sender/receiver Job 刷新 transfer -> 回写 Operation | Operation 状态依赖 transfer 查询时临时同步，状态投影不是统一事件源。 | Operation 状态由 Operation handler / scanner / event 投影维护；status API 只读 Operation projection，不触发领域补偿式同步。 |
+| 普通 Job 创建链 | `ToolInvocationApplicationService`、`maintenance_executor`、transfer 间接路径分别创建 Invocation/Job | 同一种 Node Job 有多套 fan-out 入口，resource lock、approval、timeline 和等待语义容易分叉。 | 普通 Node Job 创建收敛到 `JobExecutionHandler`；workflow/maintenance/transfer 只能调用该 handler，不直接调用 `create_job()`。 |
+| Approval gate 链 | `ToolInvocationApplicationService` 内部校验、`maintenance_executor` 内部审批、前端 approval queue 自动继续 | approval 是横切 concern，但现在分散在多个业务执行器里。 | `ApprovalGateHandler` 成为唯一 approval gate；领域服务只声明 risk/effect/resource，不能自行完成审批后执行。 |
+| 等待与轮询链 | `wait_for_invocation()`、`_wait_invocation_terminal_for_plan()`、`TransferApplicationService.status()`、前端 job polling | 短等待、长等待、审批等待、传输等待各自实现，Agent 中断后不能稳定从等待点恢复。 | 等待统一为 Operation / wait handle / OperationEvent。同步短等待只是 runtime policy 的一种结果，不是独立轮询器。 |
+| Agent 非流式链 | `/agent/invoke` -> `agent_service.agent_invoke()` -> 旧 ReAct loop -> `ToolInvocationApplicationService` | 与 stream/checkpoint 主线并存，继续保留会让“继续”语义和中断恢复语义分叉。 | 生产只保留 stream/checkpoint 主线；非流式 CLI 如需存在，只消费 stream 结果并汇聚展示。 |
+| Planning 链 | `/agent/plan` -> `agent_plan()` 中旧 planning/invoke 绑定逻辑 | planning 是意图建模，不应复用旧 invoke loop 的执行副作用。 | Planning 逻辑迁到独立 planning service；执行仍进入 runtime。 |
+| Capability context 链 | `_available_functions()` -> `_default_functions()` + center meta tools + capability context；context 为空时 legacy flat tools fallback | 多 Node 后仍可能把 test-only `system.*` 和 flat tools 当成真实能力，导致路由错觉。 | 生产上下文只来自 Center meta tools 和 capability registry；无能力时输出结构化空事实，不渲染 legacy flat tools。 |
+| API router 链 | `app.py` include `admin.py` compatibility router，同时 include 具体 admin routes | 旧聚合 router 仍在生产 app 中，不能只按文件名判断死代码。 | `app.py` 只 include 具体 router；compatibility router 删除。 |
+
+逻辑链路审计后的判定标准：
+
+- “旧构件无关键词”只是最低条件，不是完成条件；
+- 完成条件是：任意一次工具执行、审批继续、传输、maintenance step、operation status
+  查询，都能画出唯一的 runtime 主路径；
+- 领域模型可以保留多个，例如 `Job`、`TransferSession`、`MaintenanceRun`、`Operation`，
+  但每个模型只拥有自己的事实，不拥有别人的调度职责；
+- 业务入口可以保留多个，例如 Agent、Admin、CLI、未来移动端，但入口后的 admission、
+  approval、job dispatch、wait、cancel、resume 必须汇入同一个 runtime；
+- 阶段 4.7 执行后，如果一个 bug 需要同时修改 Agent 执行、Transfer 执行和
+  Maintenance 执行三处等待逻辑，说明本阶段验收失败。
+
+#### 4.7.2 构件级自检结论
+
+当前已识别的适配层、兼容层、旧入口、fallback 式结构如下，处理动作固定：
+
+| 对象 | 文件 | 当前问题 | 阶段 4.7 处理动作 |
+|---|---|---|---|
+| `ToolInvocationApplicationService` | `src/yequ/application/tool_invocation.py` | 旧统一执行入口。阶段 4.6 后会成为迁移 shim。 | 删除生产引用；删除类和文件；测试改测 `CenterExecutionRuntime`。 |
+| `ToolInvocationApplicationService` package export | `src/yequ/application/__init__.py` | 旧入口通过 package export 继续扩散。 | 删除 export；所有 import 改为 runtime 模块。 |
+| `agent_service.agent_invoke()` | `src/yequ/agent/agent_service.py` | 非流式旧 ReAct loop，与 stream 主路径并存。 | `/agent/invoke` 生产 endpoint 删除或改为 410；CLI 若需要非流式，改为调用 stream 汇聚器，不调用旧 loop。 |
+| `agent_service.agent_plan()` 中旧 plan 执行路径 | `src/yequ/agent/agent_service.py` | 与 runtime/checkpoint 主线分离。 | 保留 planning 领域逻辑时迁入独立 planning service；删除与旧 invoke 绑定的执行逻辑。 |
+| `_default_functions()` | `src/yequ/api/routes/agent.py` | test-only system.* raw tools 容易污染多 Node/Tool RAG 主线。 | 从 agent route 删除；测试需要的 fake tools 移到 `tests/fakes/agent_functions.py`。 |
+| `allow_unregistered_function` | `src/yequ/application/schemas.py`、admin routes | 为 admin 旧手动调用放宽 capability registry。 | 删除生产执行路径中的放宽开关；需要手动调用时必须先进入 registry 或显式 test helper。 |
+| `MessageDedup` 内存兼容 helper | `src/yequ/services/message_dedup.py` | 文档声明为旧 import / 轻量单测兼容 helper。 | 无生产引用时删除；测试改用 DB-backed dedup 或专用 fake。 |
+| `admin.py` compatibility router | `src/yequ/api/routes/admin.py` | compatibility import 层。 | app 不引用后删除文件；app 若引用则改为直接 include 具体 admin routes。 |
+| Capability Context legacy/fallback context | `src/yequ/runtime/capability_context.py` | `_legacy_function_context_node()` 与 `_render_flat_function_fallback()` 保留旧 flat tools 上下文。 | 删除生产 fallback；无 capability context 时返回显式空上下文事实，不渲染旧 flat 工具上下文。 |
+| `agent.fallback_synthesis` SSE 类型 | `console-frontend/src/api/types.ts`、测试 | 旧 fallback synthesis 事件已不应出现。 | 删除前端类型和测试引用；协议只保留 `agent.failed` / `agent_protocol_error`。 |
+| Approval auto continue 主机制 | `console-frontend/src/pages/AgentChatPage.tsx`、`admin_approvals.py` | 独立等待机制与 Operation waiting 并存。 | 阶段 4.7 标记为阶段 5C 必删旧主机制；阶段 5C 完成后删除 auto continue 主路径。 |
+| Maintenance `/runs/{run_id}/resume` | `src/yequ/api/routes/maintenance.py` | 独立 resume 入口与 Operation resume 并存。 | 阶段 4.7 标记为阶段 5D 必删旧主机制；阶段 5D 完成后删除该入口或改为 Operation resume 的领域动作。 |
+| `fallback_runtime_kind` | `capability_resolver.py`、`node_service.py`、`capability_registry.py` | 名称表达 fallback，容易被误解为静默降级。当前用于 hybrid runtime requirements。 | 重命名为 `allowed_runtime_kinds`；运行时选择必须在 diagnostics 中显示命中的 runtime kind。 |
+| Provider-specific compatible provider adapter | `deepseek_provider.py`、Provider 计划文档 | OpenAI-compatible 是协议适配，不是旧版本兼容。 | 保留为 provider adapter；不得作为 runtime 兼容层，不参与 4.7 删除。 |
+| SPA fallback | `api/app.py` | 前端路由 fallback。 | 保留。它是 Web 路由机制，不是业务兼容层。 |
+
+#### 4.7.3 执行步骤
+
+阶段 4.7 按以下顺序执行。
+
+1. 删除 `ToolInvocationApplicationService` 生产引用
+
+   - 修改 `src/yequ/agent/tool_stream.py`，直接调用 `CenterExecutionRuntime`；
+   - 修改 `src/yequ/api/routes/admin_approvals.py`，`approveAndRun` 直接调用 runtime；
+   - 修改 `src/yequ/api/routes/admin_invocations.py`，手动执行直接调用 runtime；
+   - 修改 `src/yequ/application/transfer.py`，删除 `_invoke_capability()` 反向调用旧
+     service 的链路，receiver/send job 创建改由 `TransferWorkflowHandler` 调用
+     runtime Job handler；
+   - 修改所有生产 import，禁止从 `yequ.application` 导入 `ToolInvocationApplicationService`。
+
+2. 删除 `ToolInvocationApplicationService`
+
+   - 删除 `src/yequ/application/tool_invocation.py`；
+   - 保留 `ExecuteToolCommand` / `ExecuteToolResult` schema，直到调用方完全迁移到
+     `RuntimeCommand` / `RuntimeResult`；
+   - 删除 `src/yequ/application/__init__.py` 中的 service export；
+   - 运行 `rg "ToolInvocationApplicationService" src`，结果必须为空。
+
+3. 迁移测试
+
+   - `tests/application/test_tool_invocation_application.py` 改名为
+     `tests/runtime/test_center_execution_runtime.py`；
+   - `tests/test_transfer_session.py` 改为直接调用 runtime；
+   - `tests/test_capability_runtime_registry.py` 中执行类断言改为 runtime；
+   - `tests/test_artifact_api.py` 中 artifact meta tool 执行改为 runtime；
+   - 运行 `rg "ToolInvocationApplicationService" tests`，结果必须为空。
+
+4. 删除非流式旧 Agent 主路径
+
+   - `/agent/invoke` endpoint 删除或返回 410；
+   - CLI 的非流式 agent invoke 改为消费 `/agent/invoke/stream` 并汇聚最终事件；
+   - `agent_service.agent_invoke()` 删除；
+   - `tests/test_agent.py` 中依赖旧 `agent_invoke()` 的测试迁移到 stream 或 runtime；
+   - 运行 `rg "agent_invoke\\(" src tests`，只允许 CLI wrapper 或无结果。
+
+5. 移出 test-only raw tools
+
+   - `_default_functions()` 从 `src/yequ/api/routes/agent.py` 删除；
+   - 测试需要的 system.* fake tools 移到 `tests/fakes/agent_functions.py`；
+   - 生产 `_available_functions()` 只由 Center meta tools 和 capability context 构成；
+   - 运行 `rg "_default_functions" src`，结果必须为空。
+
+6. 删除 context legacy fallback
+
+   - 删除 `_legacy_function_context_node()`；
+   - 删除 `_render_flat_function_fallback()`；
+   - 无 node/capability context 时返回结构化空状态：
+
+     ```json
+     {
+       "routing_mode": "auto",
+       "nodes": [],
+       "tool_count_by_node": {},
+       "capability_sources": []
+     }
+     ```
+
+   - provider prompt 不再渲染 flat legacy tool list；
+   - 测试断言改为结构化空上下文或 meta-tool discovery。
+
+7. 删除 fallback synthesis 残留
+
+   - 删除前端 `SseEventType` 中 `agent.fallback_synthesis`；
+   - 删除测试中对 fallback synthesis 的旧空断言；
+   - 文档中只保留“不得生成 fallback synthesis”的规则，不保留事件类型。
+
+8. 清理 compatibility router/helper
+
+   - 删除 `api/routes/admin.py` compatibility router；
+   - 删除 `MessageDedup` 内存兼容 helper，保留 DB-backed dedup；
+   - 运行 `rg "compatibility|legacy|fallback|shim|kept for" src`，剩余结果必须逐项列入保留表。
+
+9. 重命名 runtime requirement fallback 字段
+
+   - 将 `fallback_runtime_kind` 迁移为显式 `allowed_runtime_kinds`；
+   - capability registry 生成 execution requirements 时写入 `allowed_runtime_kinds`；
+   - resolver 按 `allowed_runtime_kinds` 匹配；
+   - diagnostics 返回实际命中的 `runtime_id` 与 `runtime_kind`；
+   - 文档同步 Linux Node 合同和 capability runtime 文档。
+
+10. 文档收口
+
+    - 本文阶段 4.7 标记完成项；
+    - `docs/documentation-index.md` 增加“唯一执行入口：CenterExecutionRuntime”；
+    - `docs/todos/2026-06-28-center-capability-runtime-v1.md` 只保留历史基线；
+    - 删除或归档仍要求旧 service 的测试文档。
+
+#### 4.7.4 验收
+
+阶段 4.7 必须满足以下硬条件：
+
+- `rg "ToolInvocationApplicationService" src tests` 无结果；
+- `rg "agent_invoke\\(" src tests` 不再指向旧 ReAct loop；
+- `rg "_default_functions" src` 无结果；
+- `rg "agent.fallback_synthesis" src console-frontend/src tests docs/agent-sse-contract.md`
+  无结果；
+- `rg "fallback_runtime_kind" src docs tests` 无结果；
+- `src/yequ/application/tool_invocation.py` 删除；
+- `src/yequ/api/routes/admin.py` compatibility router 删除；
+- `src/yequ/services/message_dedup.py` 中旧内存兼容 helper 删除；
+- 所有生产工具执行入口直接依赖 `CenterExecutionRuntime`；
+- `rg "create_job\\(" src/yequ` 只允许出现在 `src/yequ/services/job_service.py`
+  的定义和 runtime Job handler；不得出现在 transfer 或 maintenance 业务执行器中；
+- `rg "wait_for_invocation|_wait_invocation_terminal_for_plan" src/yequ` 无生产结果；
+- `OperationService.status()` 不调用 `TransferApplicationService.status()` 做隐式同步；
+- `/admin/approvals` 不再存在 approve 后直接创建 Job 的旧继续链；
+- 所有 runtime handler 测试直接测试 runtime 或具体 handler；
+- 前端 Activity 面板、OperationCard、approval 现有行为通过窄测试或手动验收；
+- 阶段 5A 开始前，代码中不存在以“迁移兼容”为理由保留的业务执行层。
+
+### 阶段 5：Operation Runtime 泛化
+
+阶段 5 不再是一个单块任务，而是分为 5A-5G。目标是让 Operation Runtime
+成为 Center 长任务、等待、取消、恢复和前端投影的统一层，而不是 transfer 的补丁。
+
+#### 阶段 5A：OperationService 泛化
+
+目标：
+
+- `OperationService` 不再只认识 `transfer_session`；
+- 建立 operation kind/ref resolver/projection 机制；
+- 领域事实仍由领域模型保存，Operation 只保存运行时外壳。
+
+目标结构：
+
+```text
+OperationRuntime
+  -> OperationHandlerRegistry
+  -> OperationHandler(kind/ref_type)
+      - project_status()
+      - project_summary()
+      - cancel()
+      - terminal_observation()
+```
+
+第一批 handler：
+
+| kind | ref_type | 领域模型 |
+|---|---|---|
+| `transfer` | `transfer_session` | `TransferSession` |
+| `job` | `job` | `Job` / `Invocation` |
+| `approval_wait` | `approval_request` | `ApprovalRequest` |
+| `maintenance` | `maintenance_run` | `MaintenanceRun` |
+| `artifact_task` | `job` 或后续 `artifact_task` | `Job` + `Artifact` |
 
 验收：
 
-- 不同领域共享 Operation/Waiter/Event；
-- 领域详情仍由各自模型保存；
-- 前端有统一等待卡片和领域详情入口。
+- `operation.status` 对不同 `kind/ref_type` 走 handler registry；
+- Operation status、summary、error、cancel 支持统一投影；
+- 未支持的 kind/ref_type 明确报错，不静默 fallback；
+- `transfer` handler 从旧 `OperationService` 内联逻辑迁出。
+
+#### 阶段 5B：长 Job 接入 Operation
+
+目标：
+
+- 解决单个 Node capability 执行时间较长时 Agent/SSE 不应持续等待或消耗 token 的问题；
+- 不把所有 tool call 强制异步，而是由 Admission 根据结构化事实决定。
+
+Admission 输入事实：
+
+- capability `timeout_sec`；
+- capability `effect` / `risk`；
+- `conflict_policy` / `resource_keys`；
+- capability 是否声明 progress/cancel/resume；
+- 是否可能产出大 artifact；
+- 用户 execution mode；
+- 调用方是否要求 `wait_for_result`。
+
+目标路径：
+
+```text
+capability.invoke / concrete capability
+  -> ExecutionAdmissionService
+  -> sync_wait 或 waitable_operation(kind=job)
+  -> Invocation + Job
+  -> Operation(ref_type=job)
+  -> OperationCard / wait_handle
+```
+
+验收：
+
+- 可配置阈值让长 Job 返回 `waiting_operation`；
+- 短 Job 仍可走 `sync_wait`；
+- Job 成功、失败、timeout、cancelled 会同步 Operation；
+- Agent 对长 Job 不再用 LLM 轮询；
+- Console 可从 OperationCard 进入 Job 详情。
+
+#### 阶段 5C：Approval 接入 Operation
+
+目标：
+
+- 把 approval waiting 从 Console 特有逻辑收敛到 Operation Runtime；
+- ApprovalRequest 仍保存审批事实，Operation 负责等待、投影、resume/cancel 入口。
+
+目标路径：
+
+```text
+tool call requires approval
+  -> ApprovalRequest
+  -> Operation(kind=approval_wait, ref_type=approval_request)
+  -> OperationCard
+  -> approve/deny
+  -> terminal observation / resume
+```
+
+需要处理：
+
+- 兼容现有 `agent.tool_call.waiting_approval` 事件；
+- 定义 `agent.operation.waiting` 与 approval UI 的关系；
+- Console 中 approval queue 与 OperationCard 不能长期并存两套主等待入口；
+- `approveAndRunApproval` 后的 Job 也应能继续接入 Operation。
+
+验收：
+
+- 写操作需要审批时，用户能在统一 Activity 面板看到 approval Operation；
+- approve/deny 后 Operation 显式终态；
+- approve 后如产生长 Job，等待可转入 Job Operation 或同一 Operation 的后续阶段；
+- 不再需要前端独立拼接一套 approval auto continue 作为主机制。
+
+#### 阶段 5D：MaintenanceRun 接入 Operation
+
+目标：
+
+- MaintenanceRun 继续保存维护领域事实；
+- check / repair / verify / rollback_hint 等步骤不丢失；
+- 等待、取消、resume、前端投影交给 Operation Runtime。
+
+目标路径：
+
+```text
+maintenance plan run
+  -> Operation(kind=maintenance, ref_type=maintenance_run)
+  -> MaintenanceRun / MaintenanceStep
+  -> OperationEvent
+  -> OperationCard
+```
+
+需要迁移：
+
+- `maintenance_executor.py` 中属于 runtime/wait/poll/resume 的部分；
+- `maintenance.py` 中 `/runs/{run_id}/resume` 的语义；
+- maintenance waiting approval 与阶段 5C 的 approval wait 关系；
+- maintenance artifact 与阶段 5E 的 artifact task 关系。
+
+验收：
+
+- MaintenanceRun 可从 OperationCard 查看状态；
+- waiting_approval、running、rollback_recommended、succeeded、failed 能投影为 Operation 状态/summary；
+- cancel/retry/resume 入口明确；
+- Maintenance 领域详情不被 Operation 吞并。
+
+当前落地：
+
+- `src/yequ/runtime/operations/maintenance.py` 新增 maintenance handler；
+- `OperationService.create_for_maintenance()` 创建 `kind=maintenance` 的 Operation；
+- maintenance run API 返回 `operation` / `wait_handle`，run 查询、resume、reject 会同步
+  operation projection；
+- cancel 通过 Operation handler 改写 `MaintenanceRun` / `MaintenancePlan` / running step，
+  并写入 `maintenance.run.cancelled` timeline。
+
+剩余缺口：
+
+- `/admin/maintenance/runs/{run_id}/resume` 仍是领域 API；阶段 6 前可保留为领域动作，
+  但前端主展示和 Agent 等待必须走 Operation；
+- maintenance retry 尚未设计，不能伪装为已支持；
+- 维护执行器内部仍是顺序执行器，不是 graph executor。
+
+#### 阶段 5E：Artifact 生产型任务接入 Operation
+
+目标：
+
+- 截图、摄像头、日志包、目录打包、大文件读取、多模态输出等 artifact-producing
+  capability 进入统一等待和展示路径；
+- Artifact 层只负责资产、元数据、存储和引用，不负责长任务等待。
+
+目标路径：
+
+```text
+artifact-producing capability
+  -> Job
+  -> Operation(kind=job)
+  -> Artifact(s)
+  -> Operation terminal summary
+  -> artifact.present / Console preview
+```
+
+设计修正：
+
+- 不新增 `ArtifactTask` 表。当前项目里的 artifact-producing capability 都是 Node Job 的
+  结果或副产物；Job 已经是执行事实，Artifact 是资产事实，Operation 是等待/展示事实。
+  再增加 ArtifactTask 会形成 Job/ArtifactTask 双执行事实。
+- `JobOperationHandler` 是 artifact-producing task 的投影点：它按 `job_id` 查询 Center
+  artifacts，并把 artifact refs 放入 `operation.output_data.artifacts` 和
+  `operation.status` 返回值。
+- 未来如果出现“纯 Center 后台 artifact 处理”，例如离线转码、OCR、缩略图生成，可以新增
+  `Operation(kind=artifact_processing)` handler；不能把 Node Job 型 artifact 能力迁到第二套
+  执行模型。
+
+验收：
+
+- 任务完成后 Operation summary 返回 artifact refs；
+- Console Activity 面板能看到任务状态，聊天流能展示 artifact；
+- Agent resume 后基于 artifact refs 总结，而不是读取二进制；
+- 不把图片/文件展示硬塞进 tool-call 结果块作为唯一展示。
+
+当前落地：
+
+- `JobOperationHandler.project()` 查询并返回与 `job_id` 关联的 artifacts；
+- `Operation.output_data` 包含 `{"job": ..., "artifacts": [...]}`；
+- 有 artifact 时 `operation.progress_message` 显示 artifact 可用数量；
+- 前端 Activity 面板已经展示 Job Operation 中的 artifacts；
+- `tests/test_artifact_api.py::test_job_operation_status_projects_linked_artifacts`
+  覆盖该投影。
+
+剩余缺口：
+
+- Agent resume 已能拿到 artifact refs，但完全避免重读二进制仍需依赖 graph executor 的
+  tool step 去重。
+
+#### 阶段 5F：通用 AgentRun Checkpoint / Resume
+
+目标：
+
+- 当前只支持 Operation 终态后的手动 Continue；
+- 普通 ReAct Loop 因 provider 错误、网络中断、SSE 断开、用户取消而中止时，不能靠用户输入“继续”恢复；
+- 必须基于 `AgentRun` / `AgentRunStep` 建立结构化 resume。
+
+新增语义：
+
+```text
+resume-run(run_id)
+resume-last-run(session_id)
+```
+
+需要记录：
+
+- provider request/response 边界；
+- assistant delta 是否已经部分输出；
+- tool call created/arguments/result；
+- waiting approval / waiting operation wait_handle；
+- provider error 是否发生在输出前还是输出后；
+- resume observation。
+
+验收：
+
+- 用户手动断开 SSE 后，前端能显示可恢复 run；
+- provider 失败后，Center 不静默重试已部分输出的 stream；
+- resume 不重新执行已经成功的 tool call；
+- 普通用户输入仍被视为新请求，不用自然语言关键词硬判断点恢复。
+
+当前落地：
+
+- `src/yequ/runtime/agent_run_service.py` 负责创建 run、追加 step、更新 checkpoint、
+  查询指定 run 和查询 session 下最近可恢复 run；
+- `src/yequ/runtime/agent_status.py` 负责 AgentRun 状态投影，Center service 不再反向
+  导入 `yequ.agent.runtime_state`；
+- `agent_invoke_stream()` 会发出 `agent.run.created`，并记录 provider/tool/final/failure
+  checkpoint；
+- `/agent/resume-run/stream` 按 `run_id` 恢复；
+- `/agent/resume-last-run/stream` 按 `session_id` 找最近
+  `waiting_operation` / `waiting_approval` / `failed` run 恢复；
+- 如果 checkpoint 中存在 `operation_id`，resume prompt 会携带最新 `operation.status`
+  observation。
+
+剩余缺口：
+
+- SSE generator 仍承担 provider/tool IO 和事件输出；状态决策已经进入
+  `AgentRunGraph`，但 provider/tool IO 还没有进一步拆成可持久化 graph node。
+- 已成功 tool call 不重放目前由 checkpoint facts 和 resume prompt 约束；只有当后续需要
+  自动跨进程恢复到中间 step 时，才继续把 IO node 持久化。
+- 前端已提供显式 `Resume` 操作进入 `resume-last-run/stream`；普通用户消息仍按新请求处理。
+
+#### 阶段 5G：OperationEvent / Outbox / Scanner 硬化
+
+目标：
+
+- 在不引入外部 MQ 的前提下，先把 PostgreSQL-backed Operation Bus 做可靠；
+- 为未来 NATS / Redis Streams / RabbitMQ 预留 dispatcher backend，但不让外部 MQ 成为第二事实源。
+
+需要完成：
+
+- OperationEvent 写入规范；
+- stuck operation scanner；
+- cancelling timeout；
+- terminal sync scanner；
+- resource lock 自动释放；
+- Operation 与 Job / TransferSession / ApprovalRequest / MaintenanceRun 终态一致性检查；
+- OperationEventDispatcher 接口；
+- Console/Agent 可依赖 Operation 状态，而不是各自轮询多个领域 API。
+
+验收：
+
+- Center 重启后，running/cancelling/stuck Operation 能被恢复或显式终结；
+- cancelled/failed/timeout 后 resource lock 不悬挂；
+- OperationEvent 可作为 UI projection 和 future MQ outbox；
+- 所有 scanner 使用短 session，不重新制造 idle-in-transaction 问题。
+
+当前落地：
+
+- `src/yequ/services/operation_scanner.py` 新增 `OperationConsistencyScanner`；
+- `app.py` 在非 test mode 启动/停止 operation consistency scanner；
+- scanner 使用短 session 分两步执行：释放 terminal owner job 的 held lock，同步非终态
+  Operation projection；
+- `resource_lock_service.release_locks_for_terminal_jobs()` 负责统一释放 owner Job 已终态的
+  held lock；
+- `OperationService.status()` 继续通过 handler registry 追加 operation terminal event。
+- `OperationEvent` 增加 `dispatch_status`、`dispatch_attempts`、`dispatched_at`、
+  `last_dispatch_error`，成为 PostgreSQL-backed outbox。
+- `OperationEventDispatcher` 负责推进 pending/retry event；当前 backend 为
+  PostgreSQL-local，不引入外部 MQ。
+- `OperationConsistencyScanner.startup_recovery_report()` 在启动时统计非终态 Operation
+  和 pending OperationEvent。
+- scanner 会将超时 `cancelling` Operation 显式标记为 `cancelled`，写入
+  `operation.cancel_timeout`；长时间未更新的 queued/running Operation 写入
+  `operation.stuck_detected` 事件暴露问题，不静默终结。
+
+剩余缺口：
+
+- 外部 MQ backend 未实现；按本文第 8 节，只有当 PostgreSQL-local dispatcher
+  无法满足实际吞吐或跨进程通知需求时才引入。
+- queued/running stuck 当前只报告，不自动失败；长任务是否终结必须由对应 handler
+  或显式取消策略决定。
+
+阶段 5 总体验收：
+
+- 不同领域共享 Operation / WaitHandle / OperationEvent / Activity 面板；
+- 领域详情仍由各自模型保存，Operation 不吞并 TransferSession / Job / MaintenanceRun / ApprovalRequest；
+- 新长任务不再各自发明等待、取消、resume、前端投影；
+- `ToolInvocationApplicationService` 不再作为 v2 新功能的扩张点；
+- SubAgent 所需的 parent/child run、wait_handle、resume observation 有可复用基础。
 
 ### 阶段 6：SubAgent 预留与实现
 
