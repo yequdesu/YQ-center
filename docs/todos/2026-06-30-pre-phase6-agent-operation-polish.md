@@ -259,6 +259,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - [x] transfer 子 job 不再使用固定 30 秒 lease，sender-ready 等待窗口也不再固定 30 秒。croc sender 在暴露 room/code 前可能需要收集和哈希大文件，Center 必须给传输类 job 足够的初始 lease 和 ready 等待窗口。
 - [x] 根据 croc v10.4.4 源码和本地 relay 复现，纠正 `Code is:` 语义：该输出发生在 sender 连接 relay 之前，不是 room ready。Node 现在必须在 `Code is:` 后等待 1 秒 relay settle 窗口再上报 `croc_sender_ready`；同时 croc 子进程必须使用 `--ignore-stdin`。
 - [x] Linux receive 端已把 `room (secure channel) not ready` / `could not secure channel` 建模为瞬态握手失败，在同一个 Job 内按 backoff 重试，不再让单次 croc receive 抢跑导致整次 Transfer 失败并取消 sender。
+- [x] Node 托管 croc sender 已改为确定性 relay 模式：`send --no-local --no-multi <path>`，禁用 croc 默认 local discovery/local relay/multiplex 多路径竞态。手动 CLI 可继续使用默认行为，自动化链路必须可观测、可推理。
 - [x] `transfer.create` 在 Operation 创建前如被客户端取消，必须取消已创建的 sender/receiver job 并标记 TransferSession cancelled，避免资源锁残留阻塞下一次传输。
 
 ```json

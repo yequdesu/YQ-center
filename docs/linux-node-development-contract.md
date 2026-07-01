@@ -607,6 +607,7 @@ src.bin  92% |██████████████████  | (7.7/8.4
 - sender 端在 stderr 读取到 `Code is:` 时，必须等待 1 秒 relay settle 窗口后再上报 `progress_source="croc_sender_ready"`、`phase="sender_ready"`、`sender_ready=true` 的 `transfer_progress` 事件；该事件不得包含 croc code 明文；
 - `Code is:` 不是 relay room ready 信号。croc v10.4.4 源码中该输出发生在 sender 连接 relay 之前；实测在该输出后立即启动 receiver 会触发 `room (secure channel) not ready, maybe peer disconnected`，约 0.5 秒后启动可成功；
 - 以子进程方式启动 croc 时必须传入 `--ignore-stdin`，避免 stdin 非字符设备时 croc 把 stdin 当作发送内容而忽略文件路径；
+- Node 托管的 croc sender 必须使用确定性 relay 模式：`croc ... send --no-local --no-multi <path>`。不得启用 croc 默认 local discovery/local relay/multiplex 多路径行为；
 - receive 端遇到 `room (secure channel) not ready` 或 `could not secure channel` 时，必须按瞬态握手失败处理，在同一个 Job 内使用相同 code/relay/output_dir 重试，不得直接把 Job 标记为最终失败；
 - `sender_ready` 是粘性事实，不是瞬时 UI 状态。sender 后续上报 `croc_stderr` 进度时必须继续携带 `sender_ready=true`，避免 Center 轮询时被后续 1%、2% 等真实进度覆盖；
 - Center 必须等待 sender 的 `croc_sender_ready` 后再启动 receive。不得用固定 sleep 代替该同步点，原因是大文件 sender 会先进行本地 hash/收集文件，room 尚未 ready 时启动 receive 会触发 `room (secure channel) not ready`；
