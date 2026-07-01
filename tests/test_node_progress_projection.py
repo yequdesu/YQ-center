@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from yequ.application.transfer import _job_has_sender_ready
+from yequ.application.transfer import (
+    _job_has_sender_ready,
+    _sender_ready_wait_sec,
+    _transfer_job_lease_sec,
+)
 from yequ.services.node_service import _apply_job_event_projection, _event_progress_pct
 
 
@@ -67,3 +71,15 @@ def test_sender_croc_progress_is_compatible_sender_ready_signal() -> None:
     )
 
     assert _job_has_sender_ready(job)
+
+
+def test_transfer_sender_ready_wait_scales_beyond_short_lease_window() -> None:
+    assert _sender_ready_wait_sec(3600) == 360.0
+    assert _sender_ready_wait_sec(30) == 180.0
+    assert _sender_ready_wait_sec(20_000) == 600.0
+
+
+def test_transfer_job_lease_is_not_fixed_thirty_seconds() -> None:
+    assert _transfer_job_lease_sec(3600) == 600
+    assert _transfer_job_lease_sec(30) == 180
+    assert _transfer_job_lease_sec(20_000) == 600

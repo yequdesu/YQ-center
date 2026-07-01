@@ -24,7 +24,10 @@ TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
 TRANSFER_SENDER_START_WAIT_SEC = 8.0
-TRANSFER_SENDER_READY_WAIT_SEC = 30.0
+TRANSFER_SENDER_READY_MIN_WAIT_SEC = 180.0
+TRANSFER_SENDER_READY_MAX_WAIT_SEC = 600.0
+TRANSFER_JOB_MIN_LEASE_SEC = 180
+TRANSFER_JOB_MAX_LEASE_SEC = 600
 
 
 @dataclass(slots=True)
@@ -321,7 +324,10 @@ class TransferApplicationService:
                 )
                 await self.db.commit()
                 return self._session_dict(session, source_job=sender_start, send_result=send_result)
-            sender_ready = await self._wait_for_sender_ready(session.source_job_id)
+            sender_ready = await self._wait_for_sender_ready(
+                session.source_job_id,
+                wait_sec=_sender_ready_wait_sec(command.timeout_sec),
+            )
         except asyncio.CancelledError:
             await self._cancel_transfer_create_inflight(session)
             raise
@@ -493,7 +499,7 @@ class TransferApplicationService:
             await asyncio.sleep(0.5)
         return last_job
 
-    async def _wait_for_sender_ready(self, job_id: str | None) -> Job | None:
+    async def _wait_for_sender_ready(self, job_id: str | None, *, wait_sec: float) -> Job | None:
         if not job_id:
             return None
         from yequ.config import get_settings
@@ -502,7 +508,7 @@ class TransferApplicationService:
         if get_settings().test_mode:
             return None
 
-        deadline = datetime.now(UTC) + timedelta(seconds=TRANSFER_SENDER_READY_WAIT_SEC)
+        deadline = datetime.now(UTC) + timedelta(seconds=wait_sec)
         last_job: Job | None = None
         terminal = {"succeeded", "failed", "timeout", "cancelled"}
         while datetime.now(UTC) < deadline:
@@ -590,7 +596,7 @@ class TransferApplicationService:
                     execution_mode=command.execution_mode,
                     wait_for_result=False,
                     timeout_sec=command.timeout_sec,
-                    lease_sec=30,
+                    lease_sec=_transfer_job_lease_sec(command.timeout_sec),
                     resource_keys=[f"node:{node_id}:transfer"],
                     suppress_operation=True,
                 )
@@ -1161,6 +1167,19 @@ def _job_has_sender_ready(job: Job | None) -> bool:
         detail.get("progress_source") == "croc_sender_ready"
         or detail.get("phase") == "sender_ready"
     )
+
+
+def _sender_ready_wait_sec(timeout_sec: int | None) -> float:
+    timeout = max(float(timeout_sec or 0), 1.0)
+    return min(
+        TRANSFER_SENDER_READY_MAX_WAIT_SEC,
+        max(TRANSFER_SENDER_READY_MIN_WAIT_SEC, timeout * 0.1),
+    )
+
+
+def _transfer_job_lease_sec(timeout_sec: int | None) -> int:
+    timeout = max(int(timeout_sec or 0), 1)
+    return min(TRANSFER_JOB_MAX_LEASE_SEC, max(TRANSFER_JOB_MIN_LEASE_SEC, timeout))
 
 
 def _transfer_progress_message(

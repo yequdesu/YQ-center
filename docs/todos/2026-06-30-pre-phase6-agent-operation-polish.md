@@ -256,6 +256,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - [x] receiver output-size 方案经实测存在假进度风险，已降级为 observation，不再生成 `progress_pct`。
 - [x] sender 端读取到 croc `Code is:` 后上报 `progress_source="croc_sender_ready"`，Center 等待该事件后再启动 receiver，避免大文件 hash/准备阶段过早启动 receive 造成 `room not ready`。
 - [x] `croc_sender_ready` 已改为粘性事实：Node 后续真实进度继续携带 `sender_ready=true`，Center 投影保留该字段，并兼容旧 Node 的 sender `croc_stderr` 进度，避免 ready 事件被 1% 进度覆盖后误判失败。
+- [x] transfer 子 job 不再使用固定 30 秒 lease，sender-ready 等待窗口也不再固定 30 秒。croc sender 在暴露 room/code 前可能需要收集和哈希大文件，Center 必须给传输类 job 足够的初始 lease 和 ready 等待窗口。
 - [x] `transfer.create` 在 Operation 创建前如被客户端取消，必须取消已创建的 sender/receiver job 并标记 TransferSession cancelled，避免资源锁残留阻塞下一次传输。
 
 ```json
