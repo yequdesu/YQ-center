@@ -54,6 +54,7 @@ CENTER_META_TOOLS = {
     "operation.cancel",
     "transfer.preflight",
     "transfer.create",
+    "transfer.resume",
     "transfer.status",
     "transfer.cancel",
 }
@@ -80,6 +81,8 @@ class CenterExecutionRuntime:
             result = await self._execute_capability_invoke(runtime_command)
         elif runtime_command.function_name == "transfer.create":
             result = await self._execute_transfer_create(runtime_command)
+        elif runtime_command.function_name == "transfer.resume":
+            result = await self._execute_transfer_resume(runtime_command)
         elif runtime_command.function_name == "artifact.deploy":
             result = await self._execute_artifact_deploy(runtime_command)
         elif runtime_command.function_name in CENTER_META_TOOLS:
@@ -295,6 +298,49 @@ class CenterExecutionRuntime:
             wait_handle=wait_handle,
         )
 
+    async def _execute_transfer_resume(self, command: RuntimeCommand) -> ExecuteToolResult:
+        from yequ.application.transfer import TransferApplicationService, TransferResumeCommand
+        from yequ.services.operation_service import OperationService, wait_handle_for_operation
+
+        input_data = dict(command.input_data)
+        try:
+            transfer = await TransferApplicationService(self.db).resume(
+                TransferResumeCommand(
+                    transfer_id=_required_string(input_data.get("transfer_id"), "transfer_id"),
+                    code=_string_or_none(input_data.get("code")),
+                    relay_url=_string_or_none(input_data.get("relay_url")),
+                    timeout_sec=_int_or_none(input_data.get("timeout_sec")),
+                    actor_type=command.actor_type,
+                    actor_id=command.actor_id,
+                    session_id=command.session_id,
+                    execution_mode=command.execution_mode,
+                )
+            )
+            operation = await OperationService(self.db).create_for_transfer(
+                transfer,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                session_id=command.session_id,
+            )
+        except ValueError as exc:
+            return _runtime_error(command, "invalid_input", str(exc))
+
+        wait_handle = wait_handle_for_operation(operation)
+        return ExecuteToolResult(
+            status="waiting_operation",
+            function_name=command.function_name,
+            target_node_id=command.target_node_id,
+            risk="maintenance",
+            effect="external",
+            output_data={
+                "transfer": transfer,
+                "operation": operation,
+                "wait_handle": wait_handle,
+            },
+            operation_id=str(operation["operation_id"]),
+            wait_handle=wait_handle,
+        )
+
     async def _execute_inline_meta_tool(self, command: RuntimeCommand) -> ExecuteToolResult:
         from yequ.application.transfer import TransferApplicationService, TransferPreflightCommand
         from yequ.services.artifact_service import (
@@ -335,14 +381,10 @@ class CenterExecutionRuntime:
                         supports_progress=_bool_or_none(input_data.get("supports_progress")),
                         supports_cancel=_bool_or_none(input_data.get("supports_cancel")),
                         supports_resume=_bool_or_none(input_data.get("supports_resume")),
-                        preflight_supported=_bool_or_none(
-                            input_data.get("preflight_supported")
-                        ),
+                        preflight_supported=_bool_or_none(input_data.get("preflight_supported")),
                         artifact_input=_bool_or_none(input_data.get("artifact_input")),
                         artifact_output=_bool_or_none(input_data.get("artifact_output")),
-                        projection=(
-                            _string_or_none(input_data.get("projection")) or "summary"
-                        ),
+                        projection=(_string_or_none(input_data.get("projection")) or "summary"),
                         capability_type=(
                             _string_or_none(input_data.get("capability_type")) or "function"
                         ),
@@ -371,8 +413,7 @@ class CenterExecutionRuntime:
             elif command.function_name == "artifact.list":
                 artifacts = await list_artifacts(
                     self.db,
-                    session_id=_string_or_none(input_data.get("session_id"))
-                    or command.session_id,
+                    session_id=_string_or_none(input_data.get("session_id")) or command.session_id,
                     invocation_id=_string_or_none(input_data.get("invocation_id")),
                     job_id=_string_or_none(input_data.get("job_id")),
                     node_id=_string_or_none(input_data.get("node_id")),
@@ -436,8 +477,7 @@ class CenterExecutionRuntime:
                                 input_data.get("output_path"),
                                 "output_path",
                             ),
-                            mode=_string_or_none(input_data.get("mode"))
-                            or "fail_if_exists",
+                            mode=_string_or_none(input_data.get("mode")) or "fail_if_exists",
                             timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
                             ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
                             actor_type=command.actor_type,
@@ -472,9 +512,7 @@ class CenterExecutionRuntime:
                                 input_data.get("source_path"),
                                 "source_path",
                             ),
-                            target_output_dir=_string_or_none(
-                                input_data.get("target_output_dir")
-                            ),
+                            target_output_dir=_string_or_none(input_data.get("target_output_dir")),
                             target_path=_string_or_none(input_data.get("target_path")),
                             resume_mode=_string_or_none(input_data.get("resume_mode")),
                             include_sha256=bool(input_data.get("include_sha256", False)),
@@ -489,16 +527,13 @@ class CenterExecutionRuntime:
                 }
             elif command.function_name == "transfer.status":
                 transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
-                output = {
-                    "transfer": await TransferApplicationService(self.db).status(transfer_id)
-                }
+                output = {"transfer": await TransferApplicationService(self.db).status(transfer_id)}
             elif command.function_name == "transfer.cancel":
                 transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
                 output = {
                     "transfer": await TransferApplicationService(self.db).cancel(
                         transfer_id,
-                        reason=_string_or_none(input_data.get("reason"))
-                        or "transfer_cancelled",
+                        reason=_string_or_none(input_data.get("reason")) or "transfer_cancelled",
                     )
                 }
             else:
@@ -1004,6 +1039,15 @@ def _int_or_default(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _string_list(value: object) -> list[str]:

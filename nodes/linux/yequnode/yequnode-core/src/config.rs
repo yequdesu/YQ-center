@@ -26,18 +26,20 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransferConfig {
-    #[serde(default = "default_croc_config")]
-    pub croc: CrocConfig,
+    #[serde(default = "default_yq_croc_config")]
+    pub yq_croc: YqCrocConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct CrocConfig {
+pub struct YqCrocConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_croc_binary_path")]
+    #[serde(default = "default_yq_croc_binary_path")]
     pub binary_path: String,
     #[serde(default)]
     pub relay_url: Option<String>,
+    #[serde(default)]
+    pub relay_password_env: Option<String>,
     #[serde(default = "default_temp_dir")]
     pub temp_dir: PathBuf,
     #[serde(default = "default_true")]
@@ -48,11 +50,12 @@ pub struct CrocConfig {
     pub max_concurrent: u32,
 }
 
-fn default_croc_config() -> CrocConfig {
-    CrocConfig {
+fn default_yq_croc_config() -> YqCrocConfig {
+    YqCrocConfig {
         enabled: true,
-        binary_path: default_croc_binary_path(),
+        binary_path: default_yq_croc_binary_path(),
         relay_url: None,
+        relay_password_env: None,
         temp_dir: default_temp_dir(),
         allow_send: true,
         allow_receive: true,
@@ -64,8 +67,8 @@ fn default_true() -> bool {
     true
 }
 
-fn default_croc_binary_path() -> String {
-    "/usr/local/bin/croc".into()
+fn default_yq_croc_binary_path() -> String {
+    "/usr/local/bin/yq-croc".into()
 }
 
 fn default_temp_dir() -> PathBuf {
@@ -79,7 +82,7 @@ fn default_max_concurrent() -> u32 {
 impl Default for TransferConfig {
     fn default() -> Self {
         Self {
-            croc: default_croc_config(),
+            yq_croc: default_yq_croc_config(),
         }
     }
 }

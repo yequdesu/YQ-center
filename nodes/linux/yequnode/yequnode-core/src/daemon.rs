@@ -79,7 +79,7 @@ impl Daemon {
         }
         if let Some(transfer_runtime) = build_transfer_runtime(&config) {
             runtimes.push(transfer_runtime);
-            info!("croc transfer runtime available — registering transfer capabilities");
+            info!("yq-croc transfer runtime available — registering transfer capabilities");
         }
 
         // Handshake: node.hello
@@ -620,17 +620,17 @@ fn build_sudo_runtime() -> RuntimeSnapshot {
     }
 }
 
-/// Build a RuntimeSnapshot for the transfer runtime (croc enabled).
-/// Returns None if croc is disabled or the daemon user cannot execute croc.
+/// Build a RuntimeSnapshot for the transfer runtime (yq-croc enabled).
+/// Returns None if yq-croc is disabled or the daemon user cannot execute it.
 fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
-    let croc_config = &config.transfer.croc;
+    let yq_croc_config = &config.transfer.yq_croc;
 
-    if !croc_config.enabled {
+    if !yq_croc_config.enabled {
         return None;
     }
 
-    let binary_path = &croc_config.binary_path;
-    if !croc_is_executable(binary_path) {
+    let binary_path = &yq_croc_config.binary_path;
+    if !yq_croc_is_executable(binary_path) {
         return None;
     }
 
@@ -640,24 +640,26 @@ fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
         status: "online".into(),
         interactive: false,
         privilege: Some(RuntimePrivilege::User),
-        labels: Some(vec!["linux".into(), "transfer".into()]),
+        labels: Some(vec!["linux".into(), "transfer".into(), "yq-croc".into()]),
         owner: None,
         metadata: Some(serde_json::json!({
-            "croc_binary_path": binary_path,
-            "temp_dir": croc_config.temp_dir.to_string_lossy(),
-            "allow_send": croc_config.allow_send,
-            "allow_receive": croc_config.allow_receive,
-            "relay_url": croc_config.relay_url,
+            "runtime": "yq-croc",
+            "yq_croc_binary_path": binary_path,
+            "temp_dir": yq_croc_config.temp_dir.to_string_lossy(),
+            "allow_send": yq_croc_config.allow_send,
+            "allow_receive": yq_croc_config.allow_receive,
+            "relay_url": yq_croc_config.relay_url,
+            "relay_password_env": yq_croc_config.relay_password_env,
         })),
     })
 }
 
-fn croc_is_executable(binary_path: &str) -> bool {
+fn yq_croc_is_executable(binary_path: &str) -> bool {
     if !std::path::Path::new(binary_path).exists() {
         return false;
     }
     std::process::Command::new(binary_path)
-        .arg("--version")
+        .arg("version")
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)

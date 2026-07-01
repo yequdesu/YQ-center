@@ -9,6 +9,8 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.application.schemas import ExecuteToolResult
 from yequ.models.job import Job
 from yequ.models.timeline import TimelineEvent
-from yequ.models.transfer import TransferPreflight, TransferSession
+from yequ.models.transfer import TransferAttempt, TransferPreflight, TransferSession
 from yequ.services.job_service import cancel_job
 from yequ.services.timeline_writer import add_timeline_event
 
@@ -62,6 +64,18 @@ class TransferPreflightCommand:
     include_sha256: bool = False
     timeout_sec: int = 20
     ttl_sec: int = TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
+    actor_type: str = "agent"
+    actor_id: str = "agent"
+    session_id: str | None = None
+    execution_mode: str = "auto"
+
+
+@dataclass(slots=True)
+class TransferResumeCommand:
+    transfer_id: str
+    code: str | None = None
+    relay_url: str | None = None
+    timeout_sec: int | None = None
     actor_type: str = "agent"
     actor_id: str = "agent"
     session_id: str | None = None
@@ -270,6 +284,22 @@ class TransferApplicationService:
         )
         self.db.add(session)
         await self.db.flush()
+        attempt = TransferAttempt(
+            transfer_session_id=session.id,
+            transfer_id=session.transfer_id,
+            attempt=1,
+            code_hash=session.code_hash,
+            relay_mode="configured" if command.relay_url else "public_default",
+            relay_url_masked=_mask_relay_url(command.relay_url),
+            status="created",
+            resumable=False,
+            started_at=session.started_at,
+            metadata_json={
+                "runtime": "yq-croc",
+                "resume_mode": resume_mode,
+            },
+        )
+        self.db.add(attempt)
         await self.db.commit()
 
         expected_size_bytes = (
@@ -284,11 +314,12 @@ class TransferApplicationService:
             capability_ref="transfer.croc.send",
             tool_input={
                 "transfer_id": session.transfer_id,
+                "attempt": session.attempt,
                 "code": code,
-                "path": command.source_path,
+                "source_path": command.source_path,
                 "relay_url": command.relay_url,
                 "timeout_sec": command.timeout_sec,
-                "expected_receiver_node_id": command.target_node_id,
+                "resume_mode": resume_mode,
             },
         )
         if send_result.status not in {"created", "running"}:
@@ -303,6 +334,8 @@ class TransferApplicationService:
 
         session.source_invocation_id = send_result.invocation_id
         session.source_job_id = send_result.job_id
+        attempt.source_job_id = send_result.job_id
+        attempt.status = "sending"
         session.status = "sending"
         await self.db.commit()
 
@@ -322,6 +355,10 @@ class TransferApplicationService:
                 session.error_message = sender_start.error_message or (
                     "sender job reached terminal state before receiver was started"
                 )
+                attempt.status = "failed"
+                attempt.error_code = session.error_code
+                attempt.error_message = session.error_message
+                attempt.completed_at = datetime.now(UTC)
                 await self.db.commit()
                 return self._session_dict(session, source_job=sender_start, send_result=send_result)
             sender_ready = await self._wait_for_sender_ready(
@@ -336,7 +373,11 @@ class TransferApplicationService:
             await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
             session.status = "failed"
             session.error_code = "sender_room_ready_timeout"
-            session.error_message = "sender job disappeared before reporting croc_sender_ready"
+            session.error_message = "sender job disappeared before reporting yq-croc sender_ready"
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
             await self.db.commit()
             return self._session_dict(session, send_result=send_result)
         if sender_ready.status in {
@@ -353,6 +394,10 @@ class TransferApplicationService:
             session.error_message = sender_ready.error_message or (
                 "sender job reached terminal state before receiver was started"
             )
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
             await self.db.commit()
             return self._session_dict(session, source_job=sender_ready, send_result=send_result)
         if not _job_has_sender_ready(sender_ready):
@@ -360,13 +405,18 @@ class TransferApplicationService:
             session.status = "failed"
             session.error_code = "sender_room_ready_timeout"
             session.error_message = (
-                "sender did not report croc_sender_ready before receiver startup"
+                "sender did not report yq-croc sender_ready before receiver startup"
             )
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
             await self.db.commit()
             return self._session_dict(session, source_job=sender_ready, send_result=send_result)
 
         receive_input: dict[str, object] = {
             "transfer_id": session.transfer_id,
+            "attempt": session.attempt,
             "code": code,
             "output_dir": target_intent.output_dir,
             "target_path": target_intent.target_path,
@@ -392,6 +442,11 @@ class TransferApplicationService:
                 receive_result.error_message,
             )
             session.error_message = receive_result.error_message
+            attempt.status = "failed"
+            attempt.target_job_id = receive_result.job_id
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
             await self.db.commit()
             return self._session_dict(
                 session,
@@ -401,6 +456,8 @@ class TransferApplicationService:
 
         session.target_invocation_id = receive_result.invocation_id
         session.target_job_id = receive_result.job_id
+        attempt.target_job_id = receive_result.job_id
+        attempt.status = "running"
         session.status = "running"
         await add_timeline_event(
             self.db,
@@ -459,6 +516,222 @@ class TransferApplicationService:
         await self.db.commit()
         return await self.status(transfer_id)
 
+    async def resume(self, command: TransferResumeCommand) -> dict[str, object]:
+        session = await self._get_session(command.transfer_id)
+        source_job = await self._get_job(session.source_job_id)
+        target_job = await self._get_job(session.target_job_id)
+        await self._refresh_status_from_jobs(session, source_job, target_job)
+        if not _session_resumable(session, source_job=source_job, target_job=target_job):
+            await self.db.commit()
+            raise ValueError(
+                "transfer_not_resumable: session must be interrupted "
+                "and contain resumable node facts"
+            )
+
+        old_jobs = [job for job in (source_job, target_job) if job is not None]
+        non_terminal = [
+            job.job_id
+            for job in old_jobs
+            if job.status not in {"succeeded", "failed", "timeout", "cancelled"}
+        ]
+        if non_terminal:
+            raise ValueError(
+                "transfer_resume_blocked: previous attempt still has non-terminal jobs"
+            )
+
+        code = command.code or _generate_croc_code()
+        relay_url = command.relay_url or session.relay_url
+        timeout_sec = command.timeout_sec or 3600
+        next_attempt = int(session.attempt or 1) + 1
+        resume_mode = "resume"
+        target_intent = NormalizedTransferTarget(
+            output_dir=session.target_output_dir
+            or _target_output_dir_from_path(session.target_path),
+            target_path=session.target_path,
+        )
+
+        session.attempt = next_attempt
+        session.relay_url = relay_url
+        session.code_hash = _secret_hash(code)
+        session.resume_mode = resume_mode
+        session.status = "created"
+        session.error_code = None
+        session.error_message = None
+        session.completed_at = None
+        session.started_at = datetime.now(UTC)
+
+        attempt = TransferAttempt(
+            transfer_session_id=session.id,
+            transfer_id=session.transfer_id,
+            attempt=next_attempt,
+            code_hash=session.code_hash,
+            relay_mode="configured" if relay_url else "public_default",
+            relay_url_masked=_mask_relay_url(relay_url),
+            status="created",
+            resumable=True,
+            started_at=session.started_at,
+            metadata_json={
+                "runtime": "yq-croc",
+                "resume_mode": resume_mode,
+                "resumed_from_attempt": next_attempt - 1,
+            },
+        )
+        self.db.add(attempt)
+        await self.db.commit()
+
+        command_for_attempt = TransferCreateCommand(
+            source_node_id=session.source_node_id,
+            target_node_id=session.target_node_id,
+            source_path=session.source_path,
+            target_output_dir=target_intent.output_dir,
+            target_path=target_intent.target_path,
+            code=code,
+            relay_url=relay_url,
+            resume_mode=resume_mode,
+            timeout_sec=timeout_sec,
+            expected_sha256=session.sha256,
+            skip_preflight=True,
+            skip_reason="transfer.resume uses existing TransferSession facts",
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id or session.session_id,
+            execution_mode=command.execution_mode,
+        )
+
+        expected_size_bytes = session.size_bytes
+        send_result = await self._invoke_capability(
+            command_for_attempt,
+            node_id=session.source_node_id,
+            capability_ref="transfer.croc.send",
+            tool_input={
+                "transfer_id": session.transfer_id,
+                "attempt": next_attempt,
+                "code": code,
+                "source_path": session.source_path,
+                "relay_url": relay_url,
+                "timeout_sec": timeout_sec,
+                "resume_mode": resume_mode,
+            },
+        )
+        if send_result.status not in {"created", "running"}:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                send_result.error_code or "sender_job_failed",
+                send_result.error_message,
+            )
+            session.error_message = send_result.error_message
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
+            await self.db.commit()
+            return self._session_dict(session, send_result=send_result)
+
+        session.source_invocation_id = send_result.invocation_id
+        session.source_job_id = send_result.job_id
+        attempt.source_job_id = send_result.job_id
+        attempt.status = "sending"
+        session.status = "sending"
+        await self.db.commit()
+
+        sender_ready = await self._wait_for_sender_ready(
+            session.source_job_id,
+            wait_sec=_sender_ready_wait_sec(timeout_sec),
+        )
+        if sender_ready is None or not _job_has_sender_ready(sender_ready):
+            await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
+            session.status = "failed"
+            session.error_code = "sender_room_ready_timeout"
+            session.error_message = (
+                "sender did not report yq-croc sender_ready before receiver startup"
+            )
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
+            await self.db.commit()
+            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
+        if sender_ready.status in {"succeeded", "failed", "timeout", "cancelled"}:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                sender_ready.error_code or "sender_job_finished_before_receiver",
+                sender_ready.error_message,
+            )
+            session.error_message = sender_ready.error_message or (
+                "sender job reached terminal state before receiver was started"
+            )
+            attempt.status = "failed"
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
+            await self.db.commit()
+            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
+
+        receive_input: dict[str, object] = {
+            "transfer_id": session.transfer_id,
+            "attempt": next_attempt,
+            "code": code,
+            "output_dir": target_intent.output_dir,
+            "target_path": target_intent.target_path,
+            "relay_url": relay_url,
+            "timeout_sec": timeout_sec,
+            "resume_mode": resume_mode,
+            "expected_sha256": session.sha256,
+        }
+        if expected_size_bytes is not None:
+            receive_input["expected_size_bytes"] = expected_size_bytes
+
+        receive_result = await self._invoke_capability(
+            command_for_attempt,
+            node_id=session.target_node_id,
+            capability_ref="transfer.croc.receive",
+            tool_input=receive_input,
+        )
+        if receive_result.status not in {"created", "running"}:
+            await self._cancel_job_id(session.source_job_id, reason="receiver_job_failed")
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                receive_result.error_code or "receiver_job_failed",
+                receive_result.error_message,
+            )
+            session.error_message = receive_result.error_message
+            attempt.status = "failed"
+            attempt.target_job_id = receive_result.job_id
+            attempt.error_code = session.error_code
+            attempt.error_message = session.error_message
+            attempt.completed_at = datetime.now(UTC)
+            await self.db.commit()
+            return self._session_dict(
+                session,
+                receive_result=receive_result,
+                send_result=send_result,
+            )
+
+        session.target_invocation_id = receive_result.invocation_id
+        session.target_job_id = receive_result.job_id
+        attempt.target_job_id = receive_result.job_id
+        attempt.status = "running"
+        session.status = "running"
+        await add_timeline_event(
+            self.db,
+            TimelineEvent(
+                event_type="transfer.session.resumed",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                session_id=command.session_id or session.session_id,
+                data={
+                    "transfer_id": session.transfer_id,
+                    "attempt": next_attempt,
+                    "source_job_id": session.source_job_id,
+                    "target_job_id": session.target_job_id,
+                    "relay_mode": "configured" if relay_url else "public_default",
+                    "relay_url_masked": _mask_relay_url(relay_url),
+                },
+            ),
+        )
+        await self.db.commit()
+        return self._session_dict(session, receive_result=receive_result, send_result=send_result)
+
     async def _cancel_job_id(self, job_id: str | None, *, reason: str) -> None:
         job = await self._get_job(job_id)
         if job is None or job.status in {"succeeded", "failed", "timeout", "cancelled"}:
@@ -506,7 +779,37 @@ class TransferApplicationService:
         from yequ.db import async_session_factory
 
         if get_settings().test_mode:
-            return None
+            job = await self._get_job(job_id)
+            if job is None:
+                return cast(
+                    Job,
+                    SimpleNamespace(
+                        job_id=job_id,
+                        status="running",
+                        progress_detail={
+                            "progress_source": "yq_croc_event",
+                            "event": "sender_ready",
+                            "role": "sender",
+                            "phase": "sender_ready",
+                            "sender_ready": True,
+                        },
+                        error_code=None,
+                        error_message=None,
+                    ),
+                )
+            if job is not None:
+                detail = dict(job.progress_detail) if isinstance(job.progress_detail, dict) else {}
+                detail.update(
+                    {
+                        "progress_source": "yq_croc_event",
+                        "event": "sender_ready",
+                        "role": "sender",
+                        "phase": "sender_ready",
+                        "sender_ready": True,
+                    }
+                )
+                job.progress_detail = detail
+            return job
 
         deadline = datetime.now(UTC) + timedelta(seconds=wait_sec)
         last_job: Job | None = None
@@ -543,9 +846,7 @@ class TransferApplicationService:
         )
 
         result = await self.db.execute(
-            select(TransferPreflight).where(
-                TransferPreflight.preflight_id == command.preflight_id
-            )
+            select(TransferPreflight).where(TransferPreflight.preflight_id == command.preflight_id)
         )
         preflight = result.scalar_one_or_none()
         if preflight is None:
@@ -688,13 +989,15 @@ class TransferApplicationService:
             return
         statuses = {job.status for job in jobs}
         if "failed" in statuses:
-            session.status = "failed"
+            failed_job = _select_transfer_failure_job(jobs)
+            session.status = "interrupted" if _job_reports_resumable(failed_job) else "failed"
             await self._cancel_non_terminal_peer(
                 jobs,
                 reason="transfer_peer_failed",
             )
         elif "timeout" in statuses:
-            session.status = "timeout"
+            failed_job = _select_transfer_failure_job(jobs)
+            session.status = "interrupted" if _job_reports_resumable(failed_job) else "timeout"
             await self._cancel_non_terminal_peer(
                 jobs,
                 reason="transfer_peer_timeout",
@@ -773,6 +1076,13 @@ class TransferApplicationService:
             "sha256": session.sha256,
             "relay_url": session.relay_url,
             "code_hash": session.code_hash,
+            "resumable": _session_resumable(session, source_job=source_job, target_job=target_job),
+            "last_resumable_error": _session_last_resumable_error(
+                session,
+                source_job=source_job,
+                target_job=target_job,
+            ),
+            "resume_hint": _session_resume_hint(session),
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "started_at": session.started_at.isoformat() if session.started_at else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
@@ -960,9 +1270,7 @@ def _transfer_preflight_failures(
         failures.append({"fact": "source.readable", "code": "source_not_readable"})
 
     if target.get("parent_exists") is False:
-        failures.append(
-            {"fact": "target.parent_exists", "code": "target_parent_not_found"}
-        )
+        failures.append({"fact": "target.parent_exists", "code": "target_parent_not_found"})
     if target.get("writable") is not True:
         failures.append({"fact": "target.writable", "code": "target_not_writable"})
     if target_path and resume_mode == "fail_if_exists" and target.get("found") is True:
@@ -980,12 +1288,46 @@ def _transfer_preflight_failures(
             }
         )
 
+    if source_status.get("runtime") != "yq-croc":
+        failures.append({"fact": "source.runtime.yq_croc", "code": "wrong_transfer_runtime"})
+    if target_status.get("runtime") != "yq-croc":
+        failures.append({"fact": "target.runtime.yq_croc", "code": "wrong_transfer_runtime"})
     if source_status.get("installed") is not True:
-        failures.append({"fact": "source.runtime.croc_installed", "code": "croc_not_installed"})
+        failures.append(
+            {"fact": "source.runtime.yq_croc_installed", "code": "yq_croc_not_installed"}
+        )
+    if source_status.get("executable") is not True:
+        failures.append(
+            {"fact": "source.runtime.yq_croc_executable", "code": "yq_croc_not_executable"}
+        )
+    if source_status.get("relay_reachable") is not True:
+        failures.append({"fact": "source.runtime.relay_reachable", "code": "relay_unreachable"})
+    if source_status.get("firewall_allows_outbound") is False:
+        failures.append(
+            {
+                "fact": "source.runtime.firewall_allows_outbound",
+                "code": "runtime_egress_blocked",
+            }
+        )
     if source_status.get("allow_send") is not True:
         failures.append({"fact": "source.runtime.allow_send", "code": "send_not_allowed"})
     if target_status.get("installed") is not True:
-        failures.append({"fact": "target.runtime.croc_installed", "code": "croc_not_installed"})
+        failures.append(
+            {"fact": "target.runtime.yq_croc_installed", "code": "yq_croc_not_installed"}
+        )
+    if target_status.get("executable") is not True:
+        failures.append(
+            {"fact": "target.runtime.yq_croc_executable", "code": "yq_croc_not_executable"}
+        )
+    if target_status.get("relay_reachable") is not True:
+        failures.append({"fact": "target.runtime.relay_reachable", "code": "relay_unreachable"})
+    if target_status.get("firewall_allows_outbound") is False:
+        failures.append(
+            {
+                "fact": "target.runtime.firewall_allows_outbound",
+                "code": "runtime_egress_blocked",
+            }
+        )
     if target_status.get("allow_receive") is not True:
         failures.append({"fact": "target.runtime.allow_receive", "code": "receive_not_allowed"})
 
@@ -995,12 +1337,8 @@ def _transfer_preflight_failures(
 def _transfer_summary(data: dict[str, object]) -> dict[str, object]:
     source_job = data.get("source_job")
     target_job = data.get("target_job")
-    source_output = (
-        source_job.get("output") if isinstance(source_job, dict) else None
-    )
-    target_output = (
-        target_job.get("output") if isinstance(target_job, dict) else None
-    )
+    source_output = source_job.get("output") if isinstance(source_job, dict) else None
+    target_output = target_job.get("output") if isinstance(target_job, dict) else None
     source_output_dict = source_output if isinstance(source_output, dict) else {}
     target_output_dict = target_output if isinstance(target_output, dict) else {}
     source_size = _first_int(
@@ -1063,9 +1401,7 @@ def _transfer_summary(data: dict[str, object]) -> dict[str, object]:
                 else None
             ),
             "sha256_match": (
-                source_sha256 == target_sha256
-                if source_sha256 and target_sha256
-                else None
+                source_sha256 == target_sha256 if source_sha256 and target_sha256 else None
             ),
         },
         "progress": _transfer_progress(data),
@@ -1155,17 +1491,16 @@ def _job_has_sender_ready(job: Job | None) -> bool:
     detail = job.progress_detail
     if not isinstance(detail, dict):
         return False
-    if detail.get("sender_ready") is True:
-        return True
     if (
         detail.get("role") == "sender"
-        and detail.get("progress_source") == "croc_stderr"
-        and _first_int(detail.get("progress_pct")) is not None
+        and detail.get("progress_source") == "yq_croc_event"
+        and detail.get("sender_ready") is True
     ):
         return True
     return (
-        detail.get("progress_source") == "croc_sender_ready"
-        or detail.get("phase") == "sender_ready"
+        detail.get("role") == "sender"
+        and detail.get("progress_source") == "yq_croc_event"
+        and detail.get("event") == "sender_ready"
     )
 
 
@@ -1180,6 +1515,66 @@ def _sender_ready_wait_sec(timeout_sec: int | None) -> float:
 def _transfer_job_lease_sec(timeout_sec: int | None) -> int:
     timeout = max(int(timeout_sec or 0), 1)
     return min(TRANSFER_JOB_MAX_LEASE_SEC, max(TRANSFER_JOB_MIN_LEASE_SEC, timeout))
+
+
+def _mask_relay_url(relay_url: str | None) -> str | None:
+    if not relay_url:
+        return None
+    if "@" not in relay_url:
+        return relay_url
+    return relay_url.rsplit("@", 1)[-1]
+
+
+def _target_output_dir_from_path(target_path: str | None) -> str:
+    if not target_path:
+        raise ValueError("transfer session has neither target_output_dir nor target_path")
+    if "\\" in target_path or ":" in target_path:
+        return str(PureWindowsPath(target_path).parent)
+    return str(PurePosixPath(target_path).parent)
+
+
+def _session_resumable(
+    session: TransferSession,
+    *,
+    source_job: Job | None,
+    target_job: Job | None,
+) -> bool:
+    if session.status != "interrupted":
+        return False
+    return any(_job_reports_resumable(job) for job in (source_job, target_job))
+
+
+def _job_reports_resumable(job: Job | None) -> bool:
+    if job is None:
+        return False
+    detail = job.progress_detail
+    if isinstance(detail, dict) and detail.get("resumable") is True:
+        return True
+    output = job.output
+    if isinstance(output, dict) and output.get("resumable") is True:
+        return True
+    error_details = job.error_details
+    return isinstance(error_details, dict) and error_details.get("resumable") is True
+
+
+def _session_last_resumable_error(
+    session: TransferSession,
+    *,
+    source_job: Job | None,
+    target_job: Job | None,
+) -> str | None:
+    if not _session_resumable(session, source_job=source_job, target_job=target_job):
+        return None
+    for job in (target_job, source_job):
+        if job is not None and job.error_code:
+            return job.error_code
+    return session.error_code
+
+
+def _session_resume_hint(session: TransferSession) -> str | None:
+    if session.status != "interrupted":
+        return None
+    return "Call transfer.resume for the same TransferSession; Center will create the next attempt."
 
 
 def _transfer_progress_message(

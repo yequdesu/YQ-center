@@ -155,9 +155,7 @@ async def handle_register_capabilities(
     await sync_capability_runtime_snapshot(db, node, plugins, now=now)
 
     await db.execute(
-        sql_update(Capability)
-        .where(Capability.node_record_id == node.id)
-        .values(is_active=False)
+        sql_update(Capability).where(Capability.node_record_id == node.id).values(is_active=False)
     )
 
     for plugin in plugins:
@@ -1209,8 +1207,8 @@ def _apply_job_event_projection(job: "Job", event_type: str, data: JsonObject) -
         if isinstance(job.progress_detail, dict) and job.progress_detail.get("sender_ready"):
             progress_detail["sender_ready"] = True
         if (
-            progress_detail.get("progress_source") == "croc_sender_ready"
-            or progress_detail.get("phase") == "sender_ready"
+            progress_detail.get("progress_source") == "yq_croc_event"
+            and progress_detail.get("event") == "sender_ready"
         ):
             progress_detail["sender_ready"] = True
         job.progress_detail = progress_detail
@@ -1280,7 +1278,7 @@ def _event_progress_detail(
         if value is not None:
             detail[target_key] = value
 
-    for key in ("transfer_id", "role", "phase", "status", "progress_source"):
+    for key in ("transfer_id", "role", "phase", "status", "progress_source", "event"):
         value = data.get(key)
         if value is None:
             value = nested_data.get(key)

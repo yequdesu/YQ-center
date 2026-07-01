@@ -24,7 +24,7 @@ from yequ.models.resource_lock import ResourceLock
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
-from yequ.models.transfer import TransferPreflight, TransferSession
+from yequ.models.transfer import TransferAttempt, TransferPreflight, TransferSession
 from yequ.models.yqp_message import YqpMessage
 
 __all__ = [
@@ -58,6 +58,7 @@ __all__ = [
     "TimelineEvent",
     "TimestampMixin",
     "TransferSession",
+    "TransferAttempt",
     "TransferPreflight",
     "YqpMessage",
     "generate_uuid",

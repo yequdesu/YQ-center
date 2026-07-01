@@ -78,7 +78,7 @@ impl Capability for LinuxTransferCrocReconcile {
                 "output_dir": entry.output_dir,
                 "source_size_bytes": entry.source_size_bytes,
                 "resume_mode": serde_json::to_value(&entry.resume_mode).unwrap_or_default(),
-                "attempt_count": entry.attempt_count,
+                "attempt": entry.attempt,
                 "started_at": entry.started_at,
                 "last_progress_at": entry.last_progress_at,
                 "completed_at": entry.completed_at,

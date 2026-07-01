@@ -402,69 +402,52 @@ Linux Node 的网络探测能力用于回答“从这个 Node 看，某个域名
 | 无法创建父目录或写入文件 | `permission_denied` |
 | SHA-256 不一致 | `integrity_mismatch` |
 
-## croc 传输工具部署合同
+## yq-croc 插件运行时部署合同
 
-`croc` 属于 Node 本地运行时依赖，不属于 Center 的隐式能力。Center 可以随仓库提供 release 包，方便部署；但每个 Node 是否可用，必须由 Node 自己在启动和 capability 执行时探测并上报。
+Linux Node 的跨 Node 大文件传输以 `yq-croc` 插件运行时为准。`yq-croc` 是独立二进制，基于 croc Go 源码构建，提供 YeQu 所需的 NDJSON 事件、稳定 ready 同步点、取消、relay probe 和错误码。Linux Node 主进程不实现 croc 协议，只负责调用 `yq-croc`、读取事件、执行本地路径策略、上报 YQP job events 和维护本地 ledger。
 
-仓库内当前随附包位置：
-
-```text
-third_party/croc/v10.4.4/
-  croc_v10.4.4_checksums.txt
-  croc_v10.4.4_Linux-64bit.tar.gz
-  croc_v10.4.4_Windows-64bit.zip
-```
-
-Linux Node 第一版推荐安装到 `/usr/local/bin/croc`：
+推荐安装路径：
 
 ```bash
-cd /tmp
-tar -xzf /path/to/croc_v10.4.4_Linux-64bit.tar.gz
-sudo install -m 0755 croc /usr/local/bin/croc
-croc --version
+sudo install -m 0755 yq-croc /usr/local/bin/yq-croc
+yq-croc version
 ```
 
 如果不能使用 `sudo`，可以安装到 Node daemon 用户自己的 bin 目录：
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-tar -xzf /path/to/croc_v10.4.4_Linux-64bit.tar.gz -C "$HOME/.local/bin" croc
-chmod 0755 "$HOME/.local/bin/croc"
-"$HOME/.local/bin/croc" --version
+install -m 0755 yq-croc "$HOME/.local/bin/yq-croc"
+"$HOME/.local/bin/yq-croc" version
 ```
 
-Node 配置中应允许显式指定 croc 路径，不应只依赖 `PATH`：
+Node 配置中必须允许显式指定 `yq-croc` 路径，不得只依赖 `PATH`：
 
 ```yaml
 transfer:
-  croc:
+  yq_croc:
     enabled: true
-    binary_path: /usr/local/bin/croc
+    binary_path: /usr/local/bin/yq-croc
+    relay_mode: public_default
     relay_url: null
+    relay_password_env: null
     temp_dir: /tmp/yequ-transfer
     allow_send: true
     allow_receive: true
+    max_concurrent_transfers: 1
 ```
 
-Linux Node 必须提供事实探测能力：
+`linux.transfer.croc.status` 必须返回 `runtime="yq-croc"`、`runtime_version`、`upstream_croc_version`、`relay_mode`、`relay_reachable`、`binary_path`、`temp_dir`、`allow_send`、`allow_receive` 和明确错误。status 必须在 `yq-croc` 不存在时仍可调用。
 
-- `linux.transfer.croc.status`
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须通过 request file 调用 `yq-croc send/receive`，逐行读取 stdout NDJSON，将 `sender_ready`、`bytes_progress`、`transfer_done`、`transfer_error` 等事件映射为 YQP `job.event`。不得解析 terminal progressbar 或 stderr 作为进度来源。
 
-该能力必须返回：
+公共 relay 模式下，Linux Node 必须把 relay 断开、超时、进程异常退出后的本地状态保存为 `interrupted`，并在 ledger 中记录 partial file facts、expected size/hash、source facts digest 和 `resumable`。失败时不得默认删除 partial file。后续 resume attempt 必须使用 `resume_mode="resume"`，且只有 ledger/source/target 匹配时才允许复用部分文件；不匹配时必须失败为 `resume_state_mismatch`。
 
-- `installed`：是否能执行 croc；
-- `binary_path`：实际使用的二进制路径；
-- `version`：`croc --version` 结果，无法获取则为 `null`；
-- `relay_url`：当前配置的 relay，未配置则为 `null`；
-- `temp_dir`：传输临时目录；
-- `daemon_user`：daemon 当前用户；
-- `allow_send` / `allow_receive`；
-- `limits`：Node 本地限制，例如允许路径、最大并发数；
-- `error`：不可用时的明确错误。
+Linux Node 不能主动发起任何传输事务。`interrupted` 或 `resumable=true` 只允许作为事实上报给 Center；Linux Node 不得自行重启 `yq-croc`、自行创建下一次 attempt、自行切换 relay、自行生成 code 或自行通知对端 Node。进程内 reconnect 只允许发生在当前 Center Job 尚未 terminal 的生命周期内。
 
-未安装或不可执行时，`linux.transfer.croc.status` 不应注册为“成功的传输能力”的替代品，也不允许 fallback 到 YQP artifact upload。它应返回明确失败或明确的 `installed=false` 状态，让 Center 和 Agent 基于事实决策。
+详细计划见 `docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md`。
 
-### transfer runtime requirement 分层
+## transfer runtime requirement 分层
 
 transfer 相关 capability 必须按职责声明不同的 `execution_requirements`。不要让诊断能力依赖只有传输可用时才存在的 runtime 标签，否则 Center 无法调用 status 来诊断 transfer 为什么不可用。
 
@@ -483,12 +466,12 @@ transfer 相关 capability 必须按职责声明不同的 `execution_requirement
 - `linux.transfer.local.stat`
 - `linux.transfer.croc.reconcile`
 
-实际传输类能力可以要求 transfer runtime：
+实际传输类能力必须要求 yq-croc transfer runtime：
 
 ```json
 {
   "runtime_kind": "privileged",
-  "labels": ["linux", "transfer"]
+  "labels": ["linux", "transfer", "yq-croc"]
 }
 ```
 
@@ -502,13 +485,13 @@ transfer 相关 capability 必须按职责声明不同的 `execution_requirement
 - `risk` 必须声明为 `maintenance`。
 - `effect` 必须声明为 `external`，不要声明为 `write`。
 - `resource_keys` 应包含稳定的传输资源键，例如 `node.transfer`。
-- `conflict_policy` 应声明为 `serialize`，避免同一 Node 上多个 croc 传输互相抢占临时目录、ledger 或网络资源。
+- `conflict_policy` 应声明为 `serialize`，避免同一 Node 上多个 yq-croc 传输互相抢占临时目录、ledger 或网络资源。
 
-原因：`linux.transfer.croc.receive` 确实会在目标 Node 写入文件，但在 YeQu 建模中，croc send/receive 是“外部传输进程控制能力”，目标路径权限由 Node runtime/path policy 自己执行；Center 的 `transfer.create` 负责一次高层 TransferSession 编排。如果 Node 把 receive 声明为 `effect=write`，当前 Center L2 策略会要求单独审批底层 receive job，导致 `transfer.create` 无法自动同时启动 receiver 和 sender。
+原因：`linux.transfer.croc.receive` 确实会在目标 Node 写入文件，但在 YeQu 建模中，yq-croc send/receive 是“外部传输进程控制能力”，目标路径权限由 Node runtime/path policy 自己执行；Center 的 `transfer.create` 负责一次高层 TransferSession 编排。如果 Node 把 receive 声明为 `effect=write`，当前 Center L2 策略会要求单独审批底层 receive job，导致 `transfer.create` 无法自动同时启动 receiver 和 sender。
 
 后续如果需要对跨 Node 文件落盘做强审批，应在 `transfer.create` 这个高层元工具上建模一次完整审批，而不是让底层 `*.transfer.croc.receive` 单独触发审批；否则会破坏 TransferSession 的并发编排。
 
-如果 Linux Node 给 send/receive 声明了 `labels=["linux", "transfer"]`，则必须同时上报一个匹配 runtime：
+如果 Linux Node 给 send/receive 声明了 `labels=["linux", "transfer", "yq-croc"]`，则必须同时上报一个匹配 runtime：
 
 ```json
 {
@@ -517,26 +500,29 @@ transfer 相关 capability 必须按职责声明不同的 `execution_requirement
   "status": "online",
   "interactive": false,
   "privilege": "user",
-  "labels": ["linux", "transfer"],
+  "labels": ["linux", "transfer", "yq-croc"],
   "metadata": {
-    "croc_binary_path": "/usr/local/bin/croc",
+    "runtime": "yq-croc",
+    "yq_croc_binary_path": "/usr/local/bin/yq-croc",
+    "upstream_croc_version": "v10.4.6",
+    "relay_mode": "public_default",
     "temp_dir": "/tmp/yequ-transfer"
   }
 }
 ```
 
-如果 croc 未安装或 send/receive 被配置禁用，Node 可以不注册 send/receive，或注册为 unavailable/degraded；但 `linux.transfer.croc.status` 必须仍然可调用，用于返回 `installed=false`、`allow_send=false`、`allow_receive=false` 和明确错误。
+如果 yq-croc 未安装或 send/receive 被配置禁用，Node 可以不注册 send/receive，或注册为 unavailable/degraded；但 `linux.transfer.croc.status` 必须仍然可调用，用于返回 `runtime="yq-croc"`、`installed=false`、`allow_send=false`、`allow_receive=false` 和明确错误。
 
-后续 send/receive 能力必须基于 status 探测事实：
+send/receive 能力必须基于 status 探测事实：
 
 - `linux.transfer.croc.send`
 - `linux.transfer.croc.receive`
 
-如果 `croc` 不可用、目标路径不允许、权限不足、relay 不可用或校验失败，必须让 Job 失败并传播错误，不得静默降级。
+如果 `yq-croc` 不可用、目标路径不允许、权限不足、relay 不可用或校验失败，必须让 Job 失败并传播错误，不得静默降级，不得 fallback 到旧 croc CLI。
 
 ### send/receive 执行语义
 
-`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 是阻塞型长任务：capability 返回时表示该端 croc 子进程已经结束，状态必须是成功、失败、取消或超时之一。
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 是阻塞型长任务：capability 返回时表示该端 yq-croc 子进程已经结束，状态必须是成功、失败、取消或超时之一。
 
 因此 Phase 2 手动传输不能依赖 Agent 顺序调用：
 
@@ -554,7 +540,7 @@ Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台
 
 `linux.transfer.croc.receive` 只有在实际收到文件或目录后才能返回 succeeded。以下情况必须返回 failed，并写入稳定错误码：
 
-- croc 子进程 returncode 为 0，但 `output_dir` 中没有新增文件或目标 `target_path` 不存在；
+- yq-croc 子进程 returncode 为 0，但 `output_dir` 中没有新增文件或目标 `target_path` 不存在；
 - 只检测到输出目录本身，不得把目录 inode/block size（例如 4096 bytes）当成传输文件大小；
 - `received_path` 指向目录但本次传输预期是单文件，且没有可验证的文件级 size/sha256；
 - `expected_sha256` 已提供但接收文件 sha256 不一致；
@@ -562,27 +548,19 @@ Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台
 
 receive 输出中的 `size_bytes` 和 `sha256` 必须来自实际接收的文件；如果接收的是目录，必须明确返回 `received_kind="directory"`，并提供目录清单摘要或 archive 级校验，不能用目录自身 stat 伪装成文件校验。
 
-### croc 命令兼容性
+### yq-croc 命令与进度接口
 
-Node 必须在启动时或 `*.transfer.croc.status` 中探测本机 croc 版本和支持的 flags。不得硬编码当前二进制不支持的参数。
+Node 必须在 `linux.transfer.croc.status` 中探测 `yq-croc` 二进制、版本、上游 croc 版本、relay 配置和 relay reachability。send/receive 不得直接拼接 croc CLI 参数。
 
-已知 `croc v10.4.4` 支持 `--yes`、`--quiet`、`--disable-clipboard`、`--overwrite`、`--out`，不支持 `--no-info`。执行 `linux.transfer.croc.send/receive` 时不得使用 `--quiet`，因为 croc 的真实字节级传输进度只通过 stderr 终端进度条输出；使用 `--quiet` 会让 Node 无法上报确定进度。daemon 环境必须将 stdin 设为 null，避免 croc 在无交互环境中读取 stdin。`--disable-clipboard` 属于可选兼容 flag：Node 必须先探测，支持则传，不支持不得让传输因此失败。如果某个必需 flag 不存在，必须在 status 中暴露或在执行前失败，不得等传输中途才产生不可诊断行为。
+`resume_mode` 必须写入 yq-croc request file：
 
-`resume_mode` 到 croc 参数的映射必须明确：
+- `resume`：发现同一 transfer 的部分文件时尝试续传，不删除 partial file。
+- `overwrite`：明确允许覆盖已有文件。
+- `fail_if_exists`：目标已存在或 partial file 已存在时直接失败，不启动传输。
 
-- `overwrite`：receive 端必须传 `--overwrite`；
-- `resume`：不得传 `--overwrite`，保留 croc 自身恢复语义；
-- `fail_if_exists`：Node 必须在启动 croc 前做本地目录/目标检查，失败时不得启动 croc。
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须逐行读取 `yq-croc` stdout NDJSON。进度事件必须来自 `bytes_progress`，不得解析 terminal progressbar、stderr 或人类可读日志。
 
-### croc 真实进度上报
-
-`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须实时读取 croc stderr，解析类似如下的进度行：
-
-```text
-src.bin  92% |██████████████████  | (7.7/8.4 MB, 524 kB/s) [13s:1s]
-```
-
-解析成功时必须上报 `job.event`：
+映射后的 YQP `job.event` 示例：
 
 ```json
 {
@@ -592,7 +570,8 @@ src.bin  92% |██████████████████  | (7.7/8.4
     "role": "sender",
     "phase": "transferring",
     "status": "running",
-    "progress_source": "croc_stderr",
+    "progress_source": "yq_croc_event",
+    "event": "bytes_progress",
     "progress_pct": 92,
     "bytes_transferred": 7700000,
     "total_bytes": 8388608,
@@ -604,42 +583,37 @@ src.bin  92% |██████████████████  | (7.7/8.4
 
 规则：
 
-- sender 端在 stderr 读取到 `Code is:` 时，必须等待 1 秒 relay settle 窗口后再上报 `progress_source="croc_sender_ready"`、`phase="sender_ready"`、`sender_ready=true` 的 `transfer_progress` 事件；该事件不得包含 croc code 明文；
-- `Code is:` 不是 relay room ready 信号。croc v10.4.4 源码中该输出发生在 sender 连接 relay 之前；实测在该输出后立即启动 receiver 会触发 `room (secure channel) not ready, maybe peer disconnected`，约 0.5 秒后启动可成功；
-- 以子进程方式启动 croc 时必须传入 `--ignore-stdin`，避免 stdin 非字符设备时 croc 把 stdin 当作发送内容而忽略文件路径；
-- Node 托管的 croc sender 必须使用确定性 relay 模式：`croc ... send --no-local --no-multi <path>`。不得启用 croc 默认 local discovery/local relay/multiplex 多路径行为；
-- receive 端遇到 `room (secure channel) not ready` 或 `could not secure channel` 时，必须按瞬态握手失败处理，在同一个 Job 内使用相同 code/relay/output_dir 重试，不得直接把 Job 标记为最终失败；
-- `sender_ready` 是粘性事实，不是瞬时 UI 状态。sender 后续上报 `croc_stderr` 进度时必须继续携带 `sender_ready=true`，避免 Center 轮询时被后续 1%、2% 等真实进度覆盖；
-- Center 必须等待 sender 的 `croc_sender_ready` 后再启动 receive。不得用固定 sleep 代替该同步点，原因是大文件 sender 会先进行本地 hash/收集文件，room 尚未 ready 时启动 receive 会触发 `room (secure channel) not ready`；
-- 上报频率应节流到约 1 秒一次，完成时允许立即上报 100；
-- `total_bytes` 优先使用 `transfer.local.stat` 或 Center 传入的 `expected_size_bytes`，不得被 croc 显示用的四舍五入大小覆盖；
-- stderr 摘要仍需脱敏保存，用于失败诊断；
-- 如果 stderr 中没有可解析进度，只允许上报 `process_keepalive`；
-- 接收目录大小只能作为 `receiver_output_size_observation` 观察值，不能作为真实进度。croc 可能提前创建完整大小的目标文件，目录大小会产生假进度。
+- `sender_ready` 必须来自 `yq-croc` 结构化事件，且事件含义固定为 sender 已成功连接 relay control room 并收到 relay room confirmation。
+- Center 必须等待 `progress_source="yq_croc_event"` 且 `event="sender_ready"` 后再启动 receive。
+- `bytes_progress` 上报频率必须在 Node 侧节流到约 1 秒一次，完成时允许立即上报 100。
+- `total_bytes` 优先使用 `transfer.local.stat` 或 Center 传入的 `expected_size_bytes`，不得被人类可读日志中的四舍五入大小覆盖。
+- stderr 只允许作为本地调试日志和失败摘要来源，不得作为进度来源。
+- 如果 `yq-croc` 没有输出可用进度，Node 只能上报 `process_keepalive`，不得伪造 `progress_pct`。
+- 接收目录大小只能作为 `receiver_output_size_observation` 观察值，不能作为真实进度。
 
 ### 取消语义
 
-`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须以可取消的子进程方式执行。收到 Center `job.cancel` 或本地任务取消时：
+`linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须以可取消的 yq-croc 子进程方式执行。收到 Center `job.cancel` 或本地任务取消时：
 
-- 必须终止对应 croc 子进程，必要时先 terminate 再 kill；
+- 必须终止对应 yq-croc 子进程，必要时先 terminate 再 kill；
 - ledger 状态更新为 `cancelled` 或 `interrupted`；
 - Job 必须尽快上报 `cancelled` 或 `failed`，不能长期停留在 `running` / `cancelling`；
 - 不得默认删除部分文件，除非用户或 capability 输入显式要求清理；
 - stdout/stderr 摘要仍需脱敏上报，便于判断取消前状态。
 
-### croc 错误上报合同
+### yq-croc 错误上报合同
 
-croc 子进程失败时，Node 上报的 Job error 必须包含可诊断信息：
+yq-croc 子进程失败时，Node 上报的 Job error 必须包含可诊断信息：
 
 ```json
 {
-  "code": "croc_failed",
-  "message": "croc receive failed with exit code 1",
+  "code": "yq_croc_failed",
+  "message": "yq-croc receive failed with exit code 1",
   "details": {
     "returncode": 1,
     "stdout": "... last 4000 chars, code redacted ...",
     "stderr": "... last 4000 chars, code redacted ...",
-    "binary_path": "/usr/local/bin/croc",
+    "binary_path": "/usr/local/bin/yq-croc",
     "relay_url": null,
     "output_dir": "/tmp/yequ-transfer",
     "resume_mode": "overwrite"
@@ -655,9 +629,9 @@ croc 子进程失败时，Node 上报的 Job error 必须包含可诊断信息�
 - 目录不存在、权限不足、目标已存在、sha256 不匹配必须有稳定 `code`。
 - 失败时 ledger 必须从 `running` 更新为 `failed` 或 `interrupted`，不得长期停留在 `running`。
 
-### croc 断点续传与 Node 配合
+### yq-croc 断点续传与 Node 配合
 
-croc 本身支持 interrupted transfer resume，但这不是 Center 单方面能保证的能力。Linux Node 必须配合保存本地传输事实，并在重试时重新构造与上次兼容的 croc 命令。
+yq-croc 保留 croc 的 interrupted transfer resume 能力，但这不是 Center 单方面能保证的能力。Linux Node 必须配合保存本地传输事实，并在 Center 下发新 attempt 时重新构造与上次兼容的 request file。
 
 Node 必须持久化一份本地 transfer ledger，至少包含：
 
@@ -671,7 +645,7 @@ Node 必须持久化一份本地 transfer ledger，至少包含：
 - `source_mtime` 或 `source_sha256`，用于判断源文件是否已变化
 - `partial_path`：接收端已存在的部分文件路径
 - `resume_mode`：`resume`、`overwrite`、`fail_if_exists`
-- `attempt_count`
+- `attempt`：Center 下发的 attempt 序号，Node 不得本地自增
 - `started_at` / `last_progress_at` / `completed_at`
 - `last_error_code` / `last_error_message`
 
@@ -705,16 +679,16 @@ Node 必须持久化一份本地 transfer ledger，至少包含：
 | `overwrite` | 明确允许覆盖已有文件。用于用户确认后的重新传输。 |
 | `fail_if_exists` | 目标已存在或存在部分文件时直接失败。 |
 
-Node 必须测试并固定本平台的 croc 调用方式。不能在 `resume` 模式下使用会强制覆盖已有文件的参数。不同 croc 版本的行为差异必须通过 `linux.transfer.croc.status` 暴露。
+Node 必须测试并固定本平台的 yq-croc request 语义。不能在 `resume` 模式下使用会强制覆盖已有文件的请求参数。yq-croc 版本和上游 croc 版本必须通过 `linux.transfer.croc.status` 暴露。
 
-建议增加辅助能力：
+必须实现辅助能力：
 
 - `linux.transfer.local.stat`：检查本地路径、大小、mtime、sha256、可读/可写、剩余空间。
 - `linux.transfer.croc.reconcile`：Node 重启后扫描本地 transfer ledger，返回 interrupted/running/succeeded/failed 状态，供 Center 修复 TransferSession。
 
-这些辅助能力不是替代 send/receive，而是让 Center 在大文件传输前后能建立事实。没有这些能力时，第一版仍可手动传输，但不能声称具备可靠断点续传编排。
+这些辅助能力不是替代 send/receive，而是让 Center 在大文件传输前后能建立事实。没有这些能力时，不得启用 Center schedule-based 大文件传输。
 
-长时间 croc Job 必须：
+长时间 yq-croc Job 必须：
 
 - 定期发送 `job.event` 进度事件，至少包含状态和已知的 stdout/stderr 摘要；
 - 定期 `job.lease_renew`，避免 Center 将长传输误判为 timeout；

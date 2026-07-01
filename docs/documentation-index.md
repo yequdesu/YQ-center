@@ -32,6 +32,7 @@
 | 文档 | 用途 |
 |---|---|
 | `docs/todos/README.md` | 当前待办文档目录。 |
+| `docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md` | yq-croc 插件运行时计划。基于 croc Go 源码做独立可选传输运行时，替代脆弱的 croc CLI 包装和错误的直连传输路线。 |
 | `docs/todos/2026-06-30-center-execution-runtime-v2.md` | 当前主路线图。将 Capability Runtime v1 升级为 Center Execution Runtime v2，覆盖 Admission、Operation Bus、workflow handlers、Agent wait/resume 和 future MQ 边界。 |
 | `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md` | 阶段 6 前强制优化待办。覆盖 Operation 进度透明、ExecutionGuard、Agent 工具选择治理、transfer preflight、capability projection 查询、Node capability 描述合同、prompt diagnostics 和 Linux Node 能力扩展。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Agent Provider 系统路线图：provider registry、模型发现、连通性探测和前端动态选择。 |

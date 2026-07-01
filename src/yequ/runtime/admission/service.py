@@ -35,11 +35,11 @@ class ExecutionAdmissionService:
                 decision="inline",
                 reason="center_read_or_presentation_meta_tool",
             )
-        if name == "transfer.create":
+        if name in {"transfer.create", "transfer.resume"}:
             return ExecutionPlan(
                 function_name=name,
                 decision="workflow_operation",
-                reason="transfer_create_fans_out_to_sender_and_receiver_jobs",
+                reason=f"{name}_fans_out_to_sender_and_receiver_jobs",
                 operation_kind="transfer",
                 waitable=True,
                 metadata={"ref_type": "transfer_session"},

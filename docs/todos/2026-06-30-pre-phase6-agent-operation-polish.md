@@ -243,7 +243,7 @@ transfer 的 `progress_detail` 第一版结构：
 
 ### 5.4 Node 合同任务
 
-Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上报结构化进度。
+Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 进度合同已由 `docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md` 接管。
 
 当前进度：
 
@@ -251,15 +251,12 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
 - [x] Windows Node transfer manifest 已声明 `supports_progress`、`supports_cancel`、`supports_resume` 和 `progress_contract=transfer_progress_v1`；
 - [x] Linux Node send/receive 实现已发送 `transfer_started`、`transfer_progress`、`transfer_cancelled` 等 `job.event`，并执行 lease renew/cancel；
 - [x] Linux Node Rust `CapabilityManifest` 顶层字段已结构化声明 `supports_progress`、`supports_cancel`、`supports_resume`、`progress_contract`、`preconditions`、`required_intent_slots`；
-- [x] Windows Node 运行时已把 croc 子进程 keepalive 通过 `job.progress` 上报为统一 progress event；
-- [x] Windows / Linux Node 已改为解析 croc stderr 终端进度条，使用 `progress_source="croc_stderr"` 上报真实传输进度；
+- [x] Windows Node 和 Linux Node 的旧 croc CLI/stderr progress 路径已废弃；后续实现只接受 `yq-croc` stdout NDJSON。
 - [x] receiver output-size 方案经实测存在假进度风险，已降级为 observation，不再生成 `progress_pct`。
-- [x] sender 端读取到 croc `Code is:` 后上报 `progress_source="croc_sender_ready"`，Center 等待该事件后再启动 receiver，避免大文件 hash/准备阶段过早启动 receive 造成 `room not ready`。
-- [x] `croc_sender_ready` 已改为粘性事实：Node 后续真实进度继续携带 `sender_ready=true`，Center 投影保留该字段，并兼容旧 Node 的 sender `croc_stderr` 进度，避免 ready 事件被 1% 进度覆盖后误判失败。
+- [x] sender ready 同步点已收敛为 `progress_source="yq_croc_event"` 且 `event="sender_ready"`；Center 不再接受旧 CLI 输出作为 ready。
+- [x] sender_ready 是由 yq-croc 结构化事件派生的粘性事实，后续 `bytes_progress` 可以携带 `sender_ready=true`。
 - [x] transfer 子 job 不再使用固定 30 秒 lease，sender-ready 等待窗口也不再固定 30 秒。croc sender 在暴露 room/code 前可能需要收集和哈希大文件，Center 必须给传输类 job 足够的初始 lease 和 ready 等待窗口。
-- [x] 根据 croc v10.4.4 源码和本地 relay 复现，纠正 `Code is:` 语义：该输出发生在 sender 连接 relay 之前，不是 room ready。Node 现在必须在 `Code is:` 后等待 1 秒 relay settle 窗口再上报 `croc_sender_ready`；同时 croc 子进程必须使用 `--ignore-stdin`。
-- [x] Linux receive 端已把 `room (secure channel) not ready` / `could not secure channel` 建模为瞬态握手失败，在同一个 Job 内按 backoff 重试，不再让单次 croc receive 抢跑导致整次 Transfer 失败并取消 sender。
-- [x] Node 托管 croc sender 已改为确定性 relay 模式：`send --no-local --no-multi <path>`，禁用 croc 默认 local discovery/local relay/multiplex 多路径竞态。手动 CLI 可继续使用默认行为，自动化链路必须可观测、可推理。
+- [x] `Code is:`、stderr progressbar、CLI flag 拼装和 Node 本地 receive retry 均不再是 active contract；Center 是唯一调度者。
 - [x] `transfer.create` 在 Operation 创建前如被客户端取消，必须取消已创建的 sender/receiver job 并标记 TransferSession cancelled，避免资源锁残留阻塞下一次传输。
 
 ```json
@@ -269,7 +266,7 @@ Windows Node 和 Linux Node 的 `*.transfer.croc.send/receive` 必须尽量上�
   "role": "sender | receiver",
   "status": "running",
   "process_pid": 1234,
-  "progress_source": "process_keepalive | croc_stderr | receiver_output_size_observation",
+  "progress_source": "process_keepalive | yq_croc_event | receiver_output_size_observation",
   "bytes_transferred": 60000000,
   "total_bytes": 120945608,
   "rate_bytes_per_sec": 5242880,

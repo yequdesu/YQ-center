@@ -41,6 +41,8 @@ class ExecutionGuard:
     def evaluate(self, command: RuntimeCommand) -> GuardDecision:
         if command.function_name == "transfer.create":
             return self._evaluate_transfer_create(command)
+        if command.function_name == "transfer.resume":
+            return self._evaluate_transfer_resume(command)
         if command.function_name == "artifact.deploy":
             return self._evaluate_artifact_deploy(command)
         return GuardDecision(decision="allow", reason="no_guard_rule")
@@ -106,6 +108,15 @@ class ExecutionGuard:
             )
 
         return GuardDecision(decision="allow", reason="transfer_intent_slots_present")
+
+    def _evaluate_transfer_resume(self, command: RuntimeCommand) -> GuardDecision:
+        if not _has_string(command.input_data.get("transfer_id")):
+            return GuardDecision(
+                decision="needs_input",
+                reason="transfer.resume requires transfer_id",
+                missing_slots=["transfer_id"],
+            )
+        return GuardDecision(decision="allow", reason="transfer_resume_intent_slots_present")
 
     def _evaluate_artifact_deploy(self, command: RuntimeCommand) -> GuardDecision:
         input_data = command.input_data

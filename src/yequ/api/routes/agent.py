@@ -257,8 +257,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "type": "integer",
                         "default": 120,
                         "description": (
-                            "Requested freshness window; Center clamps it to "
-                            "30-300 seconds."
+                            "Requested freshness window; Center clamps it to 30-300 seconds."
                         ),
                     },
                 },
@@ -367,8 +366,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "type": "integer",
                         "default": 120,
                         "description": (
-                            "Requested freshness window; Center clamps it to "
-                            "30-300 seconds."
+                            "Requested freshness window; Center clamps it to 30-300 seconds."
                         ),
                     },
                 },
@@ -453,6 +451,26 @@ def _center_meta_functions() -> list[AgentFunction]:
             },
             risk="safe",
             effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="transfer.resume",
+            description=(
+                "Resume an interrupted Center-managed TransferSession. Use only when "
+                "transfer.status reports status=interrupted and resumable=true; Center "
+                "creates the next attempt and reuses the existing TransferSession."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "transfer_id": {"type": "string"},
+                    "timeout_sec": {"type": "integer", "default": 3600},
+                    "relay_url": {"type": "string"},
+                },
+                "required": ["transfer_id"],
+            },
+            risk="maintenance",
+            effect="external",
             timeout_sec=5,
         ),
         AgentFunction(
@@ -780,9 +798,7 @@ def _agent_debug_metadata(
     capability_context: JsonDict | None = None,
 ) -> dict[str, object]:
     return {
-        "system_prompt": _provider_system_prompt(
-            provider, available_functions, capability_context
-        ),
+        "system_prompt": _provider_system_prompt(provider, available_functions, capability_context),
         "target_node_id": target_node_id,
         "execution_mode": execution_mode,
         "routing_mode": (
@@ -867,11 +883,7 @@ async def _with_context_block_events(
 
 def _context_block_summary(block: dict[str, object]) -> dict[str, object]:
     observation = block.get("observation")
-    operation = (
-        observation.get("operation")
-        if isinstance(observation, dict)
-        else None
-    )
+    operation = observation.get("operation") if isinstance(observation, dict) else None
     operation_dict = operation if isinstance(operation, dict) else {}
     return {
         "index": block.get("index"),
@@ -1024,9 +1036,7 @@ async def invoke_agent_stream_endpoint(
                 execution_mode=body.execution_mode,
                 run_metadata={
                     "context_refs": [ref.model_dump() for ref in body.context_refs],
-                    "context_blocks": [
-                        _context_block_summary(block) for block in context_blocks
-                    ],
+                    "context_blocks": [_context_block_summary(block) for block in context_blocks],
                 },
             ),
             context_blocks,
@@ -1146,9 +1156,7 @@ async def resume_agent_run_stream_endpoint(
         from yequ.runtime.agent_run_service import get_agent_run_projection
 
         run_projection = await get_agent_run_projection(db, body.run_id)
-        operation_observation = await _operation_observation_from_run_projection(
-            db, run_projection
-        )
+        operation_observation = await _operation_observation_from_run_projection(db, run_projection)
         available = await _available_functions(db, target_node_id=body.target_node_id)
         capability_context = await build_capability_context(
             db,
@@ -1209,9 +1217,7 @@ async def resume_last_agent_run_stream_endpoint(
         from yequ.runtime.agent_run_service import get_last_resumable_agent_run
 
         run_projection = await get_last_resumable_agent_run(db, session_id=body.session_id)
-        operation_observation = await _operation_observation_from_run_projection(
-            db, run_projection
-        )
+        operation_observation = await _operation_observation_from_run_projection(db, run_projection)
         available = await _available_functions(db, target_node_id=body.target_node_id)
         capability_context = await build_capability_context(
             db,
@@ -1413,5 +1419,3 @@ async def agent_plan_stream_endpoint(
             },
         },
     )
-
-

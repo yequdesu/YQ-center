@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,6 +52,38 @@ class TransferSession(Base, TimestampMixin):
 
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class TransferAttempt(Base, TimestampMixin):
+    """One Center-created execution attempt for a TransferSession."""
+
+    __tablename__ = "transfer_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "transfer_session_id", "attempt", name="uq_transfer_attempt_session_attempt"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    transfer_session_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("transfer_sessions.id"), nullable=False, index=True
+    )
+    transfer_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    source_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    target_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    relay_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    relay_url_masked: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created", index=True)
+    resumable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 

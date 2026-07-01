@@ -1,7 +1,7 @@
 //! Local transfer ledger for tracking croc transfer state.
 //!
 //! Persists transfer facts to a local SQLite database so that:
-//! - Transfers are idempotent per `transfer_id`
+//! - Transfers are idempotent per `transfer_id` + Center-assigned attempt
 //! - Daemon restarts can detect interrupted/running transfers
 //! - Source file changes can be detected via mtime/sha256 comparison
 //! - Resume mode semantics are enforced locally
@@ -59,7 +59,7 @@ pub struct TransferLedgerEntry {
     pub source_sha256: Option<String>,
     pub partial_path: Option<String>,
     pub resume_mode: ResumeMode,
-    pub attempt_count: u32,
+    pub attempt: u32,
     pub pid: Option<u32>,
     pub started_at: Option<String>,
     pub last_progress_at: Option<String>,
@@ -97,7 +97,7 @@ impl TransferLedger {
                 source_sha256 TEXT,
                 partial_path TEXT,
                 resume_mode TEXT NOT NULL DEFAULT 'resume',
-                attempt_count INTEGER NOT NULL DEFAULT 0,
+                attempt INTEGER NOT NULL DEFAULT 1,
                 pid INTEGER,
                 started_at TEXT,
                 last_progress_at TEXT,
@@ -122,7 +122,7 @@ impl TransferLedger {
             "INSERT INTO transfer_ledger (
                 transfer_id, role, status, code_hash, relay_url, source_path,
                 target_path, output_dir, source_size_bytes, source_mtime, source_sha256,
-                partial_path, resume_mode, attempt_count, pid, started_at,
+                partial_path, resume_mode, attempt, pid, started_at,
                 last_progress_at, completed_at, last_error_code, last_error_message,
                 created_at, updated_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
@@ -140,7 +140,7 @@ impl TransferLedger {
                 entry.source_sha256,
                 entry.partial_path,
                 serde_json::to_string(&entry.resume_mode).unwrap_or_default().trim_matches('"'),
-                entry.attempt_count as i32,
+                entry.attempt as i32,
                 entry.pid.map(|v| v as i64),
                 entry.started_at,
                 entry.last_progress_at,
@@ -193,13 +193,12 @@ impl TransferLedger {
         Ok(())
     }
 
-    /// Increment attempt count.
-    pub fn increment_attempt(&self, transfer_id: &str) -> Result<(), rusqlite::Error> {
+    /// Delete a terminal entry before inserting a newer Center-assigned attempt.
+    pub fn delete(&self, transfer_id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE transfer_ledger SET attempt_count = attempt_count + 1, updated_at = ?1 WHERE transfer_id = ?2",
-            params![now, transfer_id],
+            "DELETE FROM transfer_ledger WHERE transfer_id = ?1",
+            params![transfer_id],
         )?;
         Ok(())
     }
@@ -210,7 +209,7 @@ impl TransferLedger {
         let mut stmt = conn.prepare(
             "SELECT transfer_id, role, status, code_hash, relay_url, source_path,
              target_path, output_dir, source_size_bytes, source_mtime, source_sha256,
-             partial_path, resume_mode, attempt_count, pid, started_at,
+             partial_path, resume_mode, attempt, pid, started_at,
              last_progress_at, completed_at, last_error_code, last_error_message,
              created_at, updated_at
              FROM transfer_ledger WHERE transfer_id = ?1",
@@ -233,7 +232,7 @@ impl TransferLedger {
                 partial_path: row.get(11)?,
                 resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?))
                     .unwrap_or(ResumeMode::Resume),
-                attempt_count: row.get::<_, i32>(13)? as u32,
+                attempt: row.get::<_, i32>(13)? as u32,
                 pid: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
                 started_at: row.get(15)?,
                 last_progress_at: row.get(16)?,
@@ -266,7 +265,7 @@ impl TransferLedger {
                 (
                     "SELECT transfer_id, role, status, code_hash, relay_url, source_path,
                      target_path, output_dir, source_size_bytes, source_mtime, source_sha256,
-                     partial_path, resume_mode, attempt_count, pid, started_at,
+                     partial_path, resume_mode, attempt, pid, started_at,
                      last_progress_at, completed_at, last_error_code, last_error_message,
                      created_at, updated_at
                      FROM transfer_ledger WHERE status = ?1 ORDER BY created_at DESC"
@@ -277,7 +276,7 @@ impl TransferLedger {
             None => (
                 "SELECT transfer_id, role, status, code_hash, relay_url, source_path,
                  target_path, output_dir, source_size_bytes, source_mtime, source_sha256,
-                 partial_path, resume_mode, attempt_count, pid, started_at,
+                 partial_path, resume_mode, attempt, pid, started_at,
                  last_progress_at, completed_at, last_error_code, last_error_message,
                  created_at, updated_at
                  FROM transfer_ledger ORDER BY created_at DESC"
@@ -304,7 +303,7 @@ impl TransferLedger {
                 partial_path: row.get(11)?,
                 resume_mode: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(12)?))
                     .unwrap_or(ResumeMode::Resume),
-                attempt_count: row.get::<_, i32>(13)? as u32,
+                attempt: row.get::<_, i32>(13)? as u32,
                 pid: row.get::<_, Option<i64>>(14)?.map(|v| v as u32),
                 started_at: row.get(15)?,
                 last_progress_at: row.get(16)?,

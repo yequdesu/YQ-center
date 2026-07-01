@@ -194,20 +194,22 @@ ExecutionGate.evaluate(command)
 - keepalive 事件必须标记 `progress_source="process_keepalive"`，并尽量携带 `process_pid`、`phase`、`role`、`transfer_id`；
 - 不得伪造百分比。
 
-croc 传输真实进度合同：
+`yq-croc` 插件运行时是后续跨 Node 大文件传输的权威运行时抽象。它基于 croc Go 源码，作为独立二进制/插件由 Node 适配调用；Center 和 Node 主进程都不内嵌 croc 协议实现。旧的 croc CLI stderr 解析路径已经废止，不能作为新增实现依据。
 
-- Node 必须优先使用 croc 自身的传输进度输出作为真实进度源，标记 `progress_source="croc_stderr"`；
-- sender 端读取到 croc `Code is:` 后，必须等待一个 relay settle 窗口后再上报 `progress_source="croc_sender_ready"`、`phase="sender_ready"`、`sender_ready=true` 的 `transfer_progress` 事件；该事件不得泄漏 croc code 明文；
-- `Code is:` 不是 relay room ready 信号。croc v10.4.4 源码中该输出发生在 `sendCollectFiles()` 之后、sender 连接 relay 之前；实测在 `Code is:` 后立即启动 receiver 会触发 `room (secure channel) not ready, maybe peer disconnected`，约 0.5 秒后启动可成功。合同规定默认 settle 窗口为 1 秒；
-- Node 以子进程方式启动 croc 时必须传入 `--ignore-stdin`，避免 croc 在 stdin 非字符设备时把 stdin 当作发送内容而忽略文件路径；
-- Node 托管的 croc sender 必须使用确定性 relay 模式：`croc ... send --no-local --no-multi <path>`。不得启用 croc 默认 local discovery/local relay/multiplex 多路径行为，原因是这些交互式默认行为会引入 Center 无法观测的连接竞态；
-- receive 端遇到 `room (secure channel) not ready` 或 `could not secure channel` 时，必须按瞬态握手失败处理，在同一个 Job 内使用相同 code/relay/output_dir 重试，不得直接把 Job 标记为最终失败；只有超过重试次数、总 timeout、收到取消或出现非瞬态错误时才允许失败；
-- `sender_ready` 是粘性事实，不是瞬时 UI 状态。sender 后续上报 `croc_stderr` 进度时必须继续携带 `sender_ready=true`，避免 Center 等待同步点时被普通进度覆盖；
-- `croc_stderr` 进度事件应尽量携带 `progress_pct`、`bytes_transferred`、`total_bytes`、`rate_bytes_per_sec`、`eta_sec`；
-- `total_bytes` 应优先使用 Node/Center 预检得到的精确 stat 值，不得用 croc 终端显示中的四舍五入大小覆盖精确字节数；
-- `process_keepalive` 只表示子进程仍在运行，不得携带 `progress_pct`；
-- 接收端输出目录大小不等价于已传输字节。croc 可能提前创建或扩展目标文件，因此目录大小只能作为 observation 上报，必须标记 `progress_source="receiver_output_size_observation"`，不得携带 `bytes_transferred` / `progress_pct` / `eta_sec`；
-- 如果当前 croc 版本或平台无法提供可解析的真实进度，Node 只能上报 keepalive，Console 显示不确定进度条。
+`yq-croc` 传输真实进度合同：
+
+- Node 必须优先使用 `yq-croc` stdout NDJSON 事件作为真实进度源，标记 `progress_source="yq_croc_event"`；
+- `sender_ready` 必须来自 sender 成功连接 relay control room 并完成 relay room confirmation 后的结构化事件，不得来自 `Code is:`、固定 sleep 或 PAKE 完成事件；
+- `bytes_progress` 事件应携带 `progress_pct`、`bytes_transferred`、`total_bytes`、`rate_bytes_per_sec`、`eta_sec`；
+- `total_bytes` 应优先使用 Node/Center 预检得到的精确 stat 值，不得用终端显示中的四舍五入大小覆盖精确字节数；
+- 公共 relay 模式必须支持 interrupted/resumable 状态。Node 失败后不得默认删除 partial file；跨 Job resume 必须基于 ledger、source facts、target facts 和 `resume_mode="resume"` 判定；
+- `resume` 不等于无条件覆盖。ledger/source/target 不匹配时必须失败为 `resume_state_mismatch`；
+- Node 不能主动发起 transfer retry、resume、relay switch 或 code rotation。Node 只能在当前 Center Job 内执行进程内 reconnect；跨 Job resume 必须由 Center 创建下一次 attempt；
+- 如果 `yq-croc` 不可用，status capability 必须明确返回 `runtime="yq-croc"`、`installed=false` 或 `relay_reachable=false`，不得静默 fallback 到 YQP artifact upload，也不得 fallback 到旧 croc CLI；
+- Windows Node 的 yq-croc 默认关闭 croc local relay/discovery，只要求 `yq-croc.exe` 能出站连接 relay TCP 端口，默认 `9009`；如果 Windows Firewall 或上级策略默认阻断出站，`windows.transfer.croc.status` 必须报告 `firewall_allows_outbound=false`，Center 预检必须拒绝本次传输；
+- `yq-croc` request、stdout、stderr、ledger 和 Timeline 都不得泄漏 croc code、relay password、Node token 或 Center token。
+
+旧 croc CLI 路径必须删除。实现工作开始后，相关 manifest、adapter、stderr parser、bundled binary 和文档细节必须从 active contract 与代码中清理；不得保留 fallback、兼容层或可执行语义。
 
 Center 行为：
 

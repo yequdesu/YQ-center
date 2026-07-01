@@ -51,7 +51,8 @@ async def _hello(client: AsyncClient, node_id: str, token: str, os_name: str) ->
                         "status": "online",
                         "interactive": False,
                         "privilege": "user",
-                        "labels": [os_name, "transfer"],
+                        "labels": [os_name, "transfer", "yq-croc"],
+                        "metadata": {"runtime": "yq-croc"},
                     }
                 ],
             },
@@ -85,10 +86,11 @@ async def _register_transfer_capabilities(
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
-                                        "path": {"type": "string"},
+                                        "source_path": {"type": "string"},
+                                        "attempt": {"type": "integer", "minimum": 1},
                                         "code": {"type": "string"},
                                     },
-                                    "required": ["path", "code"],
+                                    "required": ["source_path", "attempt", "code"],
                                 },
                                 "output_schema": {"type": "object"},
                                 "risk": "maintenance",
@@ -97,7 +99,7 @@ async def _register_transfer_capabilities(
                                 "lease_sec": 30,
                                 "execution_requirements": {
                                     "runtime_kind": "privileged",
-                                    "labels": [prefix, "transfer"],
+                                    "labels": [prefix, "transfer", "yq-croc"],
                                 },
                                 "resource_keys": ["node.transfer"],
                                 "conflict_policy": "serialize",
@@ -110,9 +112,10 @@ async def _register_transfer_capabilities(
                                     "type": "object",
                                     "properties": {
                                         "code": {"type": "string"},
+                                        "attempt": {"type": "integer", "minimum": 1},
                                         "output_dir": {"type": "string"},
                                     },
-                                    "required": ["code"],
+                                    "required": ["code", "attempt"],
                                 },
                                 "output_schema": {"type": "object"},
                                 "risk": "maintenance",
@@ -121,7 +124,7 @@ async def _register_transfer_capabilities(
                                 "lease_sec": 30,
                                 "execution_requirements": {
                                     "runtime_kind": "privileged",
-                                    "labels": [prefix, "transfer"],
+                                    "labels": [prefix, "transfer", "yq-croc"],
                                 },
                                 "resource_keys": ["node.transfer"],
                                 "conflict_policy": "serialize",
@@ -145,10 +148,14 @@ async def _fake_transfer_status_success(self, command, *, node_id: str):
         function_name="capability.invoke",
         output_data={
             "node_id": node_id,
+            "runtime": "yq-croc",
             "installed": True,
+            "executable": True,
+            "relay_reachable": True,
             "allow_send": True,
             "allow_receive": True,
-            "version": "test-croc",
+            "runtime_version": "test-yq-croc",
+            "upstream_croc_version": "v10.4.6",
         },
     )
 
@@ -210,6 +217,9 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     ]
     assert jobs[0].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[1].input_payload["transfer_id"] == transfer["transfer_id"]
+    assert jobs[0].input_payload["attempt"] == 1
+    assert jobs[1].input_payload["attempt"] == 1
+    assert jobs[0].input_payload["source_path"] == "E:\\test\\1.mp3"
 
     session_result = await db_session.execute(select(TransferSession))
     session = session_result.scalar_one()
@@ -313,9 +323,7 @@ async def test_transfer_create_rejects_target_path_rename(
 
     assert result.status == "failed"
     assert result.error_code == "invalid_input"
-    assert "target_path filename must match source filename" in (
-        result.error_message or ""
-    )
+    assert "target_path filename must match source filename" in (result.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -362,7 +370,8 @@ async def test_transfer_operation_projects_job_progress(
         "rate_bytes_per_sec": 5_000_000,
         "eta_sec": 8,
         "last_progress_at": "2026-06-30T12:00:02+00:00",
-        "progress_source": "croc_output",
+        "progress_source": "yq_croc_event",
+        "event": "bytes_progress",
     }
     target_job.status = "running"
     target_job.progress_pct = 40
@@ -705,7 +714,10 @@ async def test_transfer_preflight_reports_target_receive_disabled(
             function_name="capability.invoke",
             output_data={
                 "node_id": node_id,
+                "runtime": "yq-croc",
                 "installed": True,
+                "executable": True,
+                "relay_reachable": True,
                 "allow_send": True,
                 "allow_receive": node_id != "linux-node-01",
             },
@@ -736,6 +748,76 @@ async def test_transfer_preflight_reports_target_receive_disabled(
     assert preflight["decision"] == "preflight_failed"
     assert preflight["failed_preconditions"] == [
         {"fact": "target.runtime.allow_receive", "code": "receive_not_allowed"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transfer_preflight_reports_runtime_egress_blocked(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yequ.application.transfer import TransferApplicationService
+
+    async def fake_stat(self, command, *, node_id: str, path: str, include_sha256: bool):
+        del self, command, node_id, path, include_sha256
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "found": True,
+                "readable": True,
+                "parent_exists": True,
+                "writable": True,
+                "size_bytes": 1024,
+                "free_bytes": 4096,
+            },
+        )
+
+    async def fake_status(self, command, *, node_id: str):
+        del self, command
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "node_id": node_id,
+                "runtime": "yq-croc",
+                "installed": True,
+                "executable": True,
+                "relay_reachable": True,
+                "firewall_allows_outbound": node_id != "winClient",
+                "allow_send": True,
+                "allow_receive": True,
+            },
+        )
+
+    monkeypatch.setattr(TransferApplicationService, "_invoke_stat_capability", fake_stat)
+    monkeypatch.setattr(TransferApplicationService, "_invoke_status_capability", fake_status)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.preflight",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    preflight = result.output_data["preflight"]
+    assert preflight["allowed"] is False
+    assert preflight["decision"] == "preflight_failed"
+    assert preflight["failed_preconditions"] == [
+        {
+            "fact": "source.runtime.firewall_allows_outbound",
+            "code": "runtime_egress_blocked",
+        }
     ]
 
 
@@ -1020,6 +1102,87 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
 
 
 @pytest.mark.asyncio
+async def test_transfer_resume_creates_next_attempt_for_interrupted_session(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await _provision(db_session, "winClient", "win-token")
+    await _provision(db_session, "linux-node-01", "linux-token")
+    await _hello(client, "winClient", "win-token", "windows")
+    await _hello(client, "linux-node-01", "linux-token", "linux")
+    await _register_transfer_capabilities(client, "winClient", "win-token", "windows")
+    await _register_transfer_capabilities(client, "linux-node-01", "linux-token", "linux")
+
+    service = CenterExecutionRuntime(db_session)
+    created = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+                "timeout_sec": 600,
+                "skip_preflight": True,
+                "skip_reason": "test prepares interrupted transfer",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert created.status == "waiting_operation"
+    assert created.output_data is not None
+    transfer_id = created.output_data["transfer"]["transfer_id"]
+
+    jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
+    source_job, target_job = list(jobs_result.scalars().all())
+    source_job.status = "failed"
+    source_job.error_code = "external_service_failed"
+    source_job.error_message = "relay disconnected"
+    source_job.progress_detail = {
+        "progress_source": "yq_croc_event",
+        "event": "transfer_error",
+        "role": "sender",
+        "resumable": True,
+    }
+    target_job.status = "cancelled"
+    await db_session.commit()
+
+    status = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.status",
+            input_data={"transfer_id": transfer_id},
+        )
+    )
+    assert status.output_data is not None
+    assert status.output_data["transfer"]["status"] == "interrupted"
+    assert status.output_data["transfer"]["resumable"] is True
+
+    resumed = await service.execute(
+        ExecuteToolCommand(
+            function_name="transfer.resume",
+            input_data={"transfer_id": transfer_id, "timeout_sec": 600},
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert resumed.status == "waiting_operation"
+    assert resumed.output_data is not None
+    resumed_transfer = resumed.output_data["transfer"]
+    assert resumed_transfer["transfer_id"] == transfer_id
+    assert resumed_transfer["attempt"] == 2
+    assert resumed_transfer["status"] == "running"
+
+    jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
+    jobs = list(jobs_result.scalars().all())
+    assert len(jobs) == 4
+    assert jobs[2].input_payload["attempt"] == 2
+    assert jobs[3].input_payload["attempt"] == 2
+
+
+@pytest.mark.asyncio
 async def test_transfer_status_deprioritizes_late_409_conflict_error(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -1058,9 +1221,7 @@ async def test_transfer_status_deprioritizes_late_409_conflict_error(
     source_job, target_job = list(jobs_result.scalars().all())
     source_job.status = "failed"
     source_job.error_code = "http_error"
-    source_job.error_message = (
-        "Client error '409 Conflict' for url 'https://gtw.yequdesu.top/yqp/'"
-    )
+    source_job.error_message = "Client error '409 Conflict' for url 'https://gtw.yequdesu.top/yqp/'"
     target_job.status = "failed"
     target_job.error_code = "function_execution_failed"
     target_job.error_message = "croc receive failed with exit code Some(1)"
@@ -1405,9 +1566,7 @@ async def test_invoke_stream_loads_operation_context_refs(
     )
     runs = list(run_result.scalars().all())
     run = next(
-        item
-        for item in runs
-        if (item.metadata_json or {}).get("source") == "agent.invoke.stream"
+        item for item in runs if (item.metadata_json or {}).get("source") == "agent.invoke.stream"
     )
     assert run.metadata_json is not None
     assert run.metadata_json["context_refs"] == [
