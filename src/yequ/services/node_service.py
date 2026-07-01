@@ -4,6 +4,7 @@ import base64
 import binascii
 from datetime import UTC, datetime, timedelta
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,9 +18,12 @@ from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.signal_state import SignalState
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import JobDeliveryMode, NodeStatus
+from yequ.protocol.errors import ErrorCode, YqpError
 from yequ.shared_types import JsonObject
 
 log = get_logger(__name__)
+
+VALID_IDEMPOTENCY_VALUES = {"idempotent", "non_idempotent", "transactional"}
 
 
 async def handle_hello(
@@ -145,6 +149,7 @@ async def handle_register_capabilities(
     """
 
     plugins = payload.get("plugins", [])
+    _validate_capability_registration_payload(plugins)
     registered_count = 0
     failed_count = 0
     now = datetime.now(UTC)
@@ -259,6 +264,69 @@ def _execution_requirements_from_context(context: str | None) -> JsonObject | No
             "allowed_runtime_kinds": ["interactive", "privileged"],
         }
     return None
+
+
+def _validate_capability_registration_payload(plugins: object) -> None:
+    if not isinstance(plugins, list):
+        _raise_schema_invalid("plugins must be a list", field="plugins")
+
+    for plugin_index, plugin in enumerate(plugins):
+        if not isinstance(plugin, dict):
+            _raise_schema_invalid(
+                "plugin manifest must be an object",
+                field=f"plugins[{plugin_index}]",
+            )
+        functions = plugin.get("functions") or []
+        if not isinstance(functions, list):
+            _raise_schema_invalid(
+                "plugin functions must be a list",
+                field=f"plugins[{plugin_index}].functions",
+                plugin_id=str(plugin.get("plugin_id") or ""),
+            )
+        for function_index, function in enumerate(functions):
+            if not isinstance(function, dict):
+                _raise_schema_invalid(
+                    "function manifest must be an object",
+                    field=f"plugins[{plugin_index}].functions[{function_index}]",
+                    plugin_id=str(plugin.get("plugin_id") or ""),
+                )
+            value = function.get("idempotency")
+            if value is None:
+                continue
+            if not isinstance(value, str) or value not in VALID_IDEMPOTENCY_VALUES:
+                _raise_schema_invalid(
+                    "function idempotency must be one of: "
+                    + ", ".join(sorted(VALID_IDEMPOTENCY_VALUES)),
+                    field=f"plugins[{plugin_index}].functions[{function_index}].idempotency",
+                    plugin_id=str(plugin.get("plugin_id") or ""),
+                    function_name=str(function.get("name") or ""),
+                    value=value,
+                )
+
+
+def _raise_schema_invalid(
+    message: str,
+    *,
+    field: str,
+    plugin_id: str | None = None,
+    function_name: str | None = None,
+    value: object | None = None,
+) -> None:
+    details: JsonObject = {"field": field}
+    if plugin_id:
+        details["plugin_id"] = plugin_id
+    if function_name:
+        details["function_name"] = function_name
+    if value is not None:
+        details["value"] = value
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=YqpError(
+            code=ErrorCode.SCHEMA_INVALID,
+            message=message,
+            details=details,
+        ).model_dump(),
+    )
 
 
 async def _sync_runtime_instances(

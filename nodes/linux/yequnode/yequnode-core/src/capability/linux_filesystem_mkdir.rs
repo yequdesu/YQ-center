@@ -61,7 +61,7 @@ impl Capability for LinuxFilesystemMkdir {
             risk: "maintenance".into(),
             effect: "write".into(),
             timeout_sec: 10,
-            idempotency: Some("idempotent_when_exist_ok_true".into()),
+            idempotency: Some("idempotent".into()),
             execution_requirements: Some(json!({
                 "runtime_kind": "privileged",
                 "labels": ["linux", "filesystem"]

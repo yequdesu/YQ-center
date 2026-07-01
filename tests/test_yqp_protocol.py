@@ -311,6 +311,51 @@ async def test_register_capabilities_full_snapshot(client: AsyncClient, provisio
 
 
 @pytest.mark.asyncio
+async def test_register_capabilities_rejects_invalid_idempotency(
+    client: AsyncClient,
+    provisioned_node,
+):
+    """Invalid manifest idempotency should be a schema error, not a DB 500."""
+    node, token = provisioned_node
+    auth = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "test.plugin",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "test.plugin.func_a",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": ("idempotent_when_overwrite_and_artifact_unchanged"),
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "schema_invalid"
+    assert detail["details"]["function_name"] == "test.plugin.func_a"
+    assert detail["details"]["field"] == "plugins[0].functions[0].idempotency"
+
+
+@pytest.mark.asyncio
 async def test_register_capabilities_plugin_error(client: AsyncClient, provisioned_node):
     """Plugin with status=error should be recorded but not block registration."""
     node, token = provisioned_node
@@ -821,9 +866,7 @@ async def test_reconcile_center_cancelling_returns_cancel(
             "node.reconcile_jobs",
             node.node_id,
             payload={
-                "known_jobs": [
-                    {"job_id": "job_rec_cancelling_001", "local_status": "running"}
-                ]
+                "known_jobs": [{"job_id": "job_rec_cancelling_001", "local_status": "running"}]
             },
         ),
         headers=auth,
@@ -834,9 +877,7 @@ async def test_reconcile_center_cancelling_returns_cancel(
     assert action["reason"] == "center_cancelling"
 
     await db_session.rollback()
-    result = await db_session.execute(
-        select(Job).where(Job.job_id == "job_rec_cancelling_001")
-    )
+    result = await db_session.execute(select(Job).where(Job.job_id == "job_rec_cancelling_001"))
     stored = result.scalar_one()
     assert stored.status == JobStatus.CANCELLING
 
@@ -894,9 +935,7 @@ async def test_reconcile_center_terminal_discards_late_daemon_result(
     assert action["local_status"] == "failed"
 
     await db_session.rollback()
-    result = await db_session.execute(
-        select(Job).where(Job.job_id == "job_rec_terminal_001")
-    )
+    result = await db_session.execute(select(Job).where(Job.job_id == "job_rec_terminal_001"))
     stored = result.scalar_one()
     assert stored.status == JobStatus.SUCCEEDED
     assert stored.output == {"center": True}

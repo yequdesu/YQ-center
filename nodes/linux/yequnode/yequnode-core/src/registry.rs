@@ -201,4 +201,25 @@ pub mod production {
         LinuxTransferLocalStat,
         LinuxTransferCrocReconcile,
     );
+
+    #[cfg(test)]
+    mod tests {
+        use super::collect_manifests;
+
+        #[test]
+        fn production_manifests_use_protocol_idempotency_values() {
+            let allowed = ["idempotent", "non_idempotent", "transactional"];
+            for manifest in collect_manifests() {
+                let Some(idempotency) = manifest.idempotency.as_deref() else {
+                    continue;
+                };
+                assert!(
+                    allowed.contains(&idempotency),
+                    "{} has invalid idempotency value {:?}",
+                    manifest.name,
+                    idempotency
+                );
+            }
+        }
+    }
 }
