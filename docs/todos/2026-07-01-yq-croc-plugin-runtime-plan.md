@@ -649,13 +649,15 @@ Linux:   /usr/local/bin/yq-croc
 4. Linux Node 已从旧 croc CLI/stderr parser 切到 `yq-croc` request/NDJSON，并删除 `croc_command.rs`、`croc_progress.rs`。
 5. Windows Node 已删除 rclone adapter、rclone 工具包和 `windows.transfer.rclone.*` 能力，改为 `windows.transfer.croc.*` + `yq-croc.exe`。
 6. Center 仓库旧 bundled croc release 包已删除。
+7. yq-croc 已新增可重复打包脚本，生成 Windows zip、Linux tar.gz 和 SHA-256 checksums。
+8. 本机 Windows 已完成 public relay 小文件 smoke test：按 Center 调度顺序先启动 sender，等待 `sender_ready` 后启动 receiver，事件链包含 `sender_ready`、`channel_secured`、`bytes_progress`、`transfer_done`，文件成功落地。
+9. Windows Node status 已新增 `firewall_allows_outbound` 事实；Center preflight 已接入 `runtime_egress_blocked`。
 
 仍需端到端验收：
 
-1. Windows 真实传输 smoke test 需要先为 `tools/yq-croc/current/yq-croc.exe` 添加 outbound firewall allow rule。
-2. Linux 真实运行环境安装 `/usr/local/bin/yq-croc` 后执行 cargo/test 和双向传输。
-3. Win/Linux 双向 1 GiB、取消、relay failure、hash mismatch、interrupted/resume、reconcile 验收。
-4. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
+1. Linux 真实运行环境安装 `/usr/local/bin/yq-croc` 后执行 cargo/test 和双向传输。
+2. Win/Linux 双向 1 GiB、取消、relay failure、hash mismatch、interrupted/resume、reconcile 验收。
+3. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
 
 ## 18. 非目标
 
