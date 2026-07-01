@@ -155,9 +155,7 @@ impl Daemon {
             function_count = filtered_manifests.len(),
             "registering capabilities"
         );
-        yqp.register_capabilities(&plugins, &runtimes)
-            .await
-            .map_err(|e| format!("capability registration failed: {e:?}"))?;
+        register_capabilities_until_success(&yqp, &plugins, &runtimes).await;
 
         // Reconcile unconfirmed jobs
         let unconfirmed = store.get_unconfirmed_jobs()?;
@@ -709,5 +707,39 @@ fn runtime_privilege(runtime: &RuntimeSnapshot) -> Option<&str> {
         RuntimePrivilege::Admin => Some("admin"),
         RuntimePrivilege::Root => Some("root"),
         RuntimePrivilege::Custom(value) => Some(value.as_str()),
+    }
+}
+
+async fn register_capabilities_until_success(
+    yqp: &YqpClient,
+    plugins: &[PluginManifest],
+    runtimes: &[RuntimeSnapshot],
+) {
+    let mut attempt: u32 = 0;
+    loop {
+        match yqp.register_capabilities(plugins, runtimes).await {
+            Ok(resp) => {
+                info!(
+                    registered_count = ?resp
+                        .payload
+                        .get("registered_count")
+                        .and_then(|value| value.as_u64()),
+                    failed_count = ?resp.payload.get("failed_count").and_then(|value| value.as_u64()),
+                    "capabilities registered"
+                );
+                return;
+            }
+            Err(error) => {
+                attempt = attempt.saturating_add(1);
+                let retry_delay_sec = (2_u64.saturating_pow(attempt.min(5))).min(60);
+                warn!(
+                    attempt,
+                    retry_delay_sec,
+                    error = %error,
+                    "capability registration failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(retry_delay_sec)).await;
+            }
+        }
     }
 }

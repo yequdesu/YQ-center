@@ -97,14 +97,20 @@ impl YqpClient {
 
             match result {
                 Ok(response) => {
-                    let http_status = response.status().as_u16();
+                    let status = response.status();
+                    let http_status = status.as_u16();
                     span.record("http_status", http_status);
 
-                    if response.status().is_success() {
-                        let yqp_response: YqpResponse = response
-                            .json()
-                            .await
-                            .map_err(|e| YqpError::JsonError(e.to_string()))?;
+                    if status.is_success() {
+                        let body = response.text().await.map_err(classify_reqwest_error)?;
+                        let yqp_response: YqpResponse =
+                            serde_json::from_str(&body).map_err(|e| {
+                                YqpError::JsonError(format!(
+                                    "failed to decode successful YQP response: {}; body={}",
+                                    e,
+                                    truncate_body(&body)
+                                ))
+                            })?;
 
                         let elapsed = start.elapsed();
                         span.record("duration_ms", elapsed.as_millis() as u64);
@@ -112,11 +118,12 @@ impl YqpClient {
                         return Ok(yqp_response);
                     }
 
-                    // HTTP error -- try to parse structured error detail
-                    let detail: YqpErrorDetail = response
-                        .json()
-                        .await
-                        .map_err(|e| YqpError::JsonError(e.to_string()))?;
+                    // HTTP error -- accept both raw YQP error objects and FastAPI
+                    // {"detail": ...} wrappers. If the center/proxy returns HTML
+                    // or plain text, preserve the body so the operator can fix the
+                    // actual server-side failure.
+                    let body = response.text().await.map_err(classify_reqwest_error)?;
+                    let detail = parse_error_detail(http_status, &body);
 
                     let elapsed = start.elapsed();
                     span.record("duration_ms", elapsed.as_millis() as u64);
@@ -455,6 +462,54 @@ impl YqpClient {
     }
 }
 
+fn parse_error_detail(status: u16, body: &str) -> YqpErrorDetail {
+    let parsed: Result<Value, _> = serde_json::from_str(body);
+    if let Ok(value) = parsed {
+        if let Ok(detail) = serde_json::from_value::<YqpErrorDetail>(value.clone()) {
+            return detail;
+        }
+        if let Some(wrapped) = value.get("detail") {
+            if let Ok(detail) = serde_json::from_value::<YqpErrorDetail>(wrapped.clone()) {
+                return detail;
+            }
+            if let Some(message) = wrapped.as_str() {
+                return YqpErrorDetail {
+                    code: format!("http_{}", status),
+                    message: message.to_string(),
+                    retryable: status >= 500,
+                    details: json!({"body": truncate_body(body)}),
+                };
+            }
+        }
+        return YqpErrorDetail {
+            code: format!("http_{}", status),
+            message: format!("HTTP {} from center", status),
+            retryable: status >= 500,
+            details: json!({"body": value}),
+        };
+    }
+
+    YqpErrorDetail {
+        code: format!("http_{}", status),
+        message: format!("HTTP {} from center: {}", status, truncate_body(body)),
+        retryable: status >= 500,
+        details: json!({"body": truncate_body(body)}),
+    }
+}
+
+fn truncate_body(body: &str) -> String {
+    const MAX_BODY_CHARS: usize = 4096;
+    let mut output = String::new();
+    for (idx, ch) in body.chars().enumerate() {
+        if idx >= MAX_BODY_CHARS {
+            output.push_str("...[truncated]");
+            return output;
+        }
+        output.push(ch);
+    }
+    output
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ArtifactDownloadResult {
     pub artifact_id: String,
@@ -734,6 +789,65 @@ mod tests {
             YqpError::HttpError { status, detail } => {
                 assert_eq!(status, 403);
                 assert_eq!(detail.code, "forbidden");
+            }
+            other => panic!("expected HttpError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fastapi_wrapped_http_error() {
+        let mock_server = MockServer::start().await;
+        let config = test_config(&mock_server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/yqp/"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "detail": {
+                    "code": "schema_invalid",
+                    "message": "invalid capability manifest",
+                    "retryable": false,
+                    "details": {"field": "plugins"}
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YqpClient::new(&config);
+        let result = client.register_capabilities(&[], &[]).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            YqpError::HttpError { status, detail } => {
+                assert_eq!(status, 422);
+                assert_eq!(detail.code, "schema_invalid");
+                assert_eq!(detail.message, "invalid capability manifest");
+                assert!(!detail.retryable);
+            }
+            other => panic!("expected HttpError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plain_text_http_error_preserves_body() {
+        let mock_server = MockServer::start().await;
+        let config = test_config(&mock_server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/yqp/"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let client = YqpClient::new(&config);
+        let result = client.register_capabilities(&[], &[]).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            YqpError::HttpError { status, detail } => {
+                assert_eq!(status, 500);
+                assert_eq!(detail.code, "http_500");
+                assert!(detail.message.contains("Internal Server Error"));
+                assert!(detail.retryable);
             }
             other => panic!("expected HttpError, got {other:?}"),
         }
