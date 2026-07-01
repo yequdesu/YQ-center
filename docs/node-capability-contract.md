@@ -200,6 +200,7 @@ croc 传输真实进度合同：
 - sender 端读取到 croc `Code is:` 后，必须等待一个 relay settle 窗口后再上报 `progress_source="croc_sender_ready"`、`phase="sender_ready"`、`sender_ready=true` 的 `transfer_progress` 事件；该事件不得泄漏 croc code 明文；
 - `Code is:` 不是 relay room ready 信号。croc v10.4.4 源码中该输出发生在 `sendCollectFiles()` 之后、sender 连接 relay 之前；实测在 `Code is:` 后立即启动 receiver 会触发 `room (secure channel) not ready, maybe peer disconnected`，约 0.5 秒后启动可成功。合同规定默认 settle 窗口为 1 秒；
 - Node 以子进程方式启动 croc 时必须传入 `--ignore-stdin`，避免 croc 在 stdin 非字符设备时把 stdin 当作发送内容而忽略文件路径；
+- receive 端遇到 `room (secure channel) not ready` 或 `could not secure channel` 时，必须按瞬态握手失败处理，在同一个 Job 内使用相同 code/relay/output_dir 重试，不得直接把 Job 标记为最终失败；只有超过重试次数、总 timeout、收到取消或出现非瞬态错误时才允许失败；
 - `sender_ready` 是粘性事实，不是瞬时 UI 状态。sender 后续上报 `croc_stderr` 进度时必须继续携带 `sender_ready=true`，避免 Center 等待同步点时被普通进度覆盖；
 - `croc_stderr` 进度事件应尽量携带 `progress_pct`、`bytes_transferred`、`total_bytes`、`rate_bytes_per_sec`、`eta_sec`；
 - `total_bytes` 应优先使用 Node/Center 预检得到的精确 stat 值，不得用 croc 终端显示中的四舍五入大小覆盖精确字节数；

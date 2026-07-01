@@ -11,6 +11,9 @@ use super::Capability;
 
 /// Maximum characters to keep from stdout/stderr tail.
 const MAX_OUTPUT_TAIL: usize = 4000;
+const CROC_RECEIVE_TRANSIENT_MAX_ATTEMPTS: u32 = 10;
+const CROC_RECEIVE_TRANSIENT_BASE_BACKOFF: Duration = Duration::from_secs(1);
+const CROC_RECEIVE_TRANSIENT_MAX_BACKOFF: Duration = Duration::from_secs(8);
 
 pub struct LinuxTransferCrocReceive;
 
@@ -318,163 +321,135 @@ impl Capability for LinuxTransferCrocReceive {
             .await;
         }
 
-        // Build croc command
-        // croc v10.4.4 requires CROC_SECRET env var for receive mode
-        // Passing code as positional arg doesn't work for receiving.
-        // Do not use --quiet: croc's byte-level progress is emitted on stderr.
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
-        let mut cmd = tokio::process::Command::new(binary_path);
-        cmd.arg("--yes");
-        cmd.arg("--ignore-stdin");
-
-        if croc_supports_flag(binary_path, "--disable-clipboard").await {
-            cmd.arg("--disable-clipboard");
-        }
-
+        let disable_clipboard_supported =
+            croc_supports_flag(binary_path, "--disable-clipboard").await;
         if should_overwrite {
             require_croc_flag(binary_path, "--overwrite").await?;
-            cmd.arg("--overwrite");
         }
 
-        if let Some(relay) = relay_url {
-            cmd.arg("--relay").arg(relay);
-        }
-
-        // Set the receive code via environment variable
-        cmd.env("CROC_SECRET", code);
-
-        // Set output directory
-        cmd.current_dir(output_dir);
-
-        // Spawn as background process
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| CapabilityError::FunctionExecutionFailed {
-                message: format!("failed to spawn croc: {}", e),
-                exit_code: None,
-                stderr: Some(e.to_string()),
-            })?;
-
-        let pid = child.id().unwrap_or(0);
-
-        // Update ledger with PID
-        ledger
-            .update_status(
-                &transfer_id,
-                crate::transfer_ledger::TransferStatus::Running,
-                Some(pid),
-                None,
-            )
-            .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
-
-        let started_at = chrono::Utc::now().to_rfc3339();
-
-        // Spawn stdout/stderr readers
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let stdout_handle = tokio::spawn(async move {
-            let mut lines = Vec::new();
-            if let Some(stdout) = stdout {
-                let reader = BufReader::new(stdout);
-                let mut line_stream = reader.lines();
-                while let Ok(Some(line)) = line_stream.next_line().await {
-                    lines.push(redact_sensitive(&line));
-                }
-            }
-            lines
-        });
-
-        let stderr_ctx = ctx.clone();
-        let stderr_progress_payload = json!({
-            "transfer_id": transfer_id.clone(),
-            "role": "receiver",
-            "phase": "receiving",
-            "pid": pid,
-            "total_bytes": expected_size_bytes,
-            "progress_source": "croc_stderr",
-        });
-        let stderr_handle = tokio::spawn(async move {
-            if let Some(stderr) = stderr {
-                collect_stderr_lines_with_progress(
-                    stderr,
-                    stderr_ctx,
-                    stderr_progress_payload,
-                    redact_sensitive,
-                )
-                .await
-            } else {
-                Vec::new()
-            }
-        });
-
-        // Monitor loop
-        let lease_interval = Duration::from_secs(60);
-        let progress_interval = Duration::from_secs(30);
-        let mut last_lease = tokio::time::Instant::now();
-        let mut last_progress = tokio::time::Instant::now();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
+        let overall_deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
+        let mut receive_attempt: u32 = 0;
+        let mut started_at = chrono::Utc::now().to_rfc3339();
 
         let result = loop {
-            // Check for cancellation
-            if let Some(ref ctx) = ctx {
-                if ctx.is_cancelled() {
-                    // Collect stdout/stderr before killing
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    let stdout_lines = stdout_handle.await.unwrap_or_default();
-                    let stderr_lines = stderr_handle.await.unwrap_or_default();
-                    let stdout_text = truncate_tail(&stdout_lines.join("\n"));
-                    let stderr_text = truncate_tail(&stderr_lines.join("\n"));
+            receive_attempt += 1;
 
-                    ledger
-                        .update_status(
-                            &transfer_id,
-                            crate::transfer_ledger::TransferStatus::Cancelled,
-                            None,
-                            Some(("cancelled", "job cancelled by center")),
-                        )
-                        .map_err(|e| {
-                            CapabilityError::Internal(format!("ledger update failed: {}", e))
-                        })?;
+            // Build croc command. croc v10.4.4 requires CROC_SECRET env var for
+            // receive mode on Linux/macOS. Do not use --quiet: croc progress is
+            // emitted on stderr.
+            let mut cmd = tokio::process::Command::new(binary_path);
+            cmd.arg("--yes");
+            cmd.arg("--ignore-stdin");
 
-                    ctx.report_progress(
-                        "transfer_cancelled",
-                        json!({
-                            "transfer_id": transfer_id,
-                            "stdout": stdout_text,
-                            "stderr": stderr_text,
-                        }),
-                    )
-                    .await;
-
-                    return Err(CapabilityError::Cancelled {
-                        message: format!("transfer cancelled: {}", stderr_text),
-                    });
-                }
+            if disable_clipboard_supported {
+                cmd.arg("--disable-clipboard");
             }
 
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let exit_code = status.code();
-                    let stdout_lines = stdout_handle.await.unwrap_or_default();
-                    let stderr_lines = stderr_handle.await.unwrap_or_default();
+            if should_overwrite {
+                cmd.arg("--overwrite");
+            }
 
-                    if status.success() {
-                        break Ok((exit_code, stdout_lines, stderr_lines));
-                    } else {
-                        break Err((exit_code, stdout_lines, stderr_lines));
+            if let Some(relay) = relay_url {
+                cmd.arg("--relay").arg(relay);
+            }
+
+            cmd.env("CROC_SECRET", code);
+            cmd.current_dir(output_dir);
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| CapabilityError::FunctionExecutionFailed {
+                    message: format!("failed to spawn croc: {}", e),
+                    exit_code: None,
+                    stderr: Some(e.to_string()),
+                })?;
+
+            let pid = child.id().unwrap_or(0);
+
+            ledger
+                .update_status(
+                    &transfer_id,
+                    crate::transfer_ledger::TransferStatus::Running,
+                    Some(pid),
+                    None,
+                )
+                .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
+
+            if receive_attempt == 1 {
+                started_at = chrono::Utc::now().to_rfc3339();
+            }
+
+            if let Some(ref ctx) = ctx {
+                ctx.report_progress(
+                    "transfer_progress",
+                    json!({
+                        "transfer_id": transfer_id,
+                        "pid": pid,
+                        "status": "running",
+                        "role": "receiver",
+                        "phase": "receiving",
+                        "attempt": receive_attempt,
+                        "total_bytes": expected_size_bytes,
+                        "progress_source": "process_keepalive",
+                    }),
+                )
+                .await;
+            }
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            let stdout_handle = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                if let Some(stdout) = stdout {
+                    let reader = BufReader::new(stdout);
+                    let mut line_stream = reader.lines();
+                    while let Ok(Some(line)) = line_stream.next_line().await {
+                        lines.push(redact_sensitive(&line));
                     }
                 }
-                Ok(None) => {
-                    let now = tokio::time::Instant::now();
+                lines
+            });
 
-                    if now >= deadline {
+            let stderr_ctx = ctx.clone();
+            let stderr_progress_payload = json!({
+                "transfer_id": transfer_id.clone(),
+                "role": "receiver",
+                "phase": "receiving",
+                "pid": pid,
+                "attempt": receive_attempt,
+                "total_bytes": expected_size_bytes,
+                "progress_source": "croc_stderr",
+            });
+            let stderr_handle = tokio::spawn(async move {
+                if let Some(stderr) = stderr {
+                    collect_stderr_lines_with_progress(
+                        stderr,
+                        stderr_ctx,
+                        stderr_progress_payload,
+                        redact_sensitive,
+                    )
+                    .await
+                } else {
+                    Vec::new()
+                }
+            });
+
+            let lease_interval = Duration::from_secs(60);
+            let progress_interval = Duration::from_secs(30);
+            let mut last_lease = tokio::time::Instant::now();
+            let mut last_progress = tokio::time::Instant::now();
+
+            let attempt_result = loop {
+                // Check for cancellation
+                if let Some(ref ctx) = ctx {
+                    if ctx.is_cancelled() {
+                        // Collect stdout/stderr before killing
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                         let stdout_lines = stdout_handle.await.unwrap_or_default();
@@ -485,68 +460,153 @@ impl Capability for LinuxTransferCrocReceive {
                         ledger
                             .update_status(
                                 &transfer_id,
-                                crate::transfer_ledger::TransferStatus::Failed,
+                                crate::transfer_ledger::TransferStatus::Cancelled,
                                 None,
-                                Some(("timeout", "transfer timed out")),
+                                Some(("cancelled", "job cancelled by center")),
                             )
                             .map_err(|e| {
                                 CapabilityError::Internal(format!("ledger update failed: {}", e))
                             })?;
 
-                        if let Some(ref ctx) = ctx {
-                            ctx.report_progress(
-                                "transfer_timeout",
-                                json!({
-                                    "transfer_id": transfer_id,
-                                    "timeout_sec": timeout_sec,
-                                    "stdout": stdout_text,
-                                    "stderr": stderr_text,
-                                }),
-                            )
-                            .await;
-                        }
+                        ctx.report_progress(
+                            "transfer_cancelled",
+                            json!({
+                                "transfer_id": transfer_id,
+                                "stdout": stdout_text,
+                                "stderr": stderr_text,
+                            }),
+                        )
+                        .await;
 
-                        return Err(CapabilityError::Timeout {
-                            timeout_sec: timeout_sec as u32,
+                        return Err(CapabilityError::Cancelled {
+                            message: format!("transfer cancelled: {}", stderr_text),
                         });
                     }
-
-                    if now.duration_since(last_lease) >= lease_interval {
-                        if let Some(ref ctx) = ctx {
-                            ctx.renew_lease(120).await;
-                        }
-                        last_lease = now;
-                    }
-
-                    if now.duration_since(last_progress) >= progress_interval {
-                        ledger.record_progress(&transfer_id).map_err(|e| {
-                            CapabilityError::Internal(format!("ledger update failed: {}", e))
-                        })?;
-
-                        if let Some(ref ctx) = ctx {
-                            ctx.report_progress(
-                                "transfer_progress",
-                                json!({
-                                    "transfer_id": transfer_id,
-                                    "pid": pid,
-                                    "status": "running",
-                                    "role": "receiver",
-                                    "phase": "receiving",
-                                    "total_bytes": expected_size_bytes,
-                                    "progress_source": "process_keepalive",
-                                }),
-                            )
-                            .await;
-                        }
-                        last_progress = now;
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => {
-                    break Err((None, vec![], vec![format!("wait error: {}", e)]));
+
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let exit_code = status.code();
+                        let stdout_lines = stdout_handle.await.unwrap_or_default();
+                        let stderr_lines = stderr_handle.await.unwrap_or_default();
+
+                        if status.success() {
+                            break Ok((exit_code, stdout_lines, stderr_lines));
+                        } else {
+                            break Err((exit_code, stdout_lines, stderr_lines));
+                        }
+                    }
+                    Ok(None) => {
+                        let now = tokio::time::Instant::now();
+
+                        if now >= overall_deadline {
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            let stdout_lines = stdout_handle.await.unwrap_or_default();
+                            let stderr_lines = stderr_handle.await.unwrap_or_default();
+                            let stdout_text = truncate_tail(&stdout_lines.join("\n"));
+                            let stderr_text = truncate_tail(&stderr_lines.join("\n"));
+
+                            ledger
+                                .update_status(
+                                    &transfer_id,
+                                    crate::transfer_ledger::TransferStatus::Failed,
+                                    None,
+                                    Some(("timeout", "transfer timed out")),
+                                )
+                                .map_err(|e| {
+                                    CapabilityError::Internal(format!(
+                                        "ledger update failed: {}",
+                                        e
+                                    ))
+                                })?;
+
+                            if let Some(ref ctx) = ctx {
+                                ctx.report_progress(
+                                    "transfer_timeout",
+                                    json!({
+                                        "transfer_id": transfer_id,
+                                        "timeout_sec": timeout_sec,
+                                        "stdout": stdout_text,
+                                        "stderr": stderr_text,
+                                    }),
+                                )
+                                .await;
+                            }
+
+                            return Err(CapabilityError::Timeout {
+                                timeout_sec: timeout_sec as u32,
+                            });
+                        }
+
+                        if now.duration_since(last_lease) >= lease_interval {
+                            if let Some(ref ctx) = ctx {
+                                ctx.renew_lease(120).await;
+                            }
+                            last_lease = now;
+                        }
+
+                        if now.duration_since(last_progress) >= progress_interval {
+                            ledger.record_progress(&transfer_id).map_err(|e| {
+                                CapabilityError::Internal(format!("ledger update failed: {}", e))
+                            })?;
+
+                            if let Some(ref ctx) = ctx {
+                                ctx.report_progress(
+                                    "transfer_progress",
+                                    json!({
+                                        "transfer_id": transfer_id,
+                                        "pid": pid,
+                                        "status": "running",
+                                        "role": "receiver",
+                                        "phase": "receiving",
+                                        "total_bytes": expected_size_bytes,
+                                        "progress_source": "process_keepalive",
+                                    }),
+                                )
+                                .await;
+                            }
+                            last_progress = now;
+                        }
+
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    Err(e) => {
+                        break Err((None, vec![], vec![format!("wait error: {}", e)]));
+                    }
+                }
+            };
+
+            if let Err((_, stdout_lines, stderr_lines)) = &attempt_result {
+                let stdout_text = stdout_lines.join("\n");
+                let stderr_text = stderr_lines.join("\n");
+                if is_transient_croc_room_not_ready(&stdout_text, &stderr_text)
+                    && receive_attempt < CROC_RECEIVE_TRANSIENT_MAX_ATTEMPTS
+                    && tokio::time::Instant::now() < overall_deadline
+                {
+                    let backoff = croc_receive_retry_backoff(receive_attempt);
+                    if let Some(ref ctx) = ctx {
+                        ctx.report_progress(
+                            "transfer_progress",
+                            json!({
+                                "transfer_id": transfer_id,
+                                "status": "running",
+                                "role": "receiver",
+                                "phase": "receiver_retrying",
+                                "attempt": receive_attempt,
+                                "retry_after_ms": backoff.as_millis() as u64,
+                                "progress_message": "croc receiver room not ready; retrying",
+                                "progress_source": "process_keepalive",
+                            }),
+                        )
+                        .await;
+                    }
+                    tokio::time::sleep(backoff).await;
+                    continue;
                 }
             }
+
+            break attempt_result;
         };
 
         match result {
@@ -780,6 +840,18 @@ fn truncate_tail(text: &str) -> String {
             .unwrap_or(start);
         format!("...{}", &text[start..])
     }
+}
+
+fn is_transient_croc_room_not_ready(stdout: &str, stderr: &str) -> bool {
+    let combined = format!("{}\n{}", stdout, stderr).to_lowercase();
+    combined.contains("room (secure channel) not ready")
+        || combined.contains("could not secure channel")
+}
+
+fn croc_receive_retry_backoff(attempt: u32) -> Duration {
+    let multiplier = 1_u32 << attempt.saturating_sub(1).min(3);
+    let backoff = CROC_RECEIVE_TRANSIENT_BASE_BACKOFF * multiplier;
+    backoff.min(CROC_RECEIVE_TRANSIENT_MAX_BACKOFF)
 }
 
 /// Find a partial file in the output directory (croc creates .partial files).
