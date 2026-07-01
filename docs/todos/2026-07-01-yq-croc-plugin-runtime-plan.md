@@ -344,6 +344,7 @@ Center preflight 的判断规则：
 - `executable=true`；
 - send 端 `allow_send=true`；
 - receive 端 `allow_receive=true`；
+- 如果 `transfer.preflight` / `transfer.create` 带 `relay_url`，Center 必须把该 `relay_url` 传给两端 `*.transfer.croc.status`，两端必须探测同一个 relay control address；
 - 两端 `relay_mode` 一致，或 Center 明确向两端下发同一个 `relay_url`；
 - 两端 `relay_reachable=true`；
 - relay password 不出现在 Timeline、Agent observation、普通日志中。
@@ -657,13 +658,16 @@ Linux:   /usr/local/bin/yq-croc
 20. WinNode adapter cancel 已实测：sender_ready 后取消任务，ledger 进入 `cancelled`，本机 `yq-croc` 进程数回到 0。
 21. public relay 已完成一次 1.06 GiB Windows -> WSL tmpfs 传输并通过运行时 size/hash 校验；随后 public relay 在持久目录 Windows -> WSL 与 WSL -> Windows 1.06 GiB attempt 中均出现约 27-30 MiB 后长时间停滞。该结论固定为 public relay best-effort，不作为生产稳定性放行条件。
 22. yq-croc 已新增 `relay` 子命令，本地 control/data relay 启动后 `relay-probe --relay 127.0.0.1:29009` 返回 reachable。
-23. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，45 tests passed。
-24. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。
+23. 受控 relay 已完成本地双向 1.06 GiB 验收：Windows -> WSL 用时约 17 秒，WSL -> Windows 用时约 26 秒，双方均通过 size/hash 校验并输出 `resume_plan`、`integrity_verified`、`transfer_done`。
+24. Center preflight 已支持 `relay_url`，并把本次 configured relay 传给两端 status capability；preflight intent hash 包含 `relay_url`，不能用 public relay 预检结果创建 configured relay transfer。
+25. WinNode `windows.transfer.croc.status` 和 LinuxNode `linux.transfer.croc.status` 已支持可选 `relay_url` 输入，用于探测当前 transfer 指定的 relay。
+26. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，46 tests passed。
+27. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。
 
 仍需端到端验收：
 
 1. 独立 Linux Node 真实部署环境安装 `/usr/local/bin/yq-croc` 后执行 systemd/daemon 级启动验收。
-2. 受控 configured relay 环境下执行 Win/Linux 双向 1 GiB、interrupted/resume 完整完成验收。
+2. 受控 configured relay 环境下执行 interrupted/resume 完整完成验收。
 3. Center 级真实 Operation workflow 端到端验收：`transfer.create` -> sender_ready -> receiver -> progress -> terminal -> `transfer.status` / `transfer.resume`。
 4. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
 

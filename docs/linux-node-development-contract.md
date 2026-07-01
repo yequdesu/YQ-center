@@ -437,7 +437,7 @@ transfer:
     max_concurrent_transfers: 1
 ```
 
-`linux.transfer.croc.status` 必须返回 `runtime="yq-croc"`、`runtime_version`、`upstream_croc_version`、`relay_mode`、`relay_reachable`、`binary_path`、`temp_dir`、`allow_send`、`allow_receive` 和明确错误。status 必须在 `yq-croc` 不存在时仍可调用。
+`linux.transfer.croc.status` 必须返回 `runtime="yq-croc"`、`runtime_version`、`upstream_croc_version`、`relay_mode`、`relay_reachable`、`binary_path`、`temp_dir`、`allow_send`、`allow_receive` 和明确错误。status 必须在 `yq-croc` 不存在时仍可调用。status 必须接受可选 `relay_url` 输入；当 Center 为 configured relay transfer/preflight 传入该字段时，Linux Node 必须探测这个 relay control address，而不是只探测本地默认配置。
 
 `linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 必须通过 request file 调用 `yq-croc send/receive`，逐行读取 stdout NDJSON，将 `sender_ready`、`bytes_progress`、`transfer_done`、`transfer_error` 等事件映射为 YQP `job.event`。不得解析 terminal progressbar 或 stderr 作为进度来源。
 

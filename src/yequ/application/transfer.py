@@ -60,6 +60,7 @@ class TransferPreflightCommand:
     source_path: str
     target_output_dir: str | None = None
     target_path: str | None = None
+    relay_url: str | None = None
     resume_mode: str | None = None
     include_sha256: bool = False
     timeout_sec: int = 20
@@ -201,6 +202,7 @@ class TransferApplicationService:
                 source_path=command.source_path,
                 target_output_dir=target_intent.output_dir,
                 target_path=target_intent.target_path,
+                relay_url=command.relay_url,
                 resume_mode=resume_mode,
             ),
             source_node_id=command.source_node_id,
@@ -228,6 +230,7 @@ class TransferApplicationService:
             "target": target,
             "source_runtime": source_status,
             "target_runtime": target_status,
+            "relay_url": command.relay_url,
             "resume_mode": resume_mode,
             "observed_at": now.isoformat(),
             "ttl_sec": ttl_sec,
@@ -862,6 +865,7 @@ class TransferApplicationService:
             source_path=command.source_path,
             target_output_dir=target_intent.output_dir,
             target_path=target_intent.target_path,
+            relay_url=command.relay_url,
             resume_mode=resume_mode,
         )
         if preflight.intent_hash != expected_hash:
@@ -950,7 +954,11 @@ class TransferApplicationService:
                     input_data={
                         "capability_ref": "transfer.croc.status",
                         "node_id": node_id,
-                        "input": {},
+                        "input": (
+                            {"relay_url": command.relay_url}
+                            if command.relay_url is not None
+                            else {}
+                        ),
                     },
                     actor_type=command.actor_type,
                     actor_id=command.actor_id,
@@ -1762,6 +1770,7 @@ def _transfer_intent_hash(
     source_path: str,
     target_output_dir: str | None,
     target_path: str | None,
+    relay_url: str | None,
     resume_mode: str,
 ) -> str:
     payload = {
@@ -1770,6 +1779,7 @@ def _transfer_intent_hash(
         "source_path": source_path,
         "target_output_dir": target_output_dir,
         "target_path": target_path,
+        "relay_url": relay_url,
         "resume_mode": resume_mode,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))

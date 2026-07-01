@@ -206,6 +206,7 @@ ExecutionGate.evaluate(command)
 - `resume` 不等于无条件覆盖。ledger/source/target 不匹配时必须失败为 `resume_state_mismatch`；
 - Node 不能主动发起 transfer retry、resume、relay switch 或 code rotation。Node 只能在当前 Center Job 内执行进程内 reconnect；跨 Job resume 必须由 Center 创建下一次 attempt；
 - 如果 `yq-croc` 不可用，status capability 必须明确返回 `runtime="yq-croc"`、`installed=false` 或 `relay_reachable=false`，不得静默 fallback 到 YQP artifact upload，也不得 fallback 到旧 croc CLI；
+- `*.transfer.croc.status` 必须接受可选 `relay_url` 输入。Center 在 configured relay transfer/preflight 中会传入本次 relay control address，Node 必须探测这个 relay，而不是只探测本地默认配置；
 - Windows Node 的 yq-croc 默认关闭 croc local relay/discovery，只要求 `yq-croc.exe` 能出站连接 relay TCP 端口，默认 `9009`；如果 Windows Firewall 或上级策略默认阻断出站，`windows.transfer.croc.status` 必须报告 `firewall_allows_outbound=false`，Center 预检必须拒绝本次传输；
 - `yq-croc` request、stdout、stderr、ledger 和 Timeline 都不得泄漏 croc code、relay password、Node token 或 Center token。
 

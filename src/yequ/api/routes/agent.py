@@ -351,6 +351,10 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_path": {"type": "string"},
                     "target_output_dir": {"type": "string"},
                     "target_path": {"type": "string"},
+                    "relay_url": {
+                        "type": "string",
+                        "description": "Optional yq-croc relay control host:port.",
+                    },
                     "resume_mode": {
                         "type": "string",
                         "enum": ["resume", "overwrite", "fail_if_exists"],
@@ -402,6 +406,10 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_path": {"type": "string"},
                     "target_output_dir": {"type": "string"},
                     "target_path": {"type": "string"},
+                    "relay_url": {
+                        "type": "string",
+                        "description": "Optional yq-croc relay control host:port.",
+                    },
                     "resume_mode": {
                         "type": "string",
                         "enum": ["resume", "overwrite", "fail_if_exists"],

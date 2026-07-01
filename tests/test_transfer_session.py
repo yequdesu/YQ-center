@@ -599,6 +599,79 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
 
 
 @pytest.mark.asyncio
+async def test_transfer_preflight_probes_requested_relay_url(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yequ.application.transfer import TransferApplicationService
+
+    observed_status_calls: list[tuple[str, str | None]] = []
+
+    async def fake_stat(self, command, *, node_id: str, path: str, include_sha256: bool):
+        del self, command, node_id, path, include_sha256
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "found": True,
+                "readable": True,
+                "parent_exists": True,
+                "writable": True,
+                "size_bytes": 1024,
+                "free_bytes": 4096,
+            },
+        )
+
+    async def fake_status(self, command, *, node_id: str):
+        del self
+        observed_status_calls.append((node_id, command.relay_url))
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "node_id": node_id,
+                "runtime": "yq-croc",
+                "installed": True,
+                "executable": True,
+                "relay_mode": "configured",
+                "relay_url": command.relay_url,
+                "relay_reachable": True,
+                "allow_send": True,
+                "allow_receive": True,
+            },
+        )
+
+    monkeypatch.setattr(TransferApplicationService, "_invoke_stat_capability", fake_stat)
+    monkeypatch.setattr(TransferApplicationService, "_invoke_status_capability", fake_status)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.preflight",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "relay_url": "127.0.0.1:29009",
+                "resume_mode": "resume",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    preflight = result.output_data["preflight"]
+    assert preflight["allowed"] is True
+    assert preflight["relay_url"] == "127.0.0.1:29009"
+    assert observed_status_calls == [
+        ("winClient", "127.0.0.1:29009"),
+        ("linux-node-01", "127.0.0.1:29009"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_transfer_preflight_requires_explicit_resume_mode(
     db_session: AsyncSession,
 ) -> None:
@@ -874,6 +947,78 @@ async def test_transfer_create_rejects_mismatched_preflight(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\different.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
+                "resume_mode": "resume",
+                "preflight_id": preflight_id,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "invalid_input"
+    assert "preflight_intent_mismatch" in (result.error_message or "")
+    transfer_count = await db_session.execute(select(TransferSession))
+    assert transfer_count.scalars().all() == []
+    job_count = await db_session.execute(select(Job))
+    assert job_count.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_transfer_create_rejects_preflight_relay_url_mismatch(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yequ.application.transfer import TransferApplicationService
+
+    async def fake_stat(self, command, *, node_id: str, path: str, include_sha256: bool):
+        del self, command, node_id, path, include_sha256
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "found": True,
+                "readable": True,
+                "parent_exists": True,
+                "writable": True,
+                "size_bytes": 1024,
+                "free_bytes": 4096,
+            },
+        )
+
+    monkeypatch.setattr(TransferApplicationService, "_invoke_stat_capability", fake_stat)
+    monkeypatch.setattr(
+        TransferApplicationService,
+        "_invoke_status_capability",
+        _fake_transfer_status_success,
+    )
+    preflight_result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.preflight",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "relay_url": "127.0.0.1:29009",
+                "resume_mode": "resume",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert preflight_result.output_data is not None
+    preflight_id = preflight_result.output_data["preflight"]["preflight_id"]
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.create",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "relay_url": "127.0.0.1:39009",
                 "resume_mode": "resume",
                 "preflight_id": preflight_id,
             },

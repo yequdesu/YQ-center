@@ -18,7 +18,12 @@ impl Capability for LinuxTransferCrocStatus {
             ),
             input_schema: json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "relay_url": {
+                        "type": ["string", "null"],
+                        "description": "Optional relay host:port to probe for this transfer."
+                    }
+                },
                 "additionalProperties": false
             }),
             output_schema: Some(json!({"type": "object"})),
@@ -41,12 +46,20 @@ impl Capability for LinuxTransferCrocStatus {
         }
     }
 
-    async fn execute(_input: Value) -> Result<Value, CapabilityError> {
+    async fn execute(input: Value) -> Result<Value, CapabilityError> {
         let config = crate::config::Config::load()
             .map_err(|e| CapabilityError::Internal(format!("config load failed: {}", e)))?;
         let yq_croc_config = &config.transfer.yq_croc;
         let binary_path = &yq_croc_config.binary_path;
         let installed = std::path::Path::new(binary_path).exists();
+        let requested_relay_url = input
+            .get("relay_url")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| v.trim().to_string());
+        let effective_relay_url = requested_relay_url
+            .as_deref()
+            .or(yq_croc_config.relay_url.as_deref());
 
         let version_probe = if installed {
             run_json(binary_path, &["version"]).await
@@ -60,7 +73,7 @@ impl Capability for LinuxTransferCrocStatus {
         };
         let relay_probe = if installed {
             let mut args = vec!["relay-probe"];
-            if let Some(relay) = yq_croc_config.relay_url.as_deref() {
+            if let Some(relay) = effective_relay_url {
                 args.push("--relay");
                 args.push(relay);
             }
@@ -121,11 +134,11 @@ impl Capability for LinuxTransferCrocStatus {
             "upstream_croc_version": version_json
                 .and_then(|v| v.get("upstream_croc_version"))
                 .or_else(|| local_json.and_then(|v| v.get("upstream_croc_version"))),
-            "relay_mode": if yq_croc_config.relay_url.is_some() { "configured" } else { "public_default" },
+            "relay_mode": if effective_relay_url.is_some() { "configured" } else { "public_default" },
             "relay_url": relay_json
                 .and_then(|v| v.get("relay_url"))
                 .cloned()
-                .or_else(|| yq_croc_config.relay_url.as_ref().map(|v| json!(v))),
+                .or_else(|| effective_relay_url.map(|v| json!(v))),
             "relay_reachable": relay_reachable,
             "temp_dir": yq_croc_config.temp_dir.to_string_lossy(),
             "temp_dir_exists": yq_croc_config.temp_dir.exists(),
@@ -197,7 +210,11 @@ case "$1" in
     printf '%s\n' '{{"runtime":"yq-croc","runtime_version":"test-runtime","upstream_croc_version":"v10.4.6","goos":"linux","goarch":"amd64"}}'
     ;;
   relay-probe)
-    printf '%s\n' '{{"runtime":"yq-croc","relay_url":"relay.example:9009","relay_reachable":true}}'
+    relay="relay.example:9009"
+    if [ "$2" = "--relay" ]; then
+      relay="$3"
+    fi
+    printf '%s\n' '{{"runtime":"yq-croc","relay_url":"'"$relay"'","relay_reachable":true}}'
     ;;
   *)
     exit 64
@@ -230,6 +247,10 @@ transfer:
         std::env::remove_var("YEQU_NODE_TOKEN");
 
         let output = LinuxTransferCrocStatus::execute(json!({})).await.unwrap();
+        let override_output =
+            LinuxTransferCrocStatus::execute(json!({"relay_url": "127.0.0.1:29009"}))
+                .await
+                .unwrap();
 
         match old_home {
             Some(value) => std::env::set_var("HOME", value),
@@ -257,6 +278,14 @@ transfer:
             output["error"],
             serde_json::Value::Null,
             "status output: {output}"
+        );
+        assert_eq!(
+            override_output["relay_mode"], "configured",
+            "status output: {override_output}"
+        );
+        assert_eq!(
+            override_output["relay_url"], "127.0.0.1:29009",
+            "status output: {override_output}"
         );
     }
 }
