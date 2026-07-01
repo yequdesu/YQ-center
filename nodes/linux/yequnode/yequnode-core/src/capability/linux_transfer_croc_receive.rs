@@ -326,6 +326,7 @@ impl Capability for LinuxTransferCrocReceive {
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
         cmd.arg("--yes");
+        cmd.arg("--ignore-stdin");
 
         if croc_supports_flag(binary_path, "--disable-clipboard").await {
             cmd.arg("--disable-clipboard");

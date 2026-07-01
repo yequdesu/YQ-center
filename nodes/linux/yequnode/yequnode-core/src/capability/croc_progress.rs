@@ -5,6 +5,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::execution_context::ExecutionContext;
 
+const CROC_SENDER_RELAY_SETTLE: Duration = Duration::from_millis(1000);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrocProgress {
     pub progress_pct: Option<u64>,
@@ -66,13 +68,20 @@ where
         let redacted = redact(&line);
         if let Some(ctx) = ctx.as_ref() {
             if is_sender_ready_line(&line) {
+                // croc prints "Code is:" before it connects to the relay room.
+                // Give the sender a short source-verified settle window before
+                // telling Center it is safe to start the receiver.
+                tokio::time::sleep(CROC_SENDER_RELAY_SETTLE).await;
                 sender_ready = true;
                 let mut payload = base_payload.as_object().cloned().unwrap_or_default();
                 payload.insert("status".into(), json!("running"));
                 payload.insert("phase".into(), json!("sender_ready"));
                 payload.insert("progress_source".into(), json!("croc_sender_ready"));
                 payload.insert("sender_ready".into(), json!(true));
-                payload.insert("progress_message".into(), json!("sender room is ready"));
+                payload.insert(
+                    "progress_message".into(),
+                    json!("sender relay settle window elapsed"),
+                );
                 payload.insert(
                     "last_progress_at".into(),
                     json!(chrono::Utc::now().to_rfc3339()),

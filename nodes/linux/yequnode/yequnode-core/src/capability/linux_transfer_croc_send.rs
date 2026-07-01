@@ -254,22 +254,23 @@ impl Capability for LinuxTransferCrocSend {
 
         // Build croc command
         // croc v10.4.4: use CROC_SECRET env var for custom code
-        // CROC_SECRET=<code> croc --yes send <file>
+        // CROC_SECRET=<code> croc --yes --ignore-stdin send <file>
         // Do not use --quiet: croc's byte-level progress is emitted on stderr.
         let binary_path = &croc_config.binary_path;
         ensure_croc_executable(binary_path).await?;
         let mut cmd = tokio::process::Command::new(binary_path);
         cmd.arg("--yes"); // auto-accept (global)
+        cmd.arg("--ignore-stdin");
 
         if croc_supports_flag(binary_path, "--disable-clipboard").await {
             cmd.arg("--disable-clipboard");
         }
 
-        cmd.arg("send").arg(path_str);
-
         if let Some(relay) = relay_url {
             cmd.arg("--relay").arg(relay);
         }
+
+        cmd.arg("send").arg(path_str);
 
         // Set the transfer code via environment variable
         cmd.env("CROC_SECRET", code);
