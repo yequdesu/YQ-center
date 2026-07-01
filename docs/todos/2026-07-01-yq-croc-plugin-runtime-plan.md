@@ -143,6 +143,7 @@ croc 源码已经提供可复用基础：
 yq-croc version
 yq-croc probe --json
 yq-croc relay-probe --relay <addr> --pass-env <env>
+yq-croc relay --host 0.0.0.0 --control-port 9009 --data-ports 9010 --pass-env <env>
 yq-croc send --request <request.json>
 yq-croc receive --request <request.json>
 ```
@@ -317,6 +318,8 @@ Secrets can be passed by request file only if the file is created in a Node-owne
 | `configured_pool` | Center 选择 relay pool 中的一个 relay 写入 transfer input。 |
 
 公共默认 relay 的稳定性决策固定为：只作为 best-effort relay 使用，不作为生产高成功率承诺来源。需要稳定大文件调度时，部署合同必须配置 `configured_single` 或 `configured_pool`，且 relay 可以部署在独立公网机器上，避免占用 Center API 公网入口服务器带宽。
+
+`yq-croc relay` 是第一版受控 relay 发布入口。Node 的 `relay_url` 指向 control port；control relay 会向双方通告 `--data-ports` 中的端口。部署防火墙或安全组必须同时放行 control port 和所有 data ports。relay password 通过 `--pass-env` 注入，不能写入 Center Timeline、Node log 或 Agent observation。
 
 Node status 必须返回：
 
@@ -653,8 +656,9 @@ Linux:   /usr/local/bin/yq-croc
 19. relay failure 已实测：不可达 relay `127.0.0.1:1` 会非零退出并输出 `transfer_error`，错误码 `external_service_failed`。
 20. WinNode adapter cancel 已实测：sender_ready 后取消任务，ledger 进入 `cancelled`，本机 `yq-croc` 进程数回到 0。
 21. public relay 已完成一次 1.06 GiB Windows -> WSL tmpfs 传输并通过运行时 size/hash 校验；随后 public relay 在持久目录 Windows -> WSL 与 WSL -> Windows 1.06 GiB attempt 中均出现约 27-30 MiB 后长时间停滞。该结论固定为 public relay best-effort，不作为生产稳定性放行条件。
-22. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，45 tests passed。
-23. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。
+22. yq-croc 已新增 `relay` 子命令，本地 control/data relay 启动后 `relay-probe --relay 127.0.0.1:29009` 返回 reachable。
+23. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，45 tests passed。
+24. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。
 
 仍需端到端验收：
 
