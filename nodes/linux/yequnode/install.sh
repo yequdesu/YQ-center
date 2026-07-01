@@ -34,16 +34,45 @@ case "$MODE" in user|hybrid|sudo) ;; *) usage ;; esac
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SUDOERS_FILE="/etc/sudoers.d/yequnode"
+YQ_CROC_SHA256="aadb2cc536640d0427c18fdb4cdd738dd8c096f4984a9d26ce68eb27c6f595a0"
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64)
+    YQ_CROC_BUNDLED="$ROOT/tools/yq-croc/linux-amd64/yq-croc"
+    ;;
+  *)
+    echo -e "${RED}Unsupported Linux architecture for bundled yq-croc: $ARCH${NC}"
+    exit 1
+    ;;
+esac
 
 # --- Step 1: Build ---
 echo -e "${YELLOW}[1/4] Building release binary ...${NC}"
 cd "$ROOT"
 cargo build --release 2>&1 | tail -1
 
-# --- Step 2: Install binary ---
-echo -e "${YELLOW}[2/4] Installing binary ...${NC}"
-sudo cp target/release/yequnode-core /usr/local/bin/yequnode
+# --- Step 2: Install binaries ---
+echo -e "${YELLOW}[2/4] Installing binaries ...${NC}"
+if [ ! -f "$YQ_CROC_BUNDLED" ]; then
+  echo -e "${RED}Bundled yq-croc binary is missing: $YQ_CROC_BUNDLED${NC}"
+  exit 1
+fi
+if ! command -v sha256sum >/dev/null 2>&1; then
+  echo -e "${RED}sha256sum is required to verify bundled yq-croc${NC}"
+  exit 1
+fi
+ACTUAL_YQ_CROC_SHA256="$(sha256sum "$YQ_CROC_BUNDLED" | awk '{print $1}')"
+if [ "$ACTUAL_YQ_CROC_SHA256" != "$YQ_CROC_SHA256" ]; then
+  echo -e "${RED}Bundled yq-croc checksum mismatch${NC}"
+  echo "  expected: $YQ_CROC_SHA256"
+  echo "  actual:   $ACTUAL_YQ_CROC_SHA256"
+  exit 1
+fi
+sudo install -m 0755 target/release/yequnode-core /usr/local/bin/yequnode
+sudo install -m 0755 "$YQ_CROC_BUNDLED" /usr/local/bin/yq-croc
 echo "  -> /usr/local/bin/yequnode"
+echo "  -> /usr/local/bin/yq-croc"
 
 # --- Step 3: Configure sudo (hybrid / sudo modes) ---
 if [ "$MODE" = "hybrid" ] || [ "$MODE" = "sudo" ]; then
@@ -69,6 +98,13 @@ yqp_path: /yqp/
 log_level: info
 db_path: $HOME/.yequnode/jobs.db
 node_token: ""
+transfer:
+  yq_croc:
+    enabled: true
+    binary_path: /usr/local/bin/yq-croc
+    temp_dir: /tmp/yequ-transfer
+    allow_send: true
+    allow_receive: true
 CONF
   echo "  -> $CONFIG_DIR/config.yaml (edit node_token before running)"
 else
