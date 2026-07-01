@@ -59,12 +59,10 @@ pub struct YqCrocRun {
 #[derive(Debug, Clone)]
 pub struct YqCrocRunResult {
     pub exit_code: Option<i32>,
-    pub pid: u32,
     pub started_at: String,
     pub completed_at: String,
     pub stdout_tail: String,
     pub stderr_tail: String,
-    pub events: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -229,12 +227,10 @@ async fn monitor_child(
                 if status.success() {
                     return Ok(YqCrocRunResult {
                         exit_code,
-                        pid,
                         started_at,
                         completed_at,
                         stdout_tail: collected.stdout_tail,
                         stderr_tail: collected.stderr_tail,
-                        events: collected.events,
                     });
                 }
                 let message = format!(
@@ -388,14 +384,12 @@ struct ProgressBase {
 #[derive(Debug, Clone, Default)]
 struct CollectedStdout {
     stdout_tail: String,
-    events: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct CollectedProcessOutput {
     stdout_tail: String,
     stderr_tail: String,
-    events: Vec<Value>,
 }
 
 async fn collect_stdout_events(
@@ -404,7 +398,6 @@ async fn collect_stdout_events(
     base: ProgressBase,
 ) -> CollectedStdout {
     let mut tail = Tail::default();
-    let mut events = Vec::new();
     let Some(stdout) = stdout else {
         return CollectedStdout::default();
     };
@@ -418,7 +411,6 @@ async fn collect_stdout_events(
         let Some(event_name) = event.get("event").and_then(|v| v.as_str()) else {
             continue;
         };
-        events.push(event.clone());
         if let Some(ref ctx) = ctx {
             ctx.report_progress(
                 "transfer_progress",
@@ -429,7 +421,6 @@ async fn collect_stdout_events(
     }
     CollectedStdout {
         stdout_tail: tail.text(),
-        events,
     }
 }
 
@@ -454,7 +445,6 @@ async fn collect_joined(
     CollectedProcessOutput {
         stdout_tail: stdout.stdout_tail,
         stderr_tail: truncate_tail(&stderr_lines.join("\n")),
-        events: stdout.events,
     }
 }
 

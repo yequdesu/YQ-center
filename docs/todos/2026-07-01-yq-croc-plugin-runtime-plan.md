@@ -652,10 +652,12 @@ Linux:   /usr/local/bin/yq-croc
 7. yq-croc 已新增可重复打包脚本，生成 Windows zip、Linux tar.gz 和 SHA-256 checksums。
 8. 本机 Windows 已完成 public relay 小文件 smoke test：按 Center 调度顺序先启动 sender，等待 `sender_ready` 后启动 receiver，事件链包含 `sender_ready`、`channel_secured`、`bytes_progress`、`transfer_done`，文件成功落地。
 9. Windows Node status 已新增 `firewall_allows_outbound` 事实；Center preflight 已接入 `runtime_egress_blocked`。
+10. WSL Ubuntu 已安装 Rust/C 工具链，`cargo check -p yequnode-core` 在真实 Linux target 上通过。
+11. Windows yq-croc sender -> WSL/Linux yq-croc receiver 的 public relay 小文件 smoke test 已通过，证明 Windows/Linux 二进制能按 Center 的 sender-ready 调度顺序完成跨平台传输。
 
 仍需端到端验收：
 
-1. Linux 真实运行环境安装 `/usr/local/bin/yq-croc` 后执行 cargo/test 和双向传输。
+1. 独立 Linux Node 真实部署环境安装 `/usr/local/bin/yq-croc` 后执行 systemd/daemon 级启动验收。
 2. Win/Linux 双向 1 GiB、取消、relay failure、hash mismatch、interrupted/resume、reconcile 验收。
 3. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
 
