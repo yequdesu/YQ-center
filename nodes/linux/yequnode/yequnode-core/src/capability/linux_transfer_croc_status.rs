@@ -161,3 +161,102 @@ async fn run_json(binary_path: &str, args: &[&str]) -> Result<Value, String> {
     serde_json::from_slice::<Value>(&output.stdout)
         .map_err(|e| format!("invalid yq-croc JSON from {:?}: {}", args, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    use serde_json::json;
+
+    use crate::capability::Capability;
+
+    use super::LinuxTransferCrocStatus;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn status_reports_yq_croc_runtime_facts() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bin_path = temp.path().join("yq-croc");
+        let home = temp.path().join("home");
+        let config_dir = home.join(".yequnode");
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        let mut script = std::fs::File::create(&bin_path).unwrap();
+        writeln!(
+            script,
+            r#"#!/bin/sh
+case "$1" in
+  version)
+    printf '%s\n' '{{"runtime":"yq-croc","runtime_version":"test-runtime","upstream_croc_version":"v10.4.6"}}'
+    ;;
+  probe)
+    printf '%s\n' '{{"runtime":"yq-croc","runtime_version":"test-runtime","upstream_croc_version":"v10.4.6","goos":"linux","goarch":"amd64"}}'
+    ;;
+  relay-probe)
+    printf '%s\n' '{{"runtime":"yq-croc","relay_url":"relay.example:9009","relay_reachable":true}}'
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+"#
+        )
+        .unwrap();
+        drop(script);
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::fs::write(
+            config_dir.join("config.yaml"),
+            format!(
+                r#"node_token: test-token
+transfer:
+  yq_croc:
+    binary_path: "{}"
+    temp_dir: "{}"
+"#,
+                bin_path.display(),
+                temp.path().join("transfers").display()
+            ),
+        )
+        .unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_token = std::env::var("YEQU_NODE_TOKEN").ok();
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("YEQU_NODE_TOKEN");
+
+        let output = LinuxTransferCrocStatus::execute(json!({})).await.unwrap();
+
+        match old_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_token {
+            Some(value) => std::env::set_var("YEQU_NODE_TOKEN", value),
+            None => std::env::remove_var("YEQU_NODE_TOKEN"),
+        }
+
+        assert_eq!(output["runtime"], "yq-croc", "status output: {output}");
+        assert_eq!(output["installed"], true, "status output: {output}");
+        assert_eq!(output["executable"], true, "status output: {output}");
+        assert_eq!(output["ready"], true, "status output: {output}");
+        assert_eq!(output["relay_reachable"], true, "status output: {output}");
+        assert_eq!(
+            output["runtime_version"], "test-runtime",
+            "status output: {output}"
+        );
+        assert_eq!(
+            output["upstream_croc_version"], "v10.4.6",
+            "status output: {output}"
+        );
+        assert_eq!(
+            output["error"],
+            serde_json::Value::Null,
+            "status output: {output}"
+        );
+    }
+}

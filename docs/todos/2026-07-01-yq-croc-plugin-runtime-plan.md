@@ -654,6 +654,7 @@ Linux:   /usr/local/bin/yq-croc
 9. Windows Node status 已新增 `firewall_allows_outbound` 事实；Center preflight 已接入 `runtime_egress_blocked`。
 10. WSL Ubuntu 已安装 Rust/C 工具链，`cargo check -p yequnode-core` 和 `cargo test -p yequnode-core` 在真实 Linux target 上通过。
 11. Windows yq-croc sender -> WSL/Linux yq-croc receiver、WSL/Linux yq-croc sender -> Windows yq-croc receiver 的 public relay 小文件 smoke test 均已通过，证明 Windows/Linux 二进制能按 Center 的 sender-ready 调度顺序完成双向跨平台传输。
+12. Linux Node `linux.transfer.croc.status` 已新增直接测试，覆盖 yq-croc version/probe/relay-probe 输出到 status JSON 的映射。
 
 仍需端到端验收：
 
