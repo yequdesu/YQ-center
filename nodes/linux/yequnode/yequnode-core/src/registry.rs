@@ -158,11 +158,11 @@ pub mod production {
     use crate::capability::linux_service_restart::LinuxServiceRestart;
     use crate::capability::linux_service_status::LinuxServiceStatus;
     use crate::capability::linux_system_info::LinuxSystemInfo;
+    use crate::capability::linux_transfer_croc_receive::LinuxTransferCrocReceive;
+    use crate::capability::linux_transfer_croc_reconcile::LinuxTransferCrocReconcile;
+    use crate::capability::linux_transfer_croc_send::LinuxTransferCrocSend;
+    use crate::capability::linux_transfer_croc_status::LinuxTransferCrocStatus;
     use crate::capability::linux_transfer_local_stat::LinuxTransferLocalStat;
-    use crate::capability::linux_transfer_rclone_receive::LinuxTransferRcloneReceive;
-    use crate::capability::linux_transfer_rclone_reconcile::LinuxTransferRcloneReconcile;
-    use crate::capability::linux_transfer_rclone_send::LinuxTransferRcloneSend;
-    use crate::capability::linux_transfer_rclone_status::LinuxTransferRcloneStatus;
     use crate::capability::linux_user_list::LinuxUserList;
 
     register!(
@@ -195,10 +195,10 @@ pub mod production {
         LinuxArtifactDiagnostics,
         LinuxArtifactUploadProc,
         LinuxArtifactScreenshotViaFb,
-        LinuxTransferRcloneStatus,
-        LinuxTransferRcloneSend,
-        LinuxTransferRcloneReceive,
+        LinuxTransferCrocStatus,
+        LinuxTransferCrocSend,
+        LinuxTransferCrocReceive,
         LinuxTransferLocalStat,
-        LinuxTransferRcloneReconcile,
+        LinuxTransferCrocReconcile,
     );
 }

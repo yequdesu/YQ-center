@@ -65,7 +65,6 @@ impl Capability for LinuxTransferLocalStat {
             let parent_writable = parent.map(is_writable).unwrap_or(false);
             return Ok(json!({
                 "path": path_str,
-                "found": false,
                 "exists": false,
                 "parent": parent.map(|p| p.to_string_lossy().to_string()),
                 "parent_exists": parent_exists,
@@ -78,7 +77,6 @@ impl Capability for LinuxTransferLocalStat {
                 "is_file": false,
                 "is_dir": false,
                 "disk_available_bytes": parent.and_then(get_disk_available),
-                "free_bytes": parent.and_then(get_disk_available),
                 "error": "path does not exist",
             }));
         }
@@ -118,7 +116,6 @@ impl Capability for LinuxTransferLocalStat {
 
         Ok(json!({
             "path": path_str,
-            "found": true,
             "exists": true,
             "parent": parent.map(|p| p.to_string_lossy().to_string()),
             "parent_exists": parent_exists,
@@ -131,7 +128,6 @@ impl Capability for LinuxTransferLocalStat {
             "is_file": is_file,
             "is_dir": is_dir,
             "disk_available_bytes": disk_available_bytes,
-            "free_bytes": disk_available_bytes,
             "error": null,
         }))
     }

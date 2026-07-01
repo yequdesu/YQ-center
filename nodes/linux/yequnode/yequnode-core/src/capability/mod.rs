@@ -1,3 +1,5 @@
+mod croc_command;
+mod croc_progress;
 pub mod linux_artifact_diagnostics;
 pub mod linux_artifact_download_file;
 pub mod linux_artifact_screenshot_via_fb;
@@ -26,11 +28,11 @@ pub mod linux_service_list;
 pub mod linux_service_restart;
 pub mod linux_service_status;
 pub mod linux_system_info;
+pub mod linux_transfer_croc_receive;
+pub mod linux_transfer_croc_reconcile;
+pub mod linux_transfer_croc_send;
+pub mod linux_transfer_croc_status;
 pub mod linux_transfer_local_stat;
-pub mod linux_transfer_rclone_receive;
-pub mod linux_transfer_rclone_reconcile;
-pub mod linux_transfer_rclone_send;
-pub mod linux_transfer_rclone_status;
 pub mod linux_user_list;
 pub mod manifest;
 

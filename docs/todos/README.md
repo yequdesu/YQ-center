@@ -15,9 +15,6 @@
 | `2026-06-30-center-execution-runtime-v2.md` | 当前主路线图。将 Capability Runtime v1 升级为 Center Execution Runtime v2，新增 Execution Admission、Operation Bus、OperationEvent/Waiter、workflow handlers、Agent wait/resume 和 future MQ 边界。 |
 | `2026-06-30-pre-phase6-agent-operation-polish.md` | 阶段 6 前强制优化待办。覆盖 Operation 进度透明、ExecutionGuard、Agent 工具选择治理、transfer preflight、capability projection 查询、Node capability 描述合同、prompt diagnostics 和 Linux Node 能力扩展。 |
 | `2026-06-29-agent-provider-system.md` | 活跃 provider 路线图。将 DeepSeek-only 接线升级为 ProviderRegistry、OpenAI-compatible adapter、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 |
-| `2026-07-01-transfer-rclone-center-plan.md` | Center 传输主路径从 croc 切换到 rclone SFTP 的详细修改计划。 |
-| `2026-07-01-transfer-rclone-winnode-plan.md` | Windows Node 删除 croc 并实现 rclone SFTP transfer capability 的详细修改计划。 |
-| `2026-07-01-transfer-rclone-linuxnode-plan.md` | Linux Node 删除 croc 并实现 rclone SFTP transfer capability 的详细修改计划。 |
 
 ## 已归档基线
 

@@ -21,10 +21,8 @@ use crate::yqp::types::{
 };
 
 /// Long-running capabilities that need progress reporting and cancellation.
-const LONG_RUNNING_CAPABILITIES: &[&str] = &[
-    "linux.transfer.rclone.send",
-    "linux.transfer.rclone.receive",
-];
+const LONG_RUNNING_CAPABILITIES: &[&str] =
+    &["linux.transfer.croc.send", "linux.transfer.croc.receive"];
 
 // ---------------------------------------------------------------------------
 // Daemon
@@ -81,7 +79,7 @@ impl Daemon {
         }
         if let Some(transfer_runtime) = build_transfer_runtime(&config) {
             runtimes.push(transfer_runtime);
-            info!("rclone transfer runtime available — registering transfer capabilities");
+            info!("croc transfer runtime available — registering transfer capabilities");
         }
 
         // Handshake: node.hello
@@ -622,17 +620,17 @@ fn build_sudo_runtime() -> RuntimeSnapshot {
     }
 }
 
-/// Build a RuntimeSnapshot for the transfer runtime.
-/// Returns None if rclone is disabled or the daemon user cannot execute rclone.
+/// Build a RuntimeSnapshot for the transfer runtime (croc enabled).
+/// Returns None if croc is disabled or the daemon user cannot execute croc.
 fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
-    let rclone_config = &config.transfer.rclone;
+    let croc_config = &config.transfer.croc;
 
-    if !rclone_config.enabled {
+    if !croc_config.enabled {
         return None;
     }
 
-    let binary_path = &rclone_config.binary_path;
-    if !rclone_is_executable(binary_path) {
+    let binary_path = &croc_config.binary_path;
+    if !croc_is_executable(binary_path) {
         return None;
     }
 
@@ -645,25 +643,21 @@ fn build_transfer_runtime(config: &Config) -> Option<RuntimeSnapshot> {
         labels: Some(vec!["linux".into(), "transfer".into()]),
         owner: None,
         metadata: Some(serde_json::json!({
-            "transport": "rclone_sftp",
-            "rclone_binary_path": binary_path,
-            "temp_dir": rclone_config.temp_dir.to_string_lossy(),
-            "allow_send": rclone_config.allow_send,
-            "allow_receive": rclone_config.allow_receive,
-            "advertise_host": rclone_config.advertise_host,
-            "bind_host": rclone_config.bind_host,
-            "listen_port": rclone_config.listen_port,
-            "max_concurrent_transfers": rclone_config.max_concurrent_transfers,
+            "croc_binary_path": binary_path,
+            "temp_dir": croc_config.temp_dir.to_string_lossy(),
+            "allow_send": croc_config.allow_send,
+            "allow_receive": croc_config.allow_receive,
+            "relay_url": croc_config.relay_url,
         })),
     })
 }
 
-fn rclone_is_executable(binary_path: &str) -> bool {
+fn croc_is_executable(binary_path: &str) -> bool {
     if !std::path::Path::new(binary_path).exists() {
         return false;
     }
     std::process::Command::new(binary_path)
-        .arg("version")
+        .arg("--version")
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)

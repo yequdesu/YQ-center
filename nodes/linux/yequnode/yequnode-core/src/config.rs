@@ -26,43 +26,37 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransferConfig {
-    #[serde(default = "default_rclone_config")]
-    pub rclone: RcloneConfig,
+    #[serde(default = "default_croc_config")]
+    pub croc: CrocConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RcloneConfig {
+pub struct CrocConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_rclone_binary_path")]
+    #[serde(default = "default_croc_binary_path")]
     pub binary_path: String,
     #[serde(default)]
-    pub advertise_host: Option<String>,
-    #[serde(default)]
-    pub bind_host: Option<String>,
+    pub relay_url: Option<String>,
     #[serde(default = "default_temp_dir")]
     pub temp_dir: PathBuf,
     #[serde(default = "default_true")]
     pub allow_send: bool,
     #[serde(default = "default_true")]
     pub allow_receive: bool,
-    #[serde(default = "default_max_concurrent_transfers")]
-    pub max_concurrent_transfers: u32,
-    #[serde(default = "default_listen_port")]
-    pub listen_port: u16,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: u32,
 }
 
-fn default_rclone_config() -> RcloneConfig {
-    RcloneConfig {
+fn default_croc_config() -> CrocConfig {
+    CrocConfig {
         enabled: true,
-        binary_path: default_rclone_binary_path(),
-        advertise_host: None,
-        bind_host: None,
+        binary_path: default_croc_binary_path(),
+        relay_url: None,
         temp_dir: default_temp_dir(),
         allow_send: true,
         allow_receive: true,
-        max_concurrent_transfers: default_max_concurrent_transfers(),
-        listen_port: default_listen_port(),
+        max_concurrent: default_max_concurrent(),
     }
 }
 
@@ -70,26 +64,22 @@ fn default_true() -> bool {
     true
 }
 
-fn default_rclone_binary_path() -> String {
-    "/usr/bin/rclone".into()
+fn default_croc_binary_path() -> String {
+    "/usr/local/bin/croc".into()
 }
 
 fn default_temp_dir() -> PathBuf {
     PathBuf::from("/tmp/yequ-transfer")
 }
 
-fn default_max_concurrent_transfers() -> u32 {
-    1
-}
-
-fn default_listen_port() -> u16 {
-    42981
+fn default_max_concurrent() -> u32 {
+    3
 }
 
 impl Default for TransferConfig {
     fn default() -> Self {
         Self {
-            rclone: default_rclone_config(),
+            croc: default_croc_config(),
         }
     }
 }
