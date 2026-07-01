@@ -51,8 +51,8 @@ class ExecutionGuard:
         for slot in ("source_node_id", "target_node_id", "source_path"):
             if not _has_string(input_data.get(slot)):
                 missing.append(slot)
-        if not _has_string(input_data.get("resume_mode")):
-            missing.append("resume_mode")
+        if not _has_string(input_data.get("conflict_mode")):
+            missing.append("conflict_mode")
         if not (
             _has_string(input_data.get("target_output_dir"))
             or _has_string(input_data.get("target_path"))
@@ -66,18 +66,18 @@ class ExecutionGuard:
                 missing_slots=missing,
             )
 
-        if input_data.get("resume_mode") not in {
-            "resume",
+        if input_data.get("conflict_mode") not in {
+            "reuse_complete",
             "overwrite",
             "fail_if_exists",
         }:
             return GuardDecision(
                 decision="blocked",
-                reason="resume_mode must be resume, overwrite, or fail_if_exists",
+                reason="conflict_mode must be fail_if_exists, overwrite, or reuse_complete",
                 failed_preconditions=[
                     {
-                        "fact": "transfer.resume_mode",
-                        "code": "invalid_resume_mode",
+                        "fact": "transfer.conflict_mode",
+                        "code": "invalid_conflict_mode",
                     }
                 ],
             )

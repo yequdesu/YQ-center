@@ -7,5 +7,4 @@ pub mod job;
 pub mod permissions;
 pub mod registry;
 pub mod shutdown;
-pub mod transfer_ledger;
 pub mod yqp;

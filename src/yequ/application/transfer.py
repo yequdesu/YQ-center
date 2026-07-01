@@ -23,9 +23,9 @@ from yequ.services.timeline_writer import add_timeline_event
 TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC = 120
 TRANSFER_PREFLIGHT_MIN_TTL_SEC = 30
 TRANSFER_PREFLIGHT_MAX_TTL_SEC = 300
-TRANSFER_SENDER_START_WAIT_SEC = 8.0
-TRANSFER_SENDER_READY_MIN_WAIT_SEC = 180.0
-TRANSFER_SENDER_READY_MAX_WAIT_SEC = 600.0
+TRANSFER_JOB_START_WAIT_SEC = 8.0
+TRANSFER_RECEIVER_READY_MIN_WAIT_SEC = 180.0
+TRANSFER_RECEIVER_READY_MAX_WAIT_SEC = 600.0
 TRANSFER_JOB_MIN_LEASE_SEC = 180
 TRANSFER_JOB_MAX_LEASE_SEC = 600
 
@@ -37,11 +37,10 @@ class TransferCreateCommand:
     source_path: str
     target_output_dir: str | None = None
     target_path: str | None = None
-    code: str | None = None
-    relay_url: str | None = None
-    resume_mode: str | None = None
+    conflict_mode: str | None = None
     timeout_sec: int = 3600
     expected_sha256: str | None = None
+    cleanup_on_failure: bool = False
     preflight_id: str | None = None
     skip_preflight: bool = False
     skip_reason: str | None = None
@@ -58,7 +57,7 @@ class TransferPreflightCommand:
     source_path: str
     target_output_dir: str | None = None
     target_path: str | None = None
-    resume_mode: str | None = None
+    conflict_mode: str | None = None
     include_sha256: bool = False
     timeout_sec: int = 20
     ttl_sec: int = TRANSFER_PREFLIGHT_DEFAULT_TTL_SEC
@@ -75,7 +74,7 @@ class NormalizedTransferTarget:
 
 
 class TransferApplicationService:
-    """Create and inspect transfer sessions without exposing croc sequencing to Agent."""
+    """Create and inspect transfer sessions without exposing node transport sequencing to Agent."""
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -93,9 +92,9 @@ class TransferApplicationService:
             missing.append("source_path")
         if not command.target_output_dir and not command.target_path:
             missing.append("target_output_dir_or_target_path")
-        resume_mode = command.resume_mode
-        if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
-            missing.append("resume_mode")
+        conflict_mode = command.conflict_mode
+        if conflict_mode not in {"fail_if_exists", "overwrite", "reuse_complete"}:
+            missing.append("conflict_mode")
         if missing:
             return {
                 "allowed": False,
@@ -175,7 +174,7 @@ class TransferApplicationService:
             source_status=source_status,
             target_status=target_status,
             target_path=command.target_path,
-            resume_mode=resume_mode,
+            conflict_mode=conflict_mode,
         )
         preflight = TransferPreflight(
             preflight_id=f"tpf_{secrets.token_hex(8)}",
@@ -187,14 +186,14 @@ class TransferApplicationService:
                 source_path=command.source_path,
                 target_output_dir=target_intent.output_dir,
                 target_path=target_intent.target_path,
-                resume_mode=resume_mode,
+                conflict_mode=conflict_mode,
             ),
             source_node_id=command.source_node_id,
             target_node_id=command.target_node_id,
             source_path=command.source_path,
             target_output_dir=target_intent.output_dir,
             target_path=target_intent.target_path,
-            resume_mode=resume_mode,
+            conflict_mode=conflict_mode,
             source_fact=source,
             target_fact=target,
             failed_preconditions=failed,
@@ -214,7 +213,7 @@ class TransferApplicationService:
             "target": target,
             "source_runtime": source_status,
             "target_runtime": target_status,
-            "resume_mode": resume_mode,
+            "conflict_mode": conflict_mode,
             "observed_at": now.isoformat(),
             "ttl_sec": ttl_sec,
             "expires_at": preflight.expires_at.isoformat(),
@@ -237,15 +236,14 @@ class TransferApplicationService:
             target_path=command.target_path,
         )
 
-        code = command.code or _generate_croc_code()
-        resume_mode = command.resume_mode
-        if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
-            raise ValueError("resume_mode must be resume, overwrite, or fail_if_exists")
-        preflight = await self._verify_preflight(command, resume_mode=resume_mode)
+        conflict_mode = command.conflict_mode
+        if conflict_mode not in {"fail_if_exists", "overwrite", "reuse_complete"}:
+            raise ValueError("conflict_mode must be fail_if_exists, overwrite, or reuse_complete")
+        preflight = await self._verify_preflight(command, conflict_mode=conflict_mode)
 
         session = TransferSession(
             transfer_id=f"trf_{secrets.token_hex(8)}",
-            transport="croc",
+            transport="rclone_sftp",
             mode="node_to_node",
             status="created",
             source_node_id=command.source_node_id,
@@ -253,19 +251,18 @@ class TransferApplicationService:
             source_path=command.source_path,
             target_path=target_intent.target_path,
             target_output_dir=target_intent.output_dir,
-            relay_url=command.relay_url,
-            code_hash=_secret_hash(code),
-            resume_mode=resume_mode,
+            conflict_mode=conflict_mode,
             attempt=1,
             created_by=command.actor_type,
             actor_id=command.actor_id,
             session_id=command.session_id,
             started_at=datetime.now(UTC),
             metadata_json={
-                "phase": "transfer_session_v1",
+                "phase": "transfer_session_v2_rclone_sftp",
                 "preflight_id": preflight.preflight_id if preflight else None,
                 "skip_preflight": command.skip_preflight,
                 "skip_reason": command.skip_reason,
+                "cleanup_on_failure": command.cleanup_on_failure,
             },
         )
         self.db.add(session)
@@ -278,102 +275,18 @@ class TransferApplicationService:
             else None
         )
 
-        send_result = await self._invoke_capability(
-            command,
-            node_id=command.source_node_id,
-            capability_ref="transfer.croc.send",
-            tool_input={
-                "transfer_id": session.transfer_id,
-                "code": code,
-                "path": command.source_path,
-                "relay_url": command.relay_url,
-                "timeout_sec": command.timeout_sec,
-                "expected_receiver_node_id": command.target_node_id,
-            },
-        )
-        if send_result.status not in {"created", "running"}:
-            session.status = "failed"
-            session.error_code = _classify_transfer_error(
-                send_result.error_code or "sender_job_failed",
-                send_result.error_message,
-            )
-            session.error_message = send_result.error_message
-            await self.db.commit()
-            return self._session_dict(session, send_result=send_result)
-
-        session.source_invocation_id = send_result.invocation_id
-        session.source_job_id = send_result.job_id
-        session.status = "sending"
-        await self.db.commit()
-
-        try:
-            sender_start = await self._wait_for_job_start(session.source_job_id)
-            if sender_start and sender_start.status in {
-                "succeeded",
-                "failed",
-                "timeout",
-                "cancelled",
-            }:
-                session.status = "failed"
-                session.error_code = _classify_transfer_error(
-                    sender_start.error_code or "sender_job_finished_before_receiver",
-                    sender_start.error_message,
-                )
-                session.error_message = sender_start.error_message or (
-                    "sender job reached terminal state before receiver was started"
-                )
-                await self.db.commit()
-                return self._session_dict(session, source_job=sender_start, send_result=send_result)
-            sender_ready = await self._wait_for_sender_ready(
-                session.source_job_id,
-                wait_sec=_sender_ready_wait_sec(command.timeout_sec),
-            )
-        except asyncio.CancelledError:
-            await self._cancel_transfer_create_inflight(session)
-            raise
-
-        if sender_ready is None:
-            await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
-            session.status = "failed"
-            session.error_code = "sender_room_ready_timeout"
-            session.error_message = "sender job disappeared before reporting croc_sender_ready"
-            await self.db.commit()
-            return self._session_dict(session, send_result=send_result)
-        if sender_ready.status in {
-            "succeeded",
-            "failed",
-            "timeout",
-            "cancelled",
-        }:
-            session.status = "failed"
-            session.error_code = _classify_transfer_error(
-                sender_ready.error_code or "sender_job_finished_before_receiver",
-                sender_ready.error_message,
-            )
-            session.error_message = sender_ready.error_message or (
-                "sender job reached terminal state before receiver was started"
-            )
-            await self.db.commit()
-            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
-        if not _job_has_sender_ready(sender_ready):
-            await self._cancel_job_id(session.source_job_id, reason="sender_room_ready_timeout")
-            session.status = "failed"
-            session.error_code = "sender_room_ready_timeout"
-            session.error_message = (
-                "sender did not report croc_sender_ready before receiver startup"
-            )
-            await self.db.commit()
-            return self._session_dict(session, source_job=sender_ready, send_result=send_result)
-
+        endpoint_username = f"yequ_{session.transfer_id}"
+        endpoint_password = secrets.token_urlsafe(32)
         receive_input: dict[str, object] = {
             "transfer_id": session.transfer_id,
-            "code": code,
             "output_dir": target_intent.output_dir,
             "target_path": target_intent.target_path,
-            "relay_url": command.relay_url,
+            "username": endpoint_username,
+            "password": endpoint_password,
+            "conflict_mode": conflict_mode,
             "timeout_sec": command.timeout_sec,
-            "resume_mode": resume_mode,
             "expected_sha256": command.expected_sha256,
+            "cleanup_on_failure": command.cleanup_on_failure,
         }
         if expected_size_bytes is not None:
             receive_input["expected_size_bytes"] = expected_size_bytes
@@ -381,11 +294,10 @@ class TransferApplicationService:
         receive_result = await self._invoke_capability(
             command,
             node_id=command.target_node_id,
-            capability_ref="transfer.croc.receive",
+            capability_ref="transfer.rclone.receive",
             tool_input=receive_input,
         )
         if receive_result.status not in {"created", "running"}:
-            await self._cancel_job_id(session.source_job_id, reason="receiver_job_failed")
             session.status = "failed"
             session.error_code = _classify_transfer_error(
                 receive_result.error_code or "receiver_job_failed",
@@ -393,14 +305,130 @@ class TransferApplicationService:
             )
             session.error_message = receive_result.error_message
             await self.db.commit()
+            return self._session_dict(session, receive_result=receive_result)
+
+        session.target_invocation_id = receive_result.invocation_id
+        session.target_job_id = receive_result.job_id
+        session.status = "receiving"
+        await self.db.commit()
+
+        try:
+            receiver_start = await self._wait_for_job_start(session.target_job_id)
+            if receiver_start and receiver_start.status in {
+                "succeeded",
+                "failed",
+                "timeout",
+                "cancelled",
+            }:
+                session.status = "failed"
+                session.error_code = _classify_transfer_error(
+                    receiver_start.error_code or "receiver_job_finished_before_sender",
+                    receiver_start.error_message,
+                )
+                session.error_message = receiver_start.error_message or (
+                    "receiver job reached terminal state before sender was started"
+                )
+                await self.db.commit()
+                return self._session_dict(
+                    session,
+                    target_job=receiver_start,
+                    receive_result=receive_result,
+                )
+            receiver_ready = await self._wait_for_receiver_ready(
+                session.target_job_id,
+                wait_sec=_receiver_ready_wait_sec(command.timeout_sec),
+            )
+        except asyncio.CancelledError:
+            await self._cancel_transfer_create_inflight(session)
+            raise
+
+        if receiver_ready is None:
+            await self._cancel_job_id(session.target_job_id, reason="receiver_ready_timeout")
+            session.status = "failed"
+            session.error_code = "receiver_ready_timeout"
+            session.error_message = "receiver job disappeared before reporting rclone endpoint"
+            await self.db.commit()
+            return self._session_dict(session, receive_result=receive_result)
+        if receiver_ready.status in {
+            "succeeded",
+            "failed",
+            "timeout",
+            "cancelled",
+        }:
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                receiver_ready.error_code or "receiver_job_finished_before_sender",
+                receiver_ready.error_message,
+            )
+            session.error_message = receiver_ready.error_message or (
+                "receiver job reached terminal state before sender was started"
+            )
+            await self.db.commit()
+            return self._session_dict(
+                session,
+                target_job=receiver_ready,
+                receive_result=receive_result,
+            )
+        if not _job_has_receiver_ready(receiver_ready):
+            await self._cancel_job_id(session.target_job_id, reason="receiver_ready_timeout")
+            session.status = "failed"
+            session.error_code = "receiver_ready_timeout"
+            session.error_message = "receiver did not report rclone endpoint before sender startup"
+            await self.db.commit()
+            return self._session_dict(
+                session,
+                target_job=receiver_ready,
+                receive_result=receive_result,
+            )
+
+        endpoint = _receiver_endpoint(receiver_ready)
+        if endpoint is None:
+            await self._cancel_job_id(session.target_job_id, reason="receiver_endpoint_missing")
+            session.status = "failed"
+            session.error_code = "receiver_endpoint_missing"
+            session.error_message = "receiver reported ready without a usable rclone endpoint"
+            await self.db.commit()
+            return self._session_dict(
+                session,
+                target_job=receiver_ready,
+                receive_result=receive_result,
+            )
+        endpoint["password"] = endpoint_password
+
+        send_input: dict[str, object] = {
+            "transfer_id": session.transfer_id,
+            "source_path": command.source_path,
+            "target_endpoint": endpoint,
+            "target_payload_path": _target_payload_path(command.source_path),
+            "timeout_sec": command.timeout_sec,
+            "expected_sha256": command.expected_sha256,
+        }
+        if expected_size_bytes is not None:
+            send_input["expected_size_bytes"] = expected_size_bytes
+
+        send_result = await self._invoke_capability(
+            command,
+            node_id=command.source_node_id,
+            capability_ref="transfer.rclone.send",
+            tool_input=send_input,
+        )
+        if send_result.status not in {"created", "running"}:
+            await self._cancel_job_id(session.target_job_id, reason="sender_job_failed")
+            session.status = "failed"
+            session.error_code = _classify_transfer_error(
+                send_result.error_code or "sender_job_failed",
+                send_result.error_message,
+            )
+            session.error_message = send_result.error_message
+            await self.db.commit()
             return self._session_dict(
                 session,
                 receive_result=receive_result,
                 send_result=send_result,
             )
 
-        session.target_invocation_id = receive_result.invocation_id
-        session.target_job_id = receive_result.job_id
+        session.source_invocation_id = send_result.invocation_id
+        session.source_job_id = send_result.job_id
         session.status = "running"
         await add_timeline_event(
             self.db,
@@ -486,7 +514,7 @@ class TransferApplicationService:
         if get_settings().test_mode:
             return None
 
-        deadline = datetime.now(UTC) + timedelta(seconds=TRANSFER_SENDER_START_WAIT_SEC)
+        deadline = datetime.now(UTC) + timedelta(seconds=TRANSFER_JOB_START_WAIT_SEC)
         last_job: Job | None = None
         while datetime.now(UTC) < deadline:
             async with async_session_factory() as db:
@@ -499,7 +527,7 @@ class TransferApplicationService:
             await asyncio.sleep(0.5)
         return last_job
 
-    async def _wait_for_sender_ready(self, job_id: str | None, *, wait_sec: float) -> Job | None:
+    async def _wait_for_receiver_ready(self, job_id: str | None, *, wait_sec: float) -> Job | None:
         if not job_id:
             return None
         from yequ.config import get_settings
@@ -517,7 +545,7 @@ class TransferApplicationService:
                 last_job = result.scalar_one_or_none()
                 if last_job is None:
                     return None
-                if _job_has_sender_ready(last_job) or last_job.status in terminal:
+                if _job_has_receiver_ready(last_job) or last_job.status in terminal:
                     return last_job
             await asyncio.sleep(0.5)
         return last_job
@@ -526,7 +554,7 @@ class TransferApplicationService:
         self,
         command: TransferCreateCommand,
         *,
-        resume_mode: str,
+        conflict_mode: str,
     ) -> TransferPreflight | None:
         if command.skip_preflight:
             if not command.skip_reason:
@@ -561,7 +589,7 @@ class TransferApplicationService:
             source_path=command.source_path,
             target_output_dir=target_intent.output_dir,
             target_path=target_intent.target_path,
-            resume_mode=resume_mode,
+            conflict_mode=conflict_mode,
         )
         if preflight.intent_hash != expected_hash:
             raise ValueError("preflight_intent_mismatch: rerun transfer.preflight")
@@ -647,7 +675,7 @@ class TransferApplicationService:
                 RuntimeCommand(
                     function_name="capability.invoke",
                     input_data={
-                        "capability_ref": "transfer.croc.status",
+                        "capability_ref": "transfer.rclone.status",
                         "node_id": node_id,
                         "input": {},
                     },
@@ -767,12 +795,10 @@ class TransferApplicationService:
             "target_invocation_id": session.target_invocation_id,
             "source_job_id": session.source_job_id,
             "target_job_id": session.target_job_id,
-            "resume_mode": session.resume_mode,
+            "conflict_mode": session.conflict_mode,
             "attempt": session.attempt,
             "size_bytes": session.size_bytes,
             "sha256": session.sha256,
-            "relay_url": session.relay_url,
-            "code_hash": session.code_hash,
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "started_at": session.started_at.isoformat() if session.started_at else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
@@ -853,9 +879,11 @@ def _transfer_failure_priority(job: Job) -> int:
             "peer disconnected",
             "output_dir is required",
             "permission denied",
-            "croc transfer failed",
-            "croc receive failed",
-            "croc send failed",
+            "rclone transfer failed",
+            "rclone receive failed",
+            "rclone send failed",
+            "connection refused",
+            "checksum",
         )
     ):
         score += 80
@@ -913,7 +941,7 @@ def _transfer_preflight_failures(
     source_status: dict[str, object],
     target_status: dict[str, object],
     target_path: str | None,
-    resume_mode: str,
+    conflict_mode: str,
 ) -> list[dict[str, object]]:
     failures: list[dict[str, object]] = []
     if source_result.status != "succeeded":
@@ -965,7 +993,7 @@ def _transfer_preflight_failures(
         )
     if target.get("writable") is not True:
         failures.append({"fact": "target.writable", "code": "target_not_writable"})
-    if target_path and resume_mode == "fail_if_exists" and target.get("found") is True:
+    if target_path and conflict_mode == "fail_if_exists" and target.get("found") is True:
         failures.append({"fact": "target.not_exists", "code": "target_exists"})
 
     source_size = _first_int(source.get("size_bytes"), source.get("size"))
@@ -981,13 +1009,21 @@ def _transfer_preflight_failures(
         )
 
     if source_status.get("installed") is not True:
-        failures.append({"fact": "source.runtime.croc_installed", "code": "croc_not_installed"})
+        failures.append({"fact": "source.runtime.rclone_installed", "code": "rclone_not_installed"})
+    if source_status.get("executable") is False:
+        failures.append({"fact": "source.runtime.rclone_executable", "code": "rclone_not_executable"})
     if source_status.get("allow_send") is not True:
         failures.append({"fact": "source.runtime.allow_send", "code": "send_not_allowed"})
     if target_status.get("installed") is not True:
-        failures.append({"fact": "target.runtime.croc_installed", "code": "croc_not_installed"})
+        failures.append({"fact": "target.runtime.rclone_installed", "code": "rclone_not_installed"})
+    if target_status.get("executable") is False:
+        failures.append({"fact": "target.runtime.rclone_executable", "code": "rclone_not_executable"})
     if target_status.get("allow_receive") is not True:
         failures.append({"fact": "target.runtime.allow_receive", "code": "receive_not_allowed"})
+    if not _first_str(target_status.get("advertise_host"), target_status.get("host")):
+        failures.append({"fact": "target.runtime.advertise_host", "code": "advertise_host_missing"})
+    if _first_int(target_status.get("listen_port"), target_status.get("port")) is None:
+        failures.append({"fact": "target.runtime.listen_port", "code": "listen_port_missing"})
 
     return failures
 
@@ -1149,31 +1185,25 @@ def _job_progress(job: dict[str, object] | None) -> dict[str, object]:
     }
 
 
-def _job_has_sender_ready(job: Job | None) -> bool:
+def _job_has_receiver_ready(job: Job | None) -> bool:
     if job is None:
         return False
     detail = job.progress_detail
     if not isinstance(detail, dict):
         return False
-    if detail.get("sender_ready") is True:
-        return True
-    if (
-        detail.get("role") == "sender"
-        and detail.get("progress_source") == "croc_stderr"
-        and _first_int(detail.get("progress_pct")) is not None
-    ):
+    if detail.get("receiver_ready") is True:
         return True
     return (
-        detail.get("progress_source") == "croc_sender_ready"
-        or detail.get("phase") == "sender_ready"
+        detail.get("progress_source") == "rclone_receiver_ready"
+        or detail.get("phase") == "receiver_ready"
     )
 
 
-def _sender_ready_wait_sec(timeout_sec: int | None) -> float:
+def _receiver_ready_wait_sec(timeout_sec: int | None) -> float:
     timeout = max(float(timeout_sec or 0), 1.0)
     return min(
-        TRANSFER_SENDER_READY_MAX_WAIT_SEC,
-        max(TRANSFER_SENDER_READY_MIN_WAIT_SEC, timeout * 0.1),
+        TRANSFER_RECEIVER_READY_MAX_WAIT_SEC,
+        max(TRANSFER_RECEIVER_READY_MIN_WAIT_SEC, timeout * 0.1),
     )
 
 
@@ -1256,14 +1286,16 @@ def _phase_indicates_transfer(value: str | None) -> bool:
 
 def _classify_transfer_error(error_code: str | None, error_message: str | None) -> str | None:
     message = (error_message or "").lower()
-    if "could not secure channel" in message:
-        return "croc_secure_channel_failed"
-    if "secure channel" in message and "not ready" in message:
-        return "croc_secure_channel_not_ready"
-    if "peer disconnected" in message or "maybe peer disconnected" in message:
-        return "croc_peer_disconnected"
-    if "relay" in message and ("unreachable" in message or "connect" in message):
-        return "croc_relay_unreachable"
+    if "checksum" in message or "sha256" in message:
+        return "integrity_mismatch"
+    if "connection refused" in message or "no route to host" in message:
+        return "rclone_endpoint_unreachable"
+    if "permission denied" in message or "authentication failed" in message:
+        return "rclone_auth_failed"
+    if "receiver" in message and "ready" in message and "timeout" in message:
+        return "receiver_ready_timeout"
+    if "timeout" in message:
+        return "transfer_timeout"
     return error_code
 
 
@@ -1327,14 +1359,6 @@ def _normalize_transfer_target(
     if not target_parent:
         raise ValueError("target_path must include a parent directory")
 
-    source_name = _path_name(source_path)
-    target_name = _path_name(target_path)
-    if source_name and target_name and source_name != target_name:
-        raise ValueError(
-            "target_path filename must match source filename for croc transfer; "
-            "use target_output_dir to choose a landing directory"
-        )
-
     return NormalizedTransferTarget(output_dir=target_parent, target_path=target_path)
 
 
@@ -1367,7 +1391,7 @@ def _transfer_intent_hash(
     source_path: str,
     target_output_dir: str | None,
     target_path: str | None,
-    resume_mode: str,
+    conflict_mode: str,
 ) -> str:
     payload = {
         "source_node_id": source_node_id,
@@ -1375,15 +1399,39 @@ def _transfer_intent_hash(
         "source_path": source_path,
         "target_output_dir": target_output_dir,
         "target_path": target_path,
-        "resume_mode": resume_mode,
+        "conflict_mode": conflict_mode,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _generate_croc_code() -> str:
-    return f"yequ-{secrets.token_urlsafe(12).replace('_', '').replace('-', '')[:16]}"
+def _target_payload_path(source_path: str) -> str:
+    source_name = _path_name(source_path) or "source"
+    return f"payload/{source_name}"
 
 
-def _secret_hash(secret: str) -> str:
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+def _receiver_endpoint(job: Job | None) -> dict[str, object] | None:
+    if job is None or not isinstance(job.progress_detail, dict):
+        return None
+    detail = job.progress_detail
+    endpoint = detail.get("endpoint")
+    if isinstance(endpoint, dict):
+        host = _first_str(endpoint.get("host"), endpoint.get("advertise_host"))
+        port = _first_int(endpoint.get("port"), endpoint.get("listen_port"))
+        username = _first_str(endpoint.get("username"))
+    else:
+        host = _first_str(detail.get("host"), detail.get("advertise_host"))
+        port = _first_int(detail.get("port"), detail.get("listen_port"))
+        username = _first_str(detail.get("username"))
+    if not host or port is None or not username:
+        return None
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "remote_dir": _first_str(
+            endpoint.get("remote_dir") if isinstance(endpoint, dict) else None,
+            detail.get("remote_dir"),
+            "payload",
+        ),
+    }

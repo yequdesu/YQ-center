@@ -1206,13 +1206,6 @@ def _apply_job_event_projection(job: "Job", event_type: str, data: JsonObject) -
         job.progress_message = progress_message[:512]
     progress_detail = _event_progress_detail(event_type, data, progress_pct, progress_message)
     if progress_detail:
-        if isinstance(job.progress_detail, dict) and job.progress_detail.get("sender_ready"):
-            progress_detail["sender_ready"] = True
-        if (
-            progress_detail.get("progress_source") == "croc_sender_ready"
-            or progress_detail.get("phase") == "sender_ready"
-        ):
-            progress_detail["sender_ready"] = True
         job.progress_detail = progress_detail
 
 

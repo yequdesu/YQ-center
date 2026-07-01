@@ -276,7 +276,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                 "Use only after artifact.deploy.preflight succeeds for the exact "
                 "target node and output_path. "
                 "This creates a waitable Node Job Operation; do not use it for "
-                "large Node-to-Node transfers where transfer.create/croc is better."
+                "large Node-to-Node transfers where transfer.create is better."
             ),
             input_schema={
                 "type": "object",
@@ -352,12 +352,12 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_path": {"type": "string"},
                     "target_output_dir": {"type": "string"},
                     "target_path": {"type": "string"},
-                    "resume_mode": {
+                    "conflict_mode": {
                         "type": "string",
-                        "enum": ["resume", "overwrite", "fail_if_exists"],
+                        "enum": ["fail_if_exists", "overwrite", "reuse_complete"],
                         "description": (
                             "Required user intent. Do not choose a value by default: "
-                            "ask the user when overwrite/resume/conflict behavior is "
+                            "ask the user when overwrite/reuse/conflict behavior is "
                             "not explicit."
                         ),
                     },
@@ -376,7 +376,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_node_id",
                     "target_node_id",
                     "source_path",
-                    "resume_mode",
+                    "conflict_mode",
                 ],
                 "anyOf": [
                     {"required": ["target_output_dir"]},
@@ -390,11 +390,11 @@ def _center_meta_functions() -> list[AgentFunction]:
         AgentFunction(
             name="transfer.create",
             description=(
-                "Create a Center-managed croc TransferSession between two nodes. "
-                "Use this instead of directly calling low-level croc send/receive; "
-                "Center will start receiver and sender jobs concurrently. Prefer "
+                "Create a Center-managed rclone_sftp TransferSession between two nodes. "
+                "Use this instead of directly calling low-level transfer capabilities; "
+                "Center will start the receiver endpoint first and then the sender. Prefer "
                 "transfer.preflight first when path permissions, free space, or "
-                "overwrite behavior are uncertain."
+                "conflict behavior are uncertain."
             ),
             input_schema={
                 "type": "object",
@@ -404,17 +404,18 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_path": {"type": "string"},
                     "target_output_dir": {"type": "string"},
                     "target_path": {"type": "string"},
-                    "resume_mode": {
+                    "conflict_mode": {
                         "type": "string",
-                        "enum": ["resume", "overwrite", "fail_if_exists"],
+                        "enum": ["fail_if_exists", "overwrite", "reuse_complete"],
                         "description": (
                             "Required user intent. Do not choose a value by default: "
-                            "ask the user when overwrite/resume/conflict behavior is "
+                            "ask the user when overwrite/reuse/conflict behavior is "
                             "not explicit."
                         ),
                     },
                     "timeout_sec": {"type": "integer", "default": 3600},
                     "expected_sha256": {"type": "string"},
+                    "cleanup_on_failure": {"type": "boolean", "default": False},
                     "preflight_id": {
                         "type": "string",
                         "description": "ID returned by a successful transfer.preflight call",
@@ -432,7 +433,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "source_node_id",
                     "target_node_id",
                     "source_path",
-                    "resume_mode",
+                    "conflict_mode",
                 ],
                 "anyOf": [
                     {"required": ["target_output_dir"]},

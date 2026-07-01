@@ -21,7 +21,7 @@ class TransferSession(Base, TimestampMixin):
     transfer_id: Mapped[str] = mapped_column(
         String(64), unique=True, nullable=False, default=generate_uuid, index=True
     )
-    transport: Mapped[str] = mapped_column(String(32), nullable=False, default="croc")
+    transport: Mapped[str] = mapped_column(String(32), nullable=False, default="rclone_sftp")
     mode: Mapped[str] = mapped_column(String(32), nullable=False, default="node_to_node")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="created", index=True)
 
@@ -39,9 +39,7 @@ class TransferSession(Base, TimestampMixin):
     artifact_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    relay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    resume_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="resume")
+    conflict_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="fail_if_exists")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     created_by: Mapped[str] = mapped_column(String(32), nullable=False, default="agent")
@@ -73,7 +71,7 @@ class TransferPreflight(Base, TimestampMixin):
     source_path: Mapped[str] = mapped_column(Text, nullable=False)
     target_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
-    resume_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="resume")
+    conflict_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="fail_if_exists")
 
     source_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     target_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

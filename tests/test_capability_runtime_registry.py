@@ -122,8 +122,8 @@ async def _register_linux_transfer_capability(
                         "status": "loaded",
                         "functions": [
                             {
-                                "name": "linux.transfer.croc.receive",
-                                "description": "Receive files with croc.",
+                                "name": "linux.transfer.rclone.receive",
+                                "description": "Receive files with rclone.",
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
@@ -212,7 +212,7 @@ async def _register_artifact_output_capability(
     assert resp.status_code == 200, resp.text
 
 
-async def _register_windows_croc_status(
+async def _register_windows_rclone_status(
     client: AsyncClient,
     node_id: str,
     token: str,
@@ -230,9 +230,9 @@ async def _register_windows_croc_status(
                         "status": "loaded",
                         "functions": [
                             {
-                                "name": "windows.transfer.croc.status",
+                                "name": "windows.transfer.rclone.status",
                                 "description": (
-                                    "Probe local croc installation and transfer runtime facts."
+                                    "Probe local rclone installation and transfer runtime facts."
                                 ),
                                 "input_schema": {
                                     "type": "object",
@@ -268,8 +268,8 @@ async def _register_windows_croc_status(
                                 "resource_keys": ["node.transfer", "node.file"],
                             },
                             {
-                                "name": "windows.transfer.croc.reconcile",
-                                "description": "Read local croc transfer ledger.",
+                                "name": "windows.transfer.rclone.reconcile",
+                                "description": "Read local rclone transfer ledger.",
                                 "input_schema": {"type": "object", "properties": {}},
                                 "output_schema": {"type": "object"},
                                 "risk": "safe",
@@ -278,8 +278,8 @@ async def _register_windows_croc_status(
                                 "resource_keys": ["node.transfer"],
                             },
                             {
-                                "name": "windows.transfer.croc.send",
-                                "description": "Send a local path through croc.",
+                                "name": "windows.transfer.rclone.send",
+                                "description": "Send a local path through rclone.",
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
@@ -296,8 +296,8 @@ async def _register_windows_croc_status(
                                 "hidden_input_fields": ["code"],
                             },
                             {
-                                "name": "windows.transfer.croc.receive",
-                                "description": "Receive files through croc.",
+                                "name": "windows.transfer.rclone.receive",
+                                "description": "Receive files through rclone.",
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
@@ -388,36 +388,36 @@ async def test_meta_capability_search_and_describe_api(
 
 
 @pytest.mark.asyncio
-async def test_croc_status_capability_is_searchable_without_center_hardcoding(
+async def test_rclone_status_capability_is_searchable_without_center_hardcoding(
     client: AsyncClient,
     provisioned_node,
 ) -> None:
     node, token = provisioned_node
     await _hello_windows_node(client, node.node_id, token)
-    await _register_windows_croc_status(client, node.node_id, token)
+    await _register_windows_rclone_status(client, node.node_id, token)
 
-    search_resp = await client.get("/admin/meta/capabilities/search", params={"q": "croc"})
+    search_resp = await client.get("/admin/meta/capabilities/search", params={"q": "rclone"})
     assert search_resp.status_code == 200, search_resp.text
     matches = search_resp.json()
     names = [item["canonical_name"] for item in matches]
     assert names == [
-        "transfer.croc.receive",
-        "transfer.croc.reconcile",
-        "transfer.croc.send",
-        "transfer.croc.status",
+        "transfer.rclone.receive",
+        "transfer.rclone.reconcile",
+        "transfer.rclone.send",
+        "transfer.rclone.status",
     ]
 
-    describe_resp = await client.get("/admin/meta/capabilities/windows.transfer.croc.status")
+    describe_resp = await client.get("/admin/meta/capabilities/windows.transfer.rclone.status")
     assert describe_resp.status_code == 200, describe_resp.text
     detail = describe_resp.json()
-    assert detail["canonical_name"] == "transfer.croc.status"
+    assert detail["canonical_name"] == "transfer.rclone.status"
     assert detail["sources"][0]["node_id"] == node.node_id
     assert detail["sources"][0]["resource_keys"] == ["node.transfer"]
 
-    send_resp = await client.get("/admin/meta/capabilities/windows.transfer.croc.send")
+    send_resp = await client.get("/admin/meta/capabilities/windows.transfer.rclone.send")
     assert send_resp.status_code == 200, send_resp.text
     send_detail = send_resp.json()
-    assert send_detail["canonical_name"] == "transfer.croc.send"
+    assert send_detail["canonical_name"] == "transfer.rclone.send"
     assert send_detail["risk"] == "maintenance"
     assert send_detail["effect"] == "external"
     assert send_detail["sources"][0]["hidden_input_fields"] == ["code"]
@@ -563,7 +563,7 @@ async def test_capability_search_supports_structured_filters_and_projection(
     capabilities = result.output_data["capabilities"]
     assert len(capabilities) == 1
     capability = capabilities[0]
-    assert capability["canonical_name"] == "transfer.croc.receive"
+    assert capability["canonical_name"] == "transfer.rclone.receive"
     assert "query:transfer" in " ".join(capability["match_reasons"])
     assert "filter:platform_os=linux" in capability["match_reasons"]
     assert "input_schema" not in capability
@@ -645,7 +645,7 @@ async def test_capability_describe_sections_return_only_requested_detail(
         ExecuteToolCommand(
             function_name="capability.describe",
             input_data={
-                "capability_ref": "transfer.croc.receive",
+                "capability_ref": "transfer.rclone.receive",
                 "node_id": node.node_id,
                 "sections": ["preconditions"],
             },
@@ -657,7 +657,7 @@ async def test_capability_describe_sections_return_only_requested_detail(
     assert result.status == "succeeded"
     assert result.output_data is not None
     capability = result.output_data["capability"]
-    assert capability["canonical_name"] == "transfer.croc.receive"
+    assert capability["canonical_name"] == "transfer.rclone.receive"
     assert capability["preconditions"] == [
         {"fact": "target.output_dir_writable", "source": "preflight"}
     ]

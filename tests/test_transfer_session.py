@@ -80,8 +80,8 @@ async def _register_transfer_capabilities(
                         "status": "loaded",
                         "functions": [
                             {
-                                "name": f"{prefix}.transfer.croc.send",
-                                "description": "Send with croc.",
+                                "name": f"{prefix}.transfer.rclone.send",
+                                "description": "Send with rclone.",
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
@@ -104,8 +104,8 @@ async def _register_transfer_capabilities(
                                 "hidden_input_fields": ["code"],
                             },
                             {
-                                "name": f"{prefix}.transfer.croc.receive",
-                                "description": "Receive with croc.",
+                                "name": f"{prefix}.transfer.rclone.receive",
+                                "description": "Receive with rclone.",
                                 "input_schema": {
                                     "type": "object",
                                     "properties": {
@@ -148,7 +148,7 @@ async def _fake_transfer_status_success(self, command, *, node_id: str):
             "installed": True,
             "allow_send": True,
             "allow_receive": True,
-            "version": "test-croc",
+            "version": "test-rclone",
         },
     )
 
@@ -173,7 +173,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises transfer workflow scheduling",
@@ -205,8 +205,8 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     jobs = list(jobs_result.scalars().all())
     assert [job.node_id for job in jobs] == ["winClient", "linux-node-01"]
     assert [job.function_name for job in jobs] == [
-        "windows.transfer.croc.send",
-        "linux.transfer.croc.receive",
+        "windows.transfer.rclone.send",
+        "linux.transfer.rclone.receive",
     ]
     assert jobs[0].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[1].input_payload["transfer_id"] == transfer["transfer_id"]
@@ -231,7 +231,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     assert status.status == "succeeded"
     assert status.output_data is not None
     assert status.output_data["transfer"]["target_job"]["function_name"] == (
-        "linux.transfer.croc.receive"
+        "linux.transfer.rclone.receive"
     )
     operation_status = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -265,7 +265,7 @@ async def test_transfer_create_derives_output_dir_from_target_path(
                 "target_node_id": "linux-node-01",
                 "source_path": "G:\\Minecraft\\280Pack.zip",
                 "target_path": "/tmp/280Pack.zip",
-                "resume_mode": "overwrite",
+                "conflict_mode": "overwrite",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test target_path normalization",
@@ -279,7 +279,7 @@ async def test_transfer_create_derives_output_dir_from_target_path(
     jobs_result = await db_session.execute(select(Job).order_by(Job.created_at))
     jobs = list(jobs_result.scalars().all())
     receive_job = jobs[1]
-    assert receive_job.function_name == "linux.transfer.croc.receive"
+    assert receive_job.function_name == "linux.transfer.rclone.receive"
     assert receive_job.input_payload["output_dir"] == "/tmp"
     assert receive_job.input_payload["target_path"] == "/tmp/280Pack.zip"
 
@@ -301,7 +301,7 @@ async def test_transfer_create_rejects_target_path_rename(
                 "target_node_id": "linux-node-01",
                 "source_path": "G:\\Minecraft\\280Pack.zip",
                 "target_path": "/tmp/renamed.zip",
-                "resume_mode": "overwrite",
+                "conflict_mode": "overwrite",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test target_path rename rejection",
@@ -339,7 +339,7 @@ async def test_transfer_operation_projects_job_progress(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\large.zip",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "overwrite",
+                "conflict_mode": "overwrite",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises operation progress projection",
@@ -362,7 +362,7 @@ async def test_transfer_operation_projects_job_progress(
         "rate_bytes_per_sec": 5_000_000,
         "eta_sec": 8,
         "last_progress_at": "2026-06-30T12:00:02+00:00",
-        "progress_source": "croc_output",
+        "progress_source": "rclone_output",
     }
     target_job.status = "running"
     target_job.progress_pct = 40
@@ -414,7 +414,7 @@ async def test_transfer_create_guard_requires_explicit_landing_path(
                 "source_node_id": "winClient",
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
             },
             actor_type="agent",
@@ -448,7 +448,7 @@ async def test_transfer_create_guard_requires_preflight_or_explicit_skip(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
             },
             actor_type="agent",
@@ -470,7 +470,7 @@ async def test_transfer_create_guard_requires_preflight_or_explicit_skip(
 
 
 @pytest.mark.asyncio
-async def test_transfer_create_guard_requires_explicit_resume_mode(
+async def test_transfer_create_guard_requires_explicit_conflict_mode(
     db_session: AsyncSession,
 ) -> None:
     result = await CenterExecutionRuntime(db_session).execute(
@@ -491,7 +491,7 @@ async def test_transfer_create_guard_requires_explicit_resume_mode(
     assert result.status == "failed"
     assert result.error_code == "needs_input"
     assert result.error_details is not None
-    assert result.error_details["missing_slots"] == ["resume_mode"]
+    assert result.error_details["missing_slots"] == ["conflict_mode"]
 
     transfer_count = await db_session.execute(select(TransferSession))
     assert transfer_count.scalars().all() == []
@@ -550,7 +550,7 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "include_sha256": True,
                 "ttl_sec": 999,
             },
@@ -590,7 +590,7 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
 
 
 @pytest.mark.asyncio
-async def test_transfer_preflight_requires_explicit_resume_mode(
+async def test_transfer_preflight_requires_explicit_conflict_mode(
     db_session: AsyncSession,
 ) -> None:
     result = await CenterExecutionRuntime(db_session).execute(
@@ -612,7 +612,7 @@ async def test_transfer_preflight_requires_explicit_resume_mode(
     preflight = result.output_data["preflight"]
     assert preflight["allowed"] is False
     assert preflight["decision"] == "needs_input"
-    assert preflight["missing_slots"] == ["resume_mode"]
+    assert preflight["missing_slots"] == ["conflict_mode"]
 
     preflight_records = await db_session.execute(select(TransferPreflight))
     assert preflight_records.scalars().all() == []
@@ -659,7 +659,7 @@ async def test_transfer_preflight_reports_target_not_writable(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/root",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -722,7 +722,7 @@ async def test_transfer_preflight_reports_target_receive_disabled(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -775,7 +775,7 @@ async def test_transfer_create_rejects_mismatched_preflight(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -792,7 +792,7 @@ async def test_transfer_create_rejects_mismatched_preflight(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\different.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "preflight_id": preflight_id,
             },
             actor_type="agent",
@@ -860,7 +860,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -877,7 +877,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "preflight_id": preflight_id,
             },
             actor_type="agent",
@@ -911,7 +911,7 @@ async def test_transfer_create_returns_structured_conflict_when_transfer_lock_is
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises resource lock conflict",
@@ -932,7 +932,7 @@ async def test_transfer_create_returns_structured_conflict_when_transfer_lock_is
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\2.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises resource lock conflict",
@@ -973,7 +973,7 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises transfer status",
@@ -992,7 +992,7 @@ async def test_transfer_status_cancels_peer_when_one_side_fails(
     source_job, target_job = list(jobs_result.scalars().all())
     target_job.status = "failed"
     target_job.error_code = "received_file_missing"
-    target_job.error_message = "croc returned success but no file found"
+    target_job.error_message = "rclone returned success but no file found"
     source_job.status = "running"
     await db_session.commit()
 
@@ -1040,7 +1040,7 @@ async def test_transfer_status_deprioritizes_late_409_conflict_error(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test transfer error priority",
@@ -1063,7 +1063,7 @@ async def test_transfer_status_deprioritizes_late_409_conflict_error(
     )
     target_job.status = "failed"
     target_job.error_code = "function_execution_failed"
-    target_job.error_message = "croc receive failed with exit code Some(1)"
+    target_job.error_message = "rclone receive failed with exit code Some(1)"
     target_job.error_details = {"stdout": "could not secure channel", "returncode": 1}
     await db_session.commit()
 
@@ -1077,9 +1077,9 @@ async def test_transfer_status_deprioritizes_late_409_conflict_error(
     assert status.status == "succeeded"
     assert status.output_data is not None
     refreshed = status.output_data["transfer"]
-    assert refreshed["error_code"] == "croc_secure_channel_failed"
+    assert refreshed["error_code"] == "rclone_secure_channel_failed"
     assert refreshed["error_message"] == (
-        "croc receive failed with exit code Some(1): could not secure channel"
+        "rclone receive failed with exit code Some(1): could not secure channel"
     )
 
 
@@ -1104,7 +1104,7 @@ async def test_operation_cancel_cancels_transfer_peer_jobs(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "timeout_sec": 600,
                 "skip_preflight": True,
                 "skip_reason": "test exercises operation cancel",
@@ -1176,7 +1176,7 @@ async def test_agent_transfer_create_emits_waiting_operation_events(
                         "target_node_id": "linux-node-01",
                         "source_path": "E:\\test\\1.mp3",
                         "target_output_dir": "/tmp/yequ-transfer",
-                        "resume_mode": "resume",
+                        "conflict_mode": "reuse_complete",
                         "skip_preflight": True,
                         "skip_reason": "test exercises waiting operation events",
                     },
@@ -1220,7 +1220,7 @@ async def test_resume_operation_stream_injects_operation_observation(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "skip_preflight": True,
                 "skip_reason": "test exercises resume operation",
             },
@@ -1238,7 +1238,7 @@ async def test_resume_operation_stream_injects_operation_observation(
             actor_id="test-agent",
             status="active",
             execution_mode="auto",
-            label="resume",
+            label="reuse_complete",
         )
     )
     await db_session.commit()
@@ -1312,7 +1312,7 @@ async def test_invoke_stream_loads_operation_context_refs(
                 "target_node_id": "linux-node-01",
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
-                "resume_mode": "resume",
+                "conflict_mode": "reuse_complete",
                 "skip_preflight": True,
                 "skip_reason": "test exercises context refs",
             },

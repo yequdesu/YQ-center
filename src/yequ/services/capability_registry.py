@@ -1000,8 +1000,8 @@ def _capability_contract_issues(
     resource_keys = list(source.resource_keys or [])
     timeout_sec = int(source.timeout_sec or 0)
     is_transfer_operation = canonical_name in {
-        "transfer.croc.send",
-        "transfer.croc.receive",
+        "transfer.rclone.send",
+        "transfer.rclone.receive",
     }
     is_artifact_download = canonical_name == "artifact.download_file"
     is_long_task = timeout_sec > 60 or effect == "external" or is_transfer_operation
@@ -1096,11 +1096,6 @@ def _capability_contract_issues(
             add(
                 "transfer_missing_intent_slots",
                 "Transfer capability must declare required_intent_slots.",
-            )
-        if source.supports_resume is False:
-            add(
-                "transfer_missing_resume",
-                "croc transfer capability should declare supports_resume.",
             )
     if is_artifact_download:
         if effect != "write":
