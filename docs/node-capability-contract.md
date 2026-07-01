@@ -197,6 +197,8 @@ ExecutionGate.evaluate(command)
 croc 传输真实进度合同：
 
 - Node 必须优先使用 croc 自身的传输进度输出作为真实进度源，标记 `progress_source="croc_stderr"`；
+- sender 端读取到 croc `Code is:` 后，必须上报 `progress_source="croc_sender_ready"`、`phase="sender_ready"`、`sender_ready=true` 的 `transfer_progress` 事件；该事件不得泄漏 croc code 明文；
+- `sender_ready` 是粘性事实，不是瞬时 UI 状态。sender 后续上报 `croc_stderr` 进度时必须继续携带 `sender_ready=true`，避免 Center 等待同步点时被普通进度覆盖；
 - `croc_stderr` 进度事件应尽量携带 `progress_pct`、`bytes_transferred`、`total_bytes`、`rate_bytes_per_sec`、`eta_sec`；
 - `total_bytes` 应优先使用 Node/Center 预检得到的精确 stat 值，不得用 croc 终端显示中的四舍五入大小覆盖精确字节数；
 - `process_keepalive` 只表示子进程仍在运行，不得携带 `progress_pct`；

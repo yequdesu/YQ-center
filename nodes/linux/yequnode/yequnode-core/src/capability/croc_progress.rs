@@ -60,15 +60,18 @@ where
     let mut line_stream = reader.lines();
     let mut lines = Vec::new();
     let mut last_emit: Option<tokio::time::Instant> = None;
+    let mut sender_ready = false;
 
     while let Ok(Some(line)) = line_stream.next_line().await {
         let redacted = redact(&line);
         if let Some(ctx) = ctx.as_ref() {
             if is_sender_ready_line(&line) {
+                sender_ready = true;
                 let mut payload = base_payload.as_object().cloned().unwrap_or_default();
                 payload.insert("status".into(), json!("running"));
                 payload.insert("phase".into(), json!("sender_ready"));
                 payload.insert("progress_source".into(), json!("croc_sender_ready"));
+                payload.insert("sender_ready".into(), json!(true));
                 payload.insert("progress_message".into(), json!("sender room is ready"));
                 payload.insert(
                     "last_progress_at".into(),
@@ -102,6 +105,9 @@ where
                     }
                 }
                 payload.insert("status".into(), json!("running"));
+                if sender_ready {
+                    payload.insert("sender_ready".into(), json!(true));
+                }
                 let progress_message = payload
                     .get("phase")
                     .and_then(|value| value.as_str())

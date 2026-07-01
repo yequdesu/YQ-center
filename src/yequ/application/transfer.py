@@ -1149,6 +1149,14 @@ def _job_has_sender_ready(job: Job | None) -> bool:
     detail = job.progress_detail
     if not isinstance(detail, dict):
         return False
+    if detail.get("sender_ready") is True:
+        return True
+    if (
+        detail.get("role") == "sender"
+        and detail.get("progress_source") == "croc_stderr"
+        and _first_int(detail.get("progress_pct")) is not None
+    ):
+        return True
     return (
         detail.get("progress_source") == "croc_sender_ready"
         or detail.get("phase") == "sender_ready"
