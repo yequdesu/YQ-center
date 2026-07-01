@@ -33,6 +33,39 @@ async def _provision(db: AsyncSession, node_id: str, token: str) -> None:
 
 
 async def _hello(client: AsyncClient, node_id: str, token: str, os_name: str) -> None:
+    if os_name == "windows":
+        runtimes = [
+            {
+                "runtime_id": "windows-system",
+                "kind": "privileged",
+                "status": "online",
+                "interactive": False,
+                "privilege": "system",
+                "labels": ["windows", "network-control", "disk-inspection"],
+                "metadata": {"host_runtime": "service"},
+            },
+            {
+                "runtime_id": "windows-yq-croc-transfer",
+                "kind": "interactive",
+                "status": "online",
+                "interactive": True,
+                "privilege": "user",
+                "labels": ["windows", "profile", "filesystem", "transfer", "yq-croc"],
+                "metadata": {"runtime": "yq-croc"},
+            },
+        ]
+    else:
+        runtimes = [
+            {
+                "runtime_id": f"{os_name}-transfer",
+                "kind": "privileged",
+                "status": "online",
+                "interactive": False,
+                "privilege": "user",
+                "labels": [os_name, "transfer", "yq-croc"],
+                "metadata": {"runtime": "yq-croc"},
+            }
+        ]
     resp = await client.post(
         "/yqp/",
         json=make_yqp_envelope(
@@ -44,17 +77,7 @@ async def _hello(client: AsyncClient, node_id: str, token: str, os_name: str) ->
                 "role": ["compute"],
                 "locality": "lan",
                 "platform": {"os": os_name, "arch": "x86_64"},
-                "runtimes": [
-                    {
-                        "runtime_id": f"{os_name}-transfer",
-                        "kind": "privileged",
-                        "status": "online",
-                        "interactive": False,
-                        "privilege": "user",
-                        "labels": [os_name, "transfer", "yq-croc"],
-                        "metadata": {"runtime": "yq-croc"},
-                    }
-                ],
+                "runtimes": runtimes,
             },
         ),
         headers={"Authorization": f"Bearer {token}"},
@@ -68,6 +91,18 @@ async def _register_transfer_capabilities(
     token: str,
     prefix: str,
 ) -> None:
+    if prefix == "windows":
+        transfer_requirements = {
+            "runtime_kind": "interactive",
+            "labels": ["windows", "profile", "filesystem", "transfer", "yq-croc"],
+            "interactive": True,
+            "privilege": "user",
+        }
+    else:
+        transfer_requirements = {
+            "runtime_kind": "privileged",
+            "labels": [prefix, "transfer", "yq-croc"],
+        }
     resp = await client.post(
         "/yqp/",
         json=make_yqp_envelope(
@@ -97,10 +132,7 @@ async def _register_transfer_capabilities(
                                 "effect": "external",
                                 "timeout_sec": 3600,
                                 "lease_sec": 30,
-                                "execution_requirements": {
-                                    "runtime_kind": "privileged",
-                                    "labels": [prefix, "transfer", "yq-croc"],
-                                },
+                                "execution_requirements": transfer_requirements,
                                 "resource_keys": ["node.transfer"],
                                 "conflict_policy": "serialize",
                                 "hidden_input_fields": ["code"],
@@ -122,10 +154,7 @@ async def _register_transfer_capabilities(
                                 "effect": "external",
                                 "timeout_sec": 3600,
                                 "lease_sec": 30,
-                                "execution_requirements": {
-                                    "runtime_kind": "privileged",
-                                    "labels": [prefix, "transfer", "yq-croc"],
-                                },
+                                "execution_requirements": transfer_requirements,
                                 "resource_keys": ["node.transfer"],
                                 "conflict_policy": "serialize",
                                 "hidden_input_fields": ["code"],
@@ -215,6 +244,18 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
         "windows.transfer.croc.send",
         "linux.transfer.croc.receive",
     ]
+    assert jobs[0].runtime_id == "windows-yq-croc-transfer"
+    assert jobs[0].execution_requirements_snapshot == {
+        "runtime_kind": "interactive",
+        "labels": ["windows", "profile", "filesystem", "transfer", "yq-croc"],
+        "interactive": True,
+        "privilege": "user",
+    }
+    assert jobs[1].runtime_id == "linux-transfer"
+    assert jobs[1].execution_requirements_snapshot == {
+        "runtime_kind": "privileged",
+        "labels": ["linux", "transfer", "yq-croc"],
+    }
     assert jobs[0].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[1].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[0].input_payload["attempt"] == 1
