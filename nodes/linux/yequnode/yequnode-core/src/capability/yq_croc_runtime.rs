@@ -511,6 +511,7 @@ fn phase_for_event(event_name: &str) -> &'static str {
         "runtime_ready" => "preparing",
         "source_scanned" | "file_info" => "scanning",
         "sender_ready" | "receiver_connected" => "ready",
+        "resume_plan" => "resuming",
         "channel_secured" => "handshake",
         "bytes_progress" => "transferring",
         "integrity_verified" => "verifying",

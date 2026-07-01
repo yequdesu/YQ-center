@@ -1,6 +1,6 @@
 # yq-croc 插件运行时计划
 
-状态：确定执行方案
+状态：核心实现已落地，公共 relay 稳定性结论已收敛
 日期：2026-07-01
 
 ## 1. 结论
@@ -147,7 +147,7 @@ yq-croc send --request <request.json>
 yq-croc receive --request <request.json>
 ```
 
-`send` 和 `receive` 必须只通过 stdout 输出 NDJSON 事件。stderr 只用于本地调试日志，且不得输出 code、relay password、token 或路径策略敏感信息。
+`send` 和 `receive` 必须只通过 stdout 输出 NDJSON 事件。stderr 只用于本地调试日志，且不得输出 code、relay password、token 或路径策略敏感信息。`send` 和 `receive` 必须使用 request 中的 `timeout_sec` 创建 context deadline；Node wrapper 的超时只是外层兜底，不能成为唯一超时来源。
 
 `yq-croc` 不知道 Center token，不调用 YQP，不读 YeQu 数据库，不写 Center Timeline。它只负责执行传输和输出事件。
 
@@ -201,11 +201,13 @@ Center 负责：
   "transfer_id": "trf_x",
   "role": "sender",
   "event": "sender_ready",
-  "phase": "sender_ready",
-  "status": "running",
-  "time": "2026-07-01T12:00:00Z"
+  "attempt": 1,
+  "at": "2026-07-01T12:00:00Z",
+  "data": {}
 }
 ```
+
+`phase`、`status`、`progress_pct` 是 Node adapter 映射到 YQP `job.event` 时产生的字段，不是 `yq-croc` 原始 NDJSON 的公共字段。
 
 事件集合固定为：
 
@@ -218,10 +220,7 @@ Center 负责：
 | `channel_secured` | `securing` | PAKE 通道已建立。 |
 | `file_info` | `metadata` | 文件清单已交换。 |
 | `resume_plan` | `resuming` | receiver 已根据目标已有文件计算缺失 chunks。 |
-| `file_started` | `transferring` | 当前文件开始传输。 |
 | `bytes_progress` | `transferring` | 字节级进度。 |
-| `reconnect_attempt` | `reconnecting` | croc 内部正在尝试重新连接 relay/data channel。 |
-| `file_done` | `transferring` | 当前文件完成。 |
 | `integrity_verified` | `verifying` | size/hash 校验通过。 |
 | `transfer_done` | `succeeded` | 本端传输成功。 |
 | `transfer_cancelled` | `cancelled` | 本端收到取消并退出。 |
@@ -232,20 +231,17 @@ Center 负责：
 ```json
 {
   "bytes_transferred": 7700000,
-  "total_bytes": 8388608,
-  "progress_pct": 91.79,
-  "rate_bytes_per_sec": 524000,
-  "eta_sec": 1
+  "total_bytes": 8388608
 }
 ```
 
-如果无法计算百分比，`progress_pct` 必须为 `null` 或省略，不能伪造。
+Node adapter 在 YQP progress payload 中根据 `bytes_transferred` 和 `total_bytes` 计算 `progress_pct`。如果无法计算百分比，`progress_pct` 必须为 `null` 或省略，不能伪造。
 
 ## 7. croc 源码 hook 点
 
 `yq-croc` 基于固定 upstream croc source 构建。第一版基线为 `schollz/croc` `v10.4.6`，作为 `yq-croc` source vendor。YeQu 对 vendor 源码的修改只允许集中在事件 hook、日志脱敏、命令入口和测试上，不修改 PAKE、加密、relay 房间协议和文件块协议。
 
-必须加入的 hook：
+第一版已加入的 hook：
 
 | 位置 | 事件 |
 |---|---|
@@ -256,14 +252,12 @@ Center 负责：
 | `Step1ChannelSecured` 置位处 | `channel_secured` |
 | 文件清单接收/发送处 | `file_info` |
 | receiver 计算 `MissingChunks(...)` 后 | `resume_plan` |
-| `setBar()` 或等价当前文件初始化处 | `file_started` |
-| `sendData()` / `receiveData()` 写入或读取 chunk 后 | `bytes_progress` |
-| croc reconnect attempt 开始和结束处 | `reconnect_attempt` |
-| 当前文件关闭且 hash/size 满足处 | `file_done` |
 | 最终校验通过处 | `integrity_verified` |
 | `SuccessfulTransfer` 成立处 | `transfer_done` |
 | context cancellation 触发处 | `transfer_cancelled` |
 | 返回错误处 | `transfer_error` |
+
+第一版的 `bytes_progress` 由 yq-croc wrapper 按 1 秒 tick 读取 sender `TotalSent` 输出，不解析 progressbar stderr。`file_started`、`file_done` 和 `reconnect_attempt` 不作为第一版合同事件；需要这些事件时只能通过新增源码 hook 和合同测试引入，不能回到 stderr parser。
 
 `sender_ready` 的定义固定为：sender 已成功连接 relay control room，并收到 relay room confirmation。它不是 `Code is:`，也不是 PAKE 完成。这个定义使 Center 可以在不启动 receiver 的情况下等待一个确定的 room-ready 同步点。
 
@@ -322,6 +316,8 @@ Secrets can be passed by request file only if the file is created in a Node-owne
 | `configured_single` | 使用 Node/Center 配置的单个 relay。 |
 | `configured_pool` | Center 选择 relay pool 中的一个 relay 写入 transfer input。 |
 
+公共默认 relay 的稳定性决策固定为：只作为 best-effort relay 使用，不作为生产高成功率承诺来源。需要稳定大文件调度时，部署合同必须配置 `configured_single` 或 `configured_pool`，且 relay 可以部署在独立公网机器上，避免占用 Center API 公网入口服务器带宽。
+
 Node status 必须返回：
 
 ```json
@@ -353,28 +349,19 @@ Center preflight 的判断规则：
 
 公共 relay 模式必须被视为可用但不稳定的传输环境。`yq-croc` 方案必须同时支持进程内 reconnect 和跨 Job resume，不能只做“失败后整文件重传”。
 
+2026-07-01 本地实测结论已经确认该判断：公共默认 relay 可连通，已完成 Windows/WSL 双向小文件、64 MiB Windows -> WSL，以及一次 1.06 GiB Windows -> WSL tmpfs 传输并通过 size/hash 校验；同一时间段内，持久目录 Windows -> WSL 和 WSL -> Windows 的 1.06 GiB attempt 都在约 27-30 MiB 处出现长时间停滞。该结果不是 yq-croc 调度模型失败，而是公共 relay 不具备稳定吞吐承诺。生产验收不能把公共默认 relay 的 1 GiB 双向成功作为唯一放行条件，必须引入受控 relay 验收。
+
 ### 进程内 reconnect
 
-`yq-croc` 必须启用 upstream croc 的 reconnect 逻辑，并将 reconnect 状态输出为结构化事件：
+`yq-croc` 使用 upstream croc 的连接和传输逻辑。第一版不输出 `reconnect_attempt` 合同事件；进程内断线表现为当前 Job 继续运行、进度停滞、最终成功或在 timeout/context cancellation 后输出 `transfer_error` / `transfer_cancelled`。后续如需 UI 展示 reconnect 细节，必须在 croc 源码 reconnect 点新增结构化 hook 和测试。
 
-```json
-{
-  "schema": "yq_croc_event_v1",
-  "event": "reconnect_attempt",
-  "phase": "reconnecting",
-  "attempt": 2,
-  "max_attempts": 10,
-  "reason": "relay_data_channel_disconnected"
-}
-```
-
-进程内 reconnect 期间：
+进程内 reconnect 或底层连接抖动期间：
 
 - Job 保持 `running`；
 - Node 继续发送 keepalive/progress event；
 - Center 不启动新的 receive/send job；
 - Node 不改变 relay、code、source、target 或 attempt；
-- 超过 `max_attempts`、总 timeout 或 context cancellation 后，`yq-croc` 输出 `transfer_error`。
+- 超过 request `timeout_sec`、Node wrapper timeout 或 context cancellation 后，`yq-croc` 输出 `transfer_error` 或 `transfer_cancelled`。
 
 ### 跨 Job resume
 
@@ -392,6 +379,8 @@ Center preflight 的判断规则：
 Node 不允许在上一次 Job terminal 后自行进入下一次 attempt。即使 Node ledger 显示 `resumable=true`，它也只能在 `reconcile` 或 status 输出中报告该事实，等待 Center 显式下发下一次 send/receive Job。
 
 croc 的跨进程 resume 依赖 receiver 本地部分文件。receiver 会根据已有文件大小/hash 计算缺失 chunk，向 sender 发送 `RemoteFileRequest.CurrentFileChunkRanges`。因此 Node 适配层不得在失败后默认删除部分文件；只有 input 明确 `cleanup_on_failure=true` 或用户明确要求时才允许删除。
+
+yq-croc 已对 upstream croc 做出第一版必须修改：在 `NoPrompt=true` 时，目标已有同名同尺寸但 hash 不一致的文件不会进入交互式 `Resume/Overwrite` prompt，而是确定性继续 resume 路径。该修改是无人值守 Center 调度的硬要求。
 
 ### resume ledger
 
@@ -623,9 +612,9 @@ Linux:   /usr/local/bin/yq-croc
 1. Windows Node 和 Linux Node 都能注册 `*.transfer.croc.status`，且 status 明确显示 `runtime="yq-croc"`。
 2. 未安装 `yq-croc` 时，status 可调用，send/receive 不注册或明确 unavailable。
 3. Windows Node 在默认出站阻断策略下，`windows.transfer.croc.status` 返回 `firewall_allows_outbound=false`，Center preflight 返回 `runtime_egress_blocked`；添加 outbound allow rule 后 status 变为 ready。
-4. public relay 模式下 Win -> Linux 传输 1 GiB 文件成功。
-5. public relay 模式下 Linux -> Win 传输 1 GiB 文件成功。
-6. configured relay 模式下双向 1 GiB 文件成功。
+4. public relay 模式下 Win/Linux 双向可完成小文件 smoke test，并能在 relay 抖动时输出稳定进度、错误和可恢复事实。
+5. public relay 模式不作为 1 GiB 稳定性放行条件；若一次 1 GiB 成功，只能记录为当前网络下的样本，不能作为生产承诺。
+6. configured relay 模式下双向 1 GiB 文件必须成功，且 size/hash 校验通过；这是生产稳定性放行条件。
 7. sender_ready 不依赖 `Code is:` 或 sleep。
 8. 进度来自 `bytes_progress` NDJSON，不解析 progressbar stderr。
 9. 取消后两端 Job 在 10 秒内进入 terminal 状态。
@@ -633,8 +622,8 @@ Linux:   /usr/local/bin/yq-croc
 11. hash 不一致返回 `integrity_mismatch`。
 12. Center Timeline 不包含 code 明文、relay password 或 request JSON 全量。
 13. Agent 只看到 `transfer.create/status/cancel`，不看到底层 yq-croc 参数。
-14. 人为中断 public relay 传输后，`transfer.status` 显示 `interrupted`、`resumable=true`。
-15. 使用同一 `TransferSession` 发起 resume attempt 后，不从 0 字节整文件重传，receiver 输出 `resume_plan` 且最终 hash/size 校验通过。
+14. 人为中断传输后，`transfer.status` 显示 `interrupted`、`resumable=true`。
+15. 使用同一 `TransferSession` 发起 resume attempt 后，receiver 输出 `resume_plan`，并在受控 relay 验收中最终 hash/size 校验通过。
 16. 目标已有无关同名文件时，`resume_mode="resume"` 必须失败为 `resume_state_mismatch`。
 17. `cleanup_on_failure=false` 时失败不会删除 partial file；`cleanup_on_failure=true` 时 ledger 必须记录清理结果。
 18. Node 在 Job terminal 后不会自行创建新进程、新 attempt、新 code 或 relay switch；所有下一次 attempt 都可在 Center Timeline 中追溯。
@@ -656,12 +645,23 @@ Linux:   /usr/local/bin/yq-croc
 11. Windows yq-croc sender -> WSL/Linux yq-croc receiver、WSL/Linux yq-croc sender -> Windows yq-croc receiver 的 public relay 小文件 smoke test 均已通过，证明 Windows/Linux 二进制能按 Center 的 sender-ready 调度顺序完成双向跨平台传输。
 12. Linux Node `linux.transfer.croc.status` 已新增直接测试，覆盖 yq-croc version/probe/relay-probe 输出到 status JSON 的映射。
 13. Windows yq-croc sender -> WSL/Linux yq-croc receiver 的 64 MiB public relay smoke test 已通过，落地文件大小一致，sender 输出 14 个 `bytes_progress` 事件和 `transfer_done`。
+14. yq-croc CLI 已执行 request `timeout_sec`，不再只依赖 Node wrapper 超时。
+15. yq-croc receive 已在运行时层执行 `expected_size_bytes` / `expected_sha256` 校验；hash 不一致输出 `transfer_error`，错误码 `integrity_mismatch`。
+16. yq-croc vendor croc 已修复无人值守 resume：`NoPrompt=true` 时不会进入交互式 `Resume/Overwrite` prompt。
+17. yq-croc vendor croc 已新增 `resume_plan` hook；WinNode 和 LinuxNode adapter 已将该事件映射为 `phase="resuming"`。
+18. yq-croc 本地 relay 集成测试已覆盖：正常传输、hash mismatch、已有 partial 文件无交互 resume 且最终 hash/size 校验通过。
+19. relay failure 已实测：不可达 relay `127.0.0.1:1` 会非零退出并输出 `transfer_error`，错误码 `external_service_failed`。
+20. WinNode adapter cancel 已实测：sender_ready 后取消任务，ledger 进入 `cancelled`，本机 `yq-croc` 进程数回到 0。
+21. public relay 已完成一次 1.06 GiB Windows -> WSL tmpfs 传输并通过运行时 size/hash 校验；随后 public relay 在持久目录 Windows -> WSL 与 WSL -> Windows 1.06 GiB attempt 中均出现约 27-30 MiB 后长时间停滞。该结论固定为 public relay best-effort，不作为生产稳定性放行条件。
+22. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，45 tests passed。
+23. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。
 
 仍需端到端验收：
 
 1. 独立 Linux Node 真实部署环境安装 `/usr/local/bin/yq-croc` 后执行 systemd/daemon 级启动验收。
-2. Win/Linux 双向 1 GiB、取消、relay failure、hash mismatch、interrupted/resume、reconcile 验收。
-3. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
+2. 受控 configured relay 环境下执行 Win/Linux 双向 1 GiB、interrupted/resume 完整完成验收。
+3. Center 级真实 Operation workflow 端到端验收：`transfer.create` -> sender_ready -> receiver -> progress -> terminal -> `transfer.status` / `transfer.resume`。
+4. configured relay pool 第一版策略尚未落地；当前实现覆盖 public default 和 single configured relay。
 
 ## 18. 非目标
 
@@ -688,8 +688,9 @@ Linux:   /usr/local/bin/yq-croc
 
 当前剩余内容全部属于真实环境验收任务，不属于决策缺口：
 
-- Linux Node 的 Rust 编译需要 Linux toolchain；Windows host 和当前 WSL 环境不能完成 cargo check。
-- 双向 1 GiB、断网/relay 中断后 resume、configured relay pool 仍需在真实 Win/Linux Node 上执行。
+- 独立 Linux Node systemd/daemon 运行验收需要目标 Linux 主机服务环境。
+- 双向 1 GiB 稳定性验收必须使用受控 configured relay；公共默认 relay 已被实测判定为 best-effort，不用于生产稳定性放行。
+- configured relay pool 仍需在真实 Win/Linux Node 上执行。
 
 不允许在实现 goal 中重新引入以下路线：
 
