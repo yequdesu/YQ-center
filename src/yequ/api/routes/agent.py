@@ -355,6 +355,30 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "type": "string",
                         "description": "Optional yq-croc relay control host:port.",
                     },
+                    "route_policy": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "relay_only",
+                            "relay_pool",
+                            "local_first",
+                            "local_only",
+                            "direct_ip",
+                        ],
+                        "default": "auto",
+                        "description": (
+                            "Transfer route strategy. Omit or use auto for Center-managed "
+                            "automatic routing; explicit values are enforced."
+                        ),
+                    },
+                    "direct_ip": {
+                        "type": "string",
+                        "description": "Required only when route_policy is direct_ip.",
+                    },
+                    "multicast_address": {
+                        "type": "string",
+                        "description": "Optional croc local discovery multicast address.",
+                    },
                     "resume_mode": {
                         "type": "string",
                         "enum": ["resume", "overwrite", "fail_if_exists"],
@@ -394,7 +418,8 @@ def _center_meta_functions() -> list[AgentFunction]:
             description=(
                 "Create a Center-managed croc TransferSession between two nodes. "
                 "Use this instead of directly calling low-level croc send/receive; "
-                "Center will start receiver and sender jobs concurrently. Prefer "
+                "Center starts the sender first, waits for yq-croc sender_ready, "
+                "then starts the receiver. Prefer "
                 "transfer.preflight first when path permissions, free space, or "
                 "overwrite behavior are uncertain."
             ),
@@ -409,6 +434,30 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "relay_url": {
                         "type": "string",
                         "description": "Optional yq-croc relay control host:port.",
+                    },
+                    "route_policy": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "relay_only",
+                            "relay_pool",
+                            "local_first",
+                            "local_only",
+                            "direct_ip",
+                        ],
+                        "default": "auto",
+                        "description": (
+                            "Transfer route strategy. Omit or use auto for Center-managed "
+                            "automatic routing; explicit values are enforced."
+                        ),
+                    },
+                    "direct_ip": {
+                        "type": "string",
+                        "description": "Required only when route_policy is direct_ip.",
+                    },
+                    "multicast_address": {
+                        "type": "string",
+                        "description": "Optional croc local discovery multicast address.",
                     },
                     "resume_mode": {
                         "type": "string",
@@ -474,6 +523,19 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "transfer_id": {"type": "string"},
                     "timeout_sec": {"type": "integer", "default": 3600},
                     "relay_url": {"type": "string"},
+                    "route_policy": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "relay_only",
+                            "relay_pool",
+                            "local_first",
+                            "local_only",
+                            "direct_ip",
+                        ],
+                    },
+                    "direct_ip": {"type": "string"},
+                    "multicast_address": {"type": "string"},
                 },
                 "required": ["transfer_id"],
             },

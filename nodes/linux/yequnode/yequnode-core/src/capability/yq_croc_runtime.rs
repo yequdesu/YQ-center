@@ -49,6 +49,9 @@ pub struct YqCrocRun {
     pub output_dir: Option<String>,
     pub target_path: Option<String>,
     pub relay_url: Option<String>,
+    pub route_policy: Option<String>,
+    pub direct_ip: Option<String>,
+    pub multicast_address: Option<String>,
     pub resume_mode: String,
     pub expected_size_bytes: Option<u64>,
     pub expected_sha256: Option<String>,
@@ -75,6 +78,12 @@ struct RequestFile<'a> {
     relay_url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     relay_password: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_policy: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    direct_ip: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    multicast_address: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,6 +347,9 @@ fn write_request_file(
         code: &run.code,
         relay_url: run.relay_url.as_deref().or(config.relay_url.as_deref()),
         relay_password,
+        route_policy: run.route_policy.as_deref(),
+        direct_ip: run.direct_ip.as_deref(),
+        multicast_address: run.multicast_address.as_deref(),
         source_path: run.source_path.as_deref(),
         output_dir: run.output_dir.as_deref(),
         target_path: run.target_path.as_deref(),

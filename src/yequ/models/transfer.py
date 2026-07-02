@@ -40,6 +40,9 @@ class TransferSession(Base, TimestampMixin):
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     relay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route_policy: Mapped[str] = mapped_column(String(32), nullable=False, default="auto")
+    direct_ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    multicast_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resume_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="resume")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -77,6 +80,7 @@ class TransferAttempt(Base, TimestampMixin):
     code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     relay_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     relay_url_masked: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route_policy: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="created", index=True)
     resumable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -106,6 +110,9 @@ class TransferPreflight(Base, TimestampMixin):
     target_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     resume_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="resume")
+    route_policy: Mapped[str] = mapped_column(String(32), nullable=False, default="auto")
+    direct_ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    multicast_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     source_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     target_fact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

@@ -124,6 +124,7 @@ async def _register_transfer_capabilities(
                                         "source_path": {"type": "string"},
                                         "attempt": {"type": "integer", "minimum": 1},
                                         "code": {"type": "string"},
+                                        "route_policy": {"type": "string"},
                                     },
                                     "required": ["source_path", "attempt", "code"],
                                 },
@@ -146,6 +147,7 @@ async def _register_transfer_capabilities(
                                         "code": {"type": "string"},
                                         "attempt": {"type": "integer", "minimum": 1},
                                         "output_dir": {"type": "string"},
+                                        "route_policy": {"type": "string"},
                                     },
                                     "required": ["code", "attempt"],
                                 },
@@ -228,6 +230,7 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     assert isinstance(operation, dict)
     assert isinstance(wait_handle, dict)
     assert transfer["status"] == "running"
+    assert transfer["route_policy"] == "auto"
     assert transfer["source_job_id"]
     assert transfer["target_job_id"]
     assert operation["kind"] == "transfer"
@@ -260,6 +263,8 @@ async def test_transfer_create_schedules_receiver_and_sender_jobs(
     assert jobs[1].input_payload["transfer_id"] == transfer["transfer_id"]
     assert jobs[0].input_payload["attempt"] == 1
     assert jobs[1].input_payload["attempt"] == 1
+    assert jobs[0].input_payload["route_policy"] == "auto"
+    assert jobs[1].input_payload["route_policy"] == "auto"
     assert jobs[0].input_payload["source_path"] == "E:\\test\\1.mp3"
 
     session_result = await db_session.execute(select(TransferSession))
@@ -624,6 +629,7 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
     assert preflight["source"]["sha256"] == "a" * 64
     assert preflight["source"]["runtime"]["allow_send"] is True
     assert preflight["target"]["runtime"]["allow_receive"] is True
+    assert preflight["route_policy"] == "auto"
 
     transfer_count = await db_session.execute(select(TransferSession))
     assert transfer_count.scalars().all() == []
@@ -635,6 +641,7 @@ async def test_transfer_preflight_aggregates_local_stat_without_creating_transfe
     record = preflight_records.scalar_one()
     assert record.preflight_id == preflight["preflight_id"]
     assert record.allowed is True
+    assert record.route_policy == "auto"
     assert record.source_fact["observed_at"] == preflight["observed_at"]
     assert record.target_fact["observed_at"] == preflight["observed_at"]
 
@@ -710,6 +717,71 @@ async def test_transfer_preflight_probes_requested_relay_url(
         ("winClient", "127.0.0.1:29009"),
         ("linux-node-01", "127.0.0.1:29009"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_transfer_preflight_local_only_does_not_require_relay(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yequ.application.transfer import TransferApplicationService
+
+    async def fake_stat(self, command, *, node_id: str, path: str, include_sha256: bool):
+        del self, command, node_id, path, include_sha256
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "found": True,
+                "readable": True,
+                "parent_exists": True,
+                "writable": True,
+                "size_bytes": 1024,
+                "free_bytes": 4096,
+            },
+        )
+
+    async def fake_status(self, command, *, node_id: str):
+        del self, command
+        return ExecuteToolResult(
+            status="succeeded",
+            function_name="capability.invoke",
+            output_data={
+                "node_id": node_id,
+                "runtime": "yq-croc",
+                "installed": True,
+                "executable": True,
+                "relay_reachable": False,
+                "allow_send": True,
+                "allow_receive": True,
+            },
+        )
+
+    monkeypatch.setattr(TransferApplicationService, "_invoke_stat_capability", fake_stat)
+    monkeypatch.setattr(TransferApplicationService, "_invoke_status_capability", fake_status)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="transfer.preflight",
+            input_data={
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\test\\1.mp3",
+                "target_output_dir": "/tmp/yequ-transfer",
+                "route_policy": "local_only",
+                "resume_mode": "resume",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    preflight = result.output_data["preflight"]
+    assert preflight["allowed"] is True
+    assert preflight["route_policy"] == "local_only"
+    assert preflight["failed_preconditions"] == []
 
 
 @pytest.mark.asyncio

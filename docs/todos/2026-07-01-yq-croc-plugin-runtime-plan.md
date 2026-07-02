@@ -87,7 +87,7 @@ Node ledger 是事实存储，不是调度队列。`reconcile` 只能把本地�
 
 | 维度 | 决策 | 原因 |
 |---|---|---|
-| 部署模型 | 适配 | 两端 Node 只需要出站连接 Center 和同一 relay，不要求公网 IP、LAN、端口映射或 Center 反连。 |
+| 部署模型 | 适配 | 默认 `auto` 策略需要两端 Node 出站连接 Center，并优先尝试 croc local discovery/local relay，失败后回落到同一 relay；显式 `relay_only` 只要求同一 relay，显式 `local_only`/`direct_ip` 必须由调用方保证本地发现或直连地址可达。 |
 | Center 唯一调度 | 适配 | `yq-croc` 不拥有事务权；attempt、resume、relay 切换和 code 轮换全部在 Center 建模。 |
 | YQP 协议 | 适配 | 现有 poll-based Job、`job.event`、`job.finished`、cancel、reconcile 足够承载传输控制面。 |
 | Operation Runtime v2 | 适配 | `transfer.create` 已是 workflow Operation，适合承载 sender/receiver fan-out、进度聚合和 waitable 结果。 |
@@ -533,7 +533,7 @@ transfer:
 7. request 文件写入 Node data temp，退出后删除。
 8. ledger 存储每个 `transfer_id` 的 role、attempt、terminal result 和 partial file facts。
 9. 禁止在 `transfer_error` 或进程退出后自动重启 `yq-croc`；只能返回终态并等待 Center 下一次 Job。
-10. `windows.transfer.croc.status` 报告 `firewall_allows_outbound`。yq-croc 默认关闭 local relay/discovery，不要求入站防火墙规则；如果 Windows Firewall 或上级策略默认阻断程序出站，必须为 `yq-croc.exe` 到 relay TCP 端口建立 outbound allow rule，默认端口 `9009`。
+10. `windows.transfer.croc.status` 报告 `firewall_allows_outbound`。yq-croc 默认 `route_policy=auto`，会启用 croc local discovery/local relay 并保留 relay fallback；如果 Windows Firewall 或上级策略阻断程序出站，必须为 `yq-croc.exe` 到 relay TCP 端口建立 outbound allow rule，默认端口 `9009`。显式 `local_only` 或 `direct_ip` 还需要本机允许 yq-croc 监听和接收入站连接。
 
 管理员 PowerShell 配置示例：
 
@@ -659,7 +659,7 @@ Linux:   /usr/local/bin/yq-croc
 21. public relay 已完成一次 1.06 GiB Windows -> WSL tmpfs 传输并通过运行时 size/hash 校验；随后 public relay 在持久目录 Windows -> WSL 与 WSL -> Windows 1.06 GiB attempt 中均出现约 27-30 MiB 后长时间停滞。该结论固定为 public relay best-effort，不作为生产稳定性放行条件。
 22. yq-croc 已新增 `relay` 子命令，本地 control/data relay 启动后 `relay-probe --relay 127.0.0.1:29009` 返回 reachable。
 23. 受控 relay 已完成本地双向 1.06 GiB 验收：Windows -> WSL 用时约 17 秒，WSL -> Windows 用时约 26 秒，双方均通过 size/hash 校验并输出 `resume_plan`、`integrity_verified`、`transfer_done`。
-24. Center preflight 已支持 `relay_url`，并把本次 configured relay 传给两端 status capability；preflight intent hash 包含 `relay_url`，不能用 public relay 预检结果创建 configured relay transfer。
+24. Center preflight 已支持 `relay_url` 与 `route_policy`，并把本次 configured relay 传给两端 status capability；preflight intent hash 包含 `relay_url`、`route_policy`、`direct_ip` 和 `multicast_address`，不能用 public relay 或不同路由策略的预检结果创建 transfer。
 25. WinNode `windows.transfer.croc.status` 和 LinuxNode `linux.transfer.croc.status` 已支持可选 `relay_url` 输入，用于探测当前 transfer 指定的 relay。
 26. WinNode `python -m compileall -q node_win_client tests` 和 `python -m pytest tests\test_plugins.py -q` 已通过，46 tests passed。
 27. WSL Ubuntu 已安装 rustfmt；Linux Node `cargo fmt -- --check`、`cargo check -p yequnode-core`、`cargo test -p yequnode-core` 已通过。

@@ -30,6 +30,21 @@ TRANSFER_SENDER_READY_MIN_WAIT_SEC = 180.0
 TRANSFER_SENDER_READY_MAX_WAIT_SEC = 600.0
 TRANSFER_JOB_MIN_LEASE_SEC = 180
 TRANSFER_JOB_MAX_LEASE_SEC = 600
+TRANSFER_ROUTE_DEFAULT = "auto"
+TRANSFER_ROUTE_POLICIES = {
+    "auto",
+    "relay_only",
+    "relay_pool",
+    "local_first",
+    "local_only",
+    "direct_ip",
+}
+TRANSFER_ROUTE_POLICIES_REQUIRING_RELAY = {
+    "auto",
+    "relay_only",
+    "relay_pool",
+    "local_first",
+}
 
 
 @dataclass(slots=True)
@@ -41,6 +56,9 @@ class TransferCreateCommand:
     target_path: str | None = None
     code: str | None = None
     relay_url: str | None = None
+    route_policy: str | None = None
+    direct_ip: str | None = None
+    multicast_address: str | None = None
     resume_mode: str | None = None
     timeout_sec: int = 3600
     expected_sha256: str | None = None
@@ -61,6 +79,9 @@ class TransferPreflightCommand:
     target_output_dir: str | None = None
     target_path: str | None = None
     relay_url: str | None = None
+    route_policy: str | None = None
+    direct_ip: str | None = None
+    multicast_address: str | None = None
     resume_mode: str | None = None
     include_sha256: bool = False
     timeout_sec: int = 20
@@ -76,6 +97,9 @@ class TransferResumeCommand:
     transfer_id: str
     code: str | None = None
     relay_url: str | None = None
+    route_policy: str | None = None
+    direct_ip: str | None = None
+    multicast_address: str | None = None
     timeout_sec: int | None = None
     actor_type: str = "agent"
     actor_id: str = "agent"
@@ -111,6 +135,9 @@ class TransferApplicationService:
         resume_mode = command.resume_mode
         if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
             missing.append("resume_mode")
+        route_policy = _normalize_route_policy(command.route_policy)
+        if route_policy == "direct_ip" and not command.direct_ip:
+            missing.append("direct_ip")
         if missing:
             return {
                 "allowed": False,
@@ -191,6 +218,8 @@ class TransferApplicationService:
             target_status=target_status,
             target_path=command.target_path,
             resume_mode=resume_mode,
+            route_policy=route_policy,
+            direct_ip=command.direct_ip,
         )
         preflight = TransferPreflight(
             preflight_id=f"tpf_{secrets.token_hex(8)}",
@@ -203,6 +232,9 @@ class TransferApplicationService:
                 target_output_dir=target_intent.output_dir,
                 target_path=target_intent.target_path,
                 relay_url=command.relay_url,
+                route_policy=route_policy,
+                direct_ip=command.direct_ip,
+                multicast_address=command.multicast_address,
                 resume_mode=resume_mode,
             ),
             source_node_id=command.source_node_id,
@@ -211,6 +243,9 @@ class TransferApplicationService:
             target_output_dir=target_intent.output_dir,
             target_path=target_intent.target_path,
             resume_mode=resume_mode,
+            route_policy=route_policy,
+            direct_ip=command.direct_ip,
+            multicast_address=command.multicast_address,
             source_fact=source,
             target_fact=target,
             failed_preconditions=failed,
@@ -231,6 +266,9 @@ class TransferApplicationService:
             "source_runtime": source_status,
             "target_runtime": target_status,
             "relay_url": command.relay_url,
+            "route_policy": route_policy,
+            "direct_ip": command.direct_ip,
+            "multicast_address": command.multicast_address,
             "resume_mode": resume_mode,
             "observed_at": now.isoformat(),
             "ttl_sec": ttl_sec,
@@ -258,6 +296,8 @@ class TransferApplicationService:
         resume_mode = command.resume_mode
         if resume_mode not in {"resume", "overwrite", "fail_if_exists"}:
             raise ValueError("resume_mode must be resume, overwrite, or fail_if_exists")
+        route_policy = _normalize_route_policy(command.route_policy)
+        _validate_route_policy_fields(route_policy, direct_ip=command.direct_ip)
         preflight = await self._verify_preflight(command, resume_mode=resume_mode)
 
         session = TransferSession(
@@ -271,6 +311,9 @@ class TransferApplicationService:
             target_path=target_intent.target_path,
             target_output_dir=target_intent.output_dir,
             relay_url=command.relay_url,
+            route_policy=route_policy,
+            direct_ip=command.direct_ip,
+            multicast_address=command.multicast_address,
             code_hash=_secret_hash(code),
             resume_mode=resume_mode,
             attempt=1,
@@ -292,8 +335,9 @@ class TransferApplicationService:
             transfer_id=session.transfer_id,
             attempt=1,
             code_hash=session.code_hash,
-            relay_mode="configured" if command.relay_url else "public_default",
+            relay_mode=_relay_mode(route_policy, command.relay_url),
             relay_url_masked=_mask_relay_url(command.relay_url),
+            route_policy=route_policy,
             status="created",
             resumable=False,
             started_at=session.started_at,
@@ -321,6 +365,9 @@ class TransferApplicationService:
                 "code": code,
                 "source_path": command.source_path,
                 "relay_url": command.relay_url,
+                "route_policy": route_policy,
+                "direct_ip": command.direct_ip,
+                "multicast_address": command.multicast_address,
                 "timeout_sec": command.timeout_sec,
                 "resume_mode": resume_mode,
             },
@@ -424,6 +471,9 @@ class TransferApplicationService:
             "output_dir": target_intent.output_dir,
             "target_path": target_intent.target_path,
             "relay_url": command.relay_url,
+            "route_policy": route_policy,
+            "direct_ip": command.direct_ip,
+            "multicast_address": command.multicast_address,
             "timeout_sec": command.timeout_sec,
             "resume_mode": resume_mode,
             "expected_sha256": command.expected_sha256,
@@ -475,6 +525,11 @@ class TransferApplicationService:
                     "target_node_id": command.target_node_id,
                     "source_job_id": session.source_job_id,
                     "target_job_id": session.target_job_id,
+                    "relay_mode": _relay_mode(route_policy, command.relay_url),
+                    "relay_url_masked": _mask_relay_url(command.relay_url),
+                    "route_policy": route_policy,
+                    "direct_ip": command.direct_ip,
+                    "multicast_address": command.multicast_address,
                 },
             ),
         )
@@ -544,6 +599,10 @@ class TransferApplicationService:
 
         code = command.code or _generate_croc_code()
         relay_url = command.relay_url or session.relay_url
+        route_policy = _normalize_route_policy(command.route_policy or session.route_policy)
+        direct_ip = command.direct_ip or session.direct_ip
+        multicast_address = command.multicast_address or session.multicast_address
+        _validate_route_policy_fields(route_policy, direct_ip=direct_ip)
         timeout_sec = command.timeout_sec or 3600
         next_attempt = int(session.attempt or 1) + 1
         resume_mode = "resume"
@@ -555,6 +614,9 @@ class TransferApplicationService:
 
         session.attempt = next_attempt
         session.relay_url = relay_url
+        session.route_policy = route_policy
+        session.direct_ip = direct_ip
+        session.multicast_address = multicast_address
         session.code_hash = _secret_hash(code)
         session.resume_mode = resume_mode
         session.status = "created"
@@ -568,8 +630,9 @@ class TransferApplicationService:
             transfer_id=session.transfer_id,
             attempt=next_attempt,
             code_hash=session.code_hash,
-            relay_mode="configured" if relay_url else "public_default",
+            relay_mode=_relay_mode(route_policy, relay_url),
             relay_url_masked=_mask_relay_url(relay_url),
+            route_policy=route_policy,
             status="created",
             resumable=True,
             started_at=session.started_at,
@@ -590,6 +653,9 @@ class TransferApplicationService:
             target_path=target_intent.target_path,
             code=code,
             relay_url=relay_url,
+            route_policy=route_policy,
+            direct_ip=direct_ip,
+            multicast_address=multicast_address,
             resume_mode=resume_mode,
             timeout_sec=timeout_sec,
             expected_sha256=session.sha256,
@@ -612,6 +678,9 @@ class TransferApplicationService:
                 "code": code,
                 "source_path": session.source_path,
                 "relay_url": relay_url,
+                "route_policy": route_policy,
+                "direct_ip": direct_ip,
+                "multicast_address": multicast_address,
                 "timeout_sec": timeout_sec,
                 "resume_mode": resume_mode,
             },
@@ -677,6 +746,9 @@ class TransferApplicationService:
             "output_dir": target_intent.output_dir,
             "target_path": target_intent.target_path,
             "relay_url": relay_url,
+            "route_policy": route_policy,
+            "direct_ip": direct_ip,
+            "multicast_address": multicast_address,
             "timeout_sec": timeout_sec,
             "resume_mode": resume_mode,
             "expected_sha256": session.sha256,
@@ -727,8 +799,11 @@ class TransferApplicationService:
                     "attempt": next_attempt,
                     "source_job_id": session.source_job_id,
                     "target_job_id": session.target_job_id,
-                    "relay_mode": "configured" if relay_url else "public_default",
+                    "relay_mode": _relay_mode(route_policy, relay_url),
                     "relay_url_masked": _mask_relay_url(relay_url),
+                    "route_policy": route_policy,
+                    "direct_ip": direct_ip,
+                    "multicast_address": multicast_address,
                 },
             ),
         )
@@ -847,6 +922,7 @@ class TransferApplicationService:
             target_output_dir=command.target_output_dir,
             target_path=command.target_path,
         )
+        route_policy = _normalize_route_policy(command.route_policy)
 
         result = await self.db.execute(
             select(TransferPreflight).where(TransferPreflight.preflight_id == command.preflight_id)
@@ -866,6 +942,9 @@ class TransferApplicationService:
             target_output_dir=target_intent.output_dir,
             target_path=target_intent.target_path,
             relay_url=command.relay_url,
+            route_policy=route_policy,
+            direct_ip=command.direct_ip,
+            multicast_address=command.multicast_address,
             resume_mode=resume_mode,
         )
         if preflight.intent_hash != expected_hash:
@@ -1083,6 +1162,9 @@ class TransferApplicationService:
             "size_bytes": session.size_bytes,
             "sha256": session.sha256,
             "relay_url": session.relay_url,
+            "route_policy": session.route_policy,
+            "direct_ip": session.direct_ip,
+            "multicast_address": session.multicast_address,
             "code_hash": session.code_hash,
             "resumable": _session_resumable(session, source_job=source_job, target_job=target_job),
             "last_resumable_error": _session_last_resumable_error(
@@ -1232,8 +1314,13 @@ def _transfer_preflight_failures(
     target_status: dict[str, object],
     target_path: str | None,
     resume_mode: str,
+    route_policy: str,
+    direct_ip: str | None,
 ) -> list[dict[str, object]]:
     failures: list[dict[str, object]] = []
+    relay_required = _route_requires_relay(route_policy)
+    if route_policy == "direct_ip" and not direct_ip:
+        failures.append({"fact": "route.direct_ip", "code": "direct_ip_required"})
     if source_result.status != "succeeded":
         failures.append(
             {
@@ -1308,7 +1395,7 @@ def _transfer_preflight_failures(
         failures.append(
             {"fact": "source.runtime.yq_croc_executable", "code": "yq_croc_not_executable"}
         )
-    if source_status.get("relay_reachable") is not True:
+    if relay_required and source_status.get("relay_reachable") is not True:
         failures.append({"fact": "source.runtime.relay_reachable", "code": "relay_unreachable"})
     if source_status.get("firewall_allows_outbound") is False:
         failures.append(
@@ -1327,7 +1414,7 @@ def _transfer_preflight_failures(
         failures.append(
             {"fact": "target.runtime.yq_croc_executable", "code": "yq_croc_not_executable"}
         )
-    if target_status.get("relay_reachable") is not True:
+    if relay_required and target_status.get("relay_reachable") is not True:
         failures.append({"fact": "target.runtime.relay_reachable", "code": "relay_unreachable"})
     if target_status.get("firewall_allows_outbound") is False:
         failures.append(
@@ -1771,6 +1858,9 @@ def _transfer_intent_hash(
     target_output_dir: str | None,
     target_path: str | None,
     relay_url: str | None,
+    route_policy: str,
+    direct_ip: str | None,
+    multicast_address: str | None,
     resume_mode: str,
 ) -> str:
     payload = {
@@ -1780,10 +1870,38 @@ def _transfer_intent_hash(
         "target_output_dir": target_output_dir,
         "target_path": target_path,
         "relay_url": relay_url,
+        "route_policy": route_policy,
+        "direct_ip": direct_ip,
+        "multicast_address": multicast_address,
         "resume_mode": resume_mode,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_route_policy(value: str | None) -> str:
+    route_policy = (value or TRANSFER_ROUTE_DEFAULT).strip()
+    if route_policy not in TRANSFER_ROUTE_POLICIES:
+        raise ValueError(
+            "route_policy must be auto, relay_only, relay_pool, "
+            "local_first, local_only, or direct_ip"
+        )
+    return route_policy
+
+
+def _validate_route_policy_fields(route_policy: str, *, direct_ip: str | None) -> None:
+    if route_policy == "direct_ip" and not direct_ip:
+        raise ValueError("direct_ip is required when route_policy is direct_ip")
+
+
+def _route_requires_relay(route_policy: str) -> bool:
+    return route_policy in TRANSFER_ROUTE_POLICIES_REQUIRING_RELAY
+
+
+def _relay_mode(route_policy: str, relay_url: str | None) -> str:
+    if not _route_requires_relay(route_policy):
+        return "not_required"
+    return "configured" if relay_url else "public_default"
 
 
 def _generate_croc_code() -> str:

@@ -28,6 +28,13 @@ impl Capability for LinuxTransferCrocSend {
                     "source_path": {"type": "string"},
                     "code": {"type": "string"},
                     "relay_url": {"type": ["string", "null"]},
+                    "route_policy": {
+                        "type": ["string", "null"],
+                        "enum": ["auto", "relay_only", "relay_pool", "local_first", "local_only", "direct_ip", null],
+                        "default": "auto"
+                    },
+                    "direct_ip": {"type": ["string", "null"]},
+                    "multicast_address": {"type": ["string", "null"]},
                     "timeout_sec": {"type": "integer", "minimum": 60, "maximum": 86400, "default": 3600},
                     "resume_mode": {
                         "type": "string",
@@ -89,6 +96,9 @@ impl Capability for LinuxTransferCrocSend {
         let source_path = required_str(&input, "source_path")?.to_string();
         let code = required_str(&input, "code")?.to_string();
         let relay_url = optional_str(&input, "relay_url");
+        let route_policy = optional_str(&input, "route_policy");
+        let direct_ip = optional_str(&input, "direct_ip");
+        let multicast_address = optional_str(&input, "multicast_address");
         let timeout_sec = input
             .get("timeout_sec")
             .and_then(|v| v.as_u64())
@@ -166,6 +176,9 @@ impl Capability for LinuxTransferCrocSend {
                 output_dir: None,
                 target_path: None,
                 relay_url,
+                route_policy,
+                direct_ip,
+                multicast_address,
                 resume_mode,
                 expected_size_bytes: source_metadata.size_bytes,
                 expected_sha256: source_metadata.sha256.clone(),
