@@ -9,6 +9,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -107,9 +108,10 @@ impl TransferLedger {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            PRAGMA journal_mode = WAL;
         ",
         )?;
+        migrate_transfer_ledger_schema(&conn)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -319,5 +321,148 @@ impl TransferLedger {
             entries.push(row?);
         }
         Ok(entries)
+    }
+}
+
+fn migrate_transfer_ledger_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let existing = transfer_ledger_columns(conn)?;
+    for (name, definition) in TRANSFER_LEDGER_COLUMN_DEFINITIONS {
+        if !existing.contains(*name) {
+            conn.execute(
+                &format!("ALTER TABLE transfer_ledger ADD COLUMN {definition}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn transfer_ledger_columns(conn: &Connection) -> Result<HashSet<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("PRAGMA table_info(transfer_ledger)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
+const TRANSFER_LEDGER_COLUMN_DEFINITIONS: &[(&str, &str)] = &[
+    ("role", "role TEXT NOT NULL DEFAULT 'sender'"),
+    ("status", "status TEXT NOT NULL DEFAULT 'created'"),
+    ("code_hash", "code_hash TEXT NOT NULL DEFAULT ''"),
+    ("relay_url", "relay_url TEXT"),
+    ("source_path", "source_path TEXT"),
+    ("target_path", "target_path TEXT"),
+    ("output_dir", "output_dir TEXT"),
+    ("source_size_bytes", "source_size_bytes INTEGER"),
+    ("source_mtime", "source_mtime TEXT"),
+    ("source_sha256", "source_sha256 TEXT"),
+    ("partial_path", "partial_path TEXT"),
+    ("resume_mode", "resume_mode TEXT NOT NULL DEFAULT 'resume'"),
+    ("attempt", "attempt INTEGER NOT NULL DEFAULT 1"),
+    ("pid", "pid INTEGER"),
+    ("started_at", "started_at TEXT"),
+    ("last_progress_at", "last_progress_at TEXT"),
+    ("completed_at", "completed_at TEXT"),
+    ("last_error_code", "last_error_code TEXT"),
+    ("last_error_message", "last_error_message TEXT"),
+    ("created_at", "created_at TEXT NOT NULL DEFAULT ''"),
+    ("updated_at", "updated_at TEXT NOT NULL DEFAULT ''"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_migrates_legacy_table_without_attempt_column() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("transfer-ledger.sqlite3");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE transfer_ledger (
+                    id INTEGER PRIMARY KEY,
+                    transfer_id TEXT NOT NULL UNIQUE,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    relay_url TEXT,
+                    source_path TEXT,
+                    target_path TEXT,
+                    output_dir TEXT,
+                    source_size_bytes INTEGER,
+                    source_mtime TEXT,
+                    source_sha256 TEXT,
+                    partial_path TEXT,
+                    resume_mode TEXT NOT NULL DEFAULT 'resume',
+                    pid INTEGER,
+                    started_at TEXT,
+                    last_progress_at TEXT,
+                    completed_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO transfer_ledger (
+                    transfer_id, role, status, code_hash, source_path,
+                    resume_mode, created_at, updated_at
+                ) VALUES (
+                    'trf_legacy', 'receiver', 'failed', 'hash',
+                    '/tmp/source.bin', 'resume', '2026-07-01T00:00:00Z',
+                    '2026-07-01T00:00:00Z'
+                );
+                ",
+            )
+            .unwrap();
+        }
+
+        let ledger = TransferLedger::open(&path).unwrap();
+        let entry = ledger.get("trf_legacy").unwrap().unwrap();
+
+        assert_eq!(entry.transfer_id, "trf_legacy");
+        assert_eq!(entry.role, TransferRole::Receiver);
+        assert_eq!(entry.status, TransferStatus::Failed);
+        assert_eq!(entry.attempt, 1);
+    }
+
+    #[test]
+    fn open_migrates_legacy_table_without_runtime_columns() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("transfer-ledger.sqlite3");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE transfer_ledger (
+                    id INTEGER PRIMARY KEY,
+                    transfer_id TEXT NOT NULL UNIQUE,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO transfer_ledger (
+                    transfer_id, role, status, code_hash, created_at, updated_at
+                ) VALUES (
+                    'trf_minimal', 'sender', 'created', 'hash',
+                    '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                );
+                ",
+            )
+            .unwrap();
+        }
+
+        let ledger = TransferLedger::open(&path).unwrap();
+        let entry = ledger.get("trf_minimal").unwrap().unwrap();
+
+        assert_eq!(entry.transfer_id, "trf_minimal");
+        assert_eq!(entry.attempt, 1);
+        assert_eq!(entry.resume_mode, ResumeMode::Resume);
+        assert!(entry.pid.is_none());
     }
 }
