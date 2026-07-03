@@ -109,29 +109,69 @@ async def test_approval_deny_changes_status(client: AsyncClient):
 async def test_approve_and_run_creates_invocation_and_job(client: AsyncClient):
     """Verify POST /approve-and-run creates both an invocation and a job."""
     from yequ.api.deps import get_db
-    from yequ.models.node import Node
     from yequ.services.approval_service import create_approval
-    from yequ.services.node_auth import hash_token
 
-    # Provision a node that can run the function
+    node_id = "approval-test-node"
+    node_token = "test-token-12345678"
+    auth = {"Authorization": f"Bearer {node_token}"}
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "node_id": node_id,
+            "node_name": "Approval Test Node",
+            "token": node_token,
+        },
+    )
+    assert resp.status_code == 201
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            {"daemon_version": "0.1.0"},
+        ),
+        headers=auth,
+    )
+    assert resp.status_code == 200
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            {
+                "plugins": [
+                    {
+                        "plugin_id": "system",
+                        "plugin_version": "1.0.0",
+                        "functions": [
+                            {
+                                "name": "system.info",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "timeout_sec": 5,
+                                "idempotency": "idempotent",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers=auth,
+    )
+    assert resp.status_code == 200
+
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
-        node = Node(
-            node_id="approval-test-node",
-            node_name="Approval Test Node",
-            token_hash=hash_token("test-token-12345678"),
-            status="provisioned",
-        )
-        db.add(node)
-        await db.flush()
-
         approval = await create_approval(
             db,
             actor_id="test-user",
             session_id=None,
             function_name="system.info",
-            target_node_id="approval-test-node",
+            target_node_id=node_id,
             input_data={"key": "test"},
             risk="safe",
             effect="read",
@@ -148,7 +188,7 @@ async def test_approve_and_run_creates_invocation_and_job(client: AsyncClient):
     assert result["invocation_id"], "Should have an invocation_id"
     assert result["job_id"], "Should have a job_id"
     assert result["function_name"] == "system.info"
-    assert result["target_node_id"] == "approval-test-node"
+    assert result["target_node_id"] == node_id
     assert result["status"] in ("queued", "running"), f"Unexpected status: {result['status']}"
 
 

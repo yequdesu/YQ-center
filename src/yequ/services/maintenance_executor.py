@@ -14,7 +14,6 @@ from yequ.models.maintenance_plan import (
     MaintenancePlan,
     MaintenanceRun,
     MaintenanceStep,
-    RollbackHint,
 )
 from yequ.models.timeline import TimelineEvent
 from yequ.services.timeline_writer import add_timeline_event
@@ -23,10 +22,6 @@ from yequ.shared_types import JsonObject
 
 def _make_artifact_id() -> str:
     return f"art_{uuid.uuid4().hex[:16]}"
-
-
-def _make_hint_id() -> str:
-    return f"hint_{uuid.uuid4().hex[:16]}"
 
 
 async def _write_artifact(
@@ -847,49 +842,6 @@ async def finalize_run(
 
     await db.commit()
     return run
-
-
-async def add_rollback_hint(
-    db: AsyncSession,
-    run_id: str,
-    step_id: str,
-    reason: str,
-    recommended_action: str,
-    function_name: str | None = None,
-    input_data: JsonObject | None = None,
-    risk: str = "maintenance",
-) -> RollbackHint:
-    """Add a rollback hint for a failed step."""
-    hint = RollbackHint(
-        hint_id=_make_hint_id(),
-        run_id=run_id,
-        step_id=step_id,
-        reason=reason,
-        recommended_action=recommended_action,
-        function_name=function_name,
-        input_data=input_data,
-        risk=risk,
-        created_at=datetime.now(UTC),
-    )
-    db.add(hint)
-    await db.commit()
-    return hint
-
-
-async def update_step_result(
-    db: AsyncSession,
-    step: MaintenanceStep,
-    status: str,
-    result: JsonObject | None = None,
-    error: str | None = None,
-) -> MaintenanceStep:
-    """Update a step with its final result."""
-    step.status = status
-    step.result = result
-    step.error = error
-    step.finished_at = datetime.now(UTC)
-    await db.commit()
-    return step
 
 
 def _build_before_data(steps: list[MaintenanceStep], current_step: MaintenanceStep) -> JsonObject:

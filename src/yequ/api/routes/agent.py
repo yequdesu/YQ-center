@@ -23,7 +23,6 @@ from yequ.agent.limits import (
     DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
 )
 from yequ.agent.provider import AgentFunction, AgentProvider
-from yequ.agent.tool_execution import AgentInvokeResponse
 from yequ.api.deps import get_agent_token
 from yequ.models.capability import Capability
 from yequ.models.node import Node
@@ -1050,18 +1049,6 @@ async def create_session_endpoint(
         max_depth=body.max_depth,
         max_steps=body.max_steps,
         max_total_duration_sec=body.max_total_duration_sec,
-    )
-
-
-@router.post("/invoke", response_model=AgentInvokeResponse)
-async def invoke_agent_endpoint(
-    body: InvokeAgentRequest,
-    _token: dict[str, str] = Depends(get_agent_token),
-) -> AgentInvokeResponse:
-    """Reject the removed non-streaming Agent path."""
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="/agent/invoke has been removed; use /agent/invoke/stream",
     )
 
 

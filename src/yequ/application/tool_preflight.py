@@ -5,10 +5,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.application.meta_tools import CENTER_META_TOOLS
 from yequ.application.schemas import ToolPreflightCommand, ToolPreflightResult
 from yequ.config import get_settings
 from yequ.models.capability import Capability
-from yequ.runtime.execution_runtime import CENTER_META_TOOLS
 from yequ.services.capability_resolver import resolve_function
 from yequ.services.policy import check_policy_l2
 

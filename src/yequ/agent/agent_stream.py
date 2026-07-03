@@ -26,7 +26,7 @@ from yequ.agent.runtime_state import (
     AgentToolObservationCollector,
 )
 from yequ.agent.tool_stream import execute_tool_calls_scheduled
-from yequ.application import MaintenancePlanApplicationService
+from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
 

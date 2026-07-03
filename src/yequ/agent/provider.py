@@ -140,8 +140,10 @@ class AgentProvider(ABC):
         """Optionally stream provider output as delta/done/error events."""
 
         async def _raise() -> AsyncGenerator[dict[str, object], None]:
+            empty_events: tuple[dict[str, object], ...] = ()
+            for event in empty_events:
+                yield event
             raise NotImplementedError(f"{self.provider_name()} does not support streaming")
-            yield {}
 
         return _raise()
 

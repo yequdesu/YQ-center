@@ -36,7 +36,7 @@ async def test_agent_endpoints_reject_no_auth_when_enabled(client: AsyncClient, 
     assert r.status_code == 401
 
     r = await client.post(
-        "/agent/invoke",
+        "/agent/invoke/stream",
         json={
             "session_id": "sess_test",
             "prompt": "test",

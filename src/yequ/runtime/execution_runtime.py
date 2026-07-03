@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.application.errors import ToolInvocationError
+from yequ.application.meta_tools import CENTER_META_TOOLS
 from yequ.application.schemas import (
     ApprovalRequiredResult,
     ExecuteToolCommand,
@@ -39,25 +40,6 @@ from yequ.services.invocation_service import create_invocation, start_invocation
 from yequ.services.job_service import create_job
 from yequ.services.policy import check_policy_l2
 from yequ.services.timeline_writer import add_timeline_event
-
-CENTER_META_TOOLS = {
-    "node.list",
-    "node.status",
-    "capability.search",
-    "capability.describe",
-    "artifact.list",
-    "artifact.get",
-    "artifact.present",
-    "artifact.deploy.preflight",
-    "artifact.deploy",
-    "operation.status",
-    "operation.cancel",
-    "transfer.preflight",
-    "transfer.create",
-    "transfer.resume",
-    "transfer.status",
-    "transfer.cancel",
-}
 
 
 class CenterExecutionRuntime:

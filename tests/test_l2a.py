@@ -357,58 +357,6 @@ async def test_l2_lock_released_on_job_finish(client: AsyncClient, l2_setup):
 
 
 @pytest.mark.asyncio
-async def test_agent_l2_returns_waiting_approval(client: AsyncClient, l2_setup):
-    """Agent invoking L2 function returns waiting_approval."""
-    node_id, token, auth = l2_setup
-
-    from yequ.agent.fake_provider import FakeAgentProvider
-    from yequ.agent.provider import AgentResult
-    from yequ.api.routes.agent import register_provider
-
-    provider = FakeAgentProvider()
-    provider.add_response(
-        "restart",
-        AgentResult(
-            success=True,
-            output={"message": ""},
-            function_calls=[
-                {
-                    "name": "system.service.restart",
-                    "input": {"name": "Spooler"},
-                    "call_id": "call_l2",
-                }
-            ],
-        ),
-    )
-    register_provider(provider)
-
-    r = await client.post(
-        "/agent/sessions",
-        json={
-            "actor_id": "l2-test",
-            "execution_mode": "auto",
-        },
-    )
-    sid = r.json()["session_id"]
-
-    r = await client.post(
-        "/agent/invoke",
-        json={
-            "session_id": sid,
-            "provider_name": "fake",
-            "prompt": "restart Spooler",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 30,
-        },
-    )
-    assert r.status_code == 200
-    data = r.json()
-    assert data["status"] == "waiting_approval"
-    assert data["tool_calls"][0]["status"] == "waiting_approval"
-    assert data["tool_calls"][0]["error"]["code"] == "approval_required"
-
-
-@pytest.mark.asyncio
 async def test_l1_read_still_works(client: AsyncClient, l2_setup):
     """L1 read operations still work alongside L2."""
     node_id, token, auth = l2_setup

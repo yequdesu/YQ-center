@@ -1,7 +1,7 @@
 """Stage 5: Integration closed-loop tests.
 
 Full end-to-end scenarios using ASGITransport -- no external services.
-Fake Node + FakeAgentProvider simulate real clients through HTTP API.
+Fake Node clients simulate real clients through HTTP API.
 """
 
 import asyncio
@@ -13,10 +13,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from yequ.agent.fake_provider import FakeAgentProvider
-from yequ.agent.provider import AgentResult
 from yequ.api.app import create_app
-from yequ.api.routes.agent import register_provider
 from yequ.models.job import Job
 from yequ.models.timeline import TimelineEvent
 from yequ.protocol import InvocationStatus, JobStatus
@@ -569,76 +566,7 @@ async def test_reconcile_flow(center, fake_node):
     assert r.json()["payload"]["actions"][0]["action"] == "forget"
 
 
-# ── Scenario 6: Agent invoke ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_agent_invoke_with_function_calls(center, fake_node):
-    """Agent session -> invoke with FakeAgentProvider returning function_calls."""
-    node_id, token, auth = fake_node
-
-    # Configure FakeAgentProvider
-    from yequ.agent.provider import AgentFunction
-
-    provider = FakeAgentProvider()
-    provider.add_response(
-        "metrics",
-        AgentResult(
-            success=True,
-            output={"action": "get_metrics"},
-            function_calls=[{"name": "system.metrics.snapshot", "input": {}}],
-        ),
-    )
-    provider.add_function(
-        AgentFunction(
-            name="system.metrics.snapshot",
-            risk="safe",
-            effect="read",
-        )
-    )
-    register_provider(provider)
-
-    # Create session
-    r = await center.post(
-        "/agent/sessions",
-        json={
-            "actor_id": "test-agent",
-            "execution_mode": "auto",
-        },
-    )
-    assert r.status_code == 201
-    sid = r.json()["session_id"]
-
-    # Invoke — use short max_total_duration_sec so the invocation wait times out fast
-    r = await center.post(
-        "/agent/invoke",
-        json={
-            "session_id": sid,
-            "provider_name": "fake",
-            "prompt": "get metrics please",
-            "execution_mode": "auto",
-            "max_total_duration_sec": 5,
-        },
-    )
-    assert r.status_code == 200
-    data = r.json()
-    # The tool will be created but times out (no daemon to poll it)
-    assert data["success"] is True or data["success"] is False
-    assert len(data["tool_calls"]) == 1
-    assert data["tool_calls"][0]["name"] == "system.metrics.snapshot"
-
-    # Verify Timeline events for agent step
-    from yequ.db import async_session_factory
-
-    async with async_session_factory() as db:
-        result = await db.execute(select(TimelineEvent).where(TimelineEvent.session_id == sid))
-        events = result.scalars().all()
-        event_types = {e.event_type for e in events}
-        assert "agent.provider.completed" in event_types
-        assert "agent.final_response" in event_types
-
-
-# ── Scenario 7: Security boundaries ────────────────────────────────
+# ── Scenario 6: Security boundaries ────────────────────────────────
 
 
 @pytest.mark.asyncio

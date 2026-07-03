@@ -21,11 +21,6 @@ GLOBAL_TIMELINE_SEQUENCE = "global"
 _sequence_lock = asyncio.Lock()
 
 
-async def next_global_seq(db: AsyncSession) -> int:
-    """Return the next available global_seq for a new timeline event."""
-    return await allocate_global_seq(db)
-
-
 async def allocate_global_seq(db: AsyncSession, count: int = 1) -> int:
     """Reserve one or more timeline global_seq values.
 

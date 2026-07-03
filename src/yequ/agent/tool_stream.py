@@ -15,11 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.provider import AgentFunction
-from yequ.application import (
-    ExecuteToolCommand,
-    ToolPreflightApplicationService,
-    ToolPreflightCommand,
-)
+from yequ.application.schemas import ExecuteToolCommand, ToolPreflightCommand
+from yequ.application.tool_preflight import ToolPreflightApplicationService
 from yequ.logconfig import get_logger
 from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 

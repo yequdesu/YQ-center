@@ -22,10 +22,3 @@ class ToolInvocationError(ApplicationError):
         super().__init__(message)
         self.error_code = error_code
         self.details = details or {}
-
-
-class ToolExecutionTimeoutError(ToolInvocationError):
-    """Raised when waiting for a tool execution exceeds its deadline."""
-
-    def __init__(self, message: str = "Tool execution timed out") -> None:
-        super().__init__(message, error_code="tool_timeout")

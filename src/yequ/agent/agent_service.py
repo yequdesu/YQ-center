@@ -25,9 +25,7 @@ from yequ.agent.provider import (
     AgentMessage,
     AgentProvider,
 )
-from yequ.application import (
-    MaintenancePlanApplicationService,
-)
+from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 
 log = logging.getLogger(__name__)
 

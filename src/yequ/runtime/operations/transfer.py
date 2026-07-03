@@ -35,7 +35,7 @@ class TransferOperationHandler:
     @staticmethod
     def sync_operation(operation: Operation, transfer: dict[str, object]) -> bool:
         next_status = operation_status_from_transfer(transfer.get("status"))
-        progress = _transfer_progress(transfer)
+        progress = _operation_transfer_progress(transfer)
         progress_pct = progress.get("pct")
         progress_message = optional_str(progress.get("message"))
         changed = (
@@ -82,7 +82,7 @@ def optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _transfer_progress(transfer: dict[str, object]) -> dict[str, object]:
+def _operation_transfer_progress(transfer: dict[str, object]) -> dict[str, object]:
     summary = transfer.get("summary")
     if isinstance(summary, dict):
         progress = summary.get("progress")
