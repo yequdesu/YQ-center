@@ -18,7 +18,7 @@
 - 权限模型清楚；
 - Center `capability.describe` 能解释该能力何时可用、需要什么权限、会产生什么副作用。
 
-截图/摄像头仍不是 Linux Node 第一优先级。Linux Node 当前优先补齐文件、服务、网络、包管理、artifact、transfer 辅助能力。
+图形和摄像头能力不是 Linux Node 当前核心路径；framebuffer 截图只作为探测通过时才注册的可选 artifact 能力。Linux Node 当前核心能力是文件、服务、网络、包管理、artifact 和 transfer 辅助能力。
 
 ## 2. 必须遵守的协议
 
@@ -36,7 +36,7 @@ Linux node 必须以 `YQP-Node-Protocol.md` 为准，实现：
 
 可以暂缓：
 
-- `signal.report`：如果第一版没有周期 Signal，可以暂缓；但推荐至少上报 load/memory。
+- `signal.report`：如果当前实现没有周期 Signal，可以暂缓；但推荐至少上报 load/memory。
 
 不能暂缓：
 
@@ -50,7 +50,7 @@ Linux node 必须以 `YQP-Node-Protocol.md` 为准，实现：
 建议配置文件：
 
 ```yaml
-node_id: linuxServer
+node_id: <linux-node-id>
 center_base_url: https://gtw.yequdesu.top
 yqp_path: /yqp/
 node_token: ${YEQU_NODE_TOKEN}
@@ -99,11 +99,11 @@ Linux node 至少上报一个 runtime：
 
 ## Linux 权限模型
 
-第一版 Linux node 默认以普通用户运行，不要求 root。
+当前 Linux Node 默认以普通用户运行，不要求 root。
 
 Node 启动时必须对 capability 做 permission probe。未通过 probe 的能力不得注册为可用能力。Center 只根据 Node 上报的 runtime 和 capability 做调度，不替 Node 解决本地权限问题。
 
-第一版策略：
+当前权限策略基线：
 
 | capability | 权限策略 |
 |---|---|
@@ -121,7 +121,7 @@ Node 启动时必须对 capability 做 permission probe。未通过 probe 的能
   "status": "online",
   "interactive": false,
   "privilege": "user",
-  "labels": ["linux", "filesystem:limited"],
+  "labels": ["linux", "filesystem", "filesystem:limited", "network"],
   "metadata": {
     "uid": 1000,
     "user": "yequ",
@@ -131,7 +131,7 @@ Node 启动时必须对 capability 做 permission probe。未通过 probe 的能
 }
 ```
 
-后续如果需要 sudo/root 能力，必须新增独立 runtime 和独立 capability，不得混入普通 capability。
+需要 sudo/root 能力时，必须使用独立 runtime 和独立 capability，不得混入普通 capability。
 
 sudo/root runtime 示例：
 
@@ -192,7 +192,7 @@ Linux Node 必须把 Center artifact 下发和 croc 跨 Node 传输区分开：
 - `linux.artifact.download_file`：从 Center artifact 存储下载文件并写入 Linux 本地路径；
 - `linux.transfer.croc.*`：Node 到 Node 直接传输，大文件优先使用该路径。
 
-`linux.artifact.download_file` 是 Center -> Linux 的能力原语，不是完整 workflow。它不负责选择 artifact、不负责选择目标 Node、不负责替用户猜测路径，也不负责把多个 Node 串成一个流程。完整流程应由 Center 后续 `artifact.deploy` workflow 组合。
+`linux.artifact.download_file` 是 Center -> Linux 的能力原语，不是完整 workflow。它不负责选择 artifact、不负责选择目标 Node、不负责替用户猜测路径，也不负责把多个 Node 串成一个流程。完整流程由 Center 的 `artifact.deploy.preflight` 和 `artifact.deploy` 组合。
 
 ### `linux.artifact.download_file`
 
@@ -240,7 +240,7 @@ Linux Node 必须把 Center artifact 下发和 croc 跨 Node 传输区分开：
 - 不支持断点续传时必须声明 `supports_resume=false`；
 - 如果需要写系统目录，应由 runtime 权限决定；权限不足不得 fallback 到其他目录。
 
-能力 manifest 第一版要求：
+能力 manifest 要求：
 
 ```json
 {
@@ -445,7 +445,7 @@ transfer:
 
 Linux Node 不能主动发起任何传输事务。`interrupted` 或 `resumable=true` 只允许作为事实上报给 Center；Linux Node 不得自行重启 `yq-croc`、自行创建下一次 attempt、自行切换 relay、自行生成 code 或自行通知对端 Node。进程内 reconnect 只允许发生在当前 Center Job 尚未 terminal 的生命周期内。
 
-详细计划见 `docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md`。
+历史方案记录见 `docs/archive/todos/2026-07-01-yq-croc-plugin-runtime-plan.md`。当前执行约束以本文和 `docs/node-capability-contract.md` 为准。
 
 ## transfer runtime requirement 分层
 
@@ -487,7 +487,7 @@ transfer 相关 capability 必须按职责声明不同的 `execution_requirement
 - `resource_keys` 应包含稳定的传输资源键，例如 `node.transfer`。
 - `conflict_policy` 应声明为 `serialize`，避免同一 Node 上多个 yq-croc 传输互相抢占临时目录、ledger 或网络资源。
 
-原因：`linux.transfer.croc.receive` 确实会在目标 Node 写入文件，但在 YeQu 建模中，yq-croc send/receive 是“外部传输进程控制能力”，目标路径权限由 Node runtime/path policy 自己执行；Center 的 `transfer.create` 负责一次高层 TransferSession 编排。如果 Node 把 receive 声明为 `effect=write`，当前 Center L2 策略会要求单独审批底层 receive job，导致 `transfer.create` 无法自动同时启动 receiver 和 sender。
+原因：`linux.transfer.croc.receive` 确实会在目标 Node 写入文件，但在 YeQu 建模中，yq-croc send/receive 是“外部传输进程控制能力”，目标路径权限由 Node runtime/path policy 自己执行；Center 的 `transfer.create` 负责一次高层 TransferSession 编排。如果 Node 把 receive 声明为 `effect=write`，当前 Center L2 策略会要求单独审批底层 receive job，导致 `transfer.create` 无法自动编排 sender-ready 和 receiver startup。
 
 后续如果需要对跨 Node 文件落盘做强审批，应在 `transfer.create` 这个高层元工具上建模一次完整审批，而不是让底层 `*.transfer.croc.receive` 单独触发审批；否则会破坏 TransferSession 的并发编排。
 
@@ -524,7 +524,7 @@ send/receive 能力必须基于 status 探测事实：
 
 `linux.transfer.croc.send` 和 `linux.transfer.croc.receive` 是阻塞型长任务：capability 返回时表示该端 yq-croc 子进程已经结束，状态必须是成功、失败、取消或超时之一。
 
-因此 Phase 2 手动传输不能依赖 Agent 顺序调用：
+因此手动传输不能依赖 Agent 顺序调用底层 send/receive：
 
 ```text
 receive 阻塞等待 sender
@@ -532,9 +532,9 @@ Agent 等 receive 返回后才会调用 send
 => 会超时或失败
 ```
 
-Phase 2 验收如果不使用 Center TransferSession，必须用两个并发控制流启动两端任务。Phase 3 以后由 Center `TransferSession` 同时创建 receiver job 和 sender job，Agent 只调用 `transfer.create`。
+当前主路径由 Center `TransferSession` 编排：Agent 只调用 `transfer.preflight` 和 `transfer.create`；Center 先创建 sender job，等待 `progress_source="yq_croc_event"` 且 `event="sender_ready"` 后再创建 receiver job。只有绕过 Center TransferSession 做底层调试时，才允许用两个并发控制流直接启动两端任务。
 
-Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台进程后立即返回”的非阻塞模式，必须另起新的 capability 或在输出中明确 `process_status=started`，并提供查询/cancel 机制；第一版合同不采用这种模式。
+Node 不得把阻塞型 receive 伪装成已完成。如果实现“启动后台进程后立即返回”的非阻塞模式，必须另起新的 capability 或在输出中明确 `process_status=started`，并提供查询/cancel 机制；当前合同不采用这种模式。
 
 ### receive 成功判定
 
@@ -696,188 +696,28 @@ Node 必须测试并固定本平台的 yq-croc request 语义。不能在 `resum
 - 完成后计算 size/sha256 并上报；
 - stdout/stderr 中如包含 code，必须脱敏。
 
-## 5. 第一版 Capabilities
+## 5. 当前 Capabilities 分类
 
-建议第一版只注册安全读能力：
+Linux Node 当前生产能力清单以 `nodes/linux/yequnode/yequnode-core/src/registry.rs` 的 `production::collect_manifests()` 为准。文档不手写完整 manifest JSON，避免和代码漂移；新增或删除 capability 必须修改 registry、对应 capability manifest、权限探测和测试。
 
-```json
-{
-  "plugin_id": "linux.system",
-  "plugin_version": "0.1.0",
-  "functions": [
-    {
-      "name": "linux.system.info",
-      "description": "Return basic Linux host information.",
-      "agent_description": "Inspect Linux host OS, kernel, uptime, CPU and memory summary.",
-      "input_schema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      },
-      "output_schema": { "type": "object" },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 5,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux"]
-      }
-    },
-    {
-      "name": "linux.metrics.snapshot",
-      "description": "Return CPU, memory, disk and load metrics.",
-      "agent_description": "Read a Linux metrics snapshot.",
-      "input_schema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      },
-      "output_schema": { "type": "object" },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 5,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux"]
-      }
-    },
-    {
-      "name": "linux.process.list",
-      "description": "List Linux processes with pid, user, cpu, memory and command.",
-      "agent_description": "List running Linux processes.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
-        },
-        "additionalProperties": false
-      },
-      "output_schema": { "type": "object" },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 5,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux"]
-      }
-    },
-    {
-      "name": "linux.filesystem.stat",
-      "description": "Return stat information for a local path visible to the Linux runtime.",
-      "agent_description": "Inspect Linux filesystem metadata for a runtime-visible path.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string" }
-        },
-        "required": ["path"],
-        "additionalProperties": false
-      },
-      "output_schema": { "type": "object" },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 5,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux"]
-      }
-    },
-    {
-      "name": "linux.filesystem.hash",
-      "description": "Compute the SHA-256 hash for a readable local Linux file.",
-      "agent_description": "Compute sha256 for a readable local file. Use this to verify file integrity after transfer.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string" },
-          "algorithm": { "type": "string", "enum": ["sha256"], "default": "sha256" }
-        },
-        "required": ["path"],
-        "additionalProperties": false
-      },
-      "output_schema": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string" },
-          "algorithm": { "type": "string" },
-          "sha256": { "type": "string" },
-          "size_bytes": { "type": "integer" }
-        },
-        "required": ["path", "algorithm", "sha256", "size_bytes"],
-        "additionalProperties": false
-      },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 60,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux", "filesystem"]
-      },
-      "preconditions": [
-        { "fact": "source.path_readable", "source": "runtime" }
-      ],
-      "required_intent_slots": ["path"]
-    },
-    {
-      "name": "linux.filesystem.disk_usage",
-      "description": "Report filesystem capacity and free space for a Linux path.",
-      "agent_description": "Check disk capacity, free bytes, and available bytes for a runtime-visible Linux path.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string" }
-        },
-        "required": ["path"],
-        "additionalProperties": false
-      },
-      "output_schema": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string" },
-          "block_size": { "type": "integer" },
-          "total_bytes": { "type": "integer" },
-          "free_bytes": { "type": "integer" },
-          "available_bytes": { "type": "integer" },
-          "used_bytes": { "type": "integer" },
-          "used_percent": { "type": "number" }
-        },
-        "required": ["path", "block_size", "total_bytes", "free_bytes", "available_bytes", "used_bytes", "used_percent"],
-        "additionalProperties": false
-      },
-      "risk": "safe",
-      "effect": "read",
-      "timeout_sec": 5,
-      "idempotency": "idempotent",
-      "execution_requirements": {
-        "runtime_kind": "privileged",
-        "labels": ["linux", "filesystem"]
-      },
-      "preconditions": [
-        { "fact": "target.path_visible", "source": "runtime" }
-      ],
-      "required_intent_slots": ["path"]
-    }
-  ],
-  "signals": [
-    {
-      "name": "linux.system.load",
-      "scope": "node",
-      "ttl_sec": 30,
-      "value_schema": { "type": "object" }
-    }
-  ]
-}
-```
+当前能力分为：
 
-`linux.filesystem.stat`、`linux.filesystem.hash` 和 `linux.filesystem.disk_usage`
-遵循 runtime 可见性和 OS 权限。
-Center 不应在能力名中假设所有路径都可访问；不可访问时必须返回稳定错误码，例如
-`permission_denied` 或 `source_not_found`。不要静默降级为“文件不存在”。
+| 分类 | 能力前缀或代表能力 | Runtime / 探测来源 |
+|---|---|---|
+| 系统与进程 | `linux.system.info`、`linux.metrics.snapshot`、`linux.process.list`、`linux.user.list`、`linux.package.list`、`linux.dmesg` | user runtime；依赖 `/proc`、`dmesg` 等本地探测。 |
+| 文件系统读取与轻量写入 | `linux.filesystem.stat`、`linux.filesystem.hash`、`linux.filesystem.disk_usage`、`linux.filesystem.read_text`、`linux.filesystem.find`、`linux.filesystem.list_dir`、`linux.filesystem.mkdir` | user runtime；受 runtime 可见性、路径策略和 OS 权限限制。 |
+| 网络诊断 | `linux.network.interfaces`、`linux.network.routes`、`linux.network.connections`、`linux.network.dns_lookup`、`linux.network.port_check` | user runtime；依赖 `ip`、`ss`、系统 resolver 或 TCP connect。 |
+| 服务与日志 | `linux.service.list`、`linux.service.status`、`linux.service.restart`、`linux.log.journal` | 读能力使用 user runtime；restart 和特权日志类能力要求 sudo/root runtime。 |
+| Artifact | `linux.artifact.upload_file`、`linux.artifact.download_file`、`linux.artifact.upload_log`、`linux.artifact.diagnostics`、`linux.artifact.upload_proc`、`linux.artifact.screenshot_via_fb` | 需要 sudo/root 或可选 framebuffer 探测；必须遵守 artifact 合同。 |
+| Transfer | `linux.transfer.local.stat`、`linux.transfer.croc.status`、`linux.transfer.croc.send`、`linux.transfer.croc.receive`、`linux.transfer.croc.reconcile` | yq-croc transfer runtime；由 `transfer.yq_croc` 配置和二进制可执行性决定是否注册 send/receive。 |
+
+Linux Node 启动时必须构建 runtime snapshot，并用权限探测过滤 manifest：
+
+- `user` runtime：`kind="privileged"`、`privilege="user"`，labels 至少包含 `linux`、`filesystem`、`filesystem:limited`、`network`。
+- `sudo-limited` runtime：只有 sudo 可用时上报，labels 包含 `linux`、`filesystem`、`artifact`、`sudoers:yequnode`、`filesystem:host`。
+- `linux-transfer` runtime：只有 `transfer.yq_croc.enabled=true` 且 `yq-croc` 可执行时上报，labels 为 `linux`、`transfer`、`yq-croc`。
+
+所有文件能力必须遵循 runtime 可见性和 OS 权限。不可访问时必须返回稳定错误码，例如 `permission_denied`、`source_not_found`、`target_not_found` 或 `insufficient_space`，不得静默降级为“文件不存在”。
 
 ## 6. Job 执行规则
 
@@ -891,7 +731,7 @@ Node 本地执行必须遵守：
 6. 不要重复发送终态；如果网络失败导致不确定，重启后通过 `node.reconcile_jobs` 对齐。
 7. 长任务需要按 lease 续租；短任务可以不续租。
 
-第一版建议所有能力都是短任务，执行时间不超过 5 秒。
+短任务应在 manifest 中给出紧凑 `timeout_sec`。长任务必须声明 `supports_progress`、`supports_cancel` 和对应 progress contract，并在执行期间续租；yq-croc send/receive 按本文 transfer 合同处理。
 
 ## 7. 错误传播
 
@@ -921,20 +761,18 @@ Node 不应静默 fallback。
 1. 在 Center 预配置 Linux node，生成 token。
 2. Linux node 启动并发送 `node.hello`。
 3. Console Nodes 页面应看到 Windows node 与 Linux node。
-4. Console Node detail 或 `/admin/capabilities?node_id=linuxServer` 应看到 Linux capabilities。
-5. Agent target node 选择 `linuxServer`。
+4. Console Node detail 或 `/admin/capabilities?node_id=<linux-node-id>` 应看到 Linux capabilities。
+5. Agent target node 选择对应 Linux node id。
 6. 调用 `linux.system.info`。
 7. Linux node poll 到 Job，执行并 `job.finished`。
 8. Center Job/Invocation/Timeline 页面能看到完整链路。
 
-## 9. 第一版明确不做
+## 9. 当前明确不做
 
-- 任意 shell 执行。
-- 任意文件读取。
-- 上传/下载大文件。
-- 二进制 artifact。
-- WebSocket push。
-- 自动发现/自动注册未预配置 Node。
-- Linux desktop 截图或摄像头。
+- 不提供任意 shell 执行入口。
+- 不自动发现或自动注册未预配置 Node。
+- 不让 Linux Node 主动发起 transfer、retry、resume、relay switch 或 code rotation。
+- 不把 artifact bytes、croc code、relay password、Node token 或 Center token 写入 Agent prompt、tool JSON、普通日志或 Timeline。
+- 不对权限不足的路径做静默 fallback。
 
-这些能力应在多 Node 基础链路稳定后再加。
+新增高风险能力必须通过 `docs/node-capability-contract.md` 的 manifest、preflight、错误传播、审批和 runtime requirement 规则后才能注册。

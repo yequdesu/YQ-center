@@ -2,7 +2,7 @@
 
 个人基础设施控制中心 — 连接设备、收集状态、调度能力、记录审计时间线，为 LLM Agent、Web 控制台、CLI 提供统一入口。
 
-当前架构主线：Center 已进入 Center Execution Runtime v2。目标是把 Agent、Console、CLI、未来 MCP 的意图转成可审计、可调度、可等待、可取消、可恢复、可观察的 Center 执行过程。详见 `docs/current-project-overview.md` 和 `docs/todos/2026-06-30-center-execution-runtime-v2.md`。
+当前架构主线：Center Execution Runtime v2 已基本落地。下一阶段先完成文档系统收口、代码质量审查、架构边界复核，以及 Node/capability 插拔性确认。详见 `docs/current-project-overview.md` 和 `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`。
 
 ## 架构
 
@@ -19,11 +19,11 @@ Agent / Web / CLI ──→ Center (FastAPI :9800)
                          ├── Resource Lock Service ── 资源冲突控制
                          ├── Approval System ── L2 写操作人工审批
                          ├── Timeline / Audit ── global_seq 不可绕过审计
-                         └── PostgreSQL / SQLite
+                         └── PostgreSQL（SQLite 仅用于测试）
 
 Node Daemon ←── YQP Protocol (POST /yqp/) ──→ Plugin → Function / Signal
                   │
-                  └── Runtime Instances (privileged / interactive / WASM / Docker)
+                  └── Runtime Instances（由 Node runtime snapshot 上报）
 ```
 
 ## 分层与职责边界
@@ -225,11 +225,12 @@ message_type 处理器：
 | SSE Event | ChatBlock 类型 | 渲染行为 |
 |---|---|---|
 | `agent.output.delta` | `assistant_text` | 追加或新建文本块 |
-| `agent.fallback_synthesis` | `assistant_text` | 追加或新建文本块 |
 | `agent.tool_call.created` | `tool_group` | 追加到当前工具组或新建 |
 | `agent.tool_call.completed` | 更新 tool_group | 工具状态 → succeeded |
 | `agent.tool_call.failed` | 更新 tool_group | 工具状态 → failed |
 | `agent.tool_call.waiting_approval` | 更新 tool_group + `system_event` | 渲染 ApprovalCard 交互卡片 |
+| `agent.operation.created` / `agent.operation.waiting` / `agent.operation.completed` | `operation_card` | 渲染或更新独立长任务卡片 |
+| `agent.failed` / `agent.provider.failed` | `system_event` | 显示明确错误 |
 | `agent.completed` | `system_event` | subtle label，非大气泡 |
 
 关键约束：
@@ -244,7 +245,7 @@ message_type 处理器：
 | 概念 | 定义 |
 |---|---|
 | **Node** | 可接入执行环境，通过 YQP 协议与 Center 通信 |
-| **RuntimeInstance** | Node 上的平台无关执行上下文（privileged / interactive / WASM / Docker） |
+| **RuntimeInstance** | Node 上报的执行上下文抽象，用于匹配 capability 的 `execution_requirements` |
 | **Function** | 主动调用型能力（查日志、重启服务等） |
 | **Signal** | 持续上报型状态（CPU、内存、服务健康等） |
 | **Invocation** | Actor 发起的一次语义调用，可产生 1+ Job |
@@ -256,19 +257,19 @@ message_type 处理器：
 ## 数据模型关系
 
 ```
-Node ──1:N──→ Capability (25 列，Function/Signal 注册信息)
-Node ──1:N──→ RuntimeInstance (9 列，执行上下文)
-Node ──1:N──→ Job (25 列)
-Invocation (17 列) ──1:N──→ Job
-Session (10 列) ──1:N──→ AgentMessage (6 列)
+Node ──1:N──→ Capability（Function/Signal 注册信息）
+Node ──1:N──→ RuntimeInstance（执行上下文）
+Node ──1:N──→ Job
+Invocation ──1:N──→ Job
+Session ──1:N──→ AgentMessage
 Session ──1:N──→ AgentTurn ──1:N──→ AgentTurnEvent
-ApprovalRequest (17 列) ──1:1──→ Invocation
+ApprovalRequest ──1:1──→ Invocation
 MaintenancePlan ──1:N──→ MaintenanceStep ──1:1──→ Job
 MaintenancePlan ──1:N──→ MaintenanceRun ──1:N──→ MaintenanceArtifact
 MaintenanceRun ──1:N──→ RollbackHint
-Job ──1:N──→ ResourceLock (8 列)
-TimelineEvent (13 列，global_seq 自增) — 全局审计
-ApiToken (3 列) — admin / agent scoped
+Job ──1:N──→ ResourceLock
+TimelineEvent（global_seq 自增）— 全局审计
+ApiToken — admin / agent scoped
 ```
 
 ## YQP 协议
@@ -345,15 +346,15 @@ Node 拥有关联的 `RuntimeInstance` 列表（`1:N`），表示不同执行上
 - Node 上报自己的 runtime 列表（全量快照）
 - Center 做 upsert：已有 runtime 更新状态；新增 runtime 创建
 - **减法去重**：本次未上报的 runtime 标记为 `offline`
-- 只存储平台无关属性，不绑定具体容器引擎
+- 只存储统一运行时属性，不绑定具体容器引擎
 
 ### 运行时匹配（capability_resolver）
 
-Capability 声明 `execution_context`，Resolver 匹配 Node 上的 RuntimeInstance：
+Capability 声明 `execution_context` 或 `execution_requirements`，Resolver 匹配 Node 上的 RuntimeInstance：
 
-- `system` → `runtime_kind="privileged"`
-- `user` → 交互式运行时
-- `hybrid` → 优先交互式，回退到特权
+- `system` -> `runtime_kind="privileged"`
+- `user` -> `runtime_kind="interactive"` 且 `interactive=true`
+- `hybrid` -> `allowed_runtime_kinds=["interactive", "privileged"]`
 - 支持按 `privilege`、`labels`、`interactive` 精确匹配
 
 匹配在 `_select_runtime()` 中完成，返回 `(runtime_id, requirements, reason)`。
@@ -602,13 +603,13 @@ Agent 不直接执行，先生成计划：
 3. 生成 `MaintenancePlan` + `MaintenanceStep`
 4. 审批后执行
 
-### SSE 流式事件（25 种类型）
+### SSE 流式事件
 
 参见 `docs/agent-sse-contract.md`。每次 invoke/stream 创建 `AgentTurn` + `AgentTurnEvent` 记录完整事件流，支持前端刷新后重建 UI。
 
-### 回退合成（fallback_synthesis）
+### 协议错误
 
-LLM 最终迭代未产生文本时，系统自动从 tool_call 结果合成为可读摘要。
+Provider 没有返回最终 assistant 文本、没有返回 tool call，或返回非法 planning intent 时，Agent stream 必须发出 `agent.failed`，错误码为 `agent_protocol_error`。系统不得合成 fallback assistant 文本。
 
 ## 维护计划
 
@@ -783,7 +784,7 @@ src/yequ/
 ├── models/              # 18 个 SQLAlchemy 模型
 │   ├── base.py              # Base + TimestampMixin
 │   ├── node.py              # Node + RuntimeInstance 关系
-│   ├── runtime_instance.py  # 平台无关执行上下文
+│   ├── runtime_instance.py  # Node 运行时上下文
 │   ├── capability.py        # Function/Signal 注册
 │   ├── job.py               # 执行任务
 │   ├── invocation.py        # 语义调用
@@ -828,9 +829,10 @@ console-dist/            # 前端构建产物
 
 ## 文档
 
-- `YeQu-Architecture-Design.md` — 架构设计
+- `docs/current-project-overview.md` — 当前项目全貌
+- `docs/documentation-index.md` — 当前文档入口
 - `YQP-Node-Protocol.md` — YQP 协议规范
-- `docs/todos/2026-06-30-center-execution-runtime-v2.md` — 当前主架构待办
+- `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` — 当前质量门禁
 - `docs/documentation-policy.md` — 文档维护与 UTF-8 编码规范
 - `docs/agent-sse-contract.md` — Agent SSE 事件契约
 - `CLAUDE.md` — AI 助手指南

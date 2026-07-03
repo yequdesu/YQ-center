@@ -1,0 +1,1072 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YeQu Center 架构全貌 - 五节点示意</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2937;
+      --muted: #64748b;
+      --line: #d7dee8;
+      --panel: #ffffff;
+      --bg: #f4f7fb;
+      --center: #2563eb;
+      --agent: #7c3aed;
+      --node: #059669;
+      --runtime: #d97706;
+      --relay: #dc2626;
+      --artifact: #0891b2;
+      --audit: #475569;
+      --soft-blue: #eef4ff;
+      --soft-green: #eaf8f0;
+      --soft-amber: #fff6df;
+      --soft-red: #fff0ee;
+      --soft-cyan: #e8f8fb;
+      --shadow: 0 18px 45px rgba(31, 41, 55, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 20px;
+      background: #ffffff;
+      border-right: 1px solid var(--line);
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #111827;
+      color: #fff;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .brand p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav a {
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: #475569;
+      font-size: 14px;
+    }
+
+    .nav a:hover {
+      background: #f1f5f9;
+      color: var(--ink);
+    }
+
+    .legend {
+      margin-top: 28px;
+      display: grid;
+      gap: 10px;
+      color: #475569;
+      font-size: 12px;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      background: var(--muted);
+    }
+
+    .dot.center { background: var(--center); }
+    .dot.agent { background: var(--agent); }
+    .dot.node { background: var(--node); }
+    .dot.runtime { background: var(--runtime); }
+    .dot.relay { background: var(--relay); }
+    .dot.artifact { background: var(--artifact); }
+
+    main {
+      padding: 34px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.04;
+      max-width: 860px;
+    }
+
+    .subtitle {
+      max-width: 900px;
+      margin: 14px 0 0;
+      color: #526173;
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .stamp {
+      min-width: 220px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    section {
+      margin-top: 34px;
+      scroll-margin-top: 24px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 14px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .section-head p {
+      margin: 0;
+      max-width: 740px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .canvas {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .topology {
+      position: relative;
+      min-height: 700px;
+      padding: 28px;
+      background:
+        linear-gradient(90deg, rgba(215, 222, 232, 0.35) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(215, 222, 232, 0.35) 1px, transparent 1px),
+        #ffffff;
+      background-size: 32px 32px;
+    }
+
+    .zone {
+      position: absolute;
+      border: 1px dashed #cbd5e1;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(255,255,255,0.84);
+    }
+
+    .zone.center-zone {
+      left: 31%;
+      top: 42px;
+      width: 38%;
+      height: 420px;
+    }
+
+    .zone.node-zone {
+      left: 24px;
+      right: 24px;
+      bottom: 24px;
+      height: 205px;
+    }
+
+    .arch-node,
+    .center-box,
+    .client-box,
+    .relay-box,
+    .store-box {
+      position: absolute;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 10px 24px rgba(31, 41, 55, 0.07);
+    }
+
+    .client-box {
+      width: 190px;
+      padding: 14px;
+      left: 54px;
+      top: 72px;
+      background: #f8f5ff;
+      border-color: #ddd6fe;
+    }
+
+    .center-box {
+      left: 38%;
+      top: 116px;
+      width: 24%;
+      min-width: 260px;
+      padding: 16px;
+      background: var(--soft-blue);
+      border-color: #bfdbfe;
+    }
+
+    .store-box {
+      width: 190px;
+      padding: 14px;
+      right: 58px;
+      top: 94px;
+      background: #f8fafc;
+    }
+
+    .relay-box {
+      width: 220px;
+      padding: 14px;
+      right: 56px;
+      top: 314px;
+      background: var(--soft-red);
+      border-color: #fecaca;
+    }
+
+    .arch-node {
+      width: 18%;
+      min-width: 165px;
+      padding: 14px;
+      bottom: 54px;
+      background: var(--soft-green);
+      border-color: #bbf7d0;
+    }
+
+    .node-1 { left: 3.5%; }
+    .node-2 { left: 23%; }
+    .node-3 { left: 42.5%; }
+    .node-4 { left: 62%; }
+    .node-5 { left: 81.5%; transform: translateX(-8%); }
+
+    .box-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .box-sub {
+      margin: 0;
+      color: #526173;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .line {
+      position: absolute;
+      height: 2px;
+      background: var(--line);
+      transform-origin: left center;
+      z-index: 0;
+    }
+
+    .line::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -4px;
+      border-left: 8px solid currentColor;
+      border-top: 5px solid transparent;
+      border-bottom: 5px solid transparent;
+      color: inherit;
+    }
+
+    .control { background: #93c5fd; color: #2563eb; }
+    .data { background: #fca5a5; color: #dc2626; }
+    .audit { background: #cbd5e1; color: #475569; }
+    .artifact-line { background: #67e8f9; color: #0891b2; }
+
+    .l-client-center {
+      width: 20%;
+      left: 228px;
+      top: 160px;
+    }
+
+    .l-center-store {
+      width: 21%;
+      left: 61%;
+      top: 160px;
+    }
+
+    .l-center-relay {
+      width: 17%;
+      left: 58%;
+      top: 314px;
+      transform: rotate(24deg);
+    }
+
+    .l-node-center-1 {
+      width: 22%;
+      left: 13%;
+      top: 530px;
+      transform: rotate(-33deg);
+    }
+
+    .l-node-center-2 {
+      width: 18%;
+      left: 31%;
+      top: 512px;
+      transform: rotate(-56deg);
+    }
+
+    .l-node-center-3 {
+      width: 15%;
+      left: 48%;
+      top: 500px;
+      transform: rotate(-82deg);
+    }
+
+    .l-node-center-4 {
+      width: 18%;
+      left: 58%;
+      top: 508px;
+      transform: rotate(-124deg);
+    }
+
+    .l-node-center-5 {
+      width: 23%;
+      left: 71%;
+      top: 528px;
+      transform: rotate(-147deg);
+    }
+
+    .l-node-relay-1 {
+      width: 56%;
+      left: 15%;
+      top: 592px;
+      transform: rotate(-18deg);
+    }
+
+    .l-node-relay-3 {
+      width: 33%;
+      left: 50%;
+      top: 585px;
+      transform: rotate(-39deg);
+    }
+
+    .l-node-relay-5 {
+      width: 14%;
+      left: 82%;
+      top: 565px;
+      transform: rotate(-71deg);
+    }
+
+    .line-label {
+      position: absolute;
+      padding: 4px 7px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid #e2e8f0;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 700;
+      z-index: 2;
+      white-space: nowrap;
+    }
+
+    .label-control { left: 255px; top: 134px; }
+    .label-yqp { left: 46%; top: 468px; }
+    .label-data { right: 262px; top: 490px; }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid.cols-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .unit {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+      min-height: 150px;
+      box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
+    }
+
+    .unit h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .unit p {
+      margin: 0;
+      color: #526173;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .unit.center { border-top: 4px solid var(--center); }
+    .unit.agent { border-top: 4px solid var(--agent); }
+    .unit.node { border-top: 4px solid var(--node); }
+    .unit.runtime { border-top: 4px solid var(--runtime); }
+    .unit.relay { border-top: 4px solid var(--relay); }
+    .unit.artifact { border-top: 4px solid var(--artifact); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 12px;
+      padding: 20px;
+      overflow-x: auto;
+    }
+
+    .step {
+      position: relative;
+      min-width: 120px;
+      padding: 14px 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .step::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 2px;
+      right: -16px;
+      top: 50%;
+      background: #94a3b8;
+    }
+
+    .step:last-child::after {
+      display: none;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #111827;
+      font-size: 14px;
+    }
+
+    .step span {
+      display: block;
+      color: #526173;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .lane {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      border-top: 1px solid var(--line);
+    }
+
+    .lane:first-child {
+      border-top: none;
+    }
+
+    .lane-name {
+      padding: 16px;
+      background: #f8fafc;
+      border-right: 1px solid var(--line);
+      font-weight: 800;
+      color: #334155;
+    }
+
+    .lane-body {
+      padding: 16px;
+      color: #475569;
+      line-height: 1.65;
+      font-size: 14px;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      font-size: 13px;
+    }
+
+    .matrix th,
+    .matrix td {
+      border: 1px solid var(--line);
+      padding: 12px;
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.55;
+    }
+
+    .matrix th {
+      background: #f8fafc;
+      color: #334155;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .callout {
+      border: 1px solid #fed7aa;
+      border-left: 5px solid var(--runtime);
+      border-radius: 8px;
+      background: var(--soft-amber);
+      padding: 16px 18px;
+      color: #6b4e16;
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: #eef2f7;
+      color: #334155;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.95em;
+    }
+
+    .footer {
+      margin: 34px 0 8px;
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1120px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .rail {
+        position: static;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .legend {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .topbar {
+        flex-direction: column;
+      }
+
+      .stamp {
+        width: 100%;
+      }
+
+      .grid.cols-3,
+      .grid.cols-4 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .topology {
+        min-height: 1040px;
+      }
+
+      .client-box,
+      .center-box,
+      .store-box,
+      .relay-box,
+      .arch-node,
+      .zone {
+        position: relative;
+        left: auto;
+        right: auto;
+        top: auto;
+        bottom: auto;
+        width: 100%;
+        min-width: 0;
+        transform: none;
+        margin-bottom: 12px;
+      }
+
+      .zone.center-zone,
+      .zone.node-zone {
+        height: auto;
+      }
+
+      .line,
+      .line-label {
+        display: none;
+      }
+    }
+
+    @media (max-width: 680px) {
+      main {
+        padding: 22px 16px;
+      }
+
+      .nav,
+      .legend,
+      .grid.cols-3,
+      .grid.cols-4 {
+        grid-template-columns: 1fr;
+      }
+
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .lane {
+        grid-template-columns: 1fr;
+      }
+
+      .lane-name {
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <div class="brand-mark">YQ</div>
+        <div>
+          <h1>YeQu Center</h1>
+          <p>五节点架构视图</p>
+        </div>
+      </div>
+      <nav class="nav" aria-label="页面导航">
+        <a href="#topology">全局拓扑</a>
+        <a href="#runtime">执行链路</a>
+        <a href="#yqp">YQP 生命周期</a>
+        <a href="#transfer">大文件传输</a>
+        <a href="#nodes">五个 Node</a>
+        <a href="#boundaries">边界与风险</a>
+      </nav>
+      <div class="legend" aria-label="图例">
+        <div class="legend-row"><span class="dot center"></span>Center 控制面</div>
+        <div class="legend-row"><span class="dot agent"></span>Agent / Console / CLI</div>
+        <div class="legend-row"><span class="dot node"></span>Node 执行面</div>
+        <div class="legend-row"><span class="dot runtime"></span>Runtime / Operation</div>
+        <div class="legend-row"><span class="dot relay"></span>yq-croc 数据面</div>
+        <div class="legend-row"><span class="dot artifact"></span>Artifact 小文件面</div>
+      </div>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <div>
+          <p class="eyebrow">当前架构总览 / 2026-07-03</p>
+          <h1 class="title">Center 唯一调度，Node 只执行，数据面按任务选择路径。</h1>
+          <p class="subtitle">
+            这个视图按当前代码和文档主线绘制：Agent、Console、CLI 都进入 Center；Center 通过 Guard、Policy、Admission 和 Operation Runtime 管理执行；Node 通过出站 HTTPS/YQP 领取 Job 并上报事实；大文件用 yq-croc relay-capable 数据面，不让 Center API 带宽承载文件主体。
+          </p>
+        </div>
+        <div class="stamp">
+          <strong>假设拓扑</strong><br>
+          5 个 Node：2 个家庭设备、1 个远端 Linux、1 个 NAS、1 个云端 worker。所有 Node 都不能被 Center 反连，只能主动出站连接。
+        </div>
+      </div>
+
+      <section id="topology">
+        <div class="section-head">
+          <h2>全局拓扑</h2>
+          <p>蓝线是控制面和审计面，红线是大文件数据面。Center 不直接实现 croc，也不把大文件内容塞进 YQP、Agent prompt 或普通 artifact 通道。</p>
+        </div>
+        <div class="canvas topology" role="img" aria-label="YeQu Center 五节点拓扑图">
+          <div class="zone center-zone">Center 公网入口 / 控制平面</div>
+          <div class="zone node-zone">分布式 Node / 出站连接 / 本地插件运行时</div>
+
+          <div class="line control l-client-center"></div>
+          <div class="line audit l-center-store"></div>
+          <div class="line control l-center-relay"></div>
+          <div class="line control l-node-center-1"></div>
+          <div class="line control l-node-center-2"></div>
+          <div class="line control l-node-center-3"></div>
+          <div class="line control l-node-center-4"></div>
+          <div class="line control l-node-center-5"></div>
+          <div class="line data l-node-relay-1"></div>
+          <div class="line data l-node-relay-3"></div>
+          <div class="line data l-node-relay-5"></div>
+
+          <div class="line-label label-control">Agent / Console / CLI -> Center API</div>
+          <div class="line-label label-yqp">YQP: poll / job.event / finished</div>
+          <div class="line-label label-data">yq-croc encrypted data stream</div>
+
+          <div class="client-box">
+            <p class="box-title"><span class="dot agent"></span>调用入口</p>
+            <p class="box-sub">Console、CLI、Agent Provider。只能通过 Center 标准路径发起意图，不直连 Node。</p>
+            <div class="pills">
+              <span class="pill">/agent/invoke/stream</span>
+              <span class="pill">/admin/*</span>
+              <span class="pill">CLI</span>
+            </div>
+          </div>
+
+          <div class="center-box">
+            <p class="box-title"><span class="dot center"></span>YeQu Center</p>
+            <p class="box-sub">认证、registry、Guard、Policy、Admission、Operation、TransferSession、Timeline、Artifact、Console 投影。</p>
+            <div class="pills">
+              <span class="pill">Capability Registry</span>
+              <span class="pill">Execution Runtime v2</span>
+              <span class="pill">Operation Bus</span>
+              <span class="pill">Timeline</span>
+            </div>
+          </div>
+
+          <div class="store-box">
+            <p class="box-title"><span class="dot audit"></span>PostgreSQL / Blob</p>
+            <p class="box-sub">Node、Capability、Invocation、Job、Operation、Transfer、Artifact、Timeline 的事实源。</p>
+            <div class="pills">
+              <span class="pill">Audit</span>
+              <span class="pill">Outbox</span>
+              <span class="pill">Read model</span>
+            </div>
+          </div>
+
+          <div class="relay-box">
+            <p class="box-title"><span class="dot relay"></span>croc Relay / Relay Pool</p>
+            <p class="box-sub">公共 relay、私有 relay 或 relay pool。只承载加密后的数据面，Center 可选择但不读文件内容。</p>
+            <div class="pills">
+              <span class="pill">public relay</span>
+              <span class="pill">private relay</span>
+              <span class="pill">relay pool</span>
+            </div>
+          </div>
+
+          <div class="arch-node node-1">
+            <p class="box-title"><span class="dot node"></span>winClient</p>
+            <p class="box-sub">Windows 家庭设备，图形会话与后台 daemon 并存。</p>
+            <div class="pills"><span class="pill">windows.*</span><span class="pill">yq-croc.exe</span></div>
+          </div>
+          <div class="arch-node node-2">
+            <p class="box-title"><span class="dot node"></span>linux-node-01</p>
+            <p class="box-sub">远端 Linux 节点，systemd daemon + 插件适配。</p>
+            <div class="pills"><span class="pill">linux.*</span><span class="pill">artifact</span></div>
+          </div>
+          <div class="arch-node node-3">
+            <p class="box-title"><span class="dot node"></span>nas-node</p>
+            <p class="box-sub">存储节点，文件 stat、hash、磁盘空间、下载落地。</p>
+            <div class="pills"><span class="pill">filesystem</span><span class="pill">transfer</span></div>
+          </div>
+          <div class="arch-node node-4">
+            <p class="box-title"><span class="dot node"></span>mac-studio-node</p>
+            <p class="box-sub">未来 macOS/工作站节点，按相同 capability 合同接入。</p>
+            <div class="pills"><span class="pill">future</span><span class="pill">contract</span></div>
+          </div>
+          <div class="arch-node node-5">
+            <p class="box-title"><span class="dot node"></span>cloud-worker-01</p>
+            <p class="box-sub">云端 worker，可作为任务执行或受控 relay 邻近节点。</p>
+            <div class="pills"><span class="pill">worker</span><span class="pill">egress</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="runtime">
+        <div class="section-head">
+          <h2>执行链路</h2>
+          <p>Center Runtime v2 的核心职责是把意图变成可审计、可等待、可取消、可恢复、可观察的执行过程。</p>
+        </div>
+        <div class="canvas">
+          <div class="flow">
+            <div class="step"><strong>1. Intent</strong><span>Agent、Console 或 CLI 提交用户意图，生产主路径是流式 Agent 调用。</span></div>
+            <div class="step"><strong>2. Discovery</strong><span>Capability Registry 通过 meta tools 搜索、描述和选择具体 source。</span></div>
+            <div class="step"><strong>3. Guard</strong><span>ExecutionGuard 检查硬事实：缺槽位、读写路径、runtime、空间、preflight。</span></div>
+            <div class="step"><strong>4. Policy</strong><span>PolicyEngine 根据 execution mode、risk、effect 判断 allow、ask 或 deny。</span></div>
+            <div class="step"><strong>5. Admission</strong><span>Admission 决定 inline、sync wait、waitable operation 或 workflow operation。</span></div>
+            <div class="step"><strong>6. Runtime</strong><span>CenterExecutionRuntime 创建 Invocation、Job、Operation 或 TransferSession。</span></div>
+          </div>
+        </div>
+        <div class="grid cols-4" style="margin-top:16px">
+          <div class="unit center">
+            <h3>Capability Registry</h3>
+            <p>维护 definition/source。Agent 默认不直接看到所有 Node 能力，而是通过 <code>capability.search</code>、<code>capability.describe</code>、<code>capability.invoke</code> 进入。</p>
+          </div>
+          <div class="unit runtime">
+            <h3>Operation Runtime</h3>
+            <p>长任务承载在 Operation 上，Transfer、Job、ApprovalWait、Maintenance 都通过 handler 投影状态和进度。</p>
+          </div>
+          <div class="unit agent">
+            <h3>AgentRun Checkpoint</h3>
+            <p>Provider 输出、tool observation、waiting_operation、waiting_approval、final/failure 都记录为结构化步骤。</p>
+          </div>
+          <div class="unit artifact">
+            <h3>Timeline / Artifact</h3>
+            <p>Timeline 是审计和追踪主干。Artifact 用于截图、日志、小中型文件和媒体展示，不承担默认大文件跨 Node 数据面。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="yqp">
+        <div class="section-head">
+          <h2>YQP 生命周期</h2>
+          <p>Node 与 Center 的稳定通道是出站 HTTPS/YQP。Node 轮询领取 Job，上报事件和终态；Node 不是业务事务发起者。</p>
+        </div>
+        <div class="canvas stack">
+          <div class="lane">
+            <div class="lane-name">Node 接入</div>
+            <div class="lane-body"><code>node.hello</code>、heartbeat、capability snapshot registration、runtime facts。Center 写 registry 和 liveness 事实。</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">Job 下发</div>
+            <div class="lane-body"><code>job.poll</code> 返回可领取 Job；Node 进入 accepted/running，执行本地 capability 或插件适配。</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">过程事实</div>
+            <div class="lane-body"><code>job.event</code> 写入 Timeline，并投影到 Job progress read model。事件只表示过程事实，不直接改变终态。</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">终态收敛</div>
+            <div class="lane-body"><code>job.finished</code> 进入 succeeded、failed、cancelled 或 timeout。终态不可变，状态转换必须经过 state machine。</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">恢复与对账</div>
+            <div class="lane-body">Node reconnect 后通过 reconcile 报告本地事实。Center 根据 Operation、Job、TransferSession 和 ledger 判断下一步。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="transfer">
+        <div class="section-head">
+          <h2>大文件传输</h2>
+          <p>Center 只调度，不中转文件主体。跨 NAT 默认用 yq-croc relay-capable 数据面；公共 relay 不承诺单次必达，失败后由 Center 创建下一次 attempt 或 resume。</p>
+        </div>
+        <div class="grid cols-3">
+          <div class="unit runtime">
+            <h3>1. Preflight</h3>
+            <p><code>transfer.preflight</code> 调用两端 <code>*.transfer.local.stat</code> 与 <code>*.transfer.croc.status</code>，确认源可读、目标可写、runtime 可用、relay 可达。</p>
+          </div>
+          <div class="unit center">
+            <h3>2. TransferSession</h3>
+            <p>Center 生成 transfer_id、code_hash、route_policy、attempt。先启动 sender，等待结构化 <code>sender_ready</code>。</p>
+          </div>
+          <div class="unit node">
+            <h3>3. Receiver Job</h3>
+            <p>sender ready 后启动 receiver。两端 Node 只执行当前 Center Job，不自行换 relay、换 code、重试或 resume。</p>
+          </div>
+          <div class="unit relay">
+            <h3>4. Data Plane</h3>
+            <p>sender/receiver 都出站连接同一个 relay。relay 转发 croc 加密数据，不读取文件内容。</p>
+          </div>
+          <div class="unit artifact">
+            <h3>5. Progress</h3>
+            <p><code>yq-croc</code> stdout NDJSON 事件由 Node adapter 映射为 YQP <code>job.event</code>，Center 聚合成 Operation 进度。</p>
+          </div>
+          <div class="unit runtime">
+            <h3>6. Resume</h3>
+            <p>跨 Job resume 只能由 Center 发起。Node ledger 是事实存储，不是调度队列。</p>
+          </div>
+        </div>
+        <div class="callout" style="margin-top:16px">
+          传输路径的固定边界：不通过 Center API/YQP JSON/Agent prompt 转发大文件；不让 Node 自主发起业务事务；不让旧 croc CLI fallback 污染当前方案；不把公共 relay 失败伪装成业务成功。
+        </div>
+      </section>
+
+      <section id="nodes">
+        <div class="section-head">
+          <h2>五个 Node 的角色假设</h2>
+          <p>这些 Node 名称中，winClient 和 linux-node-01 来自当前项目语境；其余三个用于展示未来同合同扩展方式。</p>
+        </div>
+        <div class="canvas">
+          <table class="matrix">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>位置与网络</th>
+                <th>注册能力</th>
+                <th>运行时要求</th>
+                <th>典型任务</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>winClient</strong></td>
+                <td>家庭 Windows，NAT 后，仅出站 HTTPS/YQP 和 relay egress。</td>
+                <td><code>windows.file.*</code>、<code>windows.transfer.croc.*</code>、artifact download。</td>
+                <td>daemon 在线；yq-croc.exe 可执行；防火墙允许出站 relay TCP。</td>
+                <td>发送游戏包、拉取 artifact、执行 Windows 本地诊断。</td>
+              </tr>
+              <tr>
+                <td><strong>linux-node-01</strong></td>
+                <td>远端 Linux，systemd daemon，通常无入站业务端口要求。</td>
+                <td><code>linux.filesystem.*</code>、<code>linux.network.*</code>、<code>linux.transfer.croc.*</code>。</td>
+                <td>yq-croc 位于配置路径；relay probe 可达；目标目录权限明确。</td>
+                <td>接收大文件、hash 校验、磁盘空间检查、目录准备。</td>
+              </tr>
+              <tr>
+                <td><strong>nas-node</strong></td>
+                <td>家庭或办公室 NAS，存储容量大，网络可能低速或受限。</td>
+                <td>文件 stat、hash、disk_usage、artifact cache、transfer receive。</td>
+                <td>严格资源锁；写操作 serial；传输必须支持 progress/cancel。</td>
+                <td>归档、备份、跨 Node 文件落地。</td>
+              </tr>
+              <tr>
+                <td><strong>mac-studio-node</strong></td>
+                <td>未来 macOS 工作站，同样只按 YQP 接入。</td>
+                <td>按 Node capability contract 注册平台前缀能力。</td>
+                <td>manifest 声明 runtime_kind、labels、interactive、privilege。</td>
+                <td>媒体处理、构建任务、本地工具桥接。</td>
+              </tr>
+              <tr>
+                <td><strong>cloud-worker-01</strong></td>
+                <td>公网云主机或 VPS，可部署在 Center 附近或独立网络。</td>
+                <td>worker 执行能力、relay-probe、artifact staging、future transfer worker。</td>
+                <td>高可靠 egress；可选私有 relay 邻近；不读取 Center token 之外的业务秘密。</td>
+                <td>稳定 relay 邻近任务、批处理、异地中转策略验证。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="boundaries">
+        <div class="section-head">
+          <h2>边界与当前风险</h2>
+          <p>这部分是架构上的硬边界和近期需要继续收口的点，避免实现重新变成大入口或隐式 fallback。</p>
+        </div>
+        <div class="grid cols-3">
+          <div class="unit center">
+            <h3>Center 是唯一事务调度者</h3>
+            <p>TransferSession、attempt、relay 选择、code 生成、取消、resume 都由 Center 建模和审计。Node 不能自行创建业务事务。</p>
+          </div>
+          <div class="unit node">
+            <h3>Node 只执行当前 Job</h3>
+            <p>Node 可以在当前进程内 reconnect，但不能跨 Job 自主 resume、切 relay、换 code 或通知另一端。</p>
+          </div>
+          <div class="unit relay">
+            <h3>公共 relay 不是可靠性承诺</h3>
+            <p>公共 relay 失败必须可诊断、可重试、可 resume。高稳定性需要受控 relay 或 relay pool。</p>
+          </div>
+          <div class="unit runtime">
+            <h3>长任务不让 LLM 轮询</h3>
+            <p>长任务进入 Operation，AgentRun 进入 waiting_operation，Console 展示进度；恢复通过 context_refs 或 resume-run。</p>
+          </div>
+          <div class="unit artifact">
+            <h3>Artifact 不替代大文件传输</h3>
+            <p>Artifact 适合截图、日志、小中型文件和展示。Node-to-Node 大文件默认走 yq-croc 数据面。</p>
+          </div>
+          <div class="unit agent">
+            <h3>Agent 上下文需要预算</h3>
+            <p>能力发现和工具结果必须有投影、分页、摘要和 result_ref，避免大输出反复进入 LLM 上下文。</p>
+          </div>
+        </div>
+      </section>
+
+      <p class="footer">
+        依据：<code>docs/current-project-overview.md</code>、<code>docs/node-capability-contract.md</code>、<code>docs/todos/2026-06-30-center-execution-runtime-v2.md</code>、<code>docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md</code>。这是静态展示页，不连接数据库，不读取生产状态。
+      </p>
+    </main>
+  </div>
+</body>
+</html>

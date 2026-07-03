@@ -178,7 +178,7 @@ Node 必须以响应值为运行参数，不要硬编码 poll/heartbeat 周期�
 
 ## 7. Runtime Snapshot
 
-Runtime 表示 Node 内部的平台无关执行上下文。Center 用它匹配 capability 的 `execution_requirements`。
+Runtime 表示 Node 内部的执行上下文抽象。Center 用它匹配 capability 的 `execution_requirements`；平台差异由 Node daemon、plugin adapter、runtime labels 和 capability manifest 表达。
 
 Runtime 字段：
 
@@ -192,6 +192,8 @@ Runtime 字段：
 | `labels` | 可选标签，用于 capability 匹配。 |
 | `owner` | 可选。 |
 | `metadata` | 可选，不参与通用调度语义。 |
+
+这里的 `docker` 只是 Node 可声明的一种 runtime kind，不表示当前阶段要实现 Center Docker 独立部署或生产部署闭环。
 
 `node.hello`、`node.heartbeat`、`node.register_capabilities` 都可以携带 `runtimes`。Center 将它视为当前 Node 的 runtime 全量快照：本次未上报且原本 `online` 的 runtime 会被标记为 `offline`。
 
@@ -303,7 +305,7 @@ Node 是 runtime 权限声明的事实来源。Node 只能上报自己已经本�
 | `resource_keys` | 否 | 用于资源锁和并发控制。 |
 | `conflict_policy` | 否 | `allow_parallel`、`serialize`、`reject_if_running`。 |
 | `execution_context` | 否 | 兼容简写：`system`、`user`、`hybrid`。 |
-| `execution_requirements` | 否 | 推荐使用。匹配 runtime 的平台无关要求。 |
+| `execution_requirements` | 否 | 推荐使用。匹配 runtime 的统一要求。 |
 | `hidden_input_fields` | 否 | 不暴露给 Agent 的内部字段。 |
 | `preflight_supported` | 否 | 是否支持 dry-run/preflight。 |
 | `supports_progress` | 否 | 长任务是否能通过 `job.event` 上报进度。 |
@@ -321,7 +323,7 @@ Node 是 runtime 权限声明的事实来源。Node 只能上报自己已经本�
 |---|---|
 | `system` | `{"runtime_kind": "privileged"}` |
 | `user` | `{"runtime_kind": "interactive", "interactive": true}` |
-| `hybrid` | `{"runtime_kind": "interactive", "fallback_runtime_kind": "privileged"}` |
+| `hybrid` | `{"allowed_runtime_kinds": ["interactive", "privileged"]}` |
 
 新 capability 推荐直接写 `execution_requirements`，避免平台语义混入 Center。
 
@@ -807,7 +809,7 @@ Node 实现原则：
 8. 长任务续租：超过 lease 一半的任务必须 `job.lease_renew`。
 9. 重启恢复：本地保留未确认终态 Job，启动后发送 `node.reconcile_jobs`。
 
-建议第一批 Linux capabilities：
+最小 Linux capability 起步集合：
 
 | name | risk | effect | runtime |
 |---|---|---|---|
@@ -816,7 +818,7 @@ Node 实现原则：
 | `linux.process.list` | `safe` | `read` | `privileged` |
 | `linux.filesystem.stat` | `safe` | `read` | `privileged` |
 
-暂不建议第一版实现任意 shell 写操作。若要实现命令执行，必须拆成：
+不提供任意 shell 写操作。若要实现命令执行，必须拆成：
 
 - `linux.shell.exec.readonly`：只允许白名单只读命令。
 - `linux.shell.exec`：`risk=maintenance` 或更高，`effect=write/external`，需要审批策略覆盖。
@@ -826,7 +828,7 @@ Node 实现原则：
 - 不支持 WebSocket job push。
 - 不支持 Node 主动自动注册到 Center，必须先由 Admin provisioning 创建 node/token。
 - YQP `artifact.upload` 已支持轻量二进制 artifact 上传；`GET /yqp/artifacts/{artifact_id}/download` 已支持 Node Bearer token 下载 Center artifact；但不支持分片、断点续传或跨 Node 大文件传输。
-- Center Execution Runtime v2 / Operation Bus 是 Center 侧调度层，不改变 YQP 第一版合同。Node 仍只通过 `job.*`、`artifact.upload`、`signal.report`、`node.reconcile_jobs` 等协议消息执行与上报；Node 不直接感知 Operation。
+- Center Execution Runtime v2 / Operation Bus 是 Center 侧调度层，不改变 YQP 合同。Node 仍只通过 `job.*`、`artifact.upload`、`signal.report`、`node.reconcile_jobs` 等协议消息执行与上报；Node 不直接感知 Operation。
 - 不支持按 Signal stale 自动把 Node 标记为 degraded；当前调度主要看 heartbeat liveness。
 - 不支持在 YQP payload 中传 node token。
 
@@ -916,4 +918,4 @@ Authorization: Bearer <node-token>
 - Node capability 必须把响应体流式写入本地文件，不得把 bytes 放入 `job.finished.output`。
 - Node 必须校验 `X-YeQu-Artifact-Sha256`，不一致时上报 `integrity_mismatch` 或等价稳定错误。
 - 该端点是 Center -> Node artifact 下发的底层数据通道；它本身不创建 Job、Operation 或 workflow。
-- 该端点不支持断点续传。需要大文件或跨 Node 传输时，优先使用 `transfer.create` + croc。
+- 该端点不支持断点续传。需要大文件或跨 Node 传输时，优先使用 `transfer.create` / yq-croc 工作流。

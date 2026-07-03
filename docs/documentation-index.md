@@ -1,80 +1,65 @@
 # 文档索引
 
 状态：当前文档入口
-更新时间：2026-06-30
+更新时间：2026-07-03
 
-本文说明当前哪些文档是权威依据，哪些文档已经归档，避免后续开发引用过期计划。
+本文是 YeQu Center 文档系统的唯一入口。当前开发只应引用“当前权威文档”和“活跃待办”；`docs/archive/` 下内容只解释历史演进，不能覆盖当前代码、协议和合同。
 
-## 权威文档
+## 1. 当前权威文档
 
-| 文档 | 用途 |
+| 文档 | 职责 |
 |---|---|
-| `YQP-Node-Protocol.md` | Node/Center 协议合同。开发 Windows node、Linux node 必须以此为准。 |
-| `docs/node-capability-contract.md` | 跨平台 Node capability 合同。约束 manifest 精细度、preflight/progress/cancel/resume、错误码、artifact/transfer 能力和 ExecutionGuard/PolicyEngine 边界。 |
-| `YeQu-Architecture-Design.md` | 高层架构与设计意图。若与代码或 YQP 当前合同冲突，以代码和 YQP 当前合同为准。 |
-| `docs/linux-node-development-contract.md` | 当前 Linux Node / `nodes/linux/yequnode` 的实现约束、权限模型和能力范围。 |
-| `docs/current-project-overview.md` | 当前项目全貌、能力边界和下一步主线。 |
+| `README.md` | 项目入口、快速启动、API 概览、开发命令和配置说明。 |
+| `YQP-Node-Protocol.md` | Node 接入 Center 的权威协议合同。Windows/Linux/未来 Node Daemon 必须以此为准。 |
+| `docs/current-project-overview.md` | 当前项目全貌、架构边界、能力状态和下一阶段主线。 |
+| `docs/node-capability-contract.md` | 面向多平台 Node 接入的 capability 合同。约束 manifest、runtime requirements、preflight、progress、cancel/resume、错误码、artifact/transfer 能力和 Guard/Policy 边界。 |
+| `docs/linux-node-development-contract.md` | Linux Node 当前实现合同、权限模型和能力范围。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
-| `docs/documentation-policy.md` | 文档维护规范，包含 UTF-8 编码硬规则、归档规则和一致性规则。 |
-| `docs/yqp-production-reliability-report-2026-06-25.md` | YQP 可靠性修复记录，作为排障参考。 |
-| `docs/debug-blog/2026-06-28-db-lock-saga.md` | DB 锁事故系列复盘，记录 Agent 长事务、YQP dedup 热路径 DELETE 和部署验证问题。 |
-| `docs/debug-blog/2026-06-28-yqp-deadlock-postmortem.md` | DB 连接池/事务阻塞事故复盘，作为部署排障参考。 |
+| `docs/documentation-policy.md` | 文档编码、状态、归档、一致性和事实来源规则。 |
+| `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 下一阶段前的文档与架构质量门禁。 |
 
-## 设想与路线文档
+## 2. 活跃待办
 
-| 文档 | 用途 |
+| 文档 | 范围 |
 |---|---|
-| `docs/proposals/README.md` | 设想/提案/路线文档目录说明。 |
-| 无活跃 proposal | 已采纳或已被主线吸收的 proposal 已归档。 |
+| `docs/todos/README.md` | 当前待办目录说明。 |
+| `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性和错误传播门禁。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、连通性探测、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
-## 活跃待办文档
+## 3. 已归档内容
 
-| 文档 | 用途 |
+以下内容已经归档，只能作为背景材料阅读。
+
+| 归档目录 | 内容 |
 |---|---|
-| `docs/todos/README.md` | 当前待办文档目录。 |
-| `docs/todos/2026-07-01-yq-croc-plugin-runtime-plan.md` | yq-croc 插件运行时计划。基于 croc Go 源码做独立可选传输运行时，替代脆弱的 croc CLI 包装和错误的直连传输路线。 |
-| `docs/todos/2026-06-30-center-execution-runtime-v2.md` | 当前主路线图。将 Capability Runtime v1 升级为 Center Execution Runtime v2，覆盖 Admission、Operation Bus、workflow handlers、Agent wait/resume 和 future MQ 边界。 |
-| `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md` | 阶段 6 前强制优化待办。覆盖 Operation 进度透明、ExecutionGuard、Agent 工具选择治理、transfer preflight、capability projection 查询、Node capability 描述合同、prompt diagnostics 和 Linux Node 能力扩展。 |
-| `docs/todos/2026-06-29-agent-provider-system.md` | Agent Provider 系统路线图：provider registry、模型发现、连通性探测和前端动态选择。 |
+| `docs/archive/todos/` | 已完成、已被吸收或已被替代的路线图和阶段计划。 |
+| `docs/archive/proposals/` | 已采纳或已废弃的设计提案。 |
+| `docs/archive/overview/` | 旧架构概览、旧项目全貌和历史交接材料。 |
+| `docs/archive/postmortems/` | 事故复盘、可靠性报告和排障记录。 |
+| `docs/archive/visuals/` | 临时展示页、架构图和非合同型展示材料。 |
+| `docs/archive/refactor/` | 历史重构计划、完成报告和 mypy 债务记录。 |
+| `docs/archive/superpowers/` | 早期分阶段实现计划和旧 UX spec。 |
 
-## 历史诊断与交接类文档
+重点归档说明：
 
-| 文档 | 状态 |
+| 文档 | 当前状态 |
 |---|---|
-| `docs/archive/refactor/architecture-handoff-2026-06-27.md` | 历史交接记录，不能作为当前计划来源。 |
-| `docs/archive/refactor/refactor-completion-report-2026-06-25.md` | 历史完成报告。 |
-| `docs/archive/refactor/center-agent-refactor-execution-plan.md` | 已执行过的 Center/Agent 解耦计划，当前只作背景。 |
-| `docs/archive/refactor/mypy-debt-plan-2026-06-27.md` | 历史 mypy 债务计划。 |
-| `docs/archive/overview/current-project-overview-2026-06-28.md` | 旧项目全貌，Operation v2 落地前的历史诊断。 |
-| `docs/archive/todos/2026-06-28-center-capability-runtime-v1.md` | v1 capability runtime 历史基线。 |
-| `docs/archive/todos/2026-06-28-agent-multinode-routing.md` | 多 Node Agent UX 历史基线。 |
-| `docs/archive/todos/2026-06-28-agent-tool-rag-roadmap.md` | 旧 Tool RAG 路线，已被当前结构化 capability discovery 和未来 retrieval 计划吸收。 |
-| `docs/archive/todos/2026-06-29-artifact-transfer-strategy.md` | 旧 artifact/transfer 路线，已被 Node capability 合同和阶段 5H-5K 吸收。 |
-| `docs/archive/proposals/2026-06-30-operation-bus-execution-admission.md` | 已采纳提案，当前内容并入 Execution Runtime v2 主线。 |
-| `docs/archive/proposals/artifact-media-blob-layer.md` | 旧 Artifact/Media/Blob 提案，已被当前 Artifact 实现和 Node capability 合同吸收。 |
+| `docs/archive/overview/yequ-architecture-design-v0.1.md` | 早期架构草案，已被 `docs/current-project-overview.md` 和当前代码取代。 |
+| `docs/archive/todos/2026-06-30-center-execution-runtime-v2.md` | Runtime v2 实施路线和历史记录，核心内容已落地并由当前 overview 承接。 |
+| `docs/archive/todos/2026-06-30-pre-phase6-agent-operation-polish.md` | 阶段 6 前置优化历史计划，已被质量门禁文档吸收。 |
+| `docs/archive/todos/2026-07-01-yq-croc-plugin-runtime-plan.md` | yq-croc 插件运行时方案历史记录；当前执行约束以 capability 合同和 transfer 实现为准。 |
+| `docs/archive/postmortems/yqp-production-reliability-report-2026-06-25.md` | YQP 可靠性修复记录，作为排障背景。 |
+| `docs/archive/postmortems/2026-06-28-db-lock-saga.md` | DB 锁事故复盘。 |
+| `docs/archive/postmortems/2026-06-28-yqp-deadlock-postmortem.md` | YQP/DB 阻塞事故复盘。 |
+| `docs/archive/visuals/architecture-five-nodes-2026-07-03.html` | 五节点架构静态展示页，不作为合同。 |
 
-## 已归档文档
+## 4. 一致性规则
 
-以下目录和文件已经归档，不再作为当前开发约束：
-
-```text
-docs/archive/superpowers/
-docs/archive/refactor/
-docs/archive/todos/
-docs/archive/proposals/
-docs/archive/overview/
-```
-
-归档内容主要是早期分阶段实现计划、旧 UX spec、以及已过时的架构诊断。它们可以解释项目演化，但不能覆盖当前协议、代码和测试。
-
-## 文档一致性规则
-
-1. 协议实现以 `src/yequ/api/routes/yqp.py`、`src/yequ/services/node_service.py` 和 YQP 测试为事实来源。
-2. Node 开发以 `YQP-Node-Protocol.md` 和 `docs/node-capability-contract.md` 为合同。
-3. Agent 前端事件以 `docs/agent-sse-contract.md` 为合同。
-4. 旧计划文档只保留历史意义，发现冲突时应更新权威文档，而不是让实现迁就旧计划。
-5. 新增 Node capability 前，应先确认 capability name、risk、effect、runtime requirement 和 output 形态。
-6. 当前有效文档应以中文叙述为主；代码标识、协议字段、API 路径、模型/类名和第三方项目名可以保留英文。
+1. 协议事实以 `YQP-Node-Protocol.md`、`src/yequ/api/routes/yqp.py`、`src/yequ/services/node_service.py` 和 YQP 测试为准。
+2. Node capability 开发以 `docs/node-capability-contract.md` 和具体平台合同为准。
+3. Agent 前端事件以 `docs/agent-sse-contract.md` 为准。
+4. 当前架构状态以 `docs/current-project-overview.md` 为准。
+5. 下一阶段工作以 `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` 为入口。
+6. 新增 Node capability 前，必须明确 capability name、risk、effect、runtime requirements、preflight、progress、cancel/resume、output schema 和错误码。
 7. 所有文档必须使用 UTF-8 编码；详见 `docs/documentation-policy.md`。
-8. 2026-06-30 起，Center 执行运行时主线以 `docs/todos/2026-06-30-center-execution-runtime-v2.md` 为准。旧的 Capability Runtime v1 文档只作为已验收基线和历史背景。
-9. 2026-06-30 起，当前阶段只实现确定性的 capability index / structured discovery / context builder；未来 Tool RAG 只能作为候选召回增强层，结果必须再经过 `capability.search` / `capability.describe`、`ExecutionGuard`、`PolicyEngine` 和 Runtime 校验。旧 Tool RAG 文档只作为未来 embedding retrieval 背景。
+8. 发现当前文档与代码冲突时，优先修正文档或归档旧文档，不让实现迁就过期计划。

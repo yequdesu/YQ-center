@@ -89,8 +89,7 @@
 
 - `docs/documentation-index.md`
 - `docs/todos/README.md`
-- `docs/proposals/README.md`
-- `docs/current-project-overview-*.md`
+- `docs/current-project-overview.md`
 - 协议合同，例如 `YQP-Node-Protocol.md`
 - 前后端事件合同，例如 `docs/agent-sse-contract.md`
 - 相关专题待办，例如 transfer、provider、Tool RAG、Agent runtime 文档
@@ -128,4 +127,3 @@ YeQu Center 当前处于快速迭代期。文档应服务于架构清晰和下�
 - 可以把旧模块标为 legacy；
 - 可以提出破坏式重构；
 - 但必须把“当前实现”和“目标实现”区分清楚。
-

@@ -12,7 +12,7 @@ To avoid duplicated and stale agent instructions, Claude should use the same pro
    - `docs/node-capability-contract.md`
    - `docs/linux-node-development-contract.md`
 5. Treat current runtime work as governed by:
-   - `docs/todos/2026-06-30-center-execution-runtime-v2.md`
-   - `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md`
+   - `docs/current-project-overview.md`
+   - `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`
 
 All repository documents must be UTF-8. If this file conflicts with `AGENTS.md` or `docs/documentation-index.md`, those files win.

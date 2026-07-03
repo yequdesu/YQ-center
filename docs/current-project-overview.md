@@ -1,14 +1,14 @@
 # 当前项目全貌
 
 状态：当前概览  
-更新时间：2026-06-30  
-主路线图：`docs/todos/2026-06-30-center-execution-runtime-v2.md`
+更新时间：2026-07-03
+当前阶段：`docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`
 
 ## 1. 一句话结论
 
 YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、能力注册、调度、审计、等待、恢复和前端投影；Node 负责在具体设备上执行本地 capability；Agent、Console、CLI 都必须通过 Center 标准路径执行，不能直连 Node。
 
-当前项目已经进入 **Center Execution Runtime v2** 阶段。新的主线不是继续扩张旧的 capability runtime，而是在 capability registry 之上建立：
+当前项目的 **Center Execution Runtime v2** 主线已经基本落地。系统不再继续扩张旧的 capability runtime，而是在 capability registry 之上建立：
 
 - `ExecutionGuard` / `ExecutionGate`
 - `ExecutionAdmissionService`
@@ -17,6 +17,8 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 - AgentRun checkpoint / resume
 - Console Activity / OperationCard
 - Node capability 精细合同
+
+下一阶段不是立刻扩展 SubAgent 或继续堆业务能力，而是先完成文档系统收口、代码质量审查、架构边界复核，以及 Node/capability 插拔性确认。
 
 ## 2. 当前已具备的能力
 
@@ -28,8 +30,8 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 | Agent Runtime | 生产主路径为 `/agent/invoke/stream`；非流式旧 ReAct 路径已退出主线。 |
 | Operation Runtime | transfer、job、approval_wait、maintenance 已接入 Operation 投影；transfer Operation 已能从 source/target job 和 Node job.event read model 聚合基础进度并投影到 Console。 |
 | AgentRun checkpoint | provider 输出、tool observation、waiting_operation、waiting_approval、final/failure 均有结构化记录。 |
-| Artifact | Node 可上传 artifact 到 Center；Console 可浏览、下载、预览；Agent 可用 `artifact.present` 展示；Linux/Windows Node 已有最小 `<platform>.artifact.download_file` 原语。 |
-| croc 传输 | Node -> Node 大文件/跨 Node 传输已跑通，Center 做控制面，数据面不占 Center 主带宽。 |
+| Artifact | Node 可上传 artifact 到 Center；Console 可浏览、下载、预览；Agent 可用 `artifact.present` 展示；Center 已提供 `artifact.deploy.preflight` / `artifact.deploy`，通过目标 Node 的 `<platform>.artifact.download_file` 下发 artifact。 |
+| yq-croc 传输 | Node -> Node 大文件/跨 Node 传输已跑通；Center 通过 `transfer.preflight/create/resume/status/cancel` 做控制面，数据面不占 Center 主带宽。 |
 | Linux Node | 源码位于 `nodes/linux/yequnode`，后续直接在本仓库推进。 |
 | Windows Node | 源码位于 `E:\yequdesu_project\YeQu-Gateway-Win\Node-winClient`，后续由本项目同步更新。 |
 
@@ -39,10 +41,10 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 
 | 方向 | 当前支持情况 | 策略 |
 |---|---|---|
-| Node -> Node | 已支持 | `transfer.create` + croc。适合大文件和跨 Node。 |
+| Node -> Node | 已支持 | `transfer.preflight` 校验两端路径、runtime、relay 和 `resume_mode`；`transfer.create` 创建 `TransferSession` 和 waitable Operation，编排两端 `<platform>.transfer.croc.send/receive`；默认 `route_policy=auto`，也可显式指定 `relay_only`、`relay_pool`、`local_first`、`local_only` 或 `direct_ip`。这是大文件和跨 Node 默认路径。 |
 | Node -> Center | 已支持 | `artifact.upload`。适合截图、日志、小中型文件。 |
-| Center -> Node | 部分支持 | Center 已提供 Node-auth artifact download；Linux/Windows Node 已有 `<platform>.artifact.download_file`；Center `artifact.deploy.preflight` 会检查 artifact 与目标路径事实；`artifact.deploy` 创建目标 Node Job Operation。断点续传未完成。 |
-| Node -> Center -> Node | 部分支持 | 第一段已支持；Linux/Windows 目标可通过 `artifact.deploy` 落地；大文件策略仍需完善。 |
+| Center -> Node | 已支持 | Center 提供 Node-auth artifact download；`artifact.deploy.preflight` 校验 artifact 可用性和目标路径事实；`artifact.deploy` 通过目标 Node 的 `<platform>.artifact.download_file` 创建写入 Job，并按写操作进入审批和 Operation 投影。该路径不提供跨 Job 断点续传，不作为跨 Node 大文件默认路径。 |
+| Node -> Center -> Node | 已支持但限定用途 | Node 先上传为 artifact，Center 再用 `artifact.deploy` 下发到目标 Node。该路径用于截图、日志、构建产物、配置文件等 Center 托管 artifact；Node 间大文件搬运默认走 `transfer.create` / yq-croc，避免占用 Center 主带宽。 |
 
 ### 3.2 Guard / Policy / Admission
 
@@ -82,7 +84,23 @@ Capability Registry
 Tool RAG 不能取代 registry、schema、preflight、Guard、Policy 或 Operation Runtime，也不能把语义相似度
 当成执行授权或事实满足证明。
 
-### 3.4 长任务交互
+### 3.4 Node 与 capability 插拔边界
+
+这里的“平台无关”指 Center 可以接入任意平台的 Node，不是要求 Center 运行平台无关，也不是要求每个 Node 自身平台无关。
+
+目标形态：
+
+```text
+新平台 Node
+  -> 按 YQP provision / hello / heartbeat / runtime snapshot 接入
+  -> 按 capability manifest 注册 functions / signals
+  -> Center registry 产生 definition/source
+  -> Agent 通过 capability.search / describe / invoke 发现和调用
+```
+
+新增 Node 不应要求修改 Center 调度逻辑。新增 capability 不应要求修改 Center meta tool 列表、Agent prompt 或 Agent 分支代码。只有当协议、manifest 合同或通用 runtime 规则本身不足时，才允许修改 Center。
+
+### 3.5 长任务交互
 
 长任务不应让 LLM loop 持续轮询。正确路径是：
 
@@ -99,30 +117,31 @@ tool call
 
 ## 4. 当前主要待办
 
-当前进入阶段 6 前，必须先完成：
+当前进入下一轮功能扩展前，必须先完成质量门禁：
 
-1. Operation 进度透明：基础 `progress_pct/progress_message`、字节级 read model、Console 进度条、Node keepalive progress 已落地；croc 传输已改为解析 stderr 真实进度，receiver output-size 仅作为 observation，不再伪造百分比。
-2. `ExecutionGuard` / `ExecutionGate`：`transfer.create` 缺槽位硬阻断已落地，路径权限、croc runtime status preflight 和 30-300 秒 fact freshness 策略已接入。
-3. transfer preflight：Center meta tool、`TransferPreflight` 持久事实、`preflight_id` 强制绑定和 runtime status 校验已落地。
-4. capability search / describe 的结构化筛选和 projection 诊断增强已完成基础闭环：支持按 node/platform/risk/effect/runtime/progress/preflight/artifact 输入输出筛选，按 projection 控制返回量，并返回 `match_reasons`、`dispatchable`、`unavailable_reasons`。
-5. Node capability 合同细化和 lint：第一版 `contract_issues` 已接入 registry 诊断，后续还需扩展独立 CLI 或 Node 侧构建期检查。
-6. Linux Node 能力扩展：已新增 `linux.filesystem.hash`、`linux.filesystem.disk_usage`、`linux.filesystem.mkdir`、`linux.network.dns_lookup` 和 `linux.network.port_check`，用于传输后校验、落点空间探测、落点目录准备和基础网络连通性排查；后续继续补写入、复制、移动、删除、服务日志、HTTP 探测等能力。
-7. Windows Node transfer/artifact/progress/cancel 合同对齐：artifact download 已对齐，transfer/progress/cancel 仍需继续验收。
-8. Center -> Node artifact 下发 workflow：Node-auth 下载端点、Linux/Windows Node 下载原语、`artifact.deploy.preflight` 和 `artifact.deploy` 第一版已落地；仍需进度/断点续传策略。
+1. 文档系统收口：active 文档职责清晰，旧计划、旧提案、复盘和展示材料全部归档。
+2. Node 接入插拔性：新增任意平台 Node 后，只要完成 provisioning、YQP hello、runtime 上报和 capability 注册，Center 不应新增平台分支。
+3. Capability 插拔性：新增 capability 按 manifest 注册后，应自动进入 Center registry、structured discovery 和 Agent meta tool 调用路径。
+4. 错误传播：Provider、Runtime、Tool、YQP、Operation 统一稳定错误码和 problem projection，前端不得收到伪成功或空失败。
+5. 无静默 fallback：生产路径不得保留旧 croc CLI、rclone、直连传输、未注册 capability 执行或 provider 自动切换。
+6. 模块职责拆分：继续拆小 `CenterExecutionRuntime`、`TransferApplicationService` 和 Agent route，避免形成新的大总管。
+7. Agent 上下文预算：工具 schema、tool result、history、context_refs、resume prompt 都必须有预算、投影和摘要策略。
+8. 边界测试扩展：import boundary、fallback residue、meta tool output size、Node onboarding 和 capability onboarding 都应进入测试。
 
-阶段 6 才开始 SubAgent。
+SubAgent、更多 Node 能力和未来 Tool RAG 应在质量门禁通过后再进入主线。
 
 ## 5. 当前权威文档
 
 | 文档 | 用途 |
 |---|---|
 | `YQP-Node-Protocol.md` | Node/Center 协议合同。 |
-| `docs/node-capability-contract.md` | 跨平台 Node capability 合同。 |
+| `docs/current-project-overview.md` | 当前项目全貌和下一阶段主线。 |
+| `docs/node-capability-contract.md` | 面向多平台 Node 接入的 capability 合同。 |
 | `docs/linux-node-development-contract.md` | 当前 Linux Node 实现合同。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
-| `docs/todos/2026-06-30-center-execution-runtime-v2.md` | 当前主路线图。 |
-| `docs/todos/2026-06-30-pre-phase6-agent-operation-polish.md` | 阶段 6 前置优化计划。 |
-| `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统路线图。 |
+| `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 当前质量门禁。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | 仍未完成的 Provider 系统路线图。 |
+| `docs/documentation-index.md` | 当前文档入口和归档说明。 |
 | `docs/documentation-policy.md` | 文档维护规则。 |
 
 旧路线图和已实现提案已归档。归档文档只解释历史演化，不能作为当前开发约束。

@@ -80,7 +80,7 @@ The current architecture is centered on "Center Execution Runtime v2". The runti
 - AgentRun `waiting_operation` semantics. Agents must not burn LLM tokens polling status tools for long operations.
 - A PostgreSQL-backed operation event/outbox first; external MQ can be introduced later as a dispatcher backend, not as a second source of truth.
 
-Primary planning document: `docs/todos/2026-06-30-center-execution-runtime-v2.md`.
+Current planning document: `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`.
 
 ### YQP Protocol (`src/yequ/protocol/`)
 

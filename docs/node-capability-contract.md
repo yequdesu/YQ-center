@@ -194,7 +194,7 @@ ExecutionGate.evaluate(command)
 - keepalive 事件必须标记 `progress_source="process_keepalive"`，并尽量携带 `process_pid`、`phase`、`role`、`transfer_id`；
 - 不得伪造百分比。
 
-`yq-croc` 插件运行时是后续跨 Node 大文件传输的权威运行时抽象。它基于 croc Go 源码，作为独立二进制/插件由 Node 适配调用；Center 和 Node 主进程都不内嵌 croc 协议实现。旧的 croc CLI stderr 解析路径已经废止，不能作为新增实现依据。
+`yq-croc` 插件运行时是当前跨 Node 大文件传输的权威运行时抽象。它基于 croc Go 源码，作为独立二进制/插件由 Node 适配调用；Center 和 Node 主进程都不内嵌 croc 协议实现。旧的 croc CLI stderr 解析路径已经废止，不能作为新增实现依据。
 
 `yq-croc` 传输真实进度合同：
 
@@ -210,7 +210,7 @@ ExecutionGate.evaluate(command)
 - Windows Node 的 yq-croc 默认关闭 croc local relay/discovery，只要求 `yq-croc.exe` 能出站连接 relay TCP 端口，默认 `9009`；如果 Windows Firewall 或上级策略默认阻断出站，`windows.transfer.croc.status` 必须报告 `firewall_allows_outbound=false`，Center 预检必须拒绝本次传输；
 - `yq-croc` request、stdout、stderr、ledger 和 Timeline 都不得泄漏 croc code、relay password、Node token 或 Center token。
 
-旧 croc CLI 路径必须删除。实现工作开始后，相关 manifest、adapter、stderr parser、bundled binary 和文档细节必须从 active contract 与代码中清理；不得保留 fallback、兼容层或可执行语义。
+旧 croc CLI 路径必须删除。相关 manifest、adapter、stderr parser、bundled binary 和文档细节必须从 active contract 与代码中清理；不得保留 fallback、兼容层或可执行语义。
 
 Center 行为：
 
@@ -260,7 +260,7 @@ Center 行为：
 | `permission_denied` | 权限不足。 |
 | `insufficient_space` | 空间不足。 |
 | `runtime_unavailable` | runtime 不在线或不匹配。 |
-| `dependency_missing` | croc、系统命令或库缺失。 |
+| `dependency_missing` | yq-croc、系统命令或库缺失。 |
 | `dependency_not_executable` | 依赖存在但不可执行。 |
 | `operation_timeout` | 本地执行超时。 |
 | `cancelled` | 用户或 Center 取消。 |
