@@ -89,3 +89,18 @@ def test_agent_runtime_files_do_not_import_center_services() -> None:
                 offenders.append((path.relative_to(ROOT).as_posix(), imported))
 
     assert offenders == []
+
+
+def test_runtime_has_no_unregistered_capability_escape_hatch() -> None:
+    forbidden_terms = {
+        "allow_unregistered_function",
+        "_resolve_unregistered_admin_function",
+    }
+    offenders = []
+    for path in _python_files(SRC):
+        text = path.read_text(encoding="utf-8")
+        for term in forbidden_terms:
+            if term in text:
+                offenders.append((path.relative_to(ROOT).as_posix(), term))
+
+    assert offenders == []

@@ -155,10 +155,24 @@ async def test_execute_write_function_returns_approval_required(
 
 
 async def test_execute_unknown_function_returns_unavailable(
+    client,
     db_session,
     provisioned_node,
 ) -> None:
-    node, _token = provisioned_node
+    node, token = provisioned_node
+    await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={
+                "daemon_version": "0.1.0",
+                "runtimes": _runtimes(node.node_id),
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    await db_session.rollback()
 
     result = await CenterExecutionRuntime(db_session).execute(
         RuntimeCommand.from_execute_tool_command(
@@ -171,3 +185,5 @@ async def test_execute_unknown_function_returns_unavailable(
 
     assert result.status == "unavailable"
     assert result.error_code
+    job_count = await db_session.execute(select(Job))
+    assert job_count.scalars().all() == []

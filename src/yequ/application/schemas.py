@@ -46,7 +46,6 @@ class ExecuteToolCommand:
     lease_sec: int | None = None
     declared_risk: str | None = None
     declared_effect: str | None = None
-    allow_unregistered_function: bool = False
 
 
 @dataclass(slots=True)

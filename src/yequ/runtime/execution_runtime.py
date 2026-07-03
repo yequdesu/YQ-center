@@ -25,7 +25,6 @@ from yequ.application.schemas import (
 from yequ.config import get_settings
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
-from yequ.models.node import Node
 from yequ.models.timeline import TimelineEvent
 from yequ.runtime.admission import ExecutionAdmissionService
 from yequ.runtime.command import RuntimeCommand
@@ -137,7 +136,6 @@ class CenterExecutionRuntime:
             lease_sec=command.lease_sec,
             declared_risk=target.risk,
             declared_effect=target.effect,
-            allow_unregistered_function=False,
             suppress_operation=command.suppress_operation,
         )
         return await self.execute(delegated)
@@ -206,7 +204,6 @@ class CenterExecutionRuntime:
             lease_sec=command.lease_sec,
             declared_risk="maintenance",
             declared_effect="write",
-            allow_unregistered_function=False,
             suppress_operation=command.suppress_operation,
         )
         result = await self._execute_capability_invoke(delegated)
@@ -570,24 +567,17 @@ class CenterExecutionRuntime:
             settings=get_settings(),
         )
         if resolved is None or not resolved.available:
-            if command.allow_unregistered_function and command.target_node_id:
-                resolved = await self._resolve_unregistered_admin_function(command)
-            if resolved is None or not resolved.available:
-                return ExecuteToolResult(
-                    status="unavailable",
-                    function_name=command.function_name,
-                    target_node_id=(
-                        command.target_node_id or (resolved.node_id if resolved else None)
-                    ),
-                    error_code=(
-                        resolved.unavailable_code if resolved else "FUNCTION_NOT_AVAILABLE"
-                    ),
-                    error_message=(
-                        resolved.unavailable_reason
-                        if resolved and resolved.unavailable_reason
-                        else f"No online node has capability {command.function_name!r}"
-                    ),
-                )
+            return ExecuteToolResult(
+                status="unavailable",
+                function_name=command.function_name,
+                target_node_id=command.target_node_id or (resolved.node_id if resolved else None),
+                error_code=resolved.unavailable_code if resolved else "function_not_available",
+                error_message=(
+                    resolved.unavailable_reason
+                    if resolved and resolved.unavailable_reason
+                    else f"No online node has capability {command.function_name!r}"
+                ),
+            )
 
         if command.dry_run and not approval_id:
             return await self._dry_run(command, resolved, input_data)
@@ -759,44 +749,6 @@ class CenterExecutionRuntime:
             command.deadline,
         )
         return await self._collect_terminal_result(result, final_status)
-
-    async def _resolve_unregistered_admin_function(
-        self,
-        command: RuntimeCommand,
-    ) -> ResolvedCapability:
-        node_result = await self.db.execute(
-            select(Node).where(Node.node_id == command.target_node_id)
-        )
-        node = node_result.scalar_one_or_none()
-        if node is None:
-            return ResolvedCapability(
-                node_id=command.target_node_id or "",
-                function_name=command.function_name,
-                available=False,
-                unavailable_code="node_not_found",
-                unavailable_reason=f"Node '{command.target_node_id}' not found",
-            )
-
-        from yequ.services.node_liveness_service import is_node_schedulable
-
-        schedulable, reason = is_node_schedulable(node, get_settings())
-        if not schedulable:
-            return ResolvedCapability(
-                node_id=node.node_id,
-                function_name=command.function_name,
-                available=False,
-                unavailable_code="NODE_UNAVAILABLE",
-                unavailable_reason=f"Node {node.node_id} is not schedulable: {reason}",
-            )
-
-        return ResolvedCapability(
-            node_id=node.node_id,
-            function_name=command.function_name,
-            risk="safe",
-            effect="read",
-            timeout_sec=command.timeout_sec or 30,
-            available=True,
-        )
 
     @staticmethod
     async def _wait_for_node_invocation_terminal(

@@ -71,6 +71,36 @@ async def _hello_windows_node(client: AsyncClient, node_id: str, token: str) -> 
     assert resp.status_code == 200, resp.text
 
 
+async def _hello_platform_node(
+    client: AsyncClient,
+    node_id: str,
+    token: str,
+    *,
+    platform_os: str,
+) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node_id,
+            payload={
+                "daemon_version": "0.2.0",
+                "platform": {"os": platform_os, "arch": "x86_64"},
+                "runtimes": [
+                    {
+                        "runtime_id": f"{platform_os}-system",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "root",
+                    }
+                ],
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 async def _register_linux_system_info(client: AsyncClient, node_id: str, token: str) -> None:
     resp = await client.post(
         "/yqp/",
@@ -87,6 +117,45 @@ async def _register_linux_system_info(client: AsyncClient, node_id: str, token: 
                             {
                                 "name": "linux.system.info",
                                 "description": "Read Linux system information.",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "system",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def _register_platform_system_info(
+    client: AsyncClient,
+    node_id: str,
+    token: str,
+    *,
+    platform_os: str,
+) -> None:
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": f"{platform_os}.system",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": f"{platform_os}.system.info",
+                                "description": f"Read {platform_os} system information.",
                                 "input_schema": {"type": "object", "properties": {}},
                                 "output_schema": {"type": "object"},
                                 "risk": "safe",
@@ -356,6 +425,44 @@ async def test_register_capabilities_writes_definition_and_source(
     assert source.is_active is True
     assert source.platform_os == "linux"
     assert source.execution_requirements == {"runtime_kind": "privileged"}
+
+
+@pytest.mark.asyncio
+async def test_platform_prefix_uses_reported_platform_os_without_center_enum(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _hello_platform_node(client, node.node_id, token, platform_os="freebsd")
+    await _register_platform_system_info(client, node.node_id, token, platform_os="freebsd")
+
+    definition_result = await db_session.execute(
+        select(CapabilityDefinition).where(
+            CapabilityDefinition.canonical_name == "system.info",
+            CapabilityDefinition.capability_type == "function",
+        )
+    )
+    definition = definition_result.scalar_one()
+    assert "freebsd.system.info" in definition.aliases
+
+    source_result = await db_session.execute(
+        select(CapabilitySource).where(
+            CapabilitySource.definition_id == definition.id,
+            CapabilitySource.registered_name == "freebsd.system.info",
+        )
+    )
+    source = source_result.scalar_one()
+    assert source.platform_os == "freebsd"
+
+    search_resp = await client.get(
+        "/admin/meta/capabilities/search",
+        params={"q": "system", "platform_os": "freebsd"},
+    )
+    assert search_resp.status_code == 200, search_resp.text
+    matches = search_resp.json()
+    assert [item["canonical_name"] for item in matches] == ["system.info"]
+    assert matches[0]["sources"][0]["registered_name"] == "freebsd.system.info"
 
 
 @pytest.mark.asyncio

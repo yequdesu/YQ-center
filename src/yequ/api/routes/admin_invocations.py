@@ -126,7 +126,7 @@ async def create_invocation_endpoint(
             detail=result.error_message or "Policy denied",
         )
     if result.status in {"unavailable", "not_found"}:
-        error_code = result.error_code or "FUNCTION_NOT_AVAILABLE"
+        error_code = result.error_code or "function_not_available"
         raise HTTPException(
             status_code=(
                 status.HTTP_404_NOT_FOUND

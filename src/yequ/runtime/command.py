@@ -32,7 +32,6 @@ class RuntimeCommand:
     lease_sec: int | None = None
     declared_risk: str | None = None
     declared_effect: str | None = None
-    allow_unregistered_function: bool = False
     suppress_operation: bool = False
 
     @classmethod
@@ -58,7 +57,6 @@ class RuntimeCommand:
             lease_sec=command.lease_sec,
             declared_risk=command.declared_risk,
             declared_effect=command.declared_effect,
-            allow_unregistered_function=command.allow_unregistered_function,
         )
 
     def to_execute_tool_command(self) -> ExecuteToolCommand:
@@ -83,5 +81,4 @@ class RuntimeCommand:
             lease_sec=self.lease_sec,
             declared_risk=self.declared_risk,
             declared_effect=self.declared_effect,
-            allow_unregistered_function=self.allow_unregistered_function,
         )

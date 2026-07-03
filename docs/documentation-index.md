@@ -36,6 +36,7 @@
 | `docs/archive/proposals/` | 已采纳或已废弃的设计提案。 |
 | `docs/archive/overview/` | 旧架构概览、旧项目全貌和历史交接材料。 |
 | `docs/archive/postmortems/` | 事故复盘、可靠性报告和排障记录。 |
+| `docs/archive/reports/` | 阶段性审查报告和质量门禁结论。 |
 | `docs/archive/visuals/` | 临时展示页、架构图和非合同型展示材料。 |
 | `docs/archive/refactor/` | 历史重构计划、完成报告和 mypy 债务记录。 |
 | `docs/archive/superpowers/` | 早期分阶段实现计划和旧 UX spec。 |
