@@ -52,13 +52,12 @@ async def handle_hello(
     node.job_delivery_mode = JobDeliveryMode.POLL
     await _sync_runtime_instances(db, node, payload.get("runtimes") or [], now=node.last_seen_at)
 
-    # Flush node state update first — this commits everything except the timeline
-    # event, so the FOR UPDATE lock on TimelineSequence is held for the absolute
-    # minimum time.
+    # Commit node state before the non-critical timeline event so node bootstrap
+    # is not delayed by timeline persistence.
     await db.commit()
 
-    # Do not block node bootstrap on timeline sequence allocation. If the
-    # timeline writer is delayed by DB contention, the node should still get
+    # Do not block node bootstrap on timeline persistence. If the timeline
+    # writer is delayed by DB contention, the node should still get
     # node.accepted promptly and continue into register/heartbeat.
     get_timeline_writer().enqueue(
         TimelineEvent(
@@ -106,8 +105,8 @@ async def handle_heartbeat(
     if recovering:
         node.status = NodeStatus.ONLINE
 
-    # Commit node state update first so the timeline sequence FOR UPDATE lock
-    # is only held inside the isolated session below.
+    # Commit node state update before the recovery timeline event so heartbeat
+    # handling is not coupled to timeline persistence latency.
     await db.commit()
 
     # Write recovery timeline event in an isolated short-lived session

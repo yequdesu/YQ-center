@@ -8,72 +8,13 @@ Job state transition events remain synchronous for correctness.
 import asyncio
 import contextlib
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from yequ.db import async_session_factory
 from yequ.logconfig import get_logger
-from yequ.models.timeline import TimelineEvent, TimelineSequence
+from yequ.models.timeline import TimelineEvent
+from yequ.timeline_events import add_timeline_event as add_timeline_event
+from yequ.timeline_events import add_timeline_events
 
 log = get_logger(__name__)
-
-GLOBAL_TIMELINE_SEQUENCE = "global"
-_sequence_lock = asyncio.Lock()
-
-
-async def allocate_global_seq(db: AsyncSession, count: int = 1) -> int:
-    """Reserve one or more timeline global_seq values.
-
-    Returns the first reserved sequence number. PostgreSQL uses a row lock;
-    the process lock keeps SQLite/test execution deterministic.
-    """
-    if count < 1:
-        raise ValueError("count must be >= 1")
-
-    async with _sequence_lock:
-        result = await db.execute(
-            select(TimelineSequence)
-            .where(TimelineSequence.name == GLOBAL_TIMELINE_SEQUENCE)
-            .with_for_update()
-        )
-        sequence = result.scalar_one_or_none()
-        if sequence is None:
-            max_result = await db.execute(select(func.max(TimelineEvent.global_seq)))
-            max_seq = max_result.scalar() or 0
-            sequence = TimelineSequence(
-                name=GLOBAL_TIMELINE_SEQUENCE,
-                value=max_seq,
-            )
-            db.add(sequence)
-            await db.flush()
-
-        start = sequence.value + 1
-        sequence.value += count
-        await db.flush()
-        return start
-
-
-async def add_timeline_event(db: AsyncSession, event: TimelineEvent) -> TimelineEvent:
-    """Assign global_seq and add one TimelineEvent to the current transaction."""
-    event.global_seq = await allocate_global_seq(db)
-    db.add(event)
-    await db.flush()
-    return event
-
-
-async def add_timeline_events(
-    db: AsyncSession,
-    events: list[TimelineEvent],
-) -> list[TimelineEvent]:
-    """Assign contiguous global_seq values and add TimelineEvents."""
-    if not events:
-        return events
-    start = await allocate_global_seq(db, len(events))
-    for offset, event in enumerate(events):
-        event.global_seq = start + offset
-    db.add_all(events)
-    await db.flush()
-    return events
 
 
 # Max batch size for a single DB transaction

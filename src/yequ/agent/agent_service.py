@@ -642,15 +642,10 @@ async def _write_timeline(
     event atomic with the state transition it describes. When db is None, a
     short independent session is used for background-only callers.
     """
-    from sqlalchemy import func
-
     from yequ.models.timeline import TimelineEvent
+    from yequ.timeline_events import add_timeline_event
 
     async def _add_event(_db: AsyncSession) -> None:
-        result = await _db.execute(select(func.max(TimelineEvent.global_seq)))
-        max_seq = result.scalar() or 0
-        next_seq: int = max_seq + 1
-
         data: dict[str, object] = {}
         if call_id:
             data["call_id"] = call_id
@@ -686,7 +681,7 @@ async def _write_timeline(
             data["final"] = final
 
         event = TimelineEvent(
-            global_seq=next_seq,
+            global_seq=0,
             event_type=event_type,
             actor_type="agent",
             actor_id=actor,
@@ -697,8 +692,7 @@ async def _write_timeline(
             data=data,
             timestamp=datetime.now(UTC),
         )
-        _db.add(event)
-        await _db.flush()
+        await add_timeline_event(_db, event)
 
     if db is not None:
         await _add_event(db)

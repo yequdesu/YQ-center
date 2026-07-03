@@ -36,12 +36,3 @@ class TimelineEvent(Base):
 
     def __repr__(self) -> str:
         return f"<TimelineEvent(event_type={self.event_type!r}, global_seq={self.global_seq})>"
-
-
-class TimelineSequence(Base):
-    """Durable monotonic sequence allocator for timeline global_seq."""
-
-    __tablename__ = "timeline_sequences"
-
-    name: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
