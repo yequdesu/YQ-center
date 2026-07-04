@@ -395,25 +395,15 @@ async def _upsert_source(
     )
     _merge_definition_manifest(definition, registered_name, manifest, capability_type)
 
-    result = await db.execute(
-        select(CapabilitySource).where(
-            CapabilitySource.node_record_id == node.id,
-            CapabilitySource.plugin_id == plugin_id,
-            CapabilitySource.registered_name == registered_name,
-            CapabilitySource.definition_id == definition.id,
-        )
+    source = await _get_or_create_source(
+        db,
+        node=node,
+        definition=definition,
+        plugin_id=plugin_id,
+        plugin_version=plugin_version,
+        registered_name=registered_name,
+        now=now,
     )
-    source = result.scalar_one_or_none()
-    if source is None:
-        source = CapabilitySource(
-            definition_id=definition.id,
-            node_record_id=node.id,
-            plugin_id=plugin_id,
-            plugin_version=plugin_version,
-            registered_name=registered_name,
-            registered_at=now,
-        )
-        db.add(source)
 
     source.plugin_version = plugin_version
     source.platform_os = node.platform_os
@@ -487,6 +477,53 @@ async def _get_or_create_definition(
             select(CapabilityDefinition).where(
                 CapabilityDefinition.canonical_name == canonical_name,
                 CapabilityDefinition.capability_type == capability_type,
+            )
+        )
+        return result.scalar_one()
+
+
+async def _get_or_create_source(
+    db: AsyncSession,
+    *,
+    node: Node,
+    definition: CapabilityDefinition,
+    plugin_id: str,
+    plugin_version: str,
+    registered_name: str,
+    now: datetime,
+) -> CapabilitySource:
+    result = await db.execute(
+        select(CapabilitySource).where(
+            CapabilitySource.node_record_id == node.id,
+            CapabilitySource.plugin_id == plugin_id,
+            CapabilitySource.registered_name == registered_name,
+            CapabilitySource.definition_id == definition.id,
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is not None:
+        return source
+
+    try:
+        async with db.begin_nested():
+            source = CapabilitySource(
+                definition_id=definition.id,
+                node_record_id=node.id,
+                plugin_id=plugin_id,
+                plugin_version=plugin_version,
+                registered_name=registered_name,
+                registered_at=now,
+            )
+            db.add(source)
+            await db.flush()
+            return source
+    except IntegrityError:
+        result = await db.execute(
+            select(CapabilitySource).where(
+                CapabilitySource.node_record_id == node.id,
+                CapabilitySource.plugin_id == plugin_id,
+                CapabilitySource.registered_name == registered_name,
+                CapabilitySource.definition_id == definition.id,
             )
         )
         return result.scalar_one()
