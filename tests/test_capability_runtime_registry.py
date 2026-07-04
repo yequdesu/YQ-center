@@ -466,6 +466,116 @@ async def test_platform_prefix_uses_reported_platform_os_without_center_enum(
 
 
 @pytest.mark.asyncio
+async def test_same_canonical_capability_from_multiple_nodes_is_snapshot_idempotent(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    linux_node, linux_token = provisioned_node
+    await _hello_linux_node(client, linux_node.node_id, linux_token)
+
+    linux_resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            linux_node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.storage",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.disks.list",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_context": "system",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {linux_token}"},
+    )
+    assert linux_resp.status_code == 200, linux_resp.text
+
+    windows_node_id = "win-disk-node"
+    windows_token = "win-disk-token"
+    await _provision_node(db_session, node_id=windows_node_id, token=windows_token)
+    await _hello_windows_node(client, windows_node_id, windows_token)
+
+    windows_payload = {
+        "plugins": [
+            {
+                "plugin_id": "windows.metrics",
+                "plugin_version": "0.5.0",
+                "status": "loaded",
+                "functions": [
+                    {
+                        "name": "windows.disks.list",
+                        "input_schema": {"type": "object", "properties": {}},
+                        "output_schema": {
+                            "type": "object",
+                            "properties": {"disks": {"type": "array"}},
+                        },
+                        "risk": "safe",
+                        "effect": "read",
+                        "timeout_sec": 5,
+                        "idempotency": "idempotent",
+                        "resource_keys": ["node.disk"],
+                        "conflict_policy": "allow_parallel",
+                    }
+                ],
+                "signals": [
+                    {
+                        "name": "windows.disk.usage",
+                        "scope": "node",
+                        "ttl_sec": 30,
+                        "value_schema": {"type": "number"},
+                    }
+                ],
+            }
+        ]
+    }
+    for _ in range(2):
+        windows_resp = await client.post(
+            "/yqp/",
+            json=make_yqp_envelope(
+                "node.register_capabilities",
+                windows_node_id,
+                payload=windows_payload,
+            ),
+            headers={"Authorization": f"Bearer {windows_token}"},
+        )
+        assert windows_resp.status_code == 200, windows_resp.text
+
+    await db_session.rollback()
+    definition_result = await db_session.execute(
+        select(CapabilityDefinition).where(
+            CapabilityDefinition.canonical_name == "disks.list",
+            CapabilityDefinition.capability_type == "function",
+        )
+    )
+    definitions = definition_result.scalars().all()
+    assert len(definitions) == 1
+
+    source_result = await db_session.execute(
+        select(CapabilitySource).where(
+            CapabilitySource.definition_id == definitions[0].id,
+            CapabilitySource.is_active == True,  # noqa: E712
+        )
+    )
+    assert {
+        source.registered_name for source in source_result.scalars().all()
+    } == {"linux.disks.list", "windows.disks.list"}
+
+
+@pytest.mark.asyncio
 async def test_meta_capability_search_and_describe_api(
     client: AsyncClient,
     provisioned_node,

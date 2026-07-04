@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -58,7 +56,6 @@ async def sync_capability_runtime_snapshot(
     """
 
     await _lock_registry_key(db, f"capability-snapshot:{node.id}")
-    db.sync_session.autoflush = False
 
     touched_definition_ids: set[str] = set()
 
@@ -453,12 +450,8 @@ async def _get_or_create_definition(
     canonical_name: str,
     capability_type: str,
 ) -> CapabilityDefinition:
-    await _lock_registry_key(
-        db,
-        f"capability-definition:{capability_type}:{canonical_name}",
-    )
     if db.get_bind().dialect.name == "postgresql":
-        return await _load_definition_after_upsert(
+        return await _upsert_definition_row(
             db,
             canonical_name=canonical_name,
             capability_type=capability_type,
@@ -474,29 +467,19 @@ async def _get_or_create_definition(
     if definition is not None:
         return definition
 
-    try:
-        async with db.begin_nested():
-            definition = CapabilityDefinition(
-                canonical_name=canonical_name,
-                capability_type=capability_type,
-                aliases=[],
-                examples=[],
-                tags=[],
-                artifact_inputs=[],
-                artifact_outputs=[],
-                status="active",
-            )
-            db.add(definition)
-            await db.flush()
-            return definition
-    except IntegrityError:
-        result = await db.execute(
-            select(CapabilityDefinition).where(
-                CapabilityDefinition.canonical_name == canonical_name,
-                CapabilityDefinition.capability_type == capability_type,
-            )
-        )
-        return result.scalar_one()
+    definition = CapabilityDefinition(
+        canonical_name=canonical_name,
+        capability_type=capability_type,
+        aliases=[],
+        examples=[],
+        tags=[],
+        artifact_inputs=[],
+        artifact_outputs=[],
+        status="active",
+    )
+    db.add(definition)
+    await db.flush()
+    return definition
 
 
 async def _get_or_create_source(
@@ -509,15 +492,8 @@ async def _get_or_create_source(
     registered_name: str,
     now: datetime,
 ) -> CapabilitySource:
-    await _lock_registry_key(
-        db,
-        (
-            "capability-source:"
-            f"{node.id}:{definition.id}:{plugin_id}:{registered_name}"
-        ),
-    )
     if db.get_bind().dialect.name == "postgresql":
-        return await _load_source_after_upsert(
+        return await _upsert_source_row(
             db,
             node=node,
             definition=definition,
@@ -539,29 +515,17 @@ async def _get_or_create_source(
     if source is not None:
         return source
 
-    try:
-        async with db.begin_nested():
-            source = CapabilitySource(
-                definition_id=definition.id,
-                node_record_id=node.id,
-                plugin_id=plugin_id,
-                plugin_version=plugin_version,
-                registered_name=registered_name,
-                registered_at=now,
-            )
-            db.add(source)
-            await db.flush()
-            return source
-    except IntegrityError:
-        result = await db.execute(
-            select(CapabilitySource).where(
-                CapabilitySource.node_record_id == node.id,
-                CapabilitySource.plugin_id == plugin_id,
-                CapabilitySource.registered_name == registered_name,
-                CapabilitySource.definition_id == definition.id,
-            )
-        )
-        return result.scalar_one()
+    source = CapabilitySource(
+        definition_id=definition.id,
+        node_record_id=node.id,
+        plugin_id=plugin_id,
+        plugin_version=plugin_version,
+        registered_name=registered_name,
+        registered_at=now,
+    )
+    db.add(source)
+    await db.flush()
+    return source
 
 
 async def _lock_registry_key(db: AsyncSession, key: str) -> None:
@@ -571,15 +535,14 @@ async def _lock_registry_key(db: AsyncSession, key: str) -> None:
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
 
-async def _load_definition_after_upsert(
+async def _upsert_definition_row(
     db: AsyncSession,
     *,
     canonical_name: str,
     capability_type: str,
 ) -> CapabilityDefinition:
-    for attempt in range(100):
-        inserted_id = (
-            await db.execute(
+    definition_id = (
+        await db.execute(
             pg_insert(CapabilityDefinition.__table__)
             .values(
                 id=generate_uuid(),
@@ -593,44 +556,27 @@ async def _load_definition_after_upsert(
                 artifact_outputs=[],
                 status="active",
             )
-            .on_conflict_do_nothing(
-                index_elements=["canonical_name", "capability_type"]
+            .on_conflict_do_update(
+                constraint="uq_capability_definitions_canonical_type",
+                set_={
+                    "status": "active",
+                    "updated_at": func.now(),
+                },
             )
             .returning(CapabilityDefinition.__table__.c.id)
         )
-        ).scalar_one_or_none()
-        if inserted_id:
-            definition = await db.get(CapabilityDefinition, inserted_id)
-            if definition is not None:
-                return definition
-        row_id = (
-            await db.execute(
-                text(
-                    """
-                    SELECT id FROM capability_definitions
-                    WHERE canonical_name = :canonical_name
-                      AND capability_type = :capability_type
-                    ORDER BY created_at, id
-                    LIMIT 1
-                    """
-                ),
-                {
-                    "canonical_name": canonical_name,
-                    "capability_type": capability_type,
-                },
-            )
-        ).scalar_one_or_none()
-        definition = await db.get(CapabilityDefinition, row_id) if row_id else None
-        if definition is not None:
-            return definition
-        if attempt < 99:
-            await asyncio.sleep(0.2)
-    raise RuntimeError(
-        f"capability definition upsert did not return {canonical_name}/{capability_type}"
-    )
+    ).scalar_one()
+
+    definition = await db.get(CapabilityDefinition, definition_id)
+    if definition is None:
+        raise RuntimeError(
+            "capability definition upsert returned a missing row "
+            f"{canonical_name}/{capability_type}"
+        )
+    return definition
 
 
-async def _load_source_after_upsert(
+async def _upsert_source_row(
     db: AsyncSession,
     *,
     node: Node,
@@ -640,9 +586,8 @@ async def _load_source_after_upsert(
     registered_name: str,
     now: datetime,
 ) -> CapabilitySource:
-    for attempt in range(100):
-        inserted_id = (
-            await db.execute(
+    source_id = (
+        await db.execute(
             pg_insert(CapabilitySource.__table__)
             .values(
                 id=generate_uuid(),
@@ -654,74 +599,25 @@ async def _load_source_after_upsert(
                 registered_name=registered_name,
                 registered_at=now,
             )
-            .on_conflict_do_nothing(
-                index_elements=[
-                    "node_record_id",
-                    "plugin_id",
-                    "registered_name",
-                    "definition_id",
-                ]
+            .on_conflict_do_update(
+                constraint="uq_capability_sources_node_plugin_name_definition",
+                set_={
+                    "plugin_version": plugin_version,
+                    "registered_at": now,
+                    "updated_at": func.now(),
+                },
             )
             .returning(CapabilitySource.__table__.c.id)
         )
-        ).scalar_one_or_none()
-        if inserted_id:
-            source = await db.get(CapabilitySource, inserted_id)
-            if source is not None:
-                return source
-        row_id = (
-            await db.execute(
-                text(
-                    """
-                    SELECT id FROM capability_sources
-                    WHERE node_record_id = :node_record_id
-                      AND plugin_id = :plugin_id
-                      AND registered_name = :registered_name
-                      AND definition_id = :definition_id
-                    ORDER BY registered_at DESC, id
-                    LIMIT 1
-                    """
-                ),
-                {
-                    "node_record_id": node.id,
-                    "plugin_id": plugin_id,
-                    "registered_name": registered_name,
-                    "definition_id": definition.id,
-                },
-            )
-        ).scalar_one_or_none()
-        source = await db.get(CapabilitySource, row_id) if row_id else None
-        if source is not None:
-            return source
+    ).scalar_one()
 
-        fallback_id = (
-            await db.execute(
-                text(
-                    """
-                    SELECT id FROM capability_sources
-                    WHERE node_record_id = :node_record_id
-                      AND plugin_id = :plugin_id
-                      AND registered_name = :registered_name
-                    ORDER BY registered_at DESC, id
-                    LIMIT 1
-                    """
-                ),
-                {
-                    "node_record_id": node.id,
-                    "plugin_id": plugin_id,
-                    "registered_name": registered_name,
-                },
-            )
-        ).scalar_one_or_none()
-        source = await db.get(CapabilitySource, fallback_id) if fallback_id else None
-        if source is not None:
-            return source
-        if attempt < 99:
-            await asyncio.sleep(0.2)
-    raise RuntimeError(
-        "capability source upsert did not return "
-        f"{node.node_id}/{plugin_id}/{registered_name}/{definition.canonical_name}"
-    )
+    source = await db.get(CapabilitySource, source_id)
+    if source is None:
+        raise RuntimeError(
+            "capability source upsert returned a missing row "
+            f"{node.node_id}/{plugin_id}/{registered_name}/{definition.canonical_name}"
+        )
+    return source
 
 
 def _merge_definition_manifest(
