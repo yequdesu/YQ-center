@@ -5,7 +5,6 @@ from __future__ import annotations
 import httpx
 
 from yequ.config import Settings, get_settings
-from yequ.ycr.retrieval import dense_embedding
 
 
 class EmbeddingError(RuntimeError):
@@ -20,10 +19,6 @@ async def embed_text(
     settings = settings or get_settings()
     provider = settings.ycr_embedding_provider
     model = settings.ycr_embedding_model
-    if provider == "local_hash":
-        if not settings.test_mode:
-            raise EmbeddingError("local_hash embedding is allowed only in test mode")
-        return dense_embedding(text, dimensions=settings.ycr_vector_dimensions), provider, model
     if provider == "openai_compatible":
         if not settings.ycr_embedding_base_url or not settings.ycr_embedding_api_key:
             raise EmbeddingError("YCR embedding endpoint is not configured")

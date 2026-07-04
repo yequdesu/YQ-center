@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.models.ycr import YcrContextChunk, YcrContextRef
 from yequ.ycr.embedding import embed_text
 from yequ.ycr.ledger import write_ledger
-from yequ.ycr.retrieval import cosine_similarity, dense_embedding
+from yequ.ycr.retrieval import cosine_similarity
 from yequ.ycr.source_adapter import load_source_value
 
 
@@ -257,11 +257,9 @@ async def search_ref(
     result = await db.execute(select(YcrContextChunk).where(YcrContextChunk.ref_id == ref_id))
     matches = []
     for chunk in result.scalars().all():
-        chunk_embedding = (
-            chunk.embedding_json
-            if isinstance(chunk.embedding_json, list)
-            else dense_embedding(chunk.text)
-        )
+        if not isinstance(chunk.embedding_json, list):
+            continue
+        chunk_embedding = chunk.embedding_json
         score = cosine_similarity(query_embedding, [float(value) for value in chunk_embedding])
         if query.lower() in chunk.text.lower():
             score += 1.0

@@ -1,6 +1,8 @@
 """pytest fixtures for YeQu Center tests."""
 
 import gc
+import hashlib
+import math
 import os
 import sys
 import time
@@ -49,6 +51,9 @@ def override_settings(monkeypatch, db_engine):
     """Override settings for test environment — uses db_engine's single engine."""
     import yequ.api.deps
     import yequ.db
+    import yequ.ycr.capability_gateway
+    import yequ.ycr.embedding
+    import yequ.ycr.ref_store
 
     test_settings = Settings(
         database_url=f"sqlite+aiosqlite:///{TEST_DB_PATH}",
@@ -57,9 +62,19 @@ def override_settings(monkeypatch, db_engine):
         log_level="WARNING",
         require_admin_auth=False,
         artifact_storage_dir="test_artifacts",
-        ycr_embedding_provider="local_hash",
-        ycr_embedding_model="local-hash-v1",
+        ycr_embedding_provider="openai_compatible",
+        ycr_embedding_model="test-embedding",
+        ycr_embedding_base_url="http://test-embedding",
+        ycr_embedding_api_key="test-token",
     )
+
+    async def test_embed_text(text: str, *, settings=None):
+        return (
+            _test_embedding(text, dimensions=test_settings.ycr_vector_dimensions),
+            "test",
+            "test",
+        )
+
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
     monkeypatch.setattr(yequ.db, "engine", db_engine)
@@ -73,6 +88,9 @@ def override_settings(monkeypatch, db_engine):
         ),
     )
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
+    monkeypatch.setattr(yequ.ycr.embedding, "embed_text", test_embed_text)
+    monkeypatch.setattr(yequ.ycr.capability_gateway, "embed_text", test_embed_text)
+    monkeypatch.setattr(yequ.ycr.ref_store, "embed_text", test_embed_text)
 
     class TestYcrClient:
         async def status(self):
@@ -339,3 +357,16 @@ async def node_with_hello(client, provisioned_node):
         headers=auth,
     )
     return node, token
+
+
+def _test_embedding(text: str, *, dimensions: int) -> list[float]:
+    vector = [0.0] * dimensions
+    for token in text.lower().split():
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % dimensions
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] += sign
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [value / norm for value in vector]
