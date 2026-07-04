@@ -63,6 +63,20 @@ class Settings(BaseSettings):
     artifact_storage_dir: str = "var/artifacts"
     artifact_max_upload_bytes: int = 50 * 1024 * 1024
 
+    # YeQu Context Router
+    ycr_backend: str = "http"
+    ycr_base_url: str = "http://127.0.0.1:9810"
+    ycr_timeout_sec: float = 10.0
+    ycr_fail_closed: bool = True
+    ycr_service_token: str = ""
+    ycr_embedding_provider: str = "openai_compatible"
+    ycr_embedding_model: str = "bge-m3"
+    ycr_embedding_base_url: str = ""
+    ycr_embedding_api_key: str = ""
+    ycr_vector_dimensions: int = 256
+    ycr_default_input_token_budget: int = 24000
+    ycr_reserved_response_tokens: int = 4000
+
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
     deepseek_base_url: str = "https://api.deepseek.com"

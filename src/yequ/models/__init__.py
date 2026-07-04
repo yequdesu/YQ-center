@@ -26,6 +26,7 @@ from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 from yequ.models.transfer import TransferAttempt, TransferPreflight, TransferSession
 from yequ.models.yqp_message import YqpMessage
+from yequ.models.ycr import YcrContextChunk, YcrContextLedger, YcrContextRef
 
 __all__ = [
     "AgentMessage",
@@ -61,5 +62,8 @@ __all__ = [
     "TransferAttempt",
     "TransferPreflight",
     "YqpMessage",
+    "YcrContextChunk",
+    "YcrContextLedger",
+    "YcrContextRef",
     "generate_uuid",
 ]

@@ -112,6 +112,109 @@ def _center_meta_functions() -> list[AgentFunction]:
             timeout_sec=5,
         ),
         AgentFunction(
+            name="capability.recommend",
+            description=(
+                "Recommend likely capabilities for a natural language task. "
+                "Use this when capability.search needs semantic ranking."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "node_id": {"type": "string"},
+                    "platform_os": {"type": "string"},
+                    "limit": {"type": "integer", "default": 5, "maximum": 20},
+                },
+                "required": ["query"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.inspect",
+            description="Inspect a YCR context ref without expanding the full value.",
+            input_schema={
+                "type": "object",
+                "properties": {"ref_id": {"type": "string"}},
+                "required": ["ref_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.expand",
+            description="Expand a bounded slice from a YCR context ref.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": "string"},
+                    "path": {"type": "string", "default": "$"},
+                    "limit": {"type": "integer", "default": 20, "maximum": 100},
+                },
+                "required": ["ref_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.tail",
+            description="Read the tail of a log, event list, or large context ref value.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": "string"},
+                    "path": {"type": "string", "default": "$"},
+                    "lines": {"type": "integer", "default": 40, "maximum": 200},
+                },
+                "required": ["ref_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.schema",
+            description="Return a structural schema summary for a YCR context ref.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": "string"},
+                    "path": {"type": "string", "default": "$"},
+                },
+                "required": ["ref_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.search",
+            description="Search within a YCR context ref using bounded local retrieval.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ref_id": {"type": "string"},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10, "maximum": 50},
+                },
+                "required": ["ref_id", "query"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="context.status",
+            description="Inspect YCR status and context ref capabilities.",
+            input_schema={"type": "object", "properties": {}},
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
             name="capability.invoke",
             description=(
                 "Invoke one concrete Center capability source. Use source_id from "

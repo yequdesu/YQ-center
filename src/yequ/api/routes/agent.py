@@ -16,6 +16,7 @@ from yequ.api.agent_context import (
     _context_block_summary,
     _load_agent_context_refs,
     _operation_observation_from_run_projection,
+    _operation_resume_prompt,
     _prompt_with_context_refs,
     _record_operation_resume_checkpoint,
     _with_context_block_events,
@@ -146,7 +147,7 @@ async def invoke_agent_stream_endpoint(
             available_functions=available,
             target_node_id=body.target_node_id,
         )
-    agent_prompt = _prompt_with_context_refs(body.prompt, context_blocks)
+    agent_prompt = await _prompt_with_context_refs(body.prompt, context_blocks)
     return _sse_response(
         _with_context_block_events(
             agent_invoke_stream(
@@ -222,21 +223,11 @@ async def resume_operation_stream_endpoint(
         )
 
     user_message = body.user_message.strip() if body.user_message else ""
-    prompt = (
-        "INFO: Center operation resume checkpoint follows. Continue from this "
-        "checkpoint instead of restarting the user's original request. Do not "
-        "call transfer.create or recreate the operation unless the user asks for "
-        "a retry. If the operation is terminal, summarize the outcome from these "
-        "facts. If it is still running or queued, explain that it is still "
-        "waiting. Do not invent fields that are not present.\n"
-        f"{json.dumps(operation_observation, ensure_ascii=False)}"
+    prompt = await _operation_resume_prompt(
+        db,
+        operation_observation,
+        user_message=user_message,
     )
-    if user_message:
-        prompt += (
-            "\n\nUser follow-up message. Treat it as the user's additional "
-            "instruction for this resumed operation, not as operation state:\n"
-            f"{user_message}"
-        )
     return _sse_response(
         agent_invoke_stream(
             provider,
@@ -294,7 +285,8 @@ async def resume_agent_run_stream_endpoint(
             target_node_id=body.target_node_id,
         )
 
-    prompt = _agent_run_resume_prompt(
+    prompt = await _agent_run_resume_prompt(
+        db,
         run_projection,
         operation_observation=operation_observation,
     )
@@ -355,7 +347,8 @@ async def resume_last_agent_run_stream_endpoint(
             target_node_id=body.target_node_id,
         )
 
-    prompt = _agent_run_resume_prompt(
+    prompt = await _agent_run_resume_prompt(
+        db,
         run_projection,
         operation_observation=operation_observation,
     )

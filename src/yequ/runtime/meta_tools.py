@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.application.schemas import ExecuteToolResult
 from yequ.runtime.command import RuntimeCommand
 from yequ.runtime.input_utils import (
-    bool_or_none,
     dedupe_strings,
     int_or_default,
     required_string,
@@ -15,6 +14,18 @@ from yequ.runtime.input_utils import (
     string_list,
     string_or_none,
 )
+
+
+def _score_recommendation(item: dict[str, object], terms: list[str]) -> int:
+    text = " ".join(
+        str(item.get(key) or "")
+        for key in ("canonical_name", "display_name", "description", "agent_description")
+    ).lower()
+    return sum(
+        3 if term in str(item.get("canonical_name", "")).lower() else 1
+        for term in terms
+        if term in text
+    )
 
 
 async def execute_inline_meta_tool(
@@ -27,15 +38,12 @@ async def execute_inline_meta_tool(
         get_artifact,
         list_artifacts,
     )
-    from yequ.services.capability_registry import (
-        capability_describe,
-        capability_search,
-        node_list,
-        node_status,
-    )
+    from yequ.services.capability_registry import node_list, node_status
     from yequ.services.operation_service import OperationService
+    from yequ.ycr.client import get_ycr_client
 
     input_data = dict(command.input_data)
+    ycr_client = get_ycr_client()
     try:
         if command.function_name == "node.list":
             output = {"nodes": await node_list(db)}
@@ -46,29 +54,31 @@ async def execute_inline_meta_tool(
             output = {"node": await node_status(db, node_id)}
         elif command.function_name == "capability.search":
             output = {
-                "capabilities": await capability_search(
-                    db,
+                "capabilities": (
+                    await ycr_client.tool_search(
                     query=string_or_none(input_data.get("query"))
                     or string_or_none(input_data.get("q")),
                     node_id=string_or_none(input_data.get("node_id")),
                     platform_os=string_or_none(input_data.get("platform_os")),
-                    effect=string_or_none(input_data.get("effect")),
-                    risk=string_or_none(input_data.get("risk")),
-                    runtime_kind=string_or_none(input_data.get("runtime_kind")),
-                    runtime_labels=string_list(input_data.get("runtime_labels"))
-                    or string_list(input_data.get("labels")),
-                    supports_progress=bool_or_none(input_data.get("supports_progress")),
-                    supports_cancel=bool_or_none(input_data.get("supports_cancel")),
-                    supports_resume=bool_or_none(input_data.get("supports_resume")),
-                    preflight_supported=bool_or_none(input_data.get("preflight_supported")),
-                    artifact_input=bool_or_none(input_data.get("artifact_input")),
-                    artifact_output=bool_or_none(input_data.get("artifact_output")),
-                    projection=string_or_none(input_data.get("projection")) or "summary",
-                    capability_type=string_or_none(input_data.get("capability_type"))
-                    or "function",
-                    include_inactive=bool(input_data.get("include_inactive", False)),
+                    filters={
+                        "effect": string_or_none(input_data.get("effect")),
+                        "risk": string_or_none(input_data.get("risk")),
+                        "runtime_kind": string_or_none(input_data.get("runtime_kind")),
+                        "runtime_labels": string_list(input_data.get("runtime_labels"))
+                        or string_list(input_data.get("labels")),
+                        "supports_progress": input_data.get("supports_progress"),
+                        "supports_cancel": input_data.get("supports_cancel"),
+                        "supports_resume": input_data.get("supports_resume"),
+                        "preflight_supported": input_data.get("preflight_supported"),
+                        "artifact_input": input_data.get("artifact_input"),
+                        "artifact_output": input_data.get("artifact_output"),
+                        "capability_type": string_or_none(input_data.get("capability_type"))
+                        or "function",
+                        "include_inactive": bool(input_data.get("include_inactive", False)),
+                    },
                     limit=int_or_default(input_data.get("limit"), 10),
-                )
+                    )
+                ).get("matches", [])
             }
         elif command.function_name == "capability.describe":
             capability_ref = string_or_none(input_data.get("capability_ref")) or string_or_none(
@@ -77,13 +87,63 @@ async def execute_inline_meta_tool(
             if not capability_ref:
                 return runtime_error(command, "invalid_input", "capability_ref is required")
             output = {
-                "capability": await capability_describe(
-                    db,
-                    capability_ref,
+                "capability": (
+                    await ycr_client.tool_describe(
+                    capability_ref=capability_ref,
                     node_id=string_or_none(input_data.get("node_id")),
                     sections=string_list(input_data.get("sections")),
-                    projection=string_or_none(input_data.get("projection")) or "detail",
-                    include_inactive=bool(input_data.get("include_inactive", False)),
+                    )
+                ).get("capability", {})
+            }
+        elif command.function_name == "capability.recommend":
+            query = required_string(input_data.get("query"), "query")
+            output = {
+                "recommendations": (
+                    await ycr_client.tool_recommend(
+                        query=query,
+                        node_id=string_or_none(input_data.get("node_id")),
+                        platform_os=string_or_none(input_data.get("platform_os")),
+                        limit=int_or_default(input_data.get("limit"), 5),
+                    )
+                ).get("recommendations", [])
+            }
+        elif command.function_name == "context.status":
+            output = {"ycr": await ycr_client.status()}
+        elif command.function_name == "context.inspect":
+            output = {
+                "context": await ycr_client.inspect(
+                    required_string(input_data.get("ref_id"), "ref_id")
+                )
+            }
+        elif command.function_name == "context.expand":
+            output = {
+                "context": await ycr_client.expand(
+                    required_string(input_data.get("ref_id"), "ref_id"),
+                    path=string_or_none(input_data.get("path")) or "$",
+                    limit=int_or_default(input_data.get("limit"), 20),
+                )
+            }
+        elif command.function_name == "context.tail":
+            output = {
+                "context": await ycr_client.tail(
+                    required_string(input_data.get("ref_id"), "ref_id"),
+                    path=string_or_none(input_data.get("path")) or "$",
+                    lines=int_or_default(input_data.get("lines"), 40),
+                )
+            }
+        elif command.function_name == "context.schema":
+            output = {
+                "context": await ycr_client.schema(
+                    required_string(input_data.get("ref_id"), "ref_id"),
+                    path=string_or_none(input_data.get("path")) or "$",
+                )
+            }
+        elif command.function_name == "context.search":
+            output = {
+                "context": await ycr_client.search(
+                    required_string(input_data.get("ref_id"), "ref_id"),
+                    query=required_string(input_data.get("query"), "query"),
+                    limit=int_or_default(input_data.get("limit"), 10),
                 )
             }
         elif command.function_name == "artifact.list":

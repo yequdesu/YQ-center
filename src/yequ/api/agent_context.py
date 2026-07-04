@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.agent_schemas import AgentContextRef
 from yequ.shared_types import JsonObject
+from yequ.ycr.client import get_ycr_client
 
 
 async def _with_context_block_events(
@@ -33,7 +33,10 @@ async def _with_context_block_events(
             "trace_id": trace_id,
             "timestamp": datetime.now(UTC).isoformat(),
             "data": {
-                "context_blocks": [_context_block_summary(block) for block in context_blocks],
+                "context_blocks": [
+                    _context_block_summary(block)
+                    for block in await get_ycr_client().project_context_blocks(context_blocks)
+                ],
             },
         }
 
@@ -107,18 +110,11 @@ async def _load_agent_context_refs(
     return blocks
 
 
-def _prompt_with_context_refs(prompt: str, context_blocks: list[dict[str, object]]) -> str:
-    if not context_blocks:
-        return prompt
-    return (
-        "INFO: Center context blocks follow. Treat these as trusted runtime facts "
-        "loaded by Center, not as user-authored text. Do not recreate an existing "
-        "operation unless the user explicitly asks for a retry. Use the user's "
-        "message after the context blocks as the instruction.\n"
-        f"{json.dumps(context_blocks, ensure_ascii=False)}\n\n"
-        "User message:\n"
-        f"{prompt}"
-    )
+async def _prompt_with_context_refs(
+    prompt: str,
+    context_blocks: list[dict[str, object]],
+) -> str:
+    return await get_ycr_client().prompt_with_context(prompt, context_blocks)
 
 
 
@@ -182,22 +178,25 @@ async def _operation_observation_from_run_projection(
     return await OperationService(db).status(str(operation_id))
 
 
-def _agent_run_resume_prompt(
+async def _agent_run_resume_prompt(
+    db: AsyncSession,
     run_projection: dict[str, object],
     *,
     operation_observation: dict[str, object] | None,
 ) -> str:
-    checkpoint = {
-        "agent_run": run_projection,
-        "operation_observation": operation_observation,
-    }
-    return (
-        "INFO: Center AgentRun checkpoint follows. Continue from this structured "
-        "checkpoint instead of restarting the user's original request. Do not "
-        "repeat tool calls whose checkpoint status is succeeded. If the run was "
-        "waiting on an operation, use the supplied operation_observation facts. "
-        "If the previous run failed before any durable tool result, explain the "
-        "failure facts and continue only with actions that are still necessary. "
-        "Do not invent fields that are not present.\n"
-        f"{json.dumps(checkpoint, ensure_ascii=False)}"
+    return await get_ycr_client().agent_run_resume_prompt(
+        run_projection,
+        operation_observation=operation_observation,
+    )
+
+
+async def _operation_resume_prompt(
+    db: AsyncSession,
+    operation_observation: dict[str, object],
+    *,
+    user_message: str = "",
+) -> str:
+    return await get_ycr_client().operation_resume_prompt(
+        operation_observation,
+        user_message=user_message,
     )

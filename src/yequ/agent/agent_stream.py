@@ -29,6 +29,7 @@ from yequ.agent.tool_stream import execute_tool_calls_scheduled
 from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
+from yequ.ycr.client import get_ycr_client
 
 log = get_logger(__name__)
 
@@ -500,7 +501,10 @@ async def agent_invoke_stream(
             # Execute tool calls with concurrency scheduling
             import json as _json
 
-            observation_collector = AgentToolObservationCollector(provider_call_order)
+            observation_collector = AgentToolObservationCollector(
+                provider_call_order,
+                ycr_client=get_ycr_client(),
+            )
             # Use a short-lived session for the preflight + execution block so
             # the DB connection is released before the next LLM round-trip.
             async with async_session_factory() as exec_block_db:
@@ -524,7 +528,7 @@ async def agent_invoke_stream(
                     yield ev
                     # Collect results from completed/failed/waiting_approval events
                     if (
-                        observation_collector.record_event(
+                        await observation_collector.record_event(
                             str(ev["event_type"]),
                             _as_object_dict(ev.get("data", {})),
                         )

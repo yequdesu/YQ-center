@@ -170,4 +170,45 @@ class TestDeepSeekProvider:
 
         assert chunks[0] == {"type": "delta", "content": "ok"}
         call_kwargs = p._client.chat.completions.create.call_args.kwargs
-        assert "system.file.list" in call_kwargs["messages"][0]["content"]
+        assert call_kwargs["messages"][0]["role"] == "system"
+        assert any(
+            message["role"] == "user" and message["content"] == "list USB files"
+            for message in call_kwargs["messages"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_invoke_stream_rejects_unprojected_raw_tool_message(
+        self, deepseek_provider
+    ):
+        p = deepseek_provider
+
+        async def fake_stream():
+            yield SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        p._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+
+        with pytest.raises(ValueError, match="unprojected_tool_observation"):
+            [
+                chunk
+                async for chunk in p.invoke_stream(
+                available_functions=[],
+                messages=[
+                    AgentMessage(role="assistant", content="", tool_calls=[]),
+                    AgentMessage(
+                        role="tool",
+                        tool_call_id="call_1",
+                        content='{"name":"logs","call_id":"call_1","status":"succeeded","result":{"stdout":"'
+                        + ("x" * 5000)
+                        + '"}}',
+                    ),
+                ],
+            )
+            ]

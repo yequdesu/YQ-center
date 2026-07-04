@@ -754,6 +754,8 @@ async def handle_job_finished(
     from yequ.protocol import JobStatus
     from yequ.protocol.errors import ErrorCode, YqpError
     from yequ.services.job_state_machine import transition
+    from yequ.services.result_ingestion import guard_job_output, ingestion_refs, select_path
+    from yequ.ycr.client import get_ycr_client
 
     job_id = payload["job_id"]
     result = await db.execute(select(Job).where(Job.job_id == job_id, Job.node_id == node.node_id))
@@ -815,6 +817,28 @@ async def handle_job_finished(
         error_message = payload.get("error_message")
         error_details = None
 
+    raw_output = payload.get("output")
+    guarded_output = guard_job_output(raw_output, job_id=job_id)
+    ycr_client = get_ycr_client()
+    for ref in ingestion_refs(guarded_output, job_id=job_id):
+        ref_path = str(ref.get("path") or "$")
+        try:
+            ref_value = select_path(raw_output, ref_path)
+        except (KeyError, IndexError, TypeError, ValueError):
+            ref_value = raw_output
+        await ycr_client.upsert_ref(
+            ref_type=str(ref.get("ref_type") or "job_output"),
+            source_type="job",
+            source_id=job_id,
+            path=ref_path,
+            value=ref_value,
+            summary=str(ref.get("summary") or "Node job output persisted by YCR."),
+            actor_id=None,
+            session_id=None,
+            trust_level="node_reported_fact",
+            projection_policy="job_output_ingestion_v1",
+        )
+
     try:
         await transition(
             db,
@@ -822,7 +846,7 @@ async def handle_job_finished(
             terminal_status,
             node_id=node.node_id,
             invocation_id=job.invocation_id,
-            output=payload.get("output"),
+            output=guarded_output,
             error_code=error_code,
             error_message=error_message,
             error_details=error_details,
@@ -836,7 +860,7 @@ async def handle_job_finished(
             ).model_dump(),
         ) from None
 
-    job.output = payload.get("output")
+    job.output = guarded_output
     job.error_code = error_code
     job.error_message = error_message
     job.error_details = error_details
@@ -868,7 +892,7 @@ async def handle_job_finished(
                 "approval_id": job.approval_id,
                 "function_name": job.function_name,
                 "status": terminal_status,
-                "output": payload.get("output"),
+                "output": guarded_output,
             },
             timestamp=now,
         )
@@ -894,8 +918,8 @@ async def handle_job_finished(
                 error_code=job.error_code,
                 error_message=job.error_message,
             )
-            if job.output:
-                inv.result = job.output
+            if guarded_output:
+                inv.result = guarded_output
             if job.error_code:
                 inv.error_code = job.error_code
             if job.error_message:

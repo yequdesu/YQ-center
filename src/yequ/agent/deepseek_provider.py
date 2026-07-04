@@ -522,10 +522,22 @@ def _sanitize_tool_observation_content(content: str) -> str:
     """
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return content
+    except json.JSONDecodeError as exc:
+        raise ValueError("unprojected_tool_observation") from exc
     sanitized = sanitize_tool_payload_for_agent(parsed)
+    if not _is_projected_tool_observation(sanitized):
+        raise ValueError("unprojected_tool_observation")
     return json.dumps(sanitized, ensure_ascii=False)
+
+
+def _is_projected_tool_observation(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    ycr = value.get("ycr")
+    if isinstance(ycr, dict) and ycr.get("projected") is True:
+        return True
+    result = value.get("result")
+    return isinstance(result, dict) and bool(result.get("projection_policy"))
 
 
 def _system_prompt_text_enhanced(capability_context_text: str) -> str:

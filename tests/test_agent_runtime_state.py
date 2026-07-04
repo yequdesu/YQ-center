@@ -11,6 +11,12 @@ from yequ.agent.runtime_state import (
     AgentToolObservationCollector,
 )
 from yequ.runtime.agent_status import status_for_stream_event
+from yequ.ycr import project_tool_observation
+
+
+class FakeYcrClient:
+    async def project_tool_observation(self, **payload):
+        return project_tool_observation(**payload)
 
 
 def test_runtime_rejects_depth_exceeded():
@@ -145,10 +151,13 @@ def test_turn_status_mapping_uses_runtime_state_names():
     assert status_for_stream_event("agent.provider.failed") == "failed"
 
 
-def test_tool_observation_collector_preserves_provider_call_order():
-    collector = AgentToolObservationCollector({"call_b": 0, "call_a": 1})
+async def test_tool_observation_collector_preserves_provider_call_order():
+    collector = AgentToolObservationCollector(
+        {"call_b": 0, "call_a": 1},
+        ycr_client=FakeYcrClient(),
+    )
 
-    assert collector.record_event(
+    assert await collector.record_event(
         "agent.tool_call.completed",
         {
             "call_id": "call_a",
@@ -157,7 +166,7 @@ def test_tool_observation_collector_preserves_provider_call_order():
             "target_node_id": "linux-node-01",
         },
     )
-    assert collector.record_event(
+    assert await collector.record_event(
         "agent.tool_call.failed",
         {
             "call_id": "call_b",
@@ -175,12 +184,35 @@ def test_tool_observation_collector_preserves_provider_call_order():
     assert ordered[0]["target_node_id"] == "winClient"
     assert ordered[1]["status"] == "succeeded"
     assert ordered[1]["target_node_id"] == "linux-node-01"
+    assert ordered[1]["ycr"]["projected"] is True
+    assert ordered[1]["result"]["facts"] == {"ok": True}
 
 
-def test_tool_observation_collector_tracks_waiting_approval():
+async def test_tool_observation_collector_projects_large_completed_result():
+    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
+
+    await collector.record_event(
+        "agent.tool_call.completed",
+        {
+            "call_id": "call_1",
+            "name": "linux.logs.tail",
+            "result": {"stdout": "x" * 5000, "status": "ok"},
+            "target_node_id": "linux-node-01",
+        },
+    )
+
+    ordered = collector.ordered_results()
+    result = ordered[0]["result"]
+    assert result["truncated"] is True
+    assert result["refs"]
+    assert result["facts"]["stdout"]["chars"] == 5000
+    assert "x" * 2000 not in str(ordered[0])
+
+
+async def test_tool_observation_collector_tracks_waiting_approval():
     collector = AgentToolObservationCollector({"call_1": 0})
 
-    collector.record_event(
+    await collector.record_event(
         "agent.tool_call.waiting_approval",
         {
             "call_id": "call_1",
@@ -202,10 +234,10 @@ def test_tool_observation_collector_tracks_waiting_approval():
     ]
 
 
-def test_tool_observation_collector_tracks_waiting_operation():
+async def test_tool_observation_collector_tracks_waiting_operation():
     collector = AgentToolObservationCollector({"call_1": 0})
 
-    collector.record_event(
+    await collector.record_event(
         "agent.tool_call.waiting_operation",
         {
             "call_id": "call_1",

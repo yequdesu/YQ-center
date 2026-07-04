@@ -18,6 +18,7 @@ from yequ.agent.limits import (
     DEFAULT_AGENT_MAX_STEPS,
     DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
 )
+from yequ.ycr.client import YcrClient, YcrError, get_ycr_client
 
 AgentRunStatus = Literal[
     "created",
@@ -240,13 +241,19 @@ class AgentRunGraph:
 
 
 class AgentToolObservationCollector:
-    def __init__(self, provider_call_order: dict[str, int]) -> None:
+    def __init__(
+        self,
+        provider_call_order: dict[str, int],
+        *,
+        ycr_client: YcrClient | None = None,
+    ) -> None:
         self._provider_call_order = dict(provider_call_order)
+        self._ycr_client = ycr_client or get_ycr_client()
         self._results: list[dict[str, object]] = []
         self.has_waiting_approval = False
         self.has_waiting_operation = False
 
-    def record_event(self, event_type: str, data: dict[str, object]) -> bool:
+    async def record_event(self, event_type: str, data: dict[str, object]) -> bool:
         if event_type not in {
             "agent.tool_call.completed",
             "agent.tool_call.failed",
@@ -258,15 +265,24 @@ class AgentToolObservationCollector:
         call_id = str(data.get("call_id", ""))
         name = str(data.get("name", ""))
         if event_type == "agent.tool_call.completed":
-            self._results.append(
-                {
+            try:
+                projected = await self._ycr_client.project_tool_observation(
+                    name=name,
+                    call_id=call_id,
+                    status="succeeded",
+                    result=data.get("result"),
+                    target_node_id=data.get("target_node_id"),
+                )
+            except YcrError as exc:
+                projected = {
                     "name": name,
                     "call_id": call_id,
-                    "status": "succeeded",
-                    "result": data.get("result"),
+                    "status": "failed",
+                    "error": exc.message,
+                    "error_code": exc.code,
                     "target_node_id": data.get("target_node_id"),
                 }
-            )
+            self._results.append(projected)
             return True
         if event_type == "agent.tool_call.failed":
             self._results.append(

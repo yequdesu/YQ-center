@@ -32,6 +32,7 @@ import yequ.models.session  # noqa: F401
 import yequ.models.signal_state  # noqa: F401
 import yequ.models.timeline  # noqa: F401
 import yequ.models.transfer  # noqa: F401
+import yequ.models.ycr  # noqa: F401
 import yequ.models.yqp_message  # noqa: F401
 from yequ.api.app import create_app
 from yequ.config import Settings
@@ -53,6 +54,8 @@ def override_settings(monkeypatch, db_engine):
         log_level="WARNING",
         require_admin_auth=False,
         artifact_storage_dir="test_artifacts",
+        ycr_embedding_provider="local_hash",
+        ycr_embedding_model="local-hash-v1",
     )
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)

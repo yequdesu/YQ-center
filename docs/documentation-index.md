@@ -26,7 +26,16 @@
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性和错误传播门禁。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、连通性探测、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
-## 3. 已归档内容
+## 3. 设计提案
+
+以下内容是当前讨论中的设计方案。它们不是已经落地的权威合同；实现完成并通过审查后，相关结论应并入当前权威文档或归档。
+
+| 文档 | 范围 |
+|---|---|
+| `docs/proposals/2026-07-04-yequ-context-router-ycr.md` | YCR 独立上下文代理设计：治理 Agent 输入、tool result、context_refs、resume prompt、Result RAG 和 Capability RAG 的边界。 |
+| `docs/proposals/2026-07-04-ycr-design-review-and-scenario-drill.md` | YCR 设计复核和场景预演：验证可行性、正确性、可扩展性，并列出实现前必须补强的硬约束。 |
+
+## 4. 已归档内容
 
 以下内容已经归档，只能作为背景材料阅读。
 
@@ -54,7 +63,7 @@
 | `docs/archive/postmortems/2026-06-28-yqp-deadlock-postmortem.md` | YQP/DB 阻塞事故复盘。 |
 | `docs/archive/visuals/architecture-five-nodes-2026-07-03.html` | 五节点架构静态展示页，不作为合同。 |
 
-## 4. 一致性规则
+## 5. 一致性规则
 
 1. 协议事实以 `YQP-Node-Protocol.md`、`src/yequ/api/routes/yqp.py`、`src/yequ/services/node_service.py` 和 YQP 测试为准。
 2. Node capability 开发以 `docs/node-capability-contract.md` 和具体平台合同为准。

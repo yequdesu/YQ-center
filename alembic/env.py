@@ -15,6 +15,7 @@ import yequ.models.maintenance_plan  # noqa: F401
 import yequ.models.node  # noqa: F401
 import yequ.models.session  # noqa: F401
 import yequ.models.timeline  # noqa: F401
+import yequ.models.ycr  # noqa: F401
 from alembic import context
 from yequ.config import get_settings
 from yequ.models.base import Base
