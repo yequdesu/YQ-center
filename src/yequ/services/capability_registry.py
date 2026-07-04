@@ -7,10 +7,12 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from yequ.models.base import generate_uuid
 from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 from yequ.models.node import Node
 from yequ.protocol import NodeStatus
@@ -461,6 +463,33 @@ async def _get_or_create_definition(
     if definition is not None:
         return definition
 
+    if db.get_bind().dialect.name == "postgresql":
+        await db.execute(
+            pg_insert(CapabilityDefinition)
+            .values(
+                id=generate_uuid(),
+                capability_id=generate_uuid(),
+                canonical_name=canonical_name,
+                capability_type=capability_type,
+                aliases=[],
+                examples=[],
+                tags=[],
+                artifact_inputs=[],
+                artifact_outputs=[],
+                status="active",
+            )
+            .on_conflict_do_nothing(
+                index_elements=["canonical_name", "capability_type"]
+            )
+        )
+        result = await db.execute(
+            select(CapabilityDefinition).where(
+                CapabilityDefinition.canonical_name == canonical_name,
+                CapabilityDefinition.capability_type == capability_type,
+            )
+        )
+        return result.scalar_one()
+
     try:
         async with db.begin_nested():
             definition = CapabilityDefinition(
@@ -514,6 +543,38 @@ async def _get_or_create_source(
     source = result.scalar_one_or_none()
     if source is not None:
         return source
+
+    if db.get_bind().dialect.name == "postgresql":
+        await db.execute(
+            pg_insert(CapabilitySource)
+            .values(
+                id=generate_uuid(),
+                source_id=generate_uuid(),
+                definition_id=definition.id,
+                node_record_id=node.id,
+                plugin_id=plugin_id,
+                plugin_version=plugin_version,
+                registered_name=registered_name,
+                registered_at=now,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "node_record_id",
+                    "plugin_id",
+                    "registered_name",
+                    "definition_id",
+                ]
+            )
+        )
+        result = await db.execute(
+            select(CapabilitySource).where(
+                CapabilitySource.node_record_id == node.id,
+                CapabilitySource.plugin_id == plugin_id,
+                CapabilitySource.registered_name == registered_name,
+                CapabilitySource.definition_id == definition.id,
+            )
+        )
+        return result.scalar_one()
 
     try:
         async with db.begin_nested():
