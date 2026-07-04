@@ -31,6 +31,10 @@ dev = [
     "mypy>=1.11",
     "types-jsonschema>=4.20",
 ]
+embedder = [
+    "FlagEmbedding>=1.3.0",
+    "torch>=2.0",
+]
 
 [project.scripts]
 yequ = "yequ.cli:cli"

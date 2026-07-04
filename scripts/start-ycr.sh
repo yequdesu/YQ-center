@@ -40,16 +40,9 @@ if [ -z "${YEQU_YCR_SERVICE_TOKEN:-}" ]; then
   exit 1
 fi
 
-if [ -z "${YEQU_YCR_EMBEDDING_BASE_URL:-}" ]; then
-  echo -e "${RED}[ERROR] YEQU_YCR_EMBEDDING_BASE_URL is not set${NC}"
-  echo "YCR requires an OpenAI-compatible embedding endpoint."
-  exit 1
-fi
+export YEQU_YCR_EMBEDDING_BASE_URL="${YEQU_YCR_EMBEDDING_BASE_URL:-http://127.0.0.1:9820}"
 
-if [ -z "${YEQU_YCR_EMBEDDING_API_KEY:-}" ]; then
-  echo -e "${RED}[ERROR] YEQU_YCR_EMBEDDING_API_KEY is not set${NC}"
-  exit 1
-fi
+export YEQU_YCR_EMBEDDING_API_KEY="${YEQU_YCR_EMBEDDING_API_KEY:-${YEQU_EMBEDDER_API_KEY:-local-dev}}"
 
 echo -e "${YELLOW}[1/3] Ensure PostgreSQL is running ...${NC}"
 docker compose up -d postgres

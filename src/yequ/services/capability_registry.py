@@ -244,6 +244,7 @@ async def capability_search(
     capability_type: str = "function",
     include_inactive: bool = False,
     limit: int = 20,
+    max_limit: int = 50,
 ) -> list[JsonObject]:
     """Deterministic registry search used before any vector/embedding layer."""
 
@@ -311,7 +312,7 @@ async def capability_search(
                 },
             )
         )
-        if len(matches) >= _bounded_limit(limit):
+        if len(matches) >= _bounded_limit(limit, max_limit=max_limit):
             break
 
     return matches
@@ -1139,8 +1140,8 @@ def _normalize_projection(value: str | None, *, default: str) -> str:
     return projection if projection in allowed else default
 
 
-def _bounded_limit(value: int) -> int:
-    return max(1, min(int(value), 50))
+def _bounded_limit(value: int, *, max_limit: int = 50) -> int:
+    return max(1, min(int(value), max(1, int(max_limit))))
 
 
 def _runtime_kind_matches(requirements: JsonObject, runtime_kind: str) -> bool:

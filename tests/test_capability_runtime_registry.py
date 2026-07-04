@@ -776,6 +776,40 @@ async def test_ycr_tool_search_accepts_filter_only_discovery(
     assert data["query"] == ""
     assert data["match_count"] == 1
     assert data["matches"][0]["canonical_name"] == "system.info"
+    assert data["retrieval"]["strategy"] == "registry_filter_v1"
+
+
+@pytest.mark.asyncio
+async def test_ycr_tool_search_uses_capability_rag_when_query_is_present(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    from yequ.ycr_app import app as ycr_app
+
+    node, token = provisioned_node
+    await _hello_windows_node(client, node.node_id, token)
+    await _register_artifact_output_capability(client, node.node_id, token)
+
+    transport = ASGITransport(app=ycr_app)
+    async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
+        response = await ycr_client.post(
+            "/v1/tool/search",
+            json={
+                "query": "screen capture",
+                "node_id": node.node_id,
+                "artifact_output": True,
+                "projection": "invoke_ready",
+                "limit": 5,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["kind"] == "capability_tool_rag_result"
+    assert data["retrieval"]["strategy"] == "tool_rag_hybrid_v1"
+    assert data["retrieval"]["semantic"]["enabled"] is True
+    assert data["matches"][0]["canonical_name"] == "screen.capture"
+    assert data["matches"][0]["retrieval"]["dense_score"] > 0
 
 
 @pytest.mark.asyncio
@@ -817,7 +851,8 @@ async def test_capability_search_supports_structured_filters_and_projection(
     assert len(capabilities) == 1
     capability = capabilities[0]
     assert capability["canonical_name"] == "transfer.croc.receive"
-    assert "query:transfer" in " ".join(capability["match_reasons"])
+    assert capability["retrieval"]["strategy"] == "tool_rag_hybrid_v1"
+    assert capability["retrieval"]["dense_score"] > 0
     assert "filter:platform_os=linux" in capability["match_reasons"]
     assert "input_schema" not in capability
     source = capability["sources"][0]

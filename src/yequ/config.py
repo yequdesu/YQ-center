@@ -70,10 +70,10 @@ class Settings(BaseSettings):
     ycr_fail_closed: bool = True
     ycr_service_token: str = ""
     ycr_embedding_provider: str = "openai_compatible"
-    ycr_embedding_model: str = "bge-m3"
+    ycr_embedding_model: str = "BAAI/bge-m3"
     ycr_embedding_base_url: str = ""
     ycr_embedding_api_key: str = ""
-    ycr_vector_dimensions: int = 256
+    ycr_vector_dimensions: int = 1024
     ycr_default_input_token_budget: int = 24000
     ycr_reserved_response_tokens: int = 4000
 

@@ -186,6 +186,11 @@ def _raise_ycr_value_error(exc: ValueError) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error_code": "capability_not_found", "message": message},
         ) from exc
+    if "capability_rag_unavailable" in lowered:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "capability_rag_unavailable", "message": message},
+        ) from exc
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={"error_code": "context_router_invalid_request", "message": message},
@@ -212,8 +217,14 @@ async def context_status() -> dict[str, object]:
         "embedding_provider": settings.ycr_embedding_provider,
         "embedding_model": settings.ycr_embedding_model,
         "capability_discovery": {
-            "strategy": "registry_filter_v1",
-            "capability_rag": "not_implemented",
+            "strategies": ["registry_filter_v1", "tool_rag_hybrid_v1"],
+            "tool_rag": (
+                "enabled"
+                if settings.ycr_embedding_provider == "openai_compatible"
+                and bool(settings.ycr_embedding_base_url)
+                else "unavailable"
+            ),
+            "tool_rag_model": settings.ycr_embedding_model,
         },
         "budget": {
             "provider": budget.provider,
@@ -393,14 +404,19 @@ async def tool_search(body: ToolSearchRequest) -> dict[str, object]:
     from yequ.ycr.capability_gateway import search_capability_registry
 
     async with async_session_factory() as db:
-        return await search_capability_registry(
-            db,
-            query=body.query,
-            node_id=body.node_id,
-            platform_os=body.platform_os,
-            filters=body.model_dump(exclude_none=True),
-            limit=body.limit,
-        )
+        try:
+            result = await search_capability_registry(
+                db,
+                query=body.query,
+                node_id=body.node_id,
+                platform_os=body.platform_os,
+                filters=body.model_dump(exclude_none=True),
+                limit=body.limit,
+            )
+            await db.commit()
+            return result
+        except ValueError as exc:
+            _raise_ycr_value_error(exc)
 
 
 @app.post("/v1/tool/describe", dependencies=[Depends(_require_ycr_auth)])

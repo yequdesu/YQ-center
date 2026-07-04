@@ -83,3 +83,22 @@ class YcrContextLedger(Base, TimestampMixin):
     embedding_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class YcrCapabilityIndex(Base, TimestampMixin):
+    """Search index document for one capability definition."""
+
+    __tablename__ = "ycr_capability_index"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    index_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    canonical_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    capability_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    index_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sparse_json: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)

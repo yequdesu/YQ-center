@@ -14,8 +14,8 @@
 5. `ycr_context_refs` 与 `ycr_context_chunks` 是持久 ref 与检索 chunk 的事实表。
 6. `context.*` meta tools 读取持久 ref/chunk，不依赖进程内缓存。
 7. Provider 层只接受已经投影的 tool observation；未投影内容触发 `unprojected_tool_observation`，不做 raw fallback。
-8. 当前实现只有 `src/yequ/ycr/capability_gateway.py` 的 registry-backed capability discovery；Capability RAG / Tool RAG 未实现，不能用 registry search 冒充。
-9. Result context search 使用 OpenAI-compatible embedding provider + PostgreSQL pgvector；测试环境才使用 local hash embedding。Capability RAG 只有在单独实现 capability vector index 后才能声明完成。
+8. 当前实现由 `src/yequ/ycr/capability_gateway.py` 负责 capability discovery：无 query 时走 registry filter；有 query 时走 Tool RAG hybrid retrieval。
+9. Tool RAG 使用本地 OpenAI-compatible embedding endpoint，推荐 `scripts/start-ycr-embedder.sh` 启动 CPU 版 `BAAI/bge-m3`；测试环境才使用 local hash embedding。
 10. 当前实现仍未通过本文最终验收；`AgentContextPacket` 主路径、UI/debug 双轨治理、ref durable anchor 和完整 ledger 仍是必须完成项。
 
 硬验收补充：
@@ -284,7 +284,7 @@ YCR 服务由以下模块组成：
 | `RefManager` | 创建、校验、过期和展开 `ContextRef`。 |
 | `ContextPacketBuilder` | 组装 provider-ready messages、tool definitions、context blocks 和 budget report。 |
 | `RetrievalGateway` | 暴露 `context.inspect/search/expand/tail/schema`，后续接 Result RAG。 |
-| `CapabilityKnowledgeGateway` | 当前只暴露 registry-backed capability discovery；Capability RAG 未实现，后续必须单独接 capability vector index。 |
+| `CapabilityKnowledgeGateway` | 无 query 时暴露 registry-backed discovery；有 query 时使用 capability index + 本地 embedding 做 Tool RAG。 |
 | `ContextLedgerWriter` | 写上下文账本、预算报告、投影策略命中记录。 |
 
 这些模块在 YCR 内部形成清晰边界。Agent Runtime 只能依赖 `YcrClient`，不能依赖 `ProjectionRegistry` 等内部类。
@@ -364,7 +364,7 @@ YCR 引入一组 Agent meta tools，用于按需取回 refs。它们由 Center �
 
 ### 11.1 Capability RAG
 
-Capability RAG 属于 capability discovery 层，未来服务于 `capability.search`、`capability.describe` 和独立的推荐入口。它的输入是 capability manifest、agent_description、examples、tags、failure modes、preconditions 和平台/运行时特征。当前代码没有实现 Capability RAG，只有确定性的 registry discovery。
+Capability RAG 属于 capability discovery 层，服务于带 query 的 `capability.search` 和按需 `capability.describe`。它的输入是 capability manifest、agent_description、examples、tags、failure modes、preconditions 和平台/运行时特征。无 query 的 capability list/filter 不走 RAG，因为那是确定性的 registry 查询。
 
 它解决：
 
@@ -387,6 +387,25 @@ Result RAG 属于 YCR 的 RetrievalGateway，服务于 `context.search`、`conte
 4. 历史会话很长时，Agent 如何保留任务连续性。
 
 当前项目的主要 token 问题来自 result -> agent 链路，因此第一阶段先落 YCR + Result RAG 接口；Capability RAG 作为第二阶段增强。
+
+当前个人部署约束是 CPU-only，推荐模型为 `BAAI/bge-m3`。它支持多语言 dense/sparse/multi-vector 检索能力，但本项目第一版只使用 dense embedding + registry sparse/token signal；模型通过独立 `ycr-embedder` HTTP 服务加载，不进入 Center/YCR 主进程。5600GT + 32GB 内存适合本项目几十到几百个 capability 文档的低吞吐检索。
+
+本地启动顺序：
+
+```bash
+pip install -e ".[embedder]"
+export YEQU_EMBEDDER_MODEL=BAAI/bge-m3
+export YEQU_EMBEDDER_DEVICE=cpu
+export YEQU_EMBEDDER_USE_FP16=false
+./scripts/start-ycr-embedder.sh 9820
+
+export YEQU_YCR_EMBEDDING_PROVIDER=openai_compatible
+export YEQU_YCR_EMBEDDING_MODEL=BAAI/bge-m3
+export YEQU_YCR_EMBEDDING_BASE_URL=http://127.0.0.1:9820
+./scripts/start-ycr.sh 9810
+```
+
+如果 `capability.search` 带 query 且 embedding endpoint 不可用，YCR 必须返回 `capability_rag_unavailable`，不能静默退回 registry 字段搜索。
 
 ## 12. 对当前代码的接入点
 
