@@ -57,6 +57,8 @@ async def sync_capability_runtime_snapshot(
     signals are written as active sources linked to semantic definitions.
     """
 
+    await _lock_registry_key(db, f"capability-snapshot:{node.id}")
+
     touched_definition_ids: set[str] = set()
 
     existing_sources = await db.execute(
@@ -465,24 +467,6 @@ async def _get_or_create_definition(
         return definition
 
     if db.get_bind().dialect.name == "postgresql":
-        await db.execute(
-            pg_insert(CapabilityDefinition)
-            .values(
-                id=generate_uuid(),
-                capability_id=generate_uuid(),
-                canonical_name=canonical_name,
-                capability_type=capability_type,
-                aliases=[],
-                examples=[],
-                tags=[],
-                artifact_inputs=[],
-                artifact_outputs=[],
-                status="active",
-            )
-            .on_conflict_do_nothing(
-                index_elements=["canonical_name", "capability_type"]
-            )
-        )
         return await _load_definition_after_upsert(
             db,
             canonical_name=canonical_name,
@@ -544,33 +528,14 @@ async def _get_or_create_source(
         return source
 
     if db.get_bind().dialect.name == "postgresql":
-        await db.execute(
-            pg_insert(CapabilitySource)
-            .values(
-                id=generate_uuid(),
-                source_id=generate_uuid(),
-                definition_id=definition.id,
-                node_record_id=node.id,
-                plugin_id=plugin_id,
-                plugin_version=plugin_version,
-                registered_name=registered_name,
-                registered_at=now,
-            )
-            .on_conflict_do_nothing(
-                index_elements=[
-                    "node_record_id",
-                    "plugin_id",
-                    "registered_name",
-                    "definition_id",
-                ]
-            )
-        )
         return await _load_source_after_upsert(
             db,
             node=node,
             definition=definition,
             plugin_id=plugin_id,
+            plugin_version=plugin_version,
             registered_name=registered_name,
+            now=now,
         )
 
     try:
@@ -611,7 +576,25 @@ async def _load_definition_after_upsert(
     canonical_name: str,
     capability_type: str,
 ) -> CapabilityDefinition:
-    for attempt in range(4):
+    for attempt in range(20):
+        await db.execute(
+            pg_insert(CapabilityDefinition)
+            .values(
+                id=generate_uuid(),
+                capability_id=generate_uuid(),
+                canonical_name=canonical_name,
+                capability_type=capability_type,
+                aliases=[],
+                examples=[],
+                tags=[],
+                artifact_inputs=[],
+                artifact_outputs=[],
+                status="active",
+            )
+            .on_conflict_do_nothing(
+                index_elements=["canonical_name", "capability_type"]
+            )
+        )
         result = await db.execute(
             select(CapabilityDefinition).where(
                 CapabilityDefinition.canonical_name == canonical_name,
@@ -621,7 +604,7 @@ async def _load_definition_after_upsert(
         definition = result.scalar_one_or_none()
         if definition is not None:
             return definition
-        if attempt < 3:
+        if attempt < 19:
             await asyncio.sleep(0.05)
     raise RuntimeError(
         f"capability definition upsert did not return {canonical_name}/{capability_type}"
@@ -634,9 +617,32 @@ async def _load_source_after_upsert(
     node: Node,
     definition: CapabilityDefinition,
     plugin_id: str,
+    plugin_version: str,
     registered_name: str,
+    now: datetime,
 ) -> CapabilitySource:
-    for attempt in range(4):
+    for attempt in range(20):
+        await db.execute(
+            pg_insert(CapabilitySource)
+            .values(
+                id=generate_uuid(),
+                source_id=generate_uuid(),
+                definition_id=definition.id,
+                node_record_id=node.id,
+                plugin_id=plugin_id,
+                plugin_version=plugin_version,
+                registered_name=registered_name,
+                registered_at=now,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "node_record_id",
+                    "plugin_id",
+                    "registered_name",
+                    "definition_id",
+                ]
+            )
+        )
         result = await db.execute(
             select(CapabilitySource).where(
                 CapabilitySource.node_record_id == node.id,
@@ -662,7 +668,7 @@ async def _load_source_after_upsert(
         source = fallback_result.scalar_one_or_none()
         if source is not None:
             return source
-        if attempt < 3:
+        if attempt < 19:
             await asyncio.sleep(0.05)
     raise RuntimeError(
         "capability source upsert did not return "
