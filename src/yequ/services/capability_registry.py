@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -482,13 +483,11 @@ async def _get_or_create_definition(
                 index_elements=["canonical_name", "capability_type"]
             )
         )
-        result = await db.execute(
-            select(CapabilityDefinition).where(
-                CapabilityDefinition.canonical_name == canonical_name,
-                CapabilityDefinition.capability_type == capability_type,
-            )
+        return await _load_definition_after_upsert(
+            db,
+            canonical_name=canonical_name,
+            capability_type=capability_type,
         )
-        return result.scalar_one()
 
     try:
         async with db.begin_nested():
@@ -566,15 +565,13 @@ async def _get_or_create_source(
                 ]
             )
         )
-        result = await db.execute(
-            select(CapabilitySource).where(
-                CapabilitySource.node_record_id == node.id,
-                CapabilitySource.plugin_id == plugin_id,
-                CapabilitySource.registered_name == registered_name,
-                CapabilitySource.definition_id == definition.id,
-            )
+        return await _load_source_after_upsert(
+            db,
+            node=node,
+            definition=definition,
+            plugin_id=plugin_id,
+            registered_name=registered_name,
         )
-        return result.scalar_one()
 
     try:
         async with db.begin_nested():
@@ -606,6 +603,71 @@ async def _lock_registry_key(db: AsyncSession, key: str) -> None:
     if bind.dialect.name != "postgresql":
         return
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
+
+
+async def _load_definition_after_upsert(
+    db: AsyncSession,
+    *,
+    canonical_name: str,
+    capability_type: str,
+) -> CapabilityDefinition:
+    for attempt in range(4):
+        result = await db.execute(
+            select(CapabilityDefinition).where(
+                CapabilityDefinition.canonical_name == canonical_name,
+                CapabilityDefinition.capability_type == capability_type,
+            )
+        )
+        definition = result.scalar_one_or_none()
+        if definition is not None:
+            return definition
+        if attempt < 3:
+            await asyncio.sleep(0.05)
+    raise RuntimeError(
+        f"capability definition upsert did not return {canonical_name}/{capability_type}"
+    )
+
+
+async def _load_source_after_upsert(
+    db: AsyncSession,
+    *,
+    node: Node,
+    definition: CapabilityDefinition,
+    plugin_id: str,
+    registered_name: str,
+) -> CapabilitySource:
+    for attempt in range(4):
+        result = await db.execute(
+            select(CapabilitySource).where(
+                CapabilitySource.node_record_id == node.id,
+                CapabilitySource.plugin_id == plugin_id,
+                CapabilitySource.registered_name == registered_name,
+                CapabilitySource.definition_id == definition.id,
+            )
+        )
+        source = result.scalar_one_or_none()
+        if source is not None:
+            return source
+
+        fallback_result = await db.execute(
+            select(CapabilitySource)
+            .where(
+                CapabilitySource.node_record_id == node.id,
+                CapabilitySource.plugin_id == plugin_id,
+                CapabilitySource.registered_name == registered_name,
+            )
+            .order_by(CapabilitySource.registered_at.desc())
+            .limit(1)
+        )
+        source = fallback_result.scalar_one_or_none()
+        if source is not None:
+            return source
+        if attempt < 3:
+            await asyncio.sleep(0.05)
+    raise RuntimeError(
+        "capability source upsert did not return "
+        f"{node.node_id}/{plugin_id}/{registered_name}/{definition.canonical_name}"
+    )
 
 
 def _merge_definition_manifest(
