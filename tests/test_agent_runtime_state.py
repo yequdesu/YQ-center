@@ -182,6 +182,8 @@ async def test_tool_observation_collector_preserves_provider_call_order():
     assert [result["call_id"] for result in ordered] == ["call_b", "call_a"]
     assert ordered[0]["status"] == "failed"
     assert ordered[0]["target_node_id"] == "winClient"
+    assert ordered[0]["ycr"]["projected"] is True
+    assert ordered[0]["result"]["projection_policy"] == "tool_observation_summary_v1"
     assert ordered[1]["status"] == "succeeded"
     assert ordered[1]["target_node_id"] == "linux-node-01"
     assert ordered[1]["ycr"]["projected"] is True
@@ -210,7 +212,7 @@ async def test_tool_observation_collector_projects_large_completed_result():
 
 
 async def test_tool_observation_collector_tracks_waiting_approval():
-    collector = AgentToolObservationCollector({"call_1": 0})
+    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
 
     await collector.record_event(
         "agent.tool_call.waiting_approval",
@@ -223,19 +225,17 @@ async def test_tool_observation_collector_tracks_waiting_approval():
     )
 
     assert collector.has_waiting_approval
-    assert collector.ordered_results() == [
-        {
-            "name": "system.write",
-            "call_id": "call_1",
-            "status": "waiting_approval",
-            "approval_id": "ap_1",
-            "target_node_id": "winClient",
-        }
-    ]
+    result = collector.ordered_results()[0]
+    assert result["name"] == "system.write"
+    assert result["call_id"] == "call_1"
+    assert result["status"] == "waiting_approval"
+    assert result["approval_id"] == "ap_1"
+    assert result["target_node_id"] == "winClient"
+    assert result["ycr"]["projected"] is True
 
 
 async def test_tool_observation_collector_tracks_waiting_operation():
-    collector = AgentToolObservationCollector({"call_1": 0})
+    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
 
     await collector.record_event(
         "agent.tool_call.waiting_operation",
@@ -249,13 +249,11 @@ async def test_tool_observation_collector_tracks_waiting_operation():
     )
 
     assert collector.has_waiting_operation
-    assert collector.ordered_results() == [
-        {
-            "name": "transfer.create",
-            "call_id": "call_1",
-            "status": "waiting_operation",
-            "operation_id": "op_1",
-            "wait_handle": {"operation_id": "op_1"},
-            "target_node_id": None,
-        }
-    ]
+    result = collector.ordered_results()[0]
+    assert result["name"] == "transfer.create"
+    assert result["call_id"] == "call_1"
+    assert result["status"] == "waiting_operation"
+    assert result["operation_id"] == "op_1"
+    assert result["wait_handle"] == {"operation_id": "op_1"}
+    assert result["target_node_id"] is None
+    assert result["ycr"]["projected"] is True

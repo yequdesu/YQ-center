@@ -40,7 +40,7 @@ async def execute_inline_meta_tool(
     )
     from yequ.services.capability_registry import node_list, node_status
     from yequ.services.operation_service import OperationService
-    from yequ.ycr.client import get_ycr_client
+    from yequ.ycr.client import YcrError, get_ycr_client
 
     input_data = dict(command.input_data)
     ycr_client = get_ycr_client()
@@ -280,6 +280,8 @@ async def execute_inline_meta_tool(
             }
         else:
             return runtime_error(command, "unknown_meta_tool", command.function_name)
+    except YcrError as exc:
+        return runtime_error(command, exc.code, exc.message)
     except ValueError as exc:
         return runtime_error(command, "not_found", str(exc))
 

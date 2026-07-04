@@ -273,6 +273,8 @@ def _ycr_tool_projection_event_data(
     omitted = result.get("omitted")
     budget = _as_object_dict(result.get("budget", {}))
     raw_result = raw_event_data.get("result")
+    if raw_result is None:
+        raw_result = raw_event_data
     return {
         "kind": "tool_projection",
         "step": step,

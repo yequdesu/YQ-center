@@ -258,6 +258,51 @@ class AgentToolObservationCollector:
     def latest_result(self) -> dict[str, object] | None:
         return self._latest_result
 
+    async def _project_observation(
+        self,
+        *,
+        name: str,
+        call_id: str,
+        status: str,
+        result: object,
+        target_node_id: object = None,
+    ) -> dict[str, object]:
+        try:
+            return await self._ycr_client.project_tool_observation(
+                name=name,
+                call_id=call_id,
+                status=status,
+                result=result,
+                target_node_id=target_node_id,
+            )
+        except YcrError as exc:
+            return {
+                "name": name,
+                "call_id": call_id,
+                "status": "failed",
+                "result": {
+                    "kind": "tool_observation",
+                    "summary": f"YCR projection failed: {exc.message}",
+                    "facts": {
+                        "error_code": exc.code,
+                        "message": exc.message,
+                    },
+                    "refs": [],
+                    "omitted": [],
+                    "truncated": False,
+                    "trust_level": "center_runtime_error",
+                    "projection_policy": "tool_observation_projection_error_v1",
+                },
+                "target_node_id": target_node_id,
+                "error": exc.message,
+                "error_code": exc.code,
+                "ycr": {
+                    "projected": True,
+                    "projection_policy": "tool_observation_projection_error_v1",
+                    "projection_version": 1,
+                },
+            }
+
     async def record_event(self, event_type: str, data: dict[str, object]) -> bool:
         self._latest_result = None
         if event_type not in {
@@ -271,64 +316,73 @@ class AgentToolObservationCollector:
         call_id = str(data.get("call_id", ""))
         name = str(data.get("name", ""))
         if event_type == "agent.tool_call.completed":
-            try:
-                projected = await self._ycr_client.project_tool_observation(
-                    name=name,
-                    call_id=call_id,
-                    status="succeeded",
-                    result=data.get("result"),
-                    target_node_id=data.get("target_node_id"),
-                )
-            except YcrError as exc:
-                projected = {
-                    "name": name,
-                    "call_id": call_id,
-                    "status": "failed",
-                    "error": exc.message,
-                    "error_code": exc.code,
-                    "target_node_id": data.get("target_node_id"),
-                }
+            projected = await self._project_observation(
+                name=name,
+                call_id=call_id,
+                status="succeeded",
+                result=data.get("result"),
+                target_node_id=data.get("target_node_id"),
+            )
             self._results.append(projected)
             self._latest_result = projected
             return True
         if event_type == "agent.tool_call.failed":
-            self._results.append(
-                {
-                    "name": name,
-                    "call_id": call_id,
-                    "status": "failed",
-                    "error": data.get("message"),
-                    "error_code": data.get("error_code"),
-                    "error_details": data.get("details"),
-                    "target_node_id": data.get("target_node_id"),
-                }
+            failed_result = {
+                "message": data.get("message"),
+                "error_code": data.get("error_code"),
+                "error_details": data.get("details"),
+                "status": data.get("status") or "failed",
+            }
+            projected = await self._project_observation(
+                name=name,
+                call_id=call_id,
+                status="failed",
+                result=failed_result,
+                target_node_id=data.get("target_node_id"),
             )
+            projected["error"] = data.get("message")
+            projected["error_code"] = data.get("error_code")
+            projected["error_details"] = data.get("details")
+            self._results.append(projected)
+            self._latest_result = projected
             return True
 
         if event_type == "agent.tool_call.waiting_operation":
             self.has_waiting_operation = True
-            self._results.append(
-                {
-                    "name": name,
-                    "call_id": call_id,
-                    "status": "waiting_operation",
-                    "operation_id": data.get("operation_id"),
-                    "wait_handle": data.get("wait_handle"),
-                    "target_node_id": data.get("target_node_id"),
-                }
+            waiting_result = {
+                "operation_id": data.get("operation_id"),
+                "wait_handle": data.get("wait_handle"),
+                "status": "waiting_operation",
+            }
+            projected = await self._project_observation(
+                name=name,
+                call_id=call_id,
+                status="waiting_operation",
+                result=waiting_result,
+                target_node_id=data.get("target_node_id"),
             )
+            projected["operation_id"] = data.get("operation_id")
+            projected["wait_handle"] = data.get("wait_handle")
+            self._results.append(projected)
+            self._latest_result = projected
             return True
 
         self.has_waiting_approval = True
-        self._results.append(
-            {
-                "name": name,
-                "call_id": call_id,
-                "status": "waiting_approval",
-                "approval_id": data.get("approval_id"),
-                "target_node_id": data.get("target_node_id"),
-            }
+        waiting_result = {
+            "approval_id": data.get("approval_id"),
+            "message": data.get("message") or "Approval required",
+            "status": "waiting_approval",
+        }
+        projected = await self._project_observation(
+            name=name,
+            call_id=call_id,
+            status="waiting_approval",
+            result=waiting_result,
+            target_node_id=data.get("target_node_id"),
         )
+        projected["approval_id"] = data.get("approval_id")
+        self._results.append(projected)
+        self._latest_result = projected
         return True
 
     def ordered_results(self) -> list[dict[str, object]]:

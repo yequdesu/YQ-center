@@ -1,3 +1,5 @@
+import pytest
+
 from yequ.api.agent_tool_catalog import _center_meta_functions
 from yequ.services.result_ingestion import guard_job_output
 from yequ.ycr import project_tool_observation
@@ -120,3 +122,15 @@ async def test_ycr_http_service_refs_and_search() -> None:
         )
         assert searched.status_code == 200
         assert searched.json()["matches"]
+
+
+def test_ycr_missing_ref_maps_to_structured_404() -> None:
+    from fastapi import HTTPException
+
+    from yequ.ycr_app import _raise_ref_error
+
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_ref_error(ValueError("Context ref not found: ctxref_missing"))
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error_code"] == "context_ref_not_found"

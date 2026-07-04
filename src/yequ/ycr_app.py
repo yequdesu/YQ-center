@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -138,6 +140,26 @@ def _require_ycr_auth(authorization: str | None = Header(default=None)) -> None:
         )
 
 
+def _raise_ref_error(exc: ValueError) -> NoReturn:
+    message = str(exc)
+    lowered = message.lower()
+    if "not found" in lowered:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error_code": "context_ref_not_found",
+                "message": message,
+            },
+        ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "error_code": "context_ref_invalid_request",
+            "message": message,
+        },
+    ) from exc
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, object]:
     return {"status": "ok", "component": "ycr"}
@@ -194,41 +216,59 @@ async def upsert_context_ref(body: RefUpsertRequest) -> dict[str, object]:
 @app.post("/v1/context/inspect", dependencies=[Depends(_require_ycr_auth)])
 async def inspect_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        return await inspect_ref_store(db, body.ref_id)
+        try:
+            return await inspect_ref_store(db, body.ref_id)
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/context/expand", dependencies=[Depends(_require_ycr_auth)])
 async def expand_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        return await expand_ref_store(db, body.ref_id, path=body.path, limit=body.limit)
+        try:
+            return await expand_ref_store(db, body.ref_id, path=body.path, limit=body.limit)
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/context/tail", dependencies=[Depends(_require_ycr_auth)])
 async def tail_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        return await tail_ref_store(db, body.ref_id, path=body.path, lines=body.lines)
+        try:
+            return await tail_ref_store(db, body.ref_id, path=body.path, lines=body.lines)
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/context/schema", dependencies=[Depends(_require_ycr_auth)])
 async def schema_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        return await schema_ref_store(db, body.ref_id, path=body.path)
+        try:
+            return await schema_ref_store(db, body.ref_id, path=body.path)
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/context/search", dependencies=[Depends(_require_ycr_auth)])
 async def search_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        result = await search_ref_store(db, body.ref_id, query=body.query, limit=body.limit)
-        await db.commit()
-        return result
+        try:
+            result = await search_ref_store(db, body.ref_id, query=body.query, limit=body.limit)
+            await db.commit()
+            return result
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/context/rehydrate", dependencies=[Depends(_require_ycr_auth)])
 async def rehydrate_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        ref = await rehydrate_ref_store(db, body.ref_id)
-        await db.commit()
-        return ref
+        try:
+            ref = await rehydrate_ref_store(db, body.ref_id)
+            await db.commit()
+            return ref
+        except ValueError as exc:
+            _raise_ref_error(exc)
 
 
 @app.post("/v1/project/tool-observation", dependencies=[Depends(_require_ycr_auth)])

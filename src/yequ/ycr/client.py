@@ -122,6 +122,9 @@ class HttpYcrClient:
                 response = await client.request(method, path, json=payload)
                 response.raise_for_status()
                 data = response.json()
+        except httpx.HTTPStatusError as exc:
+            code, message = _error_from_response(exc.response)
+            raise YcrError(code, message) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise YcrError("context_router_unavailable", f"YCR request failed: {exc}") from exc
         if not isinstance(data, dict):
@@ -298,3 +301,35 @@ def get_ycr_client(*, settings: Settings | None = None) -> YcrClient:
 
 def ycr_error_payload(exc: YcrError) -> str:
     return json.dumps({"status": "failed", "ycr_error": exc.to_dict()}, ensure_ascii=False)
+
+
+def _error_from_response(response: httpx.Response) -> tuple[str, str]:
+    try:
+        data = response.json()
+    except ValueError:
+        return (
+            f"context_router_http_{response.status_code}",
+            f"YCR request failed with HTTP {response.status_code}",
+        )
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, dict):
+            code = str(
+                detail.get("error_code")
+                or detail.get("code")
+                or f"context_router_http_{response.status_code}"
+            )
+            message = str(detail.get("message") or detail)
+            return code, message
+        if isinstance(detail, str) and detail:
+            return f"context_router_http_{response.status_code}", detail
+        if data.get("status") == "failed" and isinstance(data.get("error"), dict):
+            error = data["error"]
+            return (
+                str(error.get("error_code") or error.get("code") or "context_router_error"),
+                str(error.get("message") or error),
+            )
+    return (
+        f"context_router_http_{response.status_code}",
+        f"YCR request failed with HTTP {response.status_code}",
+    )
