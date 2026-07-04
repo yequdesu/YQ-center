@@ -69,6 +69,7 @@ class ResumeOperationRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     provider_name: str = Field(default="deepseek")
     operation_id: str = Field(..., min_length=1)
+    user_message: str | None = Field(default=None)
     prompt: str = Field(
         default=(
             "请根据这个 operation 的最新状态继续。"
