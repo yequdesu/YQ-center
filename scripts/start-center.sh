@@ -34,7 +34,10 @@ case "${2:-start}" in
 
     # Load .env if present
     if [ -f .env ]; then
-      export $(grep -v '^#' .env | xargs)
+      set -a
+      # shellcheck disable=SC1091
+      source .env
+      set +a
     fi
 
     # Ensure PostgreSQL is running
@@ -68,7 +71,20 @@ asyncio.run(clean())
 
     echo ""
     echo -e "${YELLOW}[2/5] alembic migrate ...${NC}"
-    alembic upgrade head 2>&1 | tail -1
+    alembic upgrade head
+
+    if [ -z "${YEQU_YCR_SERVICE_TOKEN:-}" ]; then
+      echo -e "${RED}[ERROR] YEQU_YCR_SERVICE_TOKEN not set. Start YCR and Center with the same token.${NC}"
+      exit 1
+    fi
+
+    if ! curl -fsS \
+      -H "Authorization: Bearer ${YEQU_YCR_SERVICE_TOKEN}" \
+      "${YEQU_YCR_BASE_URL:-http://127.0.0.1:9810}/v1/context/status" >/dev/null; then
+      echo -e "${RED}[ERROR] YCR is not reachable at ${YEQU_YCR_BASE_URL:-http://127.0.0.1:9810}${NC}"
+      echo "Start it in another terminal: ./scripts/start-ycr.sh"
+      exit 1
+    fi
 
     echo ""
     echo -e "${YELLOW}[3/5] Provision winClient node ...${NC}"

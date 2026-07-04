@@ -110,6 +110,30 @@ mypy src/                # 类型检查
 | `YEQU_DEBUG_TIMELINE` | `false` | 写入诊断事件 |
 | `YEQU_LOG_FORMAT` | `json` | 日志格式（json / console） |
 | `YEQU_REQUIRE_ADMIN_AUTH` | `true` | 强制 token 认证 |
+| `YEQU_YCR_BACKEND` | `http` | YCR 运行形态；当前只支持独立 HTTP 服务 |
+| `YEQU_YCR_BASE_URL` | `http://127.0.0.1:9810` | Center 调用 YCR 的内部地址 |
+| `YEQU_YCR_SERVICE_TOKEN` | — | Center 与 YCR 共用的内部 Bearer token |
+| `YEQU_YCR_EMBEDDING_BASE_URL` | — | OpenAI-compatible embedding endpoint |
+| `YEQU_YCR_EMBEDDING_API_KEY` | — | Embedding API Key |
+| `YEQU_YCR_EMBEDDING_MODEL` | `bge-m3` | Embedding 模型名 |
+
+## 本地启动
+
+YCR 是独立服务，需要和 Center 分两个终端启动，并使用同一个 `.env`。
+
+```bash
+docker compose up -d postgres
+alembic upgrade head
+./scripts/start-ycr.sh
+```
+
+另开一个终端：
+
+```bash
+./scripts/start-center.sh
+```
+
+`postgres` 镜像必须支持 pgvector；本仓库的 `docker-compose.yml` 已使用 `pgvector/pgvector:pg16`。
 
 ## API 端点总览
 
