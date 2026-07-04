@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -465,19 +466,30 @@ async def _get_or_create_definition(
     definition = result.scalar_one_or_none()
     if definition is not None:
         return definition
-    definition = CapabilityDefinition(
-        canonical_name=canonical_name,
-        capability_type=capability_type,
-        aliases=[],
-        examples=[],
-        tags=[],
-        artifact_inputs=[],
-        artifact_outputs=[],
-        status="active",
-    )
-    db.add(definition)
-    await db.flush()
-    return definition
+
+    try:
+        async with db.begin_nested():
+            definition = CapabilityDefinition(
+                canonical_name=canonical_name,
+                capability_type=capability_type,
+                aliases=[],
+                examples=[],
+                tags=[],
+                artifact_inputs=[],
+                artifact_outputs=[],
+                status="active",
+            )
+            db.add(definition)
+            await db.flush()
+            return definition
+    except IntegrityError:
+        result = await db.execute(
+            select(CapabilityDefinition).where(
+                CapabilityDefinition.canonical_name == canonical_name,
+                CapabilityDefinition.capability_type == capability_type,
+            )
+        )
+        return result.scalar_one()
 
 
 def _merge_definition_manifest(
