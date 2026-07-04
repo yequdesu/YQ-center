@@ -29,6 +29,14 @@ from yequ.models.timeline import TimelineEvent
 from yequ.runtime.admission import ExecutionAdmissionService
 from yequ.runtime.command import RuntimeCommand
 from yequ.runtime.guards import ExecutionGuard, GuardDecision
+from yequ.runtime.input_utils import (
+    int_or_default,
+    int_or_none,
+    required_string,
+    runtime_error,
+    string_or_none,
+)
+from yequ.runtime.meta_tools import execute_inline_meta_tool
 from yequ.services.approval_service import (
     consume_approval,
     create_approval,
@@ -67,7 +75,7 @@ class CenterExecutionRuntime:
         elif runtime_command.function_name == "artifact.deploy":
             result = await self._execute_artifact_deploy(runtime_command)
         elif runtime_command.function_name in CENTER_META_TOOLS:
-            result = await self._execute_inline_meta_tool(runtime_command)
+            result = await execute_inline_meta_tool(self.db, runtime_command)
         else:
             result = await self._execute_node_job(runtime_command)
 
@@ -88,18 +96,18 @@ class CenterExecutionRuntime:
         from yequ.services.capability_registry import resolve_capability_invoke_target
 
         input_data = dict(command.input_data)
-        capability_ref = _string_or_none(input_data.get("capability_ref")) or _string_or_none(
+        capability_ref = string_or_none(input_data.get("capability_ref")) or string_or_none(
             input_data.get("capability_id")
         )
-        source_id = _string_or_none(input_data.get("source_id"))
-        node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
+        source_id = string_or_none(input_data.get("source_id"))
+        node_id = string_or_none(input_data.get("node_id")) or command.target_node_id
         tool_input = input_data.get("input")
         if tool_input is None:
             tool_input = input_data.get("arguments")
         if tool_input is None:
             tool_input = {}
         if not isinstance(tool_input, dict):
-            return _runtime_error(
+            return runtime_error(
                 command,
                 "invalid_input",
                 "capability.invoke input must be an object",
@@ -113,7 +121,7 @@ class CenterExecutionRuntime:
                 node_id=node_id,
             )
         except ValueError as exc:
-            return _runtime_error(command, "capability_source_unresolved", str(exc))
+            return runtime_error(command, "capability_source_unresolved", str(exc))
 
         delegated = RuntimeCommand(
             function_name=target.registered_name,
@@ -148,14 +156,14 @@ class CenterExecutionRuntime:
 
         input_data = dict(command.input_data)
         try:
-            artifact_id = _required_string(input_data.get("artifact_id"), "artifact_id")
-            target_node_id = _required_string(input_data.get("target_node_id"), "target_node_id")
-            output_path = _required_string(input_data.get("output_path"), "output_path")
+            artifact_id = required_string(input_data.get("artifact_id"), "artifact_id")
+            target_node_id = required_string(input_data.get("target_node_id"), "target_node_id")
+            output_path = required_string(input_data.get("output_path"), "output_path")
         except ValueError as exc:
-            return _runtime_error(command, "invalid_input", str(exc))
-        mode = _string_or_none(input_data.get("mode")) or "fail_if_exists"
+            return runtime_error(command, "invalid_input", str(exc))
+        mode = string_or_none(input_data.get("mode")) or "fail_if_exists"
         if mode not in {"fail_if_exists", "overwrite"}:
-            return _runtime_error(
+            return runtime_error(
                 command,
                 "invalid_input",
                 "mode must be fail_if_exists or overwrite",
@@ -167,19 +175,19 @@ class CenterExecutionRuntime:
                     target_node_id=target_node_id,
                     output_path=output_path,
                     mode=mode,
-                    preflight_id=_string_or_none(input_data.get("preflight_id")),
+                    preflight_id=string_or_none(input_data.get("preflight_id")),
                     skip_preflight=bool(input_data.get("skip_preflight", False)),
-                    skip_reason=_string_or_none(input_data.get("skip_reason")),
+                    skip_reason=string_or_none(input_data.get("skip_reason")),
                 )
             )
         except ValueError as exc:
-            return _runtime_error(command, "invalid_input", str(exc))
+            return runtime_error(command, "invalid_input", str(exc))
 
         delegated = RuntimeCommand(
             function_name="capability.invoke",
             input_data={
                 "capability_ref": "artifact.download_file",
-                "source_id": _string_or_none(input_data.get("source_id")),
+                "source_id": string_or_none(input_data.get("source_id")),
                 "node_id": target_node_id,
                 "input": {
                     "artifact_id": artifact_id,
@@ -214,7 +222,7 @@ class CenterExecutionRuntime:
             "target_node_id": target_node_id,
             "output_path": output_path,
             "mode": mode,
-            "preflight_id": _string_or_none(input_data.get("preflight_id")),
+            "preflight_id": string_or_none(input_data.get("preflight_id")),
             "node_capability_ref": "artifact.download_file",
         }
         return result
@@ -227,28 +235,28 @@ class CenterExecutionRuntime:
         try:
             transfer = await TransferApplicationService(self.db).create(
                 TransferCreateCommand(
-                    source_node_id=_required_string(
+                    source_node_id=required_string(
                         input_data.get("source_node_id"),
                         "source_node_id",
                     ),
-                    target_node_id=_required_string(
+                    target_node_id=required_string(
                         input_data.get("target_node_id"),
                         "target_node_id",
                     ),
-                    source_path=_required_string(input_data.get("source_path"), "source_path"),
-                    target_output_dir=_string_or_none(input_data.get("target_output_dir")),
-                    target_path=_string_or_none(input_data.get("target_path")),
-                    code=_string_or_none(input_data.get("code")),
-                    relay_url=_string_or_none(input_data.get("relay_url")),
-                    route_policy=_string_or_none(input_data.get("route_policy")),
-                    direct_ip=_string_or_none(input_data.get("direct_ip")),
-                    multicast_address=_string_or_none(input_data.get("multicast_address")),
-                    resume_mode=_string_or_none(input_data.get("resume_mode")),
-                    timeout_sec=_int_or_default(input_data.get("timeout_sec"), 3600),
-                    expected_sha256=_string_or_none(input_data.get("expected_sha256")),
-                    preflight_id=_string_or_none(input_data.get("preflight_id")),
+                    source_path=required_string(input_data.get("source_path"), "source_path"),
+                    target_output_dir=string_or_none(input_data.get("target_output_dir")),
+                    target_path=string_or_none(input_data.get("target_path")),
+                    code=string_or_none(input_data.get("code")),
+                    relay_url=string_or_none(input_data.get("relay_url")),
+                    route_policy=string_or_none(input_data.get("route_policy")),
+                    direct_ip=string_or_none(input_data.get("direct_ip")),
+                    multicast_address=string_or_none(input_data.get("multicast_address")),
+                    resume_mode=string_or_none(input_data.get("resume_mode")),
+                    timeout_sec=int_or_default(input_data.get("timeout_sec"), 3600),
+                    expected_sha256=string_or_none(input_data.get("expected_sha256")),
+                    preflight_id=string_or_none(input_data.get("preflight_id")),
                     skip_preflight=bool(input_data.get("skip_preflight", False)),
-                    skip_reason=_string_or_none(input_data.get("skip_reason")),
+                    skip_reason=string_or_none(input_data.get("skip_reason")),
                     actor_type=command.actor_type,
                     actor_id=command.actor_id,
                     session_id=command.session_id,
@@ -262,7 +270,7 @@ class CenterExecutionRuntime:
                 session_id=command.session_id,
             )
         except ValueError as exc:
-            return _runtime_error(command, "invalid_input", str(exc))
+            return runtime_error(command, "invalid_input", str(exc))
 
         wait_handle = wait_handle_for_operation(operation)
         return ExecuteToolResult(
@@ -288,13 +296,13 @@ class CenterExecutionRuntime:
         try:
             transfer = await TransferApplicationService(self.db).resume(
                 TransferResumeCommand(
-                    transfer_id=_required_string(input_data.get("transfer_id"), "transfer_id"),
-                    code=_string_or_none(input_data.get("code")),
-                    relay_url=_string_or_none(input_data.get("relay_url")),
-                    route_policy=_string_or_none(input_data.get("route_policy")),
-                    direct_ip=_string_or_none(input_data.get("direct_ip")),
-                    multicast_address=_string_or_none(input_data.get("multicast_address")),
-                    timeout_sec=_int_or_none(input_data.get("timeout_sec")),
+                    transfer_id=required_string(input_data.get("transfer_id"), "transfer_id"),
+                    code=string_or_none(input_data.get("code")),
+                    relay_url=string_or_none(input_data.get("relay_url")),
+                    route_policy=string_or_none(input_data.get("route_policy")),
+                    direct_ip=string_or_none(input_data.get("direct_ip")),
+                    multicast_address=string_or_none(input_data.get("multicast_address")),
+                    timeout_sec=int_or_none(input_data.get("timeout_sec")),
                     actor_type=command.actor_type,
                     actor_id=command.actor_id,
                     session_id=command.session_id,
@@ -308,7 +316,7 @@ class CenterExecutionRuntime:
                 session_id=command.session_id,
             )
         except ValueError as exc:
-            return _runtime_error(command, "invalid_input", str(exc))
+            return runtime_error(command, "invalid_input", str(exc))
 
         wait_handle = wait_handle_for_operation(operation)
         return ExecuteToolResult(
@@ -326,222 +334,9 @@ class CenterExecutionRuntime:
             wait_handle=wait_handle,
         )
 
-    async def _execute_inline_meta_tool(self, command: RuntimeCommand) -> ExecuteToolResult:
-        from yequ.application.transfer import TransferApplicationService, TransferPreflightCommand
-        from yequ.services.artifact_service import (
-            artifact_to_dict,
-            get_artifact,
-            list_artifacts,
-        )
-        from yequ.services.capability_registry import (
-            capability_describe,
-            capability_search,
-            node_list,
-            node_status,
-        )
-        from yequ.services.operation_service import OperationService
-
-        input_data = dict(command.input_data)
-        try:
-            if command.function_name == "node.list":
-                output = {"nodes": await node_list(self.db)}
-            elif command.function_name == "node.status":
-                node_id = _string_or_none(input_data.get("node_id")) or command.target_node_id
-                if not node_id:
-                    return _runtime_error(command, "invalid_input", "node_id is required")
-                output = {"node": await node_status(self.db, node_id)}
-            elif command.function_name == "capability.search":
-                output = {
-                    "capabilities": await capability_search(
-                        self.db,
-                        query=_string_or_none(input_data.get("query"))
-                        or _string_or_none(input_data.get("q")),
-                        node_id=_string_or_none(input_data.get("node_id")),
-                        platform_os=_string_or_none(input_data.get("platform_os")),
-                        effect=_string_or_none(input_data.get("effect")),
-                        risk=_string_or_none(input_data.get("risk")),
-                        runtime_kind=_string_or_none(input_data.get("runtime_kind")),
-                        runtime_labels=_string_list(input_data.get("runtime_labels"))
-                        or _string_list(input_data.get("labels")),
-                        supports_progress=_bool_or_none(input_data.get("supports_progress")),
-                        supports_cancel=_bool_or_none(input_data.get("supports_cancel")),
-                        supports_resume=_bool_or_none(input_data.get("supports_resume")),
-                        preflight_supported=_bool_or_none(input_data.get("preflight_supported")),
-                        artifact_input=_bool_or_none(input_data.get("artifact_input")),
-                        artifact_output=_bool_or_none(input_data.get("artifact_output")),
-                        projection=(_string_or_none(input_data.get("projection")) or "summary"),
-                        capability_type=(
-                            _string_or_none(input_data.get("capability_type")) or "function"
-                        ),
-                        include_inactive=bool(input_data.get("include_inactive", False)),
-                        limit=_int_or_default(input_data.get("limit"), 10),
-                    )
-                }
-            elif command.function_name == "capability.describe":
-                capability_ref = _string_or_none(
-                    input_data.get("capability_ref")
-                ) or _string_or_none(
-                    input_data.get("capability_id"),
-                )
-                if not capability_ref:
-                    return _runtime_error(command, "invalid_input", "capability_ref is required")
-                output = {
-                    "capability": await capability_describe(
-                        self.db,
-                        capability_ref,
-                        node_id=_string_or_none(input_data.get("node_id")),
-                        sections=_string_list(input_data.get("sections")),
-                        projection=_string_or_none(input_data.get("projection")) or "detail",
-                        include_inactive=bool(input_data.get("include_inactive", False)),
-                    )
-                }
-            elif command.function_name == "artifact.list":
-                artifacts = await list_artifacts(
-                    self.db,
-                    session_id=_string_or_none(input_data.get("session_id")) or command.session_id,
-                    invocation_id=_string_or_none(input_data.get("invocation_id")),
-                    job_id=_string_or_none(input_data.get("job_id")),
-                    node_id=_string_or_none(input_data.get("node_id")),
-                    artifact_type=_string_or_none(input_data.get("artifact_type")),
-                    limit=_int_or_default(input_data.get("limit"), 20),
-                )
-                output = {"artifacts": [artifact_to_dict(artifact) for artifact in artifacts]}
-            elif command.function_name == "artifact.get":
-                artifact_id = _string_or_none(input_data.get("artifact_id"))
-                if not artifact_id:
-                    return _runtime_error(command, "invalid_input", "artifact_id is required")
-                artifact = await get_artifact(self.db, artifact_id)
-                output = {"artifact": artifact_to_dict(artifact)}
-            elif command.function_name == "artifact.present":
-                artifact_ids = _string_list(input_data.get("artifact_ids"))
-                artifact_id = _string_or_none(input_data.get("artifact_id"))
-                if artifact_id:
-                    artifact_ids = [artifact_id, *artifact_ids]
-                artifact_ids = _dedupe_strings(artifact_ids)
-                if not artifact_ids:
-                    return _runtime_error(
-                        command,
-                        "invalid_input",
-                        "artifact_id or artifact_ids is required",
-                    )
-                if len(artifact_ids) > 10:
-                    return _runtime_error(
-                        command,
-                        "invalid_input",
-                        "artifact.present can show at most 10 artifacts",
-                    )
-                artifacts = [
-                    artifact_to_dict(await get_artifact(self.db, artifact_id))
-                    for artifact_id in artifact_ids
-                ]
-                output = {
-                    "artifacts": artifacts,
-                    "presentation": {
-                        "kind": "artifact_gallery",
-                        "count": len(artifacts),
-                    },
-                }
-            elif command.function_name == "artifact.deploy.preflight":
-                from yequ.application.artifact_deploy import (
-                    ArtifactDeployApplicationService,
-                    ArtifactDeployPreflightCommand,
-                )
-
-                output = {
-                    "preflight": await ArtifactDeployApplicationService(self.db).preflight(
-                        ArtifactDeployPreflightCommand(
-                            artifact_id=_required_string(
-                                input_data.get("artifact_id"),
-                                "artifact_id",
-                            ),
-                            target_node_id=_required_string(
-                                input_data.get("target_node_id"),
-                                "target_node_id",
-                            ),
-                            output_path=_required_string(
-                                input_data.get("output_path"),
-                                "output_path",
-                            ),
-                            mode=_string_or_none(input_data.get("mode")) or "fail_if_exists",
-                            timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
-                            ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
-                            actor_type=command.actor_type,
-                            actor_id=command.actor_id,
-                            session_id=command.session_id,
-                            execution_mode=command.execution_mode,
-                        )
-                    )
-                }
-            elif command.function_name == "operation.status":
-                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
-                output = await OperationService(self.db).status(operation_id)
-            elif command.function_name == "operation.cancel":
-                operation_id = _required_string(input_data.get("operation_id"), "operation_id")
-                output = await OperationService(self.db).cancel(
-                    operation_id,
-                    reason=_string_or_none(input_data.get("reason")) or "operation_cancelled",
-                )
-            elif command.function_name == "transfer.preflight":
-                output = {
-                    "preflight": await TransferApplicationService(self.db).preflight(
-                        TransferPreflightCommand(
-                            source_node_id=_required_string(
-                                input_data.get("source_node_id"),
-                                "source_node_id",
-                            ),
-                            target_node_id=_required_string(
-                                input_data.get("target_node_id"),
-                                "target_node_id",
-                            ),
-                            source_path=_required_string(
-                                input_data.get("source_path"),
-                                "source_path",
-                            ),
-                            target_output_dir=_string_or_none(input_data.get("target_output_dir")),
-                            target_path=_string_or_none(input_data.get("target_path")),
-                            relay_url=_string_or_none(input_data.get("relay_url")),
-                            route_policy=_string_or_none(input_data.get("route_policy")),
-                            direct_ip=_string_or_none(input_data.get("direct_ip")),
-                            multicast_address=_string_or_none(input_data.get("multicast_address")),
-                            resume_mode=_string_or_none(input_data.get("resume_mode")),
-                            include_sha256=bool(input_data.get("include_sha256", False)),
-                            timeout_sec=_int_or_default(input_data.get("timeout_sec"), 20),
-                            ttl_sec=_int_or_default(input_data.get("ttl_sec"), 120),
-                            actor_type=command.actor_type,
-                            actor_id=command.actor_id,
-                            session_id=command.session_id,
-                            execution_mode=command.execution_mode,
-                        )
-                    )
-                }
-            elif command.function_name == "transfer.status":
-                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
-                output = {"transfer": await TransferApplicationService(self.db).status(transfer_id)}
-            elif command.function_name == "transfer.cancel":
-                transfer_id = _required_string(input_data.get("transfer_id"), "transfer_id")
-                output = {
-                    "transfer": await TransferApplicationService(self.db).cancel(
-                        transfer_id,
-                        reason=_string_or_none(input_data.get("reason")) or "transfer_cancelled",
-                    )
-                }
-            else:
-                return _runtime_error(command, "unknown_meta_tool", command.function_name)
-        except ValueError as exc:
-            return _runtime_error(command, "not_found", str(exc))
-
-        return ExecuteToolResult(
-            status="succeeded",
-            function_name=command.function_name,
-            target_node_id=command.target_node_id,
-            risk="safe",
-            effect="read",
-            output_data=output,
-        )
-
     async def _execute_node_job(self, command: RuntimeCommand) -> ExecuteToolResult:
         input_data = dict(command.input_data)
-        approval_id = command.approval_id or _string_or_none(input_data.get("approval_id"))
+        approval_id = command.approval_id or string_or_none(input_data.get("approval_id"))
 
         if command.declared_risk or command.declared_effect:
             declared_policy = check_policy_l2(
@@ -963,74 +758,6 @@ def _as_runtime_command(command: RuntimeCommand | ExecuteToolCommand) -> Runtime
     if isinstance(command, RuntimeCommand):
         return command
     return RuntimeCommand.from_execute_tool_command(command)
-
-
-def _string_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _required_string(value: object, field_name: str) -> str:
-    text = _string_or_none(value)
-    if not text:
-        raise ValueError(f"{field_name} is required")
-    return text
-
-
-def _int_or_default(value: object, default: int) -> int:
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _int_or_none(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str) and item]
-
-
-def _bool_or_none(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    return None
-
-
-def _dedupe_strings(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        unique.append(value)
-    return unique
-
-
-def _runtime_error(
-    command: RuntimeCommand,
-    error_code: str,
-    error_message: str,
-) -> ExecuteToolResult:
-    return ExecuteToolResult(
-        status="failed",
-        function_name=command.function_name,
-        target_node_id=command.target_node_id,
-        risk="safe",
-        effect="read",
-        error_code=error_code,
-        error_message=error_message,
-    )
 
 
 def _guard_error(
