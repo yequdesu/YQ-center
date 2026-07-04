@@ -577,7 +577,8 @@ async def _load_definition_after_upsert(
     capability_type: str,
 ) -> CapabilityDefinition:
     for attempt in range(20):
-        await db.execute(
+        inserted_id = (
+            await db.execute(
             pg_insert(CapabilityDefinition.__table__)
             .values(
                 id=generate_uuid(),
@@ -594,7 +595,13 @@ async def _load_definition_after_upsert(
             .on_conflict_do_nothing(
                 index_elements=["canonical_name", "capability_type"]
             )
+            .returning(CapabilityDefinition.__table__.c.id)
         )
+        ).scalar_one_or_none()
+        if inserted_id:
+            definition = await db.get(CapabilityDefinition, inserted_id)
+            if definition is not None:
+                return definition
         row_id = (
             await db.execute(
                 text(
@@ -633,7 +640,8 @@ async def _load_source_after_upsert(
     now: datetime,
 ) -> CapabilitySource:
     for attempt in range(20):
-        await db.execute(
+        inserted_id = (
+            await db.execute(
             pg_insert(CapabilitySource.__table__)
             .values(
                 id=generate_uuid(),
@@ -653,7 +661,13 @@ async def _load_source_after_upsert(
                     "definition_id",
                 ]
             )
+            .returning(CapabilitySource.__table__.c.id)
         )
+        ).scalar_one_or_none()
+        if inserted_id:
+            source = await db.get(CapabilitySource, inserted_id)
+            if source is not None:
+                return source
         row_id = (
             await db.execute(
                 text(
