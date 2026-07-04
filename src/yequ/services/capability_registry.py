@@ -577,7 +577,7 @@ async def _load_definition_after_upsert(
     canonical_name: str,
     capability_type: str,
 ) -> CapabilityDefinition:
-    for attempt in range(20):
+    for attempt in range(100):
         inserted_id = (
             await db.execute(
             pg_insert(CapabilityDefinition.__table__)
@@ -623,8 +623,8 @@ async def _load_definition_after_upsert(
         definition = await db.get(CapabilityDefinition, row_id) if row_id else None
         if definition is not None:
             return definition
-        if attempt < 19:
-            await asyncio.sleep(0.05)
+        if attempt < 99:
+            await asyncio.sleep(0.2)
     raise RuntimeError(
         f"capability definition upsert did not return {canonical_name}/{capability_type}"
     )
@@ -640,7 +640,7 @@ async def _load_source_after_upsert(
     registered_name: str,
     now: datetime,
 ) -> CapabilitySource:
-    for attempt in range(20):
+    for attempt in range(100):
         inserted_id = (
             await db.execute(
             pg_insert(CapabilitySource.__table__)
@@ -716,8 +716,8 @@ async def _load_source_after_upsert(
         source = await db.get(CapabilitySource, fallback_id) if fallback_id else None
         if source is not None:
             return source
-        if attempt < 19:
-            await asyncio.sleep(0.05)
+        if attempt < 99:
+            await asyncio.sleep(0.2)
     raise RuntimeError(
         "capability source upsert did not return "
         f"{node.node_id}/{plugin_id}/{registered_name}/{definition.canonical_name}"
