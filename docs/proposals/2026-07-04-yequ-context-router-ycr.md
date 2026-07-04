@@ -1,22 +1,27 @@
 # YeQu Context Router 详细设计提案
 
-状态：implemented  
+状态：target design, partially implemented  
 日期：2026-07-04  
 适用阶段：进入下一阶段前的 Agent 上下文预算与工具输出治理  
 简称：YCR
 
-实现基线已经确定：
+实现基线和验收状态已经重新校准：
 
 1. YCR 代码归属 `src/yequ/ycr/`，不再放在 `src/yequ/agent/` 下。
-2. Provider 输入前使用确定性 projection，禁止 raw tool result 直接进入下一轮 LLM 输入。
-3. Node job output 入库前执行 hard cap；超预算内容生成稳定 `ContextRef`。
-4. `ycr_context_refs` 与 `ycr_context_chunks` 是持久 ref 与检索 chunk 的事实表。
-5. `context.*` meta tools 读取持久 ref/chunk，不依赖进程内缓存。
-6. `src/yequ/ycr_app.py` 是独立 YCR 服务入口；Center 和 Agent 只能通过 `YcrClient` 边界访问 YCR。
-7. `YEQU_YCR_BACKEND=http` 是唯一运行形态；Center/Agent 不再拥有 embedded YCR backend。
-8. Provider 层只接受已经投影的 tool observation；未投影内容触发 `unprojected_tool_observation`，不做 raw fallback。
-9. Result RAG 位于 `src/yequ/ycr/result_rag.py`；Tool RAG 位于 `src/yequ/ycr/tool_rag.py`，二者边界固定。
-10. RAG 使用 OpenAI-compatible embedding provider + PostgreSQL pgvector；测试环境才使用 local hash embedding。
+2. `src/yequ/ycr_app.py` 是独立 YCR 服务入口；Center 和 Agent 只能通过 `YcrClient` 边界访问 YCR。
+3. `YEQU_YCR_BACKEND=http` 是唯一运行形态；Center/Agent 不再拥有 embedded YCR backend。
+4. Provider 输入前必须使用确定性 projection，禁止 raw tool result 直接进入下一轮 LLM 输入。
+5. `ycr_context_refs` 与 `ycr_context_chunks` 是持久 ref 与检索 chunk 的事实表。
+6. `context.*` meta tools 读取持久 ref/chunk，不依赖进程内缓存。
+7. Provider 层只接受已经投影的 tool observation；未投影内容触发 `unprojected_tool_observation`，不做 raw fallback。
+8. Result RAG 位于 `src/yequ/ycr/result_rag.py`；Tool RAG 位于 `src/yequ/ycr/tool_rag.py`，二者边界固定。
+9. RAG 使用 OpenAI-compatible embedding provider + PostgreSQL pgvector；测试环境才使用 local hash embedding。
+10. 当前实现仍未通过本文最终验收；`AgentContextPacket` 主路径、UI/debug 双轨治理、ref durable anchor 和完整 ledger 仍是必须完成项。
+
+硬验收补充：
+
+1. YCR 接入后，YCR 加入前可以完成的 Agent 行为不得退化。直接可调用能力不能被迫退化成无休止 `capability.search` / `capability.describe` / `context.expand` 循环。
+2. RAG/检索只能作为缺失、歧义、大结果展开和语义增强路径，不能替代 Center registry 的确定事实，也不能改变 capability invoke 的标准合同。
 
 本文定义 YeQu Context Router（YCR）的目标形态、边界、接口和落地路线。YCR 是 Agent 与所有信源之间的独立上下文代理。它不替代 Center 的注册、调度、审计和状态存储，也不让 Agent 绕过 Center 调用 Node。它只负责一件事：把来自 Center、Node capability、Operation、Artifact、AgentRun history 和未来检索索引的信息，转换成可预算、可追溯、可扩展、不会污染 LLM 上下文的 Agent 输入。
 

@@ -157,6 +157,7 @@ async def node_status(
     node_id: str,
     *,
     node: Node | None = None,
+    projection: str = "detail",
 ) -> JsonObject:
     """Return detailed status for one Node and its v2 capability sources."""
 
@@ -177,6 +178,35 @@ async def node_status(
         for source, definition in sources_result.all()
         if source.is_active
     ]
+    if projection == "summary":
+        capability_names = sorted(
+            {
+                str(source.get("canonical_name") or "")
+                for source in sources
+                if source.get("canonical_name")
+            }
+        )
+        preview_limit = 24
+        return {
+            "node_id": node.node_id,
+            "node_name": node.node_name,
+            "status": node.status,
+            "online": node.status == NodeStatus.ONLINE,
+            "platform_os": node.platform_os,
+            "platform_arch": node.platform_arch,
+            "last_seen_at": node.last_seen_at.isoformat() if node.last_seen_at else None,
+            "last_heartbeat_at": (
+                node.last_heartbeat_at.isoformat() if node.last_heartbeat_at else None
+            ),
+            "capability_source_count": len(sources),
+            "capability_names": capability_names[:preview_limit],
+            "omitted_capability_count": max(0, len(capability_names) - preview_limit),
+            "detail_hint": (
+                "Use capability.search with projection=invoke_ready for callable "
+                "sources, or node.status projection=detail for admin diagnostics."
+            ),
+            "projection": "summary",
+        }
 
     return {
         "node_id": node.node_id,
@@ -742,6 +772,27 @@ def _definition_search_summary(
             for source in sources
         ],
     }
+    dispatchable_sources = [source for source in sources if _source_dispatchable(source)]
+    invoke: JsonObject = {
+        "capability_ref": definition.canonical_name,
+        "canonical_name": definition.canonical_name,
+        "source_count": len(sources),
+        "dispatchable_source_count": len(dispatchable_sources),
+        "rule": (
+            "Use capability_ref exactly as provided. If source_id is present, "
+            "prefer source_id for capability.invoke."
+        ),
+    }
+    if len(dispatchable_sources) == 1:
+        only_source = dispatchable_sources[0]
+        invoke.update(
+            {
+                "source_id": only_source.source_id,
+                "registered_name": only_source.registered_name,
+                "node_id": only_source.node.node_id if only_source.node else "",
+            }
+        )
+    data["invoke"] = invoke
     if projection in {"summary", "invoke_ready", "schema", "diagnostics"}:
         data.update(
             {

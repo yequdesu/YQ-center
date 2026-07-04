@@ -77,10 +77,13 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient):
+async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient, monkeypatch):
     from yequ.agent.agent_stream import agent_invoke_stream
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
+    from yequ.config import get_settings
+    from yequ.ycr.budget import budget_profile_from_settings
+    from yequ.ycr.context_packet import build_agent_context_packet
 
     provider = FakeAgentProvider("turn-ycr-budget-test")
     provider.set_sequence(
@@ -103,6 +106,24 @@ async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient)
     assert session_resp.status_code == 201
     session_id = session_resp.json()["session_id"]
 
+    class FakeYcrClient:
+        async def build_turn(self, **payload):
+            return build_agent_context_packet(
+                session_id=str(payload["session_id"]),
+                actor_id=str(payload.get("actor_id") or ""),
+                provider=str(payload["provider"]),
+                model=str(payload.get("model") or ""),
+                messages=list(payload.get("messages") or []),
+                available_functions=list(payload.get("available_functions") or []),
+                capability_context=dict(payload.get("capability_context") or {}),
+                budget=budget_profile_from_settings(get_settings()),
+                step=int(payload.get("step") or 1),
+            )
+
+    import yequ.agent.agent_stream as agent_stream_module
+
+    monkeypatch.setattr(agent_stream_module, "get_ycr_client", lambda: FakeYcrClient())
+
     events = [
         event
         async for event in agent_invoke_stream(
@@ -123,6 +144,49 @@ async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient)
     assert ycr_events[1]["data"]["tokens"]["download_estimated"] > 0
     assert ycr_events[1]["data"]["tokens"]["upload_actual"] == 12
     assert ycr_events[1]["data"]["tokens"]["download_actual"] == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_stream_fails_closed_when_ycr_build_turn_fails(
+    client: AsyncClient, monkeypatch
+):
+    from yequ.agent.agent_stream import agent_invoke_stream
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.ycr.client import YcrError
+
+    provider = FakeAgentProvider("turn-ycr-fail-closed-test")
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "turn-ycr-fail-closed-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    class FailingYcrClient:
+        async def build_turn(self, **payload):
+            raise YcrError("context_router_unavailable", "YCR unavailable")
+
+    import yequ.agent.agent_stream as agent_stream_module
+
+    monkeypatch.setattr(agent_stream_module, "get_ycr_client", lambda: FailingYcrClient())
+
+    events = [
+        event
+        async for event in agent_invoke_stream(
+            provider,
+            session_id=session_id,
+            prompt="do not reach provider",
+            available_functions=[],
+            execution_mode="auto",
+        )
+    ]
+
+    event_types = [event["event_type"] for event in events]
+    failed_events = [event for event in events if event["event_type"] == "agent.failed"]
+    assert "agent.provider.started" not in event_types
+    assert len(failed_events) == 1
+    assert failed_events[0]["data"]["error_code"] == "context_router_unavailable"
 
 
 @pytest.mark.asyncio

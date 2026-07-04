@@ -25,10 +25,20 @@ def _center_meta_functions() -> list[AgentFunction]:
         ),
         AgentFunction(
             name="node.status",
-            description="Inspect one node and its registered capability sources.",
+            description=(
+                "Inspect one node with a compact default projection. Use "
+                "capability.search projection=invoke_ready for callable sources."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"node_id": {"type": "string"}},
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
+                    },
+                },
                 "required": ["node_id"],
             },
             risk="safe",
@@ -77,8 +87,9 @@ def _center_meta_functions() -> list[AgentFunction]:
         AgentFunction(
             name="capability.describe",
             description=(
-                "Describe one Center capability definition, including schemas, "
-                "constraints, and concrete node sources."
+                "Describe one Center capability definition. Defaults to an "
+                "invoke-ready projection with canonical_name/source_id; request "
+                "schema or diagnostics only when needed."
             ),
             input_schema={
                 "type": "object",
@@ -102,7 +113,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "projection": {
                         "type": "string",
                         "enum": ["detail", "summary", "invoke_ready", "schema", "diagnostics"],
-                        "default": "detail",
+                        "default": "invoke_ready",
                     },
                 },
                 "required": ["capability_ref"],

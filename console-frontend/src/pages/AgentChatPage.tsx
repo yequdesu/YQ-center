@@ -805,6 +805,7 @@ export function AgentChatPage() {
                   <ChatTimelineBlock
                     key={block.id}
                     block={block}
+                    ycrTrace={ycrTrace}
                     onApproveAndRun={handleApproveAndRun}
                     onResumeOperation={handleResumeOperation}
                   />
@@ -1053,20 +1054,31 @@ function PromptComposerInput({
 
 function ChatTimelineBlock({
   block,
+  ycrTrace,
   onApproveAndRun,
   onResumeOperation,
 }: {
   block: ChatBlock;
+  ycrTrace?: YcrTraceItem[];
   onApproveAndRun?: (planId: string, onRunStarted: (runId: string) => void) => void;
   onResumeOperation?: (operationId: string) => void;
 }) {
+  const inlineYcr = ycrTrace ? ycrTraceForBlock(block, ycrTrace) : [];
   switch (block.type) {
     case "user":
       return <UserBubble block={block} />;
     case "assistant_text":
-      return <AssistantTextBubble block={block} />;
+      return (
+        <WithYcrInline trace={inlineYcr}>
+          <AssistantTextBubble block={block} />
+        </WithYcrInline>
+      );
     case "tool_group":
-      return <ToolGroupBubble block={block} />;
+      return (
+        <WithYcrInline trace={inlineYcr}>
+          <ToolGroupBubble block={block} />
+        </WithYcrInline>
+      );
     case "artifact_presentation":
       return <ArtifactPresentationBubble block={block} />;
     case "operation_card":
@@ -1078,6 +1090,65 @@ function ChatTimelineBlock({
     default:
       return null;
   }
+}
+
+function WithYcrInline({
+  trace,
+  children,
+}: {
+  trace: YcrTraceItem[];
+  children: ReactNode;
+}) {
+  if (trace.length === 0) return <>{children}</>;
+  const upload = trace.reduce((sum, item) => sum + (item.uploadEstimatedTokens ?? 0), 0);
+  const download = trace.reduce((sum, item) => sum + (item.downloadEstimatedTokens ?? 0), 0);
+  const saved = trace.reduce((sum, item) => {
+    const raw = item.rawEstimatedTokens ?? 0;
+    const projected = item.projectedEstimatedTokens ?? 0;
+    return sum + Math.max(0, raw - projected);
+  }, 0);
+  if (upload + download + saved <= 0) return <>{children}</>;
+  return (
+    <div className="space-y-1">
+      {children}
+      <div className="ml-10 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
+        {upload > 0 && <YcrInlineMetric icon={<Upload size={10} />} label="up" value={upload} />}
+        {download > 0 && (
+          <YcrInlineMetric icon={<Download size={10} />} label="down" value={download} />
+        )}
+        {saved > 0 && <YcrInlineMetric icon={<Gauge size={10} />} label="saved" value={saved} />}
+      </div>
+    </div>
+  );
+}
+
+function YcrInlineMetric({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: number;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono">
+      {icon}
+      {label}:{formatTokenCount(value)}
+    </span>
+  );
+}
+
+function ycrTraceForBlock(block: ChatBlock, trace: YcrTraceItem[]): YcrTraceItem[] {
+  if (block.type !== "assistant_text" && block.type !== "tool_group") return [];
+  const blockTime = Date.parse(block.created_at);
+  if (!Number.isFinite(blockTime)) return [];
+  const windowMs = block.type === "assistant_text" ? 8000 : 12000;
+  return trace.filter((item) => {
+    const itemTime = Date.parse(item.created_at);
+    if (!Number.isFinite(itemTime)) return false;
+    return Math.abs(itemTime - blockTime) <= windowMs;
+  });
 }
 
 // ── User Bubble ──

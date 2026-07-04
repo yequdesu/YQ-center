@@ -5,7 +5,8 @@ from yequ.agent.prompt_policy import render_agent_system_prompt
 def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> None:
     prompt = render_agent_system_prompt("No nodes currently online.")
 
-    assert "capability.search and capability.describe" in prompt
+    assert "Prefer direct invocation" in prompt
+    assert "never guess shortened aliases" in prompt
     assert "do not guess the source node" in prompt
     assert "resume_mode is user intent" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt

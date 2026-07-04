@@ -86,6 +86,17 @@ class AgentRunResumePromptRequest(BaseModel):
     operation_observation: dict[str, object] | None = None
 
 
+class BuildTurnRequest(BaseModel):
+    session_id: str
+    actor_id: str | None = None
+    provider: str
+    model: str = ""
+    messages: list[dict[str, object]] = Field(default_factory=list)
+    available_functions: list[dict[str, object]] = Field(default_factory=list)
+    capability_context: dict[str, object] = Field(default_factory=dict)
+    step: int | None = None
+
+
 class ToolSearchRequest(BaseModel):
     query: str | None = None
     node_id: str | None = None
@@ -114,6 +125,7 @@ class ToolDescribeRequest(BaseModel):
     capability_ref: str
     node_id: str | None = None
     sections: list[str] = Field(default_factory=list)
+    projection: str = "invoke_ready"
 
 
 app = FastAPI(title="YeQu Context Router", version="1.0.0")
@@ -160,6 +172,30 @@ def _raise_ref_error(exc: ValueError) -> NoReturn:
     ) from exc
 
 
+def _raise_ycr_value_error(exc: ValueError) -> NoReturn:
+    message = str(exc)
+    lowered = message.lower()
+    if "context_budget_exceeded" in lowered:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"error_code": "context_budget_exceeded", "message": message},
+        ) from exc
+    if "unprojected_tool_observation" in lowered:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error_code": "unprojected_tool_observation", "message": message},
+        ) from exc
+    if "not found" in lowered or "no active capability source matches" in lowered:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "capability_not_found", "message": message},
+        ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={"error_code": "context_router_invalid_request", "message": message},
+    ) from exc
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, object]:
     return {"status": "ok", "component": "ycr"}
@@ -181,6 +217,7 @@ async def context_status() -> dict[str, object]:
             "reserved_response_tokens": budget.reserved_response_tokens,
         },
         "capabilities": [
+            "build_turn",
             "refs",
             "inspect",
             "expand",
@@ -211,6 +248,26 @@ async def upsert_context_ref(body: RefUpsertRequest) -> dict[str, object]:
         )
         await db.commit()
         return ref
+
+
+@app.post("/v1/context/build-turn", dependencies=[Depends(_require_ycr_auth)])
+async def build_turn(body: BuildTurnRequest) -> dict[str, object]:
+    from yequ.ycr.context_packet import build_agent_context_packet
+
+    try:
+        return build_agent_context_packet(
+            session_id=body.session_id,
+            actor_id=body.actor_id,
+            provider=body.provider,
+            model=body.model,
+            messages=body.messages,
+            available_functions=body.available_functions,
+            capability_context=body.capability_context,
+            budget=_budget(),
+            step=body.step,
+        )
+    except ValueError as exc:
+        _raise_ycr_value_error(exc)
 
 
 @app.post("/v1/context/inspect", dependencies=[Depends(_require_ycr_auth)])
@@ -361,9 +418,13 @@ async def tool_describe(body: ToolDescribeRequest) -> dict[str, object]:
     from yequ.ycr.tool_rag import describe_tool_context
 
     async with async_session_factory() as db:
-        return await describe_tool_context(
-            db,
-            capability_ref=body.capability_ref,
-            node_id=body.node_id,
-            sections=body.sections,
-        )
+        try:
+            return await describe_tool_context(
+                db,
+                capability_ref=body.capability_ref,
+                node_id=body.node_id,
+                sections=body.sections,
+                projection=body.projection,
+            )
+        except ValueError as exc:
+            _raise_ycr_value_error(exc)

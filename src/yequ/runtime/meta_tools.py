@@ -51,7 +51,13 @@ async def execute_inline_meta_tool(
             node_id = string_or_none(input_data.get("node_id")) or command.target_node_id
             if not node_id:
                 return runtime_error(command, "invalid_input", "node_id is required")
-            output = {"node": await node_status(db, node_id)}
+            output = {
+                "node": await node_status(
+                    db,
+                    node_id,
+                    projection=string_or_none(input_data.get("projection")) or "summary",
+                )
+            }
         elif command.function_name == "capability.search":
             output = {
                 "capabilities": (
@@ -94,6 +100,7 @@ async def execute_inline_meta_tool(
                         capability_ref=capability_ref,
                         node_id=string_or_none(input_data.get("node_id")),
                         sections=string_list(input_data.get("sections")),
+                        projection=string_or_none(input_data.get("projection")) or "invoke_ready",
                     )
                 ).get("capability", {})
             }

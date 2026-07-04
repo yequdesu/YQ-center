@@ -83,6 +83,7 @@ async def describe_tool_context(
     capability_ref: str,
     node_id: str | None = None,
     sections: list[str] | None = None,
+    projection: str = "invoke_ready",
 ) -> dict[str, object]:
     return {
         "kind": "tool_rag_description",
@@ -91,7 +92,7 @@ async def describe_tool_context(
             capability_ref,
             node_id=node_id,
             sections=sections or [],
-            projection="detail",
+            projection=projection,
             include_inactive=False,
         ),
     }

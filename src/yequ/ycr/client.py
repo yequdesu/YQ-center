@@ -41,6 +41,8 @@ class YcrClient(Protocol):
 
     async def rehydrate(self, ref_id: str) -> dict[str, object]: ...
 
+    async def build_turn(self, **payload: object) -> dict[str, object]: ...
+
     async def project_tool_observation(self, **payload: object) -> dict[str, object]: ...
 
     async def prompt_with_context(
@@ -93,6 +95,7 @@ class YcrClient(Protocol):
         capability_ref: str,
         node_id: str | None = None,
         sections: list[str] | None = None,
+        projection: str = "invoke_ready",
     ) -> dict[str, object]: ...
 
 
@@ -169,6 +172,9 @@ class HttpYcrClient:
 
     async def rehydrate(self, ref_id: str) -> dict[str, object]:
         return await self._post("/v1/context/rehydrate", {"ref_id": ref_id})
+
+    async def build_turn(self, **payload: object) -> dict[str, object]:
+        return await self._post("/v1/context/build-turn", dict(payload))
 
     async def project_tool_observation(self, **payload: object) -> dict[str, object]:
         return await self._post("/v1/project/tool-observation", dict(payload))
@@ -277,6 +283,7 @@ class HttpYcrClient:
         capability_ref: str,
         node_id: str | None = None,
         sections: list[str] | None = None,
+        projection: str = "invoke_ready",
     ) -> dict[str, object]:
         return await self._post(
             "/v1/tool/describe",
@@ -284,6 +291,7 @@ class HttpYcrClient:
                 "capability_ref": capability_ref,
                 "node_id": node_id,
                 "sections": sections or [],
+                "projection": projection,
             },
         )
 

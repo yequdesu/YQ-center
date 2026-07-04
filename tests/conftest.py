@@ -1,6 +1,8 @@
 """pytest fixtures for YeQu Center tests."""
 
+import gc
 import os
+import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -10,6 +12,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 import yequ.models.agent_message  # noqa: F401
 import yequ.models.agent_run  # noqa: F401
@@ -70,6 +73,182 @@ def override_settings(monkeypatch, db_engine):
         ),
     )
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
+
+    class TestYcrClient:
+        async def status(self):
+            return {"status": "ready", "mode": "test"}
+
+        async def build_turn(self, **payload):
+            from yequ.ycr.budget import budget_profile_from_settings
+            from yequ.ycr.context_packet import build_agent_context_packet
+
+            return build_agent_context_packet(
+                session_id=str(payload["session_id"]),
+                actor_id=str(payload.get("actor_id") or ""),
+                provider=str(payload["provider"]),
+                model=str(payload.get("model") or ""),
+                messages=list(payload.get("messages") or []),
+                available_functions=list(payload.get("available_functions") or []),
+                capability_context=dict(payload.get("capability_context") or {}),
+                budget=budget_profile_from_settings(test_settings),
+                step=int(payload.get("step") or 1),
+            )
+
+        async def project_tool_observation(self, **payload):
+            from yequ.ycr import projection
+            from yequ.ycr.budget import budget_profile_from_settings
+
+            return projection.project_tool_observation(
+                name=str(payload.get("name") or ""),
+                call_id=str(payload.get("call_id") or ""),
+                status=str(payload.get("status") or "succeeded"),
+                result=payload.get("result"),
+                target_node_id=payload.get("target_node_id"),
+                budget=budget_profile_from_settings(test_settings),
+            )
+
+        async def project_context_blocks(self, blocks):
+            from yequ.ycr import projection
+            from yequ.ycr.budget import budget_profile_from_settings
+
+            return projection.project_context_blocks(
+                blocks,
+                budget=budget_profile_from_settings(test_settings),
+            )
+
+        async def prompt_with_context(self, prompt, context_blocks):
+            from yequ.ycr import projection
+            from yequ.ycr.budget import budget_profile_from_settings
+
+            return projection.prompt_with_projected_context(
+                prompt,
+                context_blocks,
+                budget=budget_profile_from_settings(test_settings),
+            )
+
+        async def operation_resume_prompt(self, observation, *, user_message=""):
+            from yequ.ycr import projection
+            from yequ.ycr.budget import budget_profile_from_settings
+
+            return projection.operation_resume_prompt(
+                observation,
+                user_message=user_message,
+                budget=budget_profile_from_settings(test_settings),
+            )
+
+        async def agent_run_resume_prompt(self, run_projection, *, operation_observation):
+            from yequ.ycr import projection
+            from yequ.ycr.budget import budget_profile_from_settings
+
+            return projection.agent_run_resume_prompt(
+                run_projection,
+                operation_observation=operation_observation,
+                budget=budget_profile_from_settings(test_settings),
+            )
+
+        async def tool_search(
+            self,
+            *,
+            query=None,
+            node_id=None,
+            platform_os=None,
+            limit=10,
+            filters=None,
+        ):
+            from yequ.ycr.tool_rag import retrieve_tool_context
+
+            async with yequ.db.async_session_factory() as session:
+                return await retrieve_tool_context(
+                    session,
+                    query=query,
+                    node_id=node_id,
+                    platform_os=platform_os,
+                    filters=filters or {},
+                    limit=limit,
+                )
+
+        async def tool_recommend(
+            self,
+            *,
+            query,
+            node_id=None,
+            platform_os=None,
+            limit=5,
+        ):
+            from yequ.ycr.tool_rag import recommend_tool_context
+
+            async with yequ.db.async_session_factory() as session:
+                return await recommend_tool_context(
+                    session,
+                    query=query,
+                    node_id=node_id,
+                    platform_os=platform_os,
+                    filters={},
+                    limit=limit,
+                )
+
+        async def tool_describe(
+            self,
+            *,
+            capability_ref,
+            node_id=None,
+            sections=None,
+            projection="invoke_ready",
+        ):
+            from yequ.ycr.tool_rag import describe_tool_context
+
+            async with yequ.db.async_session_factory() as session:
+                return await describe_tool_context(
+                    session,
+                    capability_ref=capability_ref,
+                    node_id=node_id,
+                    sections=sections or [],
+                    projection=projection,
+                )
+
+        async def inspect(self, ref_id):
+            from yequ.ycr.ref_store import inspect_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await inspect_ref(session, ref_id)
+
+        async def expand(self, ref_id, *, path="$", limit=20):
+            from yequ.ycr.ref_store import expand_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await expand_ref(session, ref_id, path=path, limit=limit)
+
+        async def tail(self, ref_id, *, path="$", lines=40):
+            from yequ.ycr.ref_store import tail_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await tail_ref(session, ref_id, path=path, lines=lines)
+
+        async def schema(self, ref_id, *, path="$"):
+            from yequ.ycr.ref_store import schema_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await schema_ref(session, ref_id, path=path)
+
+        async def search(self, ref_id, *, query, limit=10):
+            from yequ.ycr.ref_store import search_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await search_ref(session, ref_id, query=query, limit=limit)
+
+        async def rehydrate(self, ref_id):
+            from yequ.ycr.ref_store import rehydrate_ref
+
+            async with yequ.db.async_session_factory() as session:
+                return await rehydrate_ref(session, ref_id)
+
+    fake_ycr_client = TestYcrClient()
+    import yequ.ycr.client
+
+    monkeypatch.setattr(yequ.ycr.client, "get_ycr_client", lambda: fake_ycr_client)
+    agent_stream_module = sys.modules.get("yequ.agent.agent_stream")
+    if agent_stream_module is not None:
+        monkeypatch.setattr(agent_stream_module, "get_ycr_client", lambda: fake_ycr_client)
     return test_settings
 
 
@@ -77,7 +256,7 @@ def override_settings(monkeypatch, db_engine):
 async def db_engine():
     """Create a test database engine with fresh tables."""
     db_url = f"sqlite+aiosqlite:///{TEST_DB_PATH}?_journal_mode=WAL"
-    engine = create_async_engine(db_url, echo=False)
+    engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -87,6 +266,7 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+    gc.collect()
 
     # Clean up SQLite files. Windows may hold the handle for a short moment
     # after async engine disposal, especially when WAL files were created.
@@ -94,12 +274,12 @@ async def db_engine():
         path = f"{TEST_DB_PATH}{suffix}"
         if not os.path.exists(path):
             continue
-        for attempt in range(10):
+        for attempt in range(30):
             try:
                 os.remove(path)
                 break
             except PermissionError:
-                if attempt == 9:
+                if attempt == 29:
                     raise
                 time.sleep(0.1)
     if os.path.exists("test_artifacts"):

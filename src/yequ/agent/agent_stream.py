@@ -18,7 +18,7 @@ from yequ.agent.limits import (
     DEFAULT_AGENT_MAX_STEPS,
     DEFAULT_AGENT_MAX_TOTAL_DURATION_SEC,
 )
-from yequ.agent.provider import AgentFunction, AgentProvider
+from yequ.agent.provider import AgentFunction, AgentMessage, AgentProvider
 from yequ.agent.runtime_state import (
     AgentRunGraph,
     AgentRuntimeController,
@@ -32,7 +32,7 @@ from yequ.config import get_settings
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
 from yequ.ycr.budget import budget_profile_from_settings, estimate_tokens
-from yequ.ycr.client import get_ycr_client
+from yequ.ycr.client import YcrError, get_ycr_client
 
 log = get_logger(__name__)
 
@@ -178,6 +178,36 @@ def _agent_message_payload(message: object) -> dict[str, object]:
     }
 
 
+def _agent_messages_from_ycr_packet(packet: dict[str, object]) -> list[AgentMessage]:
+    raw_messages = packet.get("messages")
+    if not isinstance(raw_messages, list):
+        raise YcrError(
+            "context_router_invalid_response",
+            "YCR context packet is missing provider messages",
+        )
+    messages: list[AgentMessage] = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        tool_call_id = item.get("tool_call_id")
+        tool_calls = item.get("tool_calls")
+        messages.append(
+            AgentMessage(
+                role=_as_str(item.get("role")),
+                content=content if isinstance(content, str) else None,
+                tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+                tool_calls=(
+                    _as_object_dict_list(tool_calls)
+                    if isinstance(tool_calls, list)
+                    else None
+                ),
+                message_id=_as_str(item.get("message_id")) or None,
+            )
+        )
+    return messages
+
+
 def _safe_json_size_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
 
@@ -194,11 +224,54 @@ def _ycr_context_event_data(
     capability_context: JsonDict | None,
     step: int,
     phase: str,
+    context_packet: dict[str, object] | None = None,
     assistant_text: str = "",
     tool_calls: list[dict[str, object]] | None = None,
     usage: dict[str, object] | None = None,
 ) -> dict[str, object]:
     budget = budget_profile_from_settings(get_settings())
+    if context_packet is not None:
+        packet_budget = _as_object_dict(context_packet.get("budget", {}))
+        budget_report = _as_object_dict(context_packet.get("budget_report", {}))
+        usage = usage or {}
+        completion_payload: dict[str, object] = {
+            "assistant_text": assistant_text,
+            "tool_calls": tool_calls or [],
+        }
+        return {
+            "kind": "provider_context",
+            "phase": phase,
+            "step": step,
+            "packet_id": context_packet.get("packet_id"),
+            "provider_name": provider.provider_name(),
+            "model": _provider_model_name(provider)
+            or str(packet_budget.get("model") or budget.model),
+            "message_count": len(messages),
+            "tool_count": len(available_functions),
+            "budget": packet_budget,
+            "tokens": {
+                "upload_estimated": _optional_int(packet_budget.get("estimated_input_tokens")),
+                "download_estimated": (
+                    estimate_tokens(completion_payload) if phase == "provider_output" else None
+                ),
+                "upload_actual": _optional_int(usage.get("prompt_tokens")),
+                "download_actual": _optional_int(usage.get("completion_tokens")),
+                "total_actual": _optional_int(usage.get("total_tokens")),
+            },
+            "breakdown": {
+                "messages": _optional_int(budget_report.get("messages_tokens")),
+                "tool_schema": _optional_int(budget_report.get("tool_schema_tokens")),
+                "capability_context": _optional_int(
+                    budget_report.get("capability_context_tokens")
+                ),
+            },
+            "truncated_paths": budget_report.get("truncated_paths") or [],
+            "ycr": context_packet.get("ycr")
+            or {
+                "projected": True,
+                "projection_policy": "agent_context_packet_v1",
+            },
+        }
     system_prompt = _provider_system_prompt(provider, available_functions, capability_context)
     message_payloads = [_agent_message_payload(message) for message in messages]
     tool_schema_payload = [
@@ -498,11 +571,50 @@ async def agent_invoke_stream(
                 trace_id,
                 iteration.as_event_data(),
             )
+            try:
+                context_packet = await get_ycr_client().build_turn(
+                    session_id=session_id,
+                    actor_id=session_actor_id,
+                    provider=provider.provider_name(),
+                    model=_provider_model_name(provider),
+                    messages=[_agent_message_payload(message) for message in history],
+                    available_functions=[
+                        _function_debug_summary(function) for function in available_functions
+                    ],
+                    capability_context=capability_context or {},
+                    step=current_step,
+                )
+                provider_messages = _agent_messages_from_ycr_packet(context_packet)
+                provider_context = _as_object_dict(context_packet.get("provider_context", {}))
+            except YcrError as exc:
+                failure = run_graph.provider_failed(exc.message)
+                loop_state = run_graph.loop_state
+                await _update_agent_run_checkpoint(
+                    agent_run_id,
+                    status="failed",
+                    error_code=exc.code,
+                    error_message=exc.message,
+                )
+                yield _event(
+                    "agent.failed",
+                    session_id,
+                    trace_id,
+                    {
+                        **failure.as_event_data(),
+                        "error_code": exc.code,
+                        "message": exc.message,
+                    },
+                )
+                break
+
             yield _event(
                 "agent.provider.started",
                 session_id,
                 trace_id,
-                {"provider_name": provider.provider_name()},
+                {
+                    "provider_name": provider.provider_name(),
+                    "ycr_packet_id": context_packet.get("packet_id"),
+                },
             )
             yield _event(
                 "agent.ycr.context",
@@ -510,11 +622,14 @@ async def agent_invoke_stream(
                 trace_id,
                 _ycr_context_event_data(
                     provider,
-                    messages=history,
+                    messages=provider_messages,
                     available_functions=available_functions,
-                    capability_context=capability_context,
+                    capability_context=provider_context.get("capability_context")
+                    if isinstance(provider_context.get("capability_context"), dict)
+                    else capability_context,
                     step=current_step,
                     phase="provider_input",
+                    context_packet=context_packet,
                 ),
             )
 
@@ -527,12 +642,12 @@ async def agent_invoke_stream(
                 async for chunk in provider.invoke_stream(
                     "",
                     available_functions=available_functions,
-                    messages=history,
+                    messages=provider_messages,
                     context={
                         "call_path": list(call_path),
                         "session_id": session_id,
                         "step": current_step,
-                        "capability_context": capability_context or {},
+                        **provider_context,
                     },
                 ):
                     chunk_type = chunk.get("type")
@@ -590,11 +705,14 @@ async def agent_invoke_stream(
                 trace_id,
                 _ycr_context_event_data(
                     provider,
-                    messages=history,
+                    messages=provider_messages,
                     available_functions=available_functions,
-                    capability_context=capability_context,
+                    capability_context=provider_context.get("capability_context")
+                    if isinstance(provider_context.get("capability_context"), dict)
+                    else capability_context,
                     step=current_step,
                     phase="provider_output",
+                    context_packet=context_packet,
                     assistant_text=assistant_text,
                     tool_calls=provider_tool_calls,
                     usage=provider_usage,

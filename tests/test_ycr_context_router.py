@@ -1,8 +1,12 @@
+import json
+
 import pytest
 
 from yequ.api.agent_tool_catalog import _center_meta_functions
 from yequ.services.result_ingestion import guard_job_output
 from yequ.ycr import project_tool_observation
+from yequ.ycr.budget import budget_profile_from_settings
+from yequ.ycr.context_packet import build_agent_context_packet
 from yequ.ycr.ref_store import expand_ref, inspect_ref, search_ref, tail_ref, upsert_ref
 
 
@@ -54,6 +58,58 @@ def test_center_meta_functions_include_ycr_and_recommend_tools() -> None:
     assert "context.inspect" in names
     assert "context.search" in names
     assert "context.status" in names
+
+
+def test_ycr_build_turn_rejects_unprojected_tool_message(override_settings) -> None:
+    with pytest.raises(ValueError, match="unprojected_tool_observation"):
+        build_agent_context_packet(
+            session_id="sess_1",
+            actor_id="agent",
+            provider="test",
+            model="test-model",
+            messages=[
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": '{"status":"succeeded","result":{"raw":true}}',
+                }
+            ],
+            available_functions=[],
+            capability_context={},
+            budget=budget_profile_from_settings(override_settings),
+            step=1,
+        )
+
+
+def test_ycr_build_turn_returns_provider_packet(override_settings) -> None:
+    projected = project_tool_observation(
+        name="node.status",
+        call_id="call_1",
+        status="succeeded",
+        result={"node_id": "node-1", "status": "online"},
+    )
+    packet = build_agent_context_packet(
+        session_id="sess_1",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[
+            {"role": "user", "content": "status?"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": json.dumps(projected),
+            },
+        ],
+        available_functions=[{"name": "node.status", "input_schema": {}}],
+        capability_context={"nodes": []},
+        budget=budget_profile_from_settings(override_settings),
+        step=1,
+    )
+
+    assert packet["packet_id"].startswith("ctxpkt_")
+    assert packet["ycr"]["projection_policy"] == "agent_context_packet_v1"
+    assert packet["budget"]["estimated_input_tokens"] > 0
 
 
 def test_result_ingestion_preserves_small_output() -> None:
