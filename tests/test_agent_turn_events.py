@@ -77,6 +77,55 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient):
+    from yequ.agent.agent_stream import agent_invoke_stream
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import ProviderInvokeResult
+
+    provider = FakeAgentProvider("turn-ycr-budget-test")
+    provider.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Budget visible.",
+                usage={
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3,
+                    "total_tokens": 15,
+                },
+            ),
+        ]
+    )
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "turn-ycr-budget-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    events = [
+        event
+        async for event in agent_invoke_stream(
+            provider,
+            session_id=session_id,
+            prompt="show ycr budget",
+            available_functions=[],
+            execution_mode="auto",
+        )
+    ]
+
+    ycr_events = [event for event in events if event["event_type"] == "agent.ycr.context"]
+    assert [event["data"]["phase"] for event in ycr_events] == [
+        "provider_input",
+        "provider_output",
+    ]
+    assert ycr_events[0]["data"]["tokens"]["upload_estimated"] > 0
+    assert ycr_events[1]["data"]["tokens"]["download_estimated"] > 0
+    assert ycr_events[1]["data"]["tokens"]["upload_actual"] == 12
+    assert ycr_events[1]["data"]["tokens"]["download_actual"] == 3
+
+
+@pytest.mark.asyncio
 async def test_delete_session_deletes_turn_events(client: AsyncClient):
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult

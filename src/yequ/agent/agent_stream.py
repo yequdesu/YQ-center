@@ -5,6 +5,7 @@ The caller (FastAPI route) formats these as SSE text/event-stream.
 """
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -27,8 +28,10 @@ from yequ.agent.runtime_state import (
 )
 from yequ.agent.tool_stream import execute_tool_calls_scheduled
 from yequ.application.maintenance_plan import MaintenancePlanApplicationService
+from yequ.config import get_settings
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
+from yequ.ycr.budget import budget_profile_from_settings, estimate_tokens
 from yequ.ycr.client import get_ycr_client
 
 log = get_logger(__name__)
@@ -158,6 +161,138 @@ def _prompt_context_event_data(
             capability_context.get("tool_count_by_node", {}) if capability_context else {}
         ),
         "available_functions": [_function_debug_summary(f) for f in available_functions],
+    }
+
+
+def _provider_model_name(provider: AgentProvider) -> str:
+    value = getattr(provider, "_model", "")
+    return value if isinstance(value, str) else ""
+
+
+def _agent_message_payload(message: object) -> dict[str, object]:
+    return {
+        "role": _as_str(getattr(message, "role", "")),
+        "content": getattr(message, "content", None),
+        "tool_call_id": getattr(message, "tool_call_id", None),
+        "tool_calls": getattr(message, "tool_calls", None),
+    }
+
+
+def _safe_json_size_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _ycr_context_event_data(
+    provider: AgentProvider,
+    *,
+    messages: list[object],
+    available_functions: list[AgentFunction],
+    capability_context: JsonDict | None,
+    step: int,
+    phase: str,
+    assistant_text: str = "",
+    tool_calls: list[dict[str, object]] | None = None,
+    usage: dict[str, object] | None = None,
+) -> dict[str, object]:
+    budget = budget_profile_from_settings(get_settings())
+    system_prompt = _provider_system_prompt(provider, available_functions, capability_context)
+    message_payloads = [_agent_message_payload(message) for message in messages]
+    tool_schema_payload = [
+        {
+            "name": func.name,
+            "description": func.description,
+            "parameters": func.input_schema or {"type": "object", "properties": {}},
+        }
+        for func in available_functions
+    ]
+    message_tokens = estimate_tokens(message_payloads)
+    system_tokens = estimate_tokens(system_prompt)
+    tool_schema_tokens = estimate_tokens(tool_schema_payload)
+    capability_context_tokens = estimate_tokens(capability_context or {})
+    upload_estimated = (
+        message_tokens
+        + system_tokens
+        + tool_schema_tokens
+        + capability_context_tokens
+    )
+    completion_payload: dict[str, object] = {
+        "assistant_text": assistant_text,
+        "tool_calls": tool_calls or [],
+    }
+    usage = usage or {}
+    return {
+        "kind": "provider_context",
+        "phase": phase,
+        "step": step,
+        "provider_name": provider.provider_name(),
+        "model": _provider_model_name(provider) or budget.model,
+        "message_count": len(messages),
+        "tool_count": len(available_functions),
+        "budget": {
+            "provider": budget.provider,
+            "model": budget.model,
+            "max_input_tokens": budget.max_input_tokens,
+            "reserved_response_tokens": budget.reserved_response_tokens,
+            "max_tool_observation_tokens": budget.max_tool_observation_tokens,
+            "max_context_block_tokens": budget.max_context_block_tokens,
+        },
+        "tokens": {
+            "upload_estimated": upload_estimated,
+            "download_estimated": (
+                estimate_tokens(completion_payload) if phase == "provider_output" else None
+            ),
+            "upload_actual": _optional_int(usage.get("prompt_tokens")),
+            "download_actual": _optional_int(usage.get("completion_tokens")),
+            "total_actual": _optional_int(usage.get("total_tokens")),
+        },
+        "breakdown": {
+            "messages": message_tokens,
+            "system_prompt": system_tokens,
+            "tool_schema": tool_schema_tokens,
+            "capability_context": capability_context_tokens,
+        },
+        "ycr": {
+            "projected": True,
+            "projection_policy": "provider_context_budget_v1",
+        },
+    }
+
+
+def _ycr_tool_projection_event_data(
+    projection: dict[str, object],
+    *,
+    raw_event_data: dict[str, object],
+    step: int,
+) -> dict[str, object]:
+    result = _as_object_dict(projection.get("result", {}))
+    refs = result.get("refs")
+    omitted = result.get("omitted")
+    budget = _as_object_dict(result.get("budget", {}))
+    raw_result = raw_event_data.get("result")
+    return {
+        "kind": "tool_projection",
+        "step": step,
+        "call_id": projection.get("call_id"),
+        "name": projection.get("name"),
+        "status": projection.get("status"),
+        "target_node_id": projection.get("target_node_id"),
+        "projection_policy": result.get("projection_policy"),
+        "summary": result.get("summary"),
+        "raw_estimated_tokens": estimate_tokens(raw_result),
+        "projected_estimated_tokens": _optional_int(budget.get("estimated_tokens")),
+        "raw_size_bytes": _safe_json_size_bytes(raw_result),
+        "projected_size_bytes": _safe_json_size_bytes(projection),
+        "ref_count": len(refs) if isinstance(refs, list) else 0,
+        "omitted_count": len(omitted) if isinstance(omitted, list) else 0,
+        "projection": projection,
+        "ycr": {
+            "projected": True,
+            "projection_policy": "tool_projection_telemetry_v1",
+        },
     }
 
 
@@ -367,10 +502,24 @@ async def agent_invoke_stream(
                 trace_id,
                 {"provider_name": provider.provider_name()},
             )
+            yield _event(
+                "agent.ycr.context",
+                session_id,
+                trace_id,
+                _ycr_context_event_data(
+                    provider,
+                    messages=history,
+                    available_functions=available_functions,
+                    capability_context=capability_context,
+                    step=current_step,
+                    phase="provider_input",
+                ),
+            )
 
             # Call provider with streaming --text deltas are yielded in real-time
             assistant_text = ""
             provider_tool_calls: list[dict[str, object]] = []
+            provider_usage: dict[str, object] = {}
             provider_error: str | None = None
             try:
                 async for chunk in provider.invoke_stream(
@@ -396,6 +545,7 @@ async def agent_invoke_stream(
                         )
                     elif chunk_type == "done":
                         provider_tool_calls = _as_object_dict_list(chunk.get("tool_calls", []))
+                        provider_usage = _as_object_dict(chunk.get("usage", {}))
                     elif chunk_type == "error":
                         provider_error = _as_str(
                             chunk.get("message", chunk.get("error_message", "Provider error"))
@@ -432,6 +582,22 @@ async def agent_invoke_stream(
                 )
                 break
 
+            yield _event(
+                "agent.ycr.context",
+                session_id,
+                trace_id,
+                _ycr_context_event_data(
+                    provider,
+                    messages=history,
+                    available_functions=available_functions,
+                    capability_context=capability_context,
+                    step=current_step,
+                    phase="provider_output",
+                    assistant_text=assistant_text,
+                    tool_calls=provider_tool_calls,
+                    usage=provider_usage,
+                ),
+            )
             executable_calls = list(provider_tool_calls)
             await _record_agent_run_provider_step(
                 agent_run_id,
@@ -527,13 +693,24 @@ async def agent_invoke_stream(
                 ):
                     yield ev
                     # Collect results from completed/failed/waiting_approval events
-                    if (
-                        await observation_collector.record_event(
-                            str(ev["event_type"]),
-                            _as_object_dict(ev.get("data", {})),
+                    ev_data = _as_object_dict(ev.get("data", {}))
+                    recorded_observation = await observation_collector.record_event(
+                        str(ev["event_type"]),
+                        ev_data,
+                    )
+                    latest_projection = observation_collector.latest_result
+                    if latest_projection is not None:
+                        yield _event(
+                            "agent.ycr.tool_projection",
+                            session_id,
+                            trace_id,
+                            _ycr_tool_projection_event_data(
+                                latest_projection,
+                                raw_event_data=ev_data,
+                                step=current_step,
+                            ),
                         )
-                        and observation_collector.has_waiting_approval
-                    ):
+                    if recorded_observation and observation_collector.has_waiting_approval:
                         loop_state = run_graph.observe_tool_results(
                             [{"status": "waiting_approval"}]
                         ).status

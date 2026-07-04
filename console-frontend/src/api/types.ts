@@ -429,6 +429,8 @@ export type SseEventType =
   | "agent.run.created"
   | "agent.provider.started"
   | "agent.provider.delta"
+  | "agent.ycr.context"
+  | "agent.ycr.tool_projection"
   | "agent.planning.summary"
   | "agent.tool_call.created"
   | "agent.tool_call.arguments"

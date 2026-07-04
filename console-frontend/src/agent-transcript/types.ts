@@ -133,9 +133,50 @@ export interface PromptContextData {
   }>;
 }
 
+export interface YcrTraceItem {
+  id: string;
+  kind: "provider_input" | "provider_output" | "tool_projection";
+  label: string;
+  created_at: string;
+  step?: number;
+  providerName?: string;
+  model?: string;
+  toolName?: string;
+  callId?: string;
+  targetNodeId?: string;
+  projectionPolicy?: string;
+  summary?: string;
+  uploadEstimatedTokens?: number;
+  downloadEstimatedTokens?: number;
+  uploadActualTokens?: number;
+  downloadActualTokens?: number;
+  totalActualTokens?: number;
+  rawEstimatedTokens?: number;
+  projectedEstimatedTokens?: number;
+  rawSizeBytes?: number;
+  projectedSizeBytes?: number;
+  refCount?: number;
+  omittedCount?: number;
+  data?: Record<string, unknown>;
+}
+
+export interface YcrTokenSummary {
+  uploadEstimatedTokens: number;
+  downloadEstimatedTokens: number;
+  uploadActualTokens: number;
+  downloadActualTokens: number;
+  toolRawEstimatedTokens: number;
+  toolProjectedEstimatedTokens: number;
+  toolSavedEstimatedTokens: number;
+  projectionCount: number;
+  providerCallCount: number;
+}
+
 export interface TranscriptState {
   blocks: ChatBlock[];
   promptContext: PromptContextData | null;
+  ycrTrace: YcrTraceItem[];
+  ycrTokenSummary: YcrTokenSummary;
 }
 
 export interface PersistedTranscriptInput {

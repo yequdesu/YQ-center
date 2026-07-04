@@ -250,10 +250,16 @@ class AgentToolObservationCollector:
         self._provider_call_order = dict(provider_call_order)
         self._ycr_client = ycr_client or get_ycr_client()
         self._results: list[dict[str, object]] = []
+        self._latest_result: dict[str, object] | None = None
         self.has_waiting_approval = False
         self.has_waiting_operation = False
 
+    @property
+    def latest_result(self) -> dict[str, object] | None:
+        return self._latest_result
+
     async def record_event(self, event_type: str, data: dict[str, object]) -> bool:
+        self._latest_result = None
         if event_type not in {
             "agent.tool_call.completed",
             "agent.tool_call.failed",
@@ -283,6 +289,7 @@ class AgentToolObservationCollector:
                     "target_node_id": data.get("target_node_id"),
                 }
             self._results.append(projected)
+            self._latest_result = projected
             return True
         if event_type == "agent.tool_call.failed":
             self._results.append(

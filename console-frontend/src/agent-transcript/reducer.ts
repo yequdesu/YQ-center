@@ -11,10 +11,17 @@ import type {
   ToolGroupBlock,
   TranscriptState,
   UserBlock,
+  YcrTokenSummary,
+  YcrTraceItem,
 } from "./types";
 
 export function emptyTranscript(): TranscriptState {
-  return { blocks: [], promptContext: null };
+  return {
+    blocks: [],
+    promptContext: null,
+    ycrTrace: [],
+    ycrTokenSummary: emptyYcrTokenSummary(),
+  };
 }
 
 export function appendOptimisticUserPrompt(
@@ -72,6 +79,12 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
 
     case "agent.provider.started":
       return upsertRunStatus(state, "Thinking", createdAt);
+
+    case "agent.ycr.context":
+      return appendYcrContextTrace(state, event, data, createdAt);
+
+    case "agent.ycr.tool_projection":
+      return appendYcrToolProjectionTrace(state, event, data, createdAt);
 
     case "agent.output.delta":
       return appendAssistantDelta(state, String(data.content ?? ""), createdAt, event.event_id);
@@ -219,7 +232,12 @@ export function transcriptFromPersisted(input: PersistedTranscriptInput): Transc
     );
   }
 
-  return { blocks: blocksFromMessages(input.messages), promptContext: null };
+  return {
+    blocks: blocksFromMessages(input.messages),
+    promptContext: null,
+    ycrTrace: [],
+    ycrTokenSummary: emptyYcrTokenSummary(),
+  };
 }
 
 export function applyToolPatch(state: TranscriptState, patch: {
@@ -493,6 +511,110 @@ function replaceOptimisticUserPrompt(
 function appendBlockOnce(state: TranscriptState, block: ChatBlock): TranscriptState {
   if (state.blocks.some((existing) => existing.id === block.id)) return state;
   return { ...state, blocks: [...state.blocks, block] };
+}
+
+function emptyYcrTokenSummary(): YcrTokenSummary {
+  return {
+    uploadEstimatedTokens: 0,
+    downloadEstimatedTokens: 0,
+    uploadActualTokens: 0,
+    downloadActualTokens: 0,
+    toolRawEstimatedTokens: 0,
+    toolProjectedEstimatedTokens: 0,
+    toolSavedEstimatedTokens: 0,
+    projectionCount: 0,
+    providerCallCount: 0,
+  };
+}
+
+function appendYcrContextTrace(
+  state: TranscriptState,
+  event: SseEvent,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const phase = String(data.phase ?? "");
+  const tokens = asRecord(data.tokens);
+  const item: YcrTraceItem = {
+    id: `ycr:${event.event_id}`,
+    kind: phase === "provider_output" ? "provider_output" : "provider_input",
+    label: phase === "provider_output" ? "Provider output" : "Provider input",
+    created_at: createdAt,
+    step: optionalNumber(data.step),
+    providerName: optionalString(data.provider_name),
+    model: optionalString(data.model),
+    uploadEstimatedTokens: optionalNumber(tokens.upload_estimated),
+    downloadEstimatedTokens: optionalNumber(tokens.download_estimated),
+    uploadActualTokens: optionalNumber(tokens.upload_actual),
+    downloadActualTokens: optionalNumber(tokens.download_actual),
+    totalActualTokens: optionalNumber(tokens.total_actual),
+    data,
+  };
+  const summary = {
+    ...state.ycrTokenSummary,
+    uploadEstimatedTokens:
+      state.ycrTokenSummary.uploadEstimatedTokens + (item.uploadEstimatedTokens ?? 0),
+    downloadEstimatedTokens:
+      state.ycrTokenSummary.downloadEstimatedTokens + (item.downloadEstimatedTokens ?? 0),
+    uploadActualTokens: state.ycrTokenSummary.uploadActualTokens + (item.uploadActualTokens ?? 0),
+    downloadActualTokens:
+      state.ycrTokenSummary.downloadActualTokens + (item.downloadActualTokens ?? 0),
+    providerCallCount:
+      state.ycrTokenSummary.providerCallCount + (item.kind === "provider_input" ? 1 : 0),
+  };
+  return appendYcrTraceItem(state, item, summary);
+}
+
+function appendYcrToolProjectionTrace(
+  state: TranscriptState,
+  event: SseEvent,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const rawTokens = optionalNumber(data.raw_estimated_tokens) ?? 0;
+  const projectedTokens = optionalNumber(data.projected_estimated_tokens) ?? 0;
+  const item: YcrTraceItem = {
+    id: `ycr:${event.event_id}`,
+    kind: "tool_projection",
+    label: "Tool projection",
+    created_at: createdAt,
+    step: optionalNumber(data.step),
+    toolName: optionalString(data.name),
+    callId: optionalString(data.call_id),
+    targetNodeId: optionalString(data.target_node_id),
+    projectionPolicy: optionalString(data.projection_policy),
+    summary: optionalString(data.summary),
+    rawEstimatedTokens: rawTokens,
+    projectedEstimatedTokens: projectedTokens,
+    rawSizeBytes: optionalNumber(data.raw_size_bytes),
+    projectedSizeBytes: optionalNumber(data.projected_size_bytes),
+    refCount: optionalNumber(data.ref_count),
+    omittedCount: optionalNumber(data.omitted_count),
+    data,
+  };
+  const summary = {
+    ...state.ycrTokenSummary,
+    toolRawEstimatedTokens: state.ycrTokenSummary.toolRawEstimatedTokens + rawTokens,
+    toolProjectedEstimatedTokens:
+      state.ycrTokenSummary.toolProjectedEstimatedTokens + projectedTokens,
+    toolSavedEstimatedTokens:
+      state.ycrTokenSummary.toolSavedEstimatedTokens + Math.max(0, rawTokens - projectedTokens),
+    projectionCount: state.ycrTokenSummary.projectionCount + 1,
+  };
+  return appendYcrTraceItem(state, item, summary);
+}
+
+function appendYcrTraceItem(
+  state: TranscriptState,
+  item: YcrTraceItem,
+  summary: YcrTokenSummary,
+): TranscriptState {
+  if (state.ycrTrace.some((existing) => existing.id === item.id)) return state;
+  return {
+    ...state,
+    ycrTrace: [...state.ycrTrace, item],
+    ycrTokenSummary: summary,
+  };
 }
 
 function blocksFromMessages(messages: AgentSessionMessage[]): ChatBlock[] {

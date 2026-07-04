@@ -20,6 +20,8 @@ import type {
   RunStatusBlock,
   ArtifactPresentationBlock,
   OperationCardBlock,
+  YcrTokenSummary,
+  YcrTraceItem,
 } from "@/agent-transcript/types";
 import type { AgentSessionDetail, SseEvent } from "@/api/types";
 
@@ -36,6 +38,8 @@ export type {
   RunStatusBlock,
   ArtifactPresentationBlock,
   OperationCardBlock,
+  YcrTokenSummary,
+  YcrTraceItem,
 };
 
 interface UseAgentChatOptions {
@@ -388,6 +392,8 @@ export function useAgentChat({
     blocks: transcript.blocks,
     isStreaming,
     promptContext: transcript.promptContext,
+    ycrTrace: transcript.ycrTrace,
+    ycrTokenSummary: transcript.ycrTokenSummary,
     planSteps,
     sendInvoke,
     sendPlan,

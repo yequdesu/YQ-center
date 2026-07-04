@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -31,6 +31,8 @@ import {
   type ToolCallState,
   type ToolGroupBlock,
   type UserBlock,
+  type YcrTokenSummary,
+  type YcrTraceItem,
 } from "@/hooks/useAgentChat";
 import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -57,6 +59,10 @@ import {
   Search,
   Info,
   RefreshCw,
+  Database,
+  Download,
+  Gauge,
+  Upload,
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
@@ -125,6 +131,8 @@ export function AgentChatPage() {
     blocks,
     isStreaming,
     promptContext,
+    ycrTrace,
+    ycrTokenSummary,
     planSteps,
     sendInvoke,
     sendPlan,
@@ -814,6 +822,8 @@ export function AgentChatPage() {
           <ActivityPanel
             operations={operationBlocks}
             promptContext={promptContext}
+            ycrTrace={ycrTrace}
+            ycrTokenSummary={ycrTokenSummary}
             onResumeOperation={handleResumeOperation}
           />
         </div>
@@ -1181,10 +1191,14 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
 function ActivityPanel({
   operations,
   promptContext,
+  ycrTrace,
+  ycrTokenSummary,
   onResumeOperation,
 }: {
   operations: OperationCardBlock[];
   promptContext: PromptContextData | null;
+  ycrTrace: YcrTraceItem[];
+  ycrTokenSummary: YcrTokenSummary;
   onResumeOperation: (operationId: string) => void;
 }) {
   const latestOperations = [...operations].sort((a, b) =>
@@ -1221,9 +1235,159 @@ function ActivityPanel({
           )}
         </section>
 
+        <YcrActivityPanel
+          trace={ycrTrace}
+          tokenSummary={ycrTokenSummary}
+        />
+
         {promptContext && <PromptContextPanel promptContext={promptContext} />}
       </div>
     </aside>
+  );
+}
+
+function YcrActivityPanel({
+  trace,
+  tokenSummary,
+}: {
+  trace: YcrTraceItem[];
+  tokenSummary: YcrTokenSummary;
+}) {
+  const latest = [...trace].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8);
+  const hasActual = tokenSummary.uploadActualTokens > 0 || tokenSummary.downloadActualTokens > 0;
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2">
+        <Database size={14} className="text-[var(--text-muted)]" />
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+          YCR
+        </h2>
+        <span className="flex-1" />
+        <span className="text-[11px] text-[var(--text-subtle)]">
+          {tokenSummary.projectionCount} projections
+        </span>
+      </div>
+
+      <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3">
+        <div className="grid grid-cols-2 gap-2">
+          <YcrMetric
+            icon={<Upload size={12} />}
+            label="Upload est"
+            value={formatTokenCount(tokenSummary.uploadEstimatedTokens)}
+          />
+          <YcrMetric
+            icon={<Download size={12} />}
+            label="Download est"
+            value={formatTokenCount(tokenSummary.downloadEstimatedTokens)}
+          />
+          <YcrMetric
+            icon={<Gauge size={12} />}
+            label="Saved est"
+            value={formatTokenCount(tokenSummary.toolSavedEstimatedTokens)}
+          />
+          <YcrMetric
+            icon={<RefreshCw size={12} />}
+            label={hasActual ? "Actual" : "Provider calls"}
+            value={
+              hasActual
+                ? `${formatTokenCount(tokenSummary.uploadActualTokens)} / ${formatTokenCount(
+                    tokenSummary.downloadActualTokens,
+                  )}`
+                : String(tokenSummary.providerCallCount)
+            }
+          />
+        </div>
+
+        {latest.length === 0 ? (
+          <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border)] bg-[var(--surface-muted)] p-2.5 text-[12px] text-[var(--text-subtle)]">
+            No YCR telemetry in this session yet.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {latest.map((item) => (
+              <YcrTraceRow key={item.id} item={item} />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function YcrMetric({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2">
+      <div className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-[0.06em] text-[var(--text-subtle)]">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="font-mono text-[13px] font-semibold text-[var(--text)]">{value}</div>
+    </div>
+  );
+}
+
+function YcrTraceRow({ item }: { item: YcrTraceItem }) {
+  const step = item.step ? `step ${item.step}` : "step ?";
+  const title =
+    item.kind === "tool_projection"
+      ? item.toolName ?? "tool result"
+      : `${item.providerName ?? "provider"} ${item.kind === "provider_input" ? "input" : "output"}`;
+  return (
+    <details className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2 text-[12px]">
+      <summary className="cursor-pointer list-none">
+        <div className="flex items-center gap-2">
+          {item.kind === "tool_projection" ? (
+            <Database size={12} className="text-[var(--accent)]" />
+          ) : item.kind === "provider_input" ? (
+            <Upload size={12} className="text-[var(--info)]" />
+          ) : (
+            <Download size={12} className="text-[var(--success)]" />
+          )}
+          <span className="min-w-0 flex-1 truncate font-medium text-[var(--text)]">{title}</span>
+          <span className="font-mono text-[10px] text-[var(--text-subtle)]">{step}</span>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-[var(--text-subtle)]">
+          {item.uploadEstimatedTokens !== undefined && (
+            <span>up {formatTokenCount(item.uploadEstimatedTokens)}</span>
+          )}
+          {item.downloadEstimatedTokens !== undefined && (
+            <span>down {formatTokenCount(item.downloadEstimatedTokens)}</span>
+          )}
+          {item.rawEstimatedTokens !== undefined && (
+            <span>raw {formatTokenCount(item.rawEstimatedTokens)}</span>
+          )}
+          {item.projectedEstimatedTokens !== undefined && (
+            <span>proj {formatTokenCount(item.projectedEstimatedTokens)}</span>
+          )}
+          {item.refCount ? <span>{item.refCount} refs</span> : null}
+          {item.omittedCount ? <span>{item.omittedCount} omitted</span> : null}
+        </div>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {item.summary && (
+          <p className="text-[11px] leading-[16px] text-[var(--text-muted)]">{item.summary}</p>
+        )}
+        {item.projectionPolicy && (
+          <p className="font-mono text-[10px] text-[var(--text-subtle)]">
+            policy: {item.projectionPolicy}
+          </p>
+        )}
+        {item.rawSizeBytes !== undefined && item.projectedSizeBytes !== undefined && (
+          <p className="font-mono text-[10px] text-[var(--text-subtle)]">
+            bytes: {formatBytes(item.rawSizeBytes)} {"->"} {formatBytes(item.projectedSizeBytes)}
+          </p>
+        )}
+        {item.data && <JsonView data={item.data} />}
+      </div>
+    </details>
   );
 }
 
@@ -1579,6 +1743,13 @@ function formatBytes(value: number) {
     unit += 1;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatTokenCount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value < 1000) return String(Math.round(value));
+  if (value < 1_000_000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
 function formatPhase(value: string) {
