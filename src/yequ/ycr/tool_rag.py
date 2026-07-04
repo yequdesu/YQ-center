@@ -10,7 +10,7 @@ from yequ.services.capability_registry import capability_describe, capability_se
 async def retrieve_tool_context(
     db: AsyncSession,
     *,
-    query: str,
+    query: str | None = None,
     node_id: str | None = None,
     platform_os: str | None = None,
     filters: dict[str, object] | None = None,
@@ -32,14 +32,14 @@ async def retrieve_tool_context(
         preflight_supported=_bool_or_none(filters.get("preflight_supported")),
         artifact_input=_bool_or_none(filters.get("artifact_input")),
         artifact_output=_bool_or_none(filters.get("artifact_output")),
-        projection="summary",
+        projection=_str_or_none(filters.get("projection")) or "summary",
         capability_type=_str_or_none(filters.get("capability_type")) or "function",
         include_inactive=bool(filters.get("include_inactive", False)),
         limit=limit,
     )
     return {
         "kind": "tool_rag_result",
-        "query": query,
+        "query": query or "",
         "matches": capabilities,
         "match_count": len(capabilities),
     }

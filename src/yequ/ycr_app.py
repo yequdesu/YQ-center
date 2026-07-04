@@ -85,7 +85,7 @@ class AgentRunResumePromptRequest(BaseModel):
 
 
 class ToolSearchRequest(BaseModel):
-    query: str
+    query: str | None = None
     node_id: str | None = None
     platform_os: str | None = None
     effect: str | None = None
@@ -98,9 +98,14 @@ class ToolSearchRequest(BaseModel):
     preflight_supported: bool | None = None
     artifact_input: bool | None = None
     artifact_output: bool | None = None
+    projection: str = "summary"
     capability_type: str = "function"
     include_inactive: bool = False
     limit: int = Field(default=10, ge=1, le=50)
+
+
+class ToolRecommendRequest(ToolSearchRequest):
+    query: str
 
 
 class ToolDescribeRequest(BaseModel):
@@ -291,13 +296,13 @@ async def tool_search(body: ToolSearchRequest) -> dict[str, object]:
             query=body.query,
             node_id=body.node_id,
             platform_os=body.platform_os,
-            filters=body.model_dump(),
+            filters=body.model_dump(exclude_none=True),
             limit=body.limit,
         )
 
 
 @app.post("/v1/tool/recommend", dependencies=[Depends(_require_ycr_auth)])
-async def tool_recommend(body: ToolSearchRequest) -> dict[str, object]:
+async def tool_recommend(body: ToolRecommendRequest) -> dict[str, object]:
     from yequ.ycr.tool_rag import recommend_tool_context
 
     async with async_session_factory() as db:
@@ -306,7 +311,7 @@ async def tool_recommend(body: ToolSearchRequest) -> dict[str, object]:
             query=body.query,
             node_id=body.node_id,
             platform_os=body.platform_os,
-            filters=body.model_dump(),
+            filters=body.model_dump(exclude_none=True),
             limit=body.limit,
         )
 

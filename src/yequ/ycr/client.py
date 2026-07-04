@@ -71,7 +71,7 @@ class YcrClient(Protocol):
     async def tool_search(
         self,
         *,
-        query: str,
+        query: str | None = None,
         node_id: str | None = None,
         platform_os: str | None = None,
         limit: int = 10,
@@ -230,18 +230,19 @@ class HttpYcrClient:
     async def tool_search(
         self,
         *,
-        query: str,
+        query: str | None = None,
         node_id: str | None = None,
         platform_os: str | None = None,
         limit: int = 10,
         filters: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload = {
-            "query": query,
             "node_id": node_id,
             "platform_os": platform_os,
             "limit": limit,
         }
+        if query is not None:
+            payload["query"] = query
         if filters:
             payload.update(filters)
         return await self._post(

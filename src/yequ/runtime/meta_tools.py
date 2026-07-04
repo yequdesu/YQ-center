@@ -56,27 +56,29 @@ async def execute_inline_meta_tool(
             output = {
                 "capabilities": (
                     await ycr_client.tool_search(
-                    query=string_or_none(input_data.get("query"))
-                    or string_or_none(input_data.get("q")),
-                    node_id=string_or_none(input_data.get("node_id")),
-                    platform_os=string_or_none(input_data.get("platform_os")),
-                    filters={
-                        "effect": string_or_none(input_data.get("effect")),
-                        "risk": string_or_none(input_data.get("risk")),
-                        "runtime_kind": string_or_none(input_data.get("runtime_kind")),
-                        "runtime_labels": string_list(input_data.get("runtime_labels"))
-                        or string_list(input_data.get("labels")),
-                        "supports_progress": input_data.get("supports_progress"),
-                        "supports_cancel": input_data.get("supports_cancel"),
-                        "supports_resume": input_data.get("supports_resume"),
-                        "preflight_supported": input_data.get("preflight_supported"),
-                        "artifact_input": input_data.get("artifact_input"),
-                        "artifact_output": input_data.get("artifact_output"),
-                        "capability_type": string_or_none(input_data.get("capability_type"))
-                        or "function",
-                        "include_inactive": bool(input_data.get("include_inactive", False)),
-                    },
-                    limit=int_or_default(input_data.get("limit"), 10),
+                        query=string_or_none(input_data.get("query"))
+                        or string_or_none(input_data.get("q")),
+                        node_id=string_or_none(input_data.get("node_id")),
+                        platform_os=string_or_none(input_data.get("platform_os")),
+                        filters={
+                            "effect": string_or_none(input_data.get("effect")),
+                            "risk": string_or_none(input_data.get("risk")),
+                            "runtime_kind": string_or_none(input_data.get("runtime_kind")),
+                            "runtime_labels": string_list(input_data.get("runtime_labels"))
+                            or string_list(input_data.get("labels")),
+                            "supports_progress": input_data.get("supports_progress"),
+                            "supports_cancel": input_data.get("supports_cancel"),
+                            "supports_resume": input_data.get("supports_resume"),
+                            "preflight_supported": input_data.get("preflight_supported"),
+                            "artifact_input": input_data.get("artifact_input"),
+                            "artifact_output": input_data.get("artifact_output"),
+                            "projection": string_or_none(input_data.get("projection"))
+                            or "summary",
+                            "capability_type": string_or_none(input_data.get("capability_type"))
+                            or "function",
+                            "include_inactive": bool(input_data.get("include_inactive", False)),
+                        },
+                        limit=int_or_default(input_data.get("limit"), 10),
                     )
                 ).get("matches", [])
             }
@@ -89,9 +91,9 @@ async def execute_inline_meta_tool(
             output = {
                 "capability": (
                     await ycr_client.tool_describe(
-                    capability_ref=capability_ref,
-                    node_id=string_or_none(input_data.get("node_id")),
-                    sections=string_list(input_data.get("sections")),
+                        capability_ref=capability_ref,
+                        node_id=string_or_none(input_data.get("node_id")),
+                        sections=string_list(input_data.get("sections")),
                     )
                 ).get("capability", {})
             }

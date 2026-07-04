@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from tests.conftest import make_yqp_envelope
@@ -740,6 +740,35 @@ async def test_center_meta_tool_executes_without_node_job(
     assert result.job_id is None
     assert result.output_data is not None
     assert result.output_data["capabilities"][0]["canonical_name"] == "system.info"
+
+
+@pytest.mark.asyncio
+async def test_ycr_tool_search_accepts_filter_only_discovery(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    from yequ.ycr_app import app as ycr_app
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    await _register_linux_system_info(client, node.node_id, token)
+
+    transport = ASGITransport(app=ycr_app)
+    async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
+        response = await ycr_client.post(
+            "/v1/tool/search",
+            json={
+                "node_id": node.node_id,
+                "projection": "summary",
+                "limit": 50,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["query"] == ""
+    assert data["match_count"] == 1
+    assert data["matches"][0]["canonical_name"] == "system.info"
 
 
 @pytest.mark.asyncio
