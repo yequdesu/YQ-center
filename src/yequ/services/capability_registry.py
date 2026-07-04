@@ -578,7 +578,7 @@ async def _load_definition_after_upsert(
 ) -> CapabilityDefinition:
     for attempt in range(20):
         await db.execute(
-            pg_insert(CapabilityDefinition)
+            pg_insert(CapabilityDefinition.__table__)
             .values(
                 id=generate_uuid(),
                 capability_id=generate_uuid(),
@@ -623,7 +623,7 @@ async def _load_source_after_upsert(
 ) -> CapabilitySource:
     for attempt in range(20):
         await db.execute(
-            pg_insert(CapabilitySource)
+            pg_insert(CapabilitySource.__table__)
             .values(
                 id=generate_uuid(),
                 source_id=generate_uuid(),
