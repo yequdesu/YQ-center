@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -447,6 +447,10 @@ async def _get_or_create_definition(
     canonical_name: str,
     capability_type: str,
 ) -> CapabilityDefinition:
+    await _lock_registry_key(
+        db,
+        f"capability-definition:{capability_type}:{canonical_name}",
+    )
     result = await db.execute(
         select(CapabilityDefinition).where(
             CapabilityDefinition.canonical_name == canonical_name,
@@ -492,6 +496,13 @@ async def _get_or_create_source(
     registered_name: str,
     now: datetime,
 ) -> CapabilitySource:
+    await _lock_registry_key(
+        db,
+        (
+            "capability-source:"
+            f"{node.id}:{definition.id}:{plugin_id}:{registered_name}"
+        ),
+    )
     result = await db.execute(
         select(CapabilitySource).where(
             CapabilitySource.node_record_id == node.id,
@@ -527,6 +538,13 @@ async def _get_or_create_source(
             )
         )
         return result.scalar_one()
+
+
+async def _lock_registry_key(db: AsyncSession, key: str) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
 
 def _merge_definition_manifest(
