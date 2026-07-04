@@ -58,6 +58,7 @@ async def sync_capability_runtime_snapshot(
     """
 
     await _lock_registry_key(db, f"capability-snapshot:{node.id}")
+    db.sync_session.autoflush = False
 
     touched_definition_ids: set[str] = set()
 
