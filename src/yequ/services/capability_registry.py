@@ -117,7 +117,38 @@ async def node_list(db: AsyncSession) -> list[JsonObject]:
     nodes = list(result.scalars().all())
     output: list[JsonObject] = []
     for node in nodes:
-        output.append(await node_status(db, node.node_id, node=node))
+        sources_result = await db.execute(
+            select(CapabilityDefinition.canonical_name)
+            .join(CapabilitySource, CapabilitySource.definition_id == CapabilityDefinition.id)
+            .where(
+                CapabilitySource.node_record_id == node.id,
+                CapabilitySource.is_active == True,  # noqa: E712
+            )
+            .order_by(CapabilityDefinition.canonical_name)
+        )
+        capability_names = [str(item) for item in sources_result.scalars().all()]
+        preview_limit = 20
+        output.append(
+            {
+                "node_id": node.node_id,
+                "node_name": node.node_name,
+                "status": node.status,
+                "online": node.status == NodeStatus.ONLINE,
+                "platform_os": node.platform_os,
+                "platform_arch": node.platform_arch,
+                "last_seen_at": node.last_seen_at.isoformat() if node.last_seen_at else None,
+                "last_heartbeat_at": (
+                    node.last_heartbeat_at.isoformat() if node.last_heartbeat_at else None
+                ),
+                "capability_source_count": len(capability_names),
+                "capability_names": capability_names[:preview_limit],
+                "omitted_capability_count": max(0, len(capability_names) - preview_limit),
+                "detail_hint": (
+                    "Use node.status for one-node details or capability.search for "
+                    "capability discovery."
+                ),
+            }
+        )
     return output
 
 

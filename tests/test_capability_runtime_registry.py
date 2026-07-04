@@ -603,6 +603,13 @@ async def test_meta_capability_search_and_describe_api(
     assert node_detail["capability_source_count"] == 1
     assert node_detail["capability_sources"][0]["canonical_name"] == "system.info"
 
+    node_list_resp = await client.get("/admin/meta/nodes")
+    assert node_list_resp.status_code == 200, node_list_resp.text
+    node_summary = node_list_resp.json()[0]
+    assert node_summary["capability_source_count"] == 1
+    assert node_summary["capability_names"] == ["system.info"]
+    assert "capability_sources" not in node_summary
+
 
 @pytest.mark.asyncio
 async def test_croc_status_capability_is_searchable_without_center_hardcoding(
