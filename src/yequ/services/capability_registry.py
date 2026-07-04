@@ -595,13 +595,24 @@ async def _load_definition_after_upsert(
                 index_elements=["canonical_name", "capability_type"]
             )
         )
-        result = await db.execute(
-            select(CapabilityDefinition).where(
-                CapabilityDefinition.canonical_name == canonical_name,
-                CapabilityDefinition.capability_type == capability_type,
+        row_id = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id FROM capability_definitions
+                    WHERE canonical_name = :canonical_name
+                      AND capability_type = :capability_type
+                    ORDER BY created_at, id
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "canonical_name": canonical_name,
+                    "capability_type": capability_type,
+                },
             )
-        )
-        definition = result.scalar_one_or_none()
+        ).scalar_one_or_none()
+        definition = await db.get(CapabilityDefinition, row_id) if row_id else None
         if definition is not None:
             return definition
         if attempt < 19:
@@ -643,29 +654,51 @@ async def _load_source_after_upsert(
                 ]
             )
         )
-        result = await db.execute(
-            select(CapabilitySource).where(
-                CapabilitySource.node_record_id == node.id,
-                CapabilitySource.plugin_id == plugin_id,
-                CapabilitySource.registered_name == registered_name,
-                CapabilitySource.definition_id == definition.id,
+        row_id = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id FROM capability_sources
+                    WHERE node_record_id = :node_record_id
+                      AND plugin_id = :plugin_id
+                      AND registered_name = :registered_name
+                      AND definition_id = :definition_id
+                    ORDER BY registered_at DESC, id
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "node_record_id": node.id,
+                    "plugin_id": plugin_id,
+                    "registered_name": registered_name,
+                    "definition_id": definition.id,
+                },
             )
-        )
-        source = result.scalar_one_or_none()
+        ).scalar_one_or_none()
+        source = await db.get(CapabilitySource, row_id) if row_id else None
         if source is not None:
             return source
 
-        fallback_result = await db.execute(
-            select(CapabilitySource)
-            .where(
-                CapabilitySource.node_record_id == node.id,
-                CapabilitySource.plugin_id == plugin_id,
-                CapabilitySource.registered_name == registered_name,
+        fallback_id = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id FROM capability_sources
+                    WHERE node_record_id = :node_record_id
+                      AND plugin_id = :plugin_id
+                      AND registered_name = :registered_name
+                    ORDER BY registered_at DESC, id
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "node_record_id": node.id,
+                    "plugin_id": plugin_id,
+                    "registered_name": registered_name,
+                },
             )
-            .order_by(CapabilitySource.registered_at.desc())
-            .limit(1)
-        )
-        source = fallback_result.scalar_one_or_none()
+        ).scalar_one_or_none()
+        source = await db.get(CapabilitySource, fallback_id) if fallback_id else None
         if source is not None:
             return source
         if attempt < 19:
