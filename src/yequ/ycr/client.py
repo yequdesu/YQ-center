@@ -80,15 +80,6 @@ class YcrClient(Protocol):
         filters: dict[str, object] | None = None,
     ) -> dict[str, object]: ...
 
-    async def tool_recommend(
-        self,
-        *,
-        query: str,
-        node_id: str | None = None,
-        platform_os: str | None = None,
-        limit: int = 5,
-    ) -> dict[str, object]: ...
-
     async def tool_describe(
         self,
         *,
@@ -257,24 +248,6 @@ class HttpYcrClient:
         return await self._post(
             "/v1/tool/search",
             payload,
-        )
-
-    async def tool_recommend(
-        self,
-        *,
-        query: str,
-        node_id: str | None = None,
-        platform_os: str | None = None,
-        limit: int = 5,
-    ) -> dict[str, object]:
-        return await self._post(
-            "/v1/tool/recommend",
-            {
-                "query": query,
-                "node_id": node_id,
-                "platform_os": platform_os,
-                "limit": limit,
-            },
         )
 
     async def tool_describe(

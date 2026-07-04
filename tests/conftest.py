@@ -155,35 +155,15 @@ def override_settings(monkeypatch, db_engine):
             limit=10,
             filters=None,
         ):
-            from yequ.ycr.tool_rag import retrieve_tool_context
+            from yequ.ycr.capability_gateway import search_capability_registry
 
             async with yequ.db.async_session_factory() as session:
-                return await retrieve_tool_context(
+                return await search_capability_registry(
                     session,
                     query=query,
                     node_id=node_id,
                     platform_os=platform_os,
                     filters=filters or {},
-                    limit=limit,
-                )
-
-        async def tool_recommend(
-            self,
-            *,
-            query,
-            node_id=None,
-            platform_os=None,
-            limit=5,
-        ):
-            from yequ.ycr.tool_rag import recommend_tool_context
-
-            async with yequ.db.async_session_factory() as session:
-                return await recommend_tool_context(
-                    session,
-                    query=query,
-                    node_id=node_id,
-                    platform_os=platform_os,
-                    filters={},
                     limit=limit,
                 )
 
@@ -195,10 +175,10 @@ def override_settings(monkeypatch, db_engine):
             sections=None,
             projection="invoke_ready",
         ):
-            from yequ.ycr.tool_rag import describe_tool_context
+            from yequ.ycr.capability_gateway import describe_capability_registry
 
             async with yequ.db.async_session_factory() as session:
-                return await describe_tool_context(
+                return await describe_capability_registry(
                     session,
                     capability_ref=capability_ref,
                     node_id=node_id,

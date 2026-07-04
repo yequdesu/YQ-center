@@ -104,18 +104,6 @@ async def execute_inline_meta_tool(
                     )
                 ).get("capability", {})
             }
-        elif command.function_name == "capability.recommend":
-            query = required_string(input_data.get("query"), "query")
-            output = {
-                "recommendations": (
-                    await ycr_client.tool_recommend(
-                        query=query,
-                        node_id=string_or_none(input_data.get("node_id")),
-                        platform_os=string_or_none(input_data.get("platform_os")),
-                        limit=int_or_default(input_data.get("limit"), 5),
-                    )
-                ).get("recommendations", [])
-            }
         elif command.function_name == "context.status":
             output = {"ycr": await ycr_client.status()}
         elif command.function_name == "context.inspect":

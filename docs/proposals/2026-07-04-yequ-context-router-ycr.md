@@ -14,8 +14,8 @@
 5. `ycr_context_refs` 与 `ycr_context_chunks` 是持久 ref 与检索 chunk 的事实表。
 6. `context.*` meta tools 读取持久 ref/chunk，不依赖进程内缓存。
 7. Provider 层只接受已经投影的 tool observation；未投影内容触发 `unprojected_tool_observation`，不做 raw fallback。
-8. Result RAG 位于 `src/yequ/ycr/result_rag.py`；Tool RAG 位于 `src/yequ/ycr/tool_rag.py`，二者边界固定。
-9. RAG 使用 OpenAI-compatible embedding provider + PostgreSQL pgvector；测试环境才使用 local hash embedding。
+8. 当前实现只有 `src/yequ/ycr/capability_gateway.py` 的 registry-backed capability discovery；Capability RAG / Tool RAG 未实现，不能用 registry search 冒充。
+9. Result context search 使用 OpenAI-compatible embedding provider + PostgreSQL pgvector；测试环境才使用 local hash embedding。Capability RAG 只有在单独实现 capability vector index 后才能声明完成。
 10. 当前实现仍未通过本文最终验收；`AgentContextPacket` 主路径、UI/debug 双轨治理、ref durable anchor 和完整 ledger 仍是必须完成项。
 
 硬验收补充：
@@ -284,7 +284,7 @@ YCR 服务由以下模块组成：
 | `RefManager` | 创建、校验、过期和展开 `ContextRef`。 |
 | `ContextPacketBuilder` | 组装 provider-ready messages、tool definitions、context blocks 和 budget report。 |
 | `RetrievalGateway` | 暴露 `context.inspect/search/expand/tail/schema`，后续接 Result RAG。 |
-| `CapabilityKnowledgeGateway` | 暴露 capability discovery 的语义增强，后续接 Capability RAG。 |
+| `CapabilityKnowledgeGateway` | 当前只暴露 registry-backed capability discovery；Capability RAG 未实现，后续必须单独接 capability vector index。 |
 | `ContextLedgerWriter` | 写上下文账本、预算报告、投影策略命中记录。 |
 
 这些模块在 YCR 内部形成清晰边界。Agent Runtime 只能依赖 `YcrClient`，不能依赖 `ProjectionRegistry` 等内部类。
@@ -364,7 +364,7 @@ YCR 引入一组 Agent meta tools，用于按需取回 refs。它们由 Center �
 
 ### 11.1 Capability RAG
 
-Capability RAG 属于 capability discovery 层，服务于 `capability.search`、`capability.describe` 和未来的 `capability.recommend`。它的输入是 capability manifest、agent_description、examples、tags、failure modes、preconditions 和平台/运行时特征。
+Capability RAG 属于 capability discovery 层，未来服务于 `capability.search`、`capability.describe` 和独立的推荐入口。它的输入是 capability manifest、agent_description、examples、tags、failure modes、preconditions 和平台/运行时特征。当前代码没有实现 Capability RAG，只有确定性的 registry discovery。
 
 它解决：
 
@@ -627,7 +627,7 @@ YCR 不破坏“新增 capability 后 Center/Agent 不改代码”的目标。�
 交付：
 
 1. 建立 capability knowledge index。
-2. `capability.search` 支持 semantic ranking。
+2. `capability.search` 支持真实 capability vector index + semantic ranking，并在响应中返回 retrieval trace。
 3. `capability.describe` 默认 `invoke_ready`，detail/schema 走按需展开。
 4. capability examples、aliases、failure modes 进入索引。
 

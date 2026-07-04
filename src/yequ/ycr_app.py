@@ -117,10 +117,6 @@ class ToolSearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
 
 
-class ToolRecommendRequest(ToolSearchRequest):
-    query: str
-
-
 class ToolDescribeRequest(BaseModel):
     capability_ref: str
     node_id: str | None = None
@@ -204,12 +200,21 @@ async def healthz() -> dict[str, object]:
 @app.get("/v1/context/status", dependencies=[Depends(_require_ycr_auth)])
 async def context_status() -> dict[str, object]:
     budget = _budget()
+    settings = get_settings()
+    database_url = settings.database_url.lower()
+    vector_backend = (
+        "postgresql_pgvector" if database_url.startswith("postgresql") else "local_vector_scan"
+    )
     return {
         "status": "ready",
         "mode": "standalone",
-        "vector_backend": "pgvector",
-        "embedding_provider": get_settings().ycr_embedding_provider,
-        "embedding_model": get_settings().ycr_embedding_model,
+        "vector_backend": vector_backend,
+        "embedding_provider": settings.ycr_embedding_provider,
+        "embedding_model": settings.ycr_embedding_model,
+        "capability_discovery": {
+            "strategy": "registry_filter_v1",
+            "capability_rag": "not_implemented",
+        },
         "budget": {
             "provider": budget.provider,
             "model": budget.model,
@@ -385,25 +390,10 @@ async def agent_run_resume_prompt(body: AgentRunResumePromptRequest) -> dict[str
 
 @app.post("/v1/tool/search", dependencies=[Depends(_require_ycr_auth)])
 async def tool_search(body: ToolSearchRequest) -> dict[str, object]:
-    from yequ.ycr.tool_rag import retrieve_tool_context
+    from yequ.ycr.capability_gateway import search_capability_registry
 
     async with async_session_factory() as db:
-        return await retrieve_tool_context(
-            db,
-            query=body.query,
-            node_id=body.node_id,
-            platform_os=body.platform_os,
-            filters=body.model_dump(exclude_none=True),
-            limit=body.limit,
-        )
-
-
-@app.post("/v1/tool/recommend", dependencies=[Depends(_require_ycr_auth)])
-async def tool_recommend(body: ToolRecommendRequest) -> dict[str, object]:
-    from yequ.ycr.tool_rag import recommend_tool_context
-
-    async with async_session_factory() as db:
-        return await recommend_tool_context(
+        return await search_capability_registry(
             db,
             query=body.query,
             node_id=body.node_id,
@@ -415,11 +405,11 @@ async def tool_recommend(body: ToolRecommendRequest) -> dict[str, object]:
 
 @app.post("/v1/tool/describe", dependencies=[Depends(_require_ycr_auth)])
 async def tool_describe(body: ToolDescribeRequest) -> dict[str, object]:
-    from yequ.ycr.tool_rag import describe_tool_context
+    from yequ.ycr.capability_gateway import describe_capability_registry
 
     async with async_session_factory() as db:
         try:
-            return await describe_tool_context(
+            return await describe_capability_registry(
                 db,
                 capability_ref=body.capability_ref,
                 node_id=body.node_id,

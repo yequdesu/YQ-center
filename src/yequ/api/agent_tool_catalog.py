@@ -123,26 +123,6 @@ def _center_meta_functions() -> list[AgentFunction]:
             timeout_sec=5,
         ),
         AgentFunction(
-            name="capability.recommend",
-            description=(
-                "Recommend likely capabilities for a natural language task. "
-                "Use this when capability.search needs semantic ranking."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "node_id": {"type": "string"},
-                    "platform_os": {"type": "string"},
-                    "limit": {"type": "integer", "default": 5, "maximum": 20},
-                },
-                "required": ["query"],
-            },
-            risk="safe",
-            effect="read",
-            timeout_sec=5,
-        ),
-        AgentFunction(
             name="context.inspect",
             description="Inspect a YCR context ref without expanding the full value.",
             input_schema={

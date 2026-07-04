@@ -5,7 +5,6 @@ CENTER_META_TOOLS = {
     "node.status",
     "capability.search",
     "capability.describe",
-    "capability.recommend",
     "context.inspect",
     "context.expand",
     "context.tail",

@@ -51,10 +51,12 @@ async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
     assert status["status"] == "ready"
 
 
-def test_center_meta_functions_include_ycr_and_recommend_tools() -> None:
+def test_center_meta_functions_include_ycr_context_tools() -> None:
     names = {function.name for function in _center_meta_functions()}
 
-    assert "capability.recommend" in names
+    assert "capability.search" in names
+    assert "capability.describe" in names
+    assert "capability.recommend" not in names
     assert "context.inspect" in names
     assert "context.search" in names
     assert "context.status" in names
