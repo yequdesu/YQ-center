@@ -456,6 +456,13 @@ async def _get_or_create_definition(
         db,
         f"capability-definition:{capability_type}:{canonical_name}",
     )
+    if db.get_bind().dialect.name == "postgresql":
+        return await _load_definition_after_upsert(
+            db,
+            canonical_name=canonical_name,
+            capability_type=capability_type,
+        )
+
     result = await db.execute(
         select(CapabilityDefinition).where(
             CapabilityDefinition.canonical_name == canonical_name,
@@ -465,13 +472,6 @@ async def _get_or_create_definition(
     definition = result.scalar_one_or_none()
     if definition is not None:
         return definition
-
-    if db.get_bind().dialect.name == "postgresql":
-        return await _load_definition_after_upsert(
-            db,
-            canonical_name=canonical_name,
-            capability_type=capability_type,
-        )
 
     try:
         async with db.begin_nested():
@@ -515,6 +515,17 @@ async def _get_or_create_source(
             f"{node.id}:{definition.id}:{plugin_id}:{registered_name}"
         ),
     )
+    if db.get_bind().dialect.name == "postgresql":
+        return await _load_source_after_upsert(
+            db,
+            node=node,
+            definition=definition,
+            plugin_id=plugin_id,
+            plugin_version=plugin_version,
+            registered_name=registered_name,
+            now=now,
+        )
+
     result = await db.execute(
         select(CapabilitySource).where(
             CapabilitySource.node_record_id == node.id,
@@ -526,17 +537,6 @@ async def _get_or_create_source(
     source = result.scalar_one_or_none()
     if source is not None:
         return source
-
-    if db.get_bind().dialect.name == "postgresql":
-        return await _load_source_after_upsert(
-            db,
-            node=node,
-            definition=definition,
-            plugin_id=plugin_id,
-            plugin_version=plugin_version,
-            registered_name=registered_name,
-            now=now,
-        )
 
     try:
         async with db.begin_nested():
