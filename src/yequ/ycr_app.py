@@ -144,7 +144,9 @@ async def context_status() -> dict[str, object]:
     return {
         "status": "ready",
         "mode": "standalone",
-        "vector_backend": "deterministic_dense_hash",
+        "vector_backend": "pgvector",
+        "embedding_provider": get_settings().ycr_embedding_provider,
+        "embedding_model": get_settings().ycr_embedding_model,
         "budget": {
             "provider": budget.provider,
             "model": budget.model,
@@ -211,7 +213,9 @@ async def schema_ref(body: RefRequest) -> dict[str, object]:
 @app.post("/v1/context/search", dependencies=[Depends(_require_ycr_auth)])
 async def search_ref(body: RefRequest) -> dict[str, object]:
     async with async_session_factory() as db:
-        return await search_ref_store(db, body.ref_id, query=body.query, limit=body.limit)
+        result = await search_ref_store(db, body.ref_id, query=body.query, limit=body.limit)
+        await db.commit()
+        return result
 
 
 @app.post("/v1/context/rehydrate", dependencies=[Depends(_require_ycr_auth)])
