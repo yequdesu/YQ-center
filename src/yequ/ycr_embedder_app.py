@@ -61,9 +61,10 @@ async def embeddings(
             {
                 "object": "embedding",
                 "index": index,
-                "embedding": [float(value) for value in vector],
+                "embedding": [float(value) for value in item["dense"]],
+                "sparse_embedding": item["sparse"],
             }
-            for index, vector in enumerate(vectors)
+            for index, item in enumerate(vectors)
         ],
     }
 
@@ -94,12 +95,21 @@ async def _load_model() -> Any:
         return _model
 
 
-def _encode(model: Any, inputs: list[str]) -> list[list[float]]:
+def _encode(model: Any, inputs: list[str]) -> list[dict[str, object]]:
     output = model.encode(
         inputs,
         return_dense=True,
-        return_sparse=False,
+        return_sparse=True,
         return_colbert_vecs=False,
     )
-    dense = output.get("dense_vecs") if isinstance(output, dict) else output
-    return [list(vector) for vector in dense]
+    dense_vectors = output.get("dense_vecs") if isinstance(output, dict) else output
+    sparse_vectors = output.get("lexical_weights") if isinstance(output, dict) else None
+    if sparse_vectors is None:
+        sparse_vectors = [{} for _ in inputs]
+    return [
+        {
+            "dense": list(dense),
+            "sparse": {str(key): float(value) for key, value in dict(sparse).items()},
+        }
+        for dense, sparse in zip(dense_vectors, sparse_vectors, strict=True)
+    ]

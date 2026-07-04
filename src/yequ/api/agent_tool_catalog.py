@@ -77,7 +77,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "default": "summary",
                     },
                     "capability_type": {"type": "string", "default": "function"},
-                    "limit": {"type": "integer", "default": 10, "maximum": 50},
+                    "limit": {"type": "integer", "default": 5, "maximum": 20},
                 },
             },
             risk="safe",

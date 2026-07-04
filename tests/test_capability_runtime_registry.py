@@ -806,7 +806,7 @@ async def test_ycr_tool_search_uses_capability_rag_when_query_is_present(
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["kind"] == "capability_tool_rag_result"
-    assert data["retrieval"]["strategy"] == "tool_rag_hybrid_v1"
+    assert data["retrieval"]["strategy"] == "tool_rag_bge_m3_rrf_v1"
     assert data["retrieval"]["semantic"]["enabled"] is True
     assert data["matches"][0]["canonical_name"] == "screen.capture"
     assert data["matches"][0]["retrieval"]["dense_score"] > 0
@@ -851,8 +851,8 @@ async def test_capability_search_supports_structured_filters_and_projection(
     assert len(capabilities) == 1
     capability = capabilities[0]
     assert capability["canonical_name"] == "transfer.croc.receive"
-    assert capability["retrieval"]["strategy"] == "tool_rag_hybrid_v1"
-    assert capability["retrieval"]["dense_score"] > 0
+    assert capability["retrieval"]["strategy"] == "tool_rag_bge_m3_rrf_v1"
+    assert capability["retrieval"]["sparse_rank"] == 1
     assert "filter:platform_os=linux" in capability["match_reasons"]
     assert "input_schema" not in capability
     source = capability["sources"][0]
@@ -867,6 +867,90 @@ async def test_capability_search_supports_structured_filters_and_projection(
         "source_node",
         "target_node",
         "target_output_dir",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ycr_tool_search_prefers_exact_disk_capability_over_dense_noise(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    from yequ.ycr_app import app as ycr_app
+
+    node, token = provisioned_node
+    await _hello_windows_node(client, node.node_id, token)
+    resp = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "windows.storage",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "windows.disk.detail",
+                                "description": "Return Windows disk capacity and free space.",
+                                "agent_description": (
+                                    "Use to inspect drive capacity, free bytes, and usage."
+                                ),
+                                "tags": ["disk", "storage", "capacity"],
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"drive": {"type": "string"}},
+                                },
+                                "output_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "total_bytes": {"type": "integer"},
+                                        "free_bytes": {"type": "integer"},
+                                    },
+                                },
+                                "risk": "safe",
+                                "effect": "read",
+                            },
+                            {
+                                "name": "windows.directory.archive_artifact",
+                                "description": "Create a ZIP archive of a local directory.",
+                                "tags": ["archive", "artifact", "directory"],
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object", "properties": {}},
+                                "risk": "safe",
+                                "effect": "read",
+                            },
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    transport = ASGITransport(app=ycr_app)
+    async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
+        response = await ycr_client.post(
+            "/v1/tool/search",
+            json={
+                "query": "disk",
+                "node_id": node.node_id,
+                "platform_os": "windows",
+                "projection": "summary",
+                "limit": 5,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["matches"][0]["canonical_name"] == "disk.detail"
+    assert data["matches"][0]["retrieval"]["sparse_rank"] == 1
+    assert data["matches"][0]["retrieval"]["field_matches"]
+    assert "directory.archive_artifact" not in [
+        item["canonical_name"] for item in data["matches"]
     ]
 
 

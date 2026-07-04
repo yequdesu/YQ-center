@@ -42,6 +42,7 @@ import yequ.models.yqp_message  # noqa: F401
 from yequ.api.app import create_app
 from yequ.config import Settings
 from yequ.models.base import Base
+from yequ.ycr.embedding import YcrEmbedding
 
 TEST_DB_PATH = "test_yequ.db"
 
@@ -68,12 +69,17 @@ def override_settings(monkeypatch, db_engine):
         ycr_embedding_api_key="test-token",
     )
 
-    async def test_embed_text(text: str, *, settings=None):
-        return (
-            _test_embedding(text, dimensions=test_settings.ycr_vector_dimensions),
-            "test",
-            "test",
+    async def test_embed_text_full(text: str, *, settings=None):
+        return YcrEmbedding(
+            dense=_test_embedding(text, dimensions=test_settings.ycr_vector_dimensions),
+            sparse=_test_sparse_embedding(text),
+            provider="test",
+            model="test",
         )
+
+    async def test_embed_text(text: str, *, settings=None):
+        embedding = await test_embed_text_full(text, settings=settings)
+        return embedding.dense, embedding.provider, embedding.model
 
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
@@ -89,7 +95,8 @@ def override_settings(monkeypatch, db_engine):
     )
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
     monkeypatch.setattr(yequ.ycr.embedding, "embed_text", test_embed_text)
-    monkeypatch.setattr(yequ.ycr.capability_gateway, "embed_text", test_embed_text)
+    monkeypatch.setattr(yequ.ycr.embedding, "embed_text_full", test_embed_text_full)
+    monkeypatch.setattr(yequ.ycr.capability_gateway, "embed_text_full", test_embed_text_full)
     monkeypatch.setattr(yequ.ycr.ref_store, "embed_text", test_embed_text)
 
     class TestYcrClient:
@@ -370,3 +377,10 @@ def _test_embedding(text: str, *, dimensions: int) -> list[float]:
     if norm == 0:
         return vector
     return [value / norm for value in vector]
+
+
+def _test_sparse_embedding(text: str) -> dict[str, float]:
+    terms: dict[str, float] = {}
+    for token in text.lower().split():
+        terms[token] = terms.get(token, 0.0) + 1.0
+    return terms

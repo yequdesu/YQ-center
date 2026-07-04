@@ -95,6 +95,7 @@ class YcrCapabilityIndex(Base, TimestampMixin):
     capability_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     canonical_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     capability_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     document_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     index_text: Mapped[str] = mapped_column(Text, nullable=False)

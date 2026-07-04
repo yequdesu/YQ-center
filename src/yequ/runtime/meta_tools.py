@@ -84,7 +84,7 @@ async def execute_inline_meta_tool(
                             or "function",
                             "include_inactive": bool(input_data.get("include_inactive", False)),
                         },
-                        limit=int_or_default(input_data.get("limit"), 10),
+                        limit=int_or_default(input_data.get("limit"), 5),
                     )
                 ).get("matches", [])
             }

@@ -14,7 +14,7 @@
 5. `ycr_context_refs` 与 `ycr_context_chunks` 是持久 ref 与检索 chunk 的事实表。
 6. `context.*` meta tools 读取持久 ref/chunk，不依赖进程内缓存。
 7. Provider 层只接受已经投影的 tool observation；未投影内容触发 `unprojected_tool_observation`，不做 raw fallback。
-8. 当前实现由 `src/yequ/ycr/capability_gateway.py` 负责 capability discovery：无 query 时走 registry filter；有 query 时走 Tool RAG hybrid retrieval。
+8. 当前实现由 `src/yequ/ycr/capability_gateway.py` 负责 capability discovery：无 query 时走 registry filter；有 query 时走 BGE-M3 dense+sparse Tool RAG，并使用 RRF 融合排名。
 9. Tool RAG 使用本地 OpenAI-compatible embedding endpoint，推荐 `scripts/start-ycr-embedder.sh` 启动 CPU 版 `BAAI/bge-m3`；测试通过 pytest monkeypatch 注入测试向量函数，不提供部署可选的替代 embedding provider。
 10. 当前实现仍未通过本文最终验收；`AgentContextPacket` 主路径、UI/debug 双轨治理、ref durable anchor 和完整 ledger 仍是必须完成项。
 
@@ -388,7 +388,7 @@ Result RAG 属于 YCR 的 RetrievalGateway，服务于 `context.search`、`conte
 
 当前项目的主要 token 问题来自 result -> agent 链路，因此第一阶段先落 YCR + Result RAG 接口；Capability RAG 作为第二阶段增强。
 
-当前个人部署约束是 CPU-only，推荐模型为 `BAAI/bge-m3`。它支持多语言 dense/sparse/multi-vector 检索能力，但本项目第一版只使用 dense embedding + registry sparse/token signal；模型通过独立 `ycr-embedder` HTTP 服务加载，不进入 Center/YCR 主进程。5600GT + 32GB 内存适合本项目几十到几百个 capability 文档的低吞吐检索。
+当前个人部署约束是 CPU-only，推荐模型为 `BAAI/bge-m3`。Tool RAG 使用 BGE-M3 dense vector 与 sparse lexical weights 两路召回，并通过 RRF 融合排名；字段命中只作为 trace/debug 证据，不作为主排名公式。模型通过独立 `ycr-embedder` HTTP 服务加载，不进入 Center/YCR 主进程。5600GT + 32GB 内存适合本项目几十到几百个 capability 文档的低吞吐检索。
 
 本地启动顺序：
 

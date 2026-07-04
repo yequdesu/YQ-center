@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+from pydantic import BaseModel
 
 from yequ.config import Settings, get_settings
 
@@ -11,11 +12,27 @@ class EmbeddingError(RuntimeError):
     pass
 
 
+class YcrEmbedding(BaseModel):
+    dense: list[float]
+    sparse: dict[str, float]
+    provider: str
+    model: str
+
+
 async def embed_text(
     text: str,
     *,
     settings: Settings | None = None,
 ) -> tuple[list[float], str, str]:
+    embedding = await embed_text_full(text, settings=settings)
+    return embedding.dense, embedding.provider, embedding.model
+
+
+async def embed_text_full(
+    text: str,
+    *,
+    settings: Settings | None = None,
+) -> YcrEmbedding:
     settings = settings or get_settings()
     provider = settings.ycr_embedding_provider
     model = settings.ycr_embedding_model
@@ -36,8 +53,23 @@ async def embed_text(
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list) or not data:
             raise EmbeddingError("Embedding response has no data")
-        embedding = data[0].get("embedding") if isinstance(data[0], dict) else None
+        item = data[0]
+        if not isinstance(item, dict):
+            raise EmbeddingError("Embedding response item is not an object")
+        embedding = item.get("embedding")
         if not isinstance(embedding, list):
             raise EmbeddingError("Embedding response has no vector")
-        return [float(value) for value in embedding], provider, model
+        sparse = item.get("sparse_embedding")
+        if sparse is None:
+            sparse = item.get("sparse")
+        if sparse is None:
+            sparse = {}
+        if not isinstance(sparse, dict):
+            raise EmbeddingError("Embedding response sparse vector is not an object")
+        return YcrEmbedding(
+            dense=[float(value) for value in embedding],
+            sparse={str(key): float(value) for key, value in sparse.items()},
+            provider=provider,
+            model=model,
+        )
     raise EmbeddingError(f"Unsupported YCR embedding provider: {provider}")
