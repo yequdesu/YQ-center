@@ -39,11 +39,13 @@ Agent Runtime
 | `YEQU_YCR_BACKEND` | 当前主路径为 `http`。 |
 | `YEQU_YCR_BASE_URL` | Center 调用 YCR 的内部地址，默认 `http://127.0.0.1:9810`。 |
 | `YEQU_YCR_SERVICE_TOKEN` | Center/YCR 内部 Bearer token。 |
-| `YEQU_YCR_TIMEOUT_SEC` | YCR HTTP 与 embedding/rerank 请求超时。 |
+| `YEQU_YCR_TIMEOUT_SEC` | Center 调用 YCR HTTP 服务的超时，默认 45 秒。 |
 | `YEQU_YCR_EMBEDDING_PROVIDER` | 当前为 `openai_compatible`。 |
 | `YEQU_YCR_EMBEDDING_BASE_URL` | 本地 embedder 地址，例如 `http://127.0.0.1:9820`。 |
 | `YEQU_YCR_EMBEDDING_MODEL` | 默认 `BAAI/bge-m3`。 |
+| `YEQU_YCR_EMBEDDING_TIMEOUT_SEC` | YCR 调用 embedding endpoint 的超时，默认 60 秒。 |
 | `YEQU_YCR_RERANK_MODEL` | 默认 `BAAI/bge-reranker-base`。 |
+| `YEQU_YCR_RERANK_TIMEOUT_SEC` | YCR 调用 rerank endpoint 的超时，默认 90 秒。 |
 | `YEQU_YCR_PROJECTION_INLINE_BYTES` | 默认投影 inline 上限。 |
 | `YEQU_YCR_PROJECTION_PREVIEW_CHARS` | `$ycr_ref` preview 字符数。 |
 | `YEQU_YCR_MAX_RAW_REF_BYTES` | 单个 raw ref 最大写入大小。 |

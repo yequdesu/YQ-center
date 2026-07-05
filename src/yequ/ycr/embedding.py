@@ -46,7 +46,7 @@ async def embed_text_full(
             raise EmbeddingError("YCR embedding endpoint is not configured")
         async with httpx.AsyncClient(
             base_url=settings.ycr_embedding_base_url,
-            timeout=settings.ycr_timeout_sec,
+            timeout=settings.ycr_embedding_timeout_sec,
             headers={"Authorization": f"Bearer {settings.ycr_embedding_api_key}"},
         ) as client:
             try:
@@ -101,7 +101,7 @@ async def rerank_documents(
         raise EmbeddingError("YCR rerank endpoint is not configured")
     async with httpx.AsyncClient(
         base_url=settings.ycr_embedding_base_url,
-        timeout=settings.ycr_timeout_sec,
+        timeout=settings.ycr_rerank_timeout_sec,
         headers={"Authorization": f"Bearer {settings.ycr_embedding_api_key}"},
     ) as client:
         try:

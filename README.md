@@ -112,11 +112,14 @@ mypy src/                # 类型检查
 | `YEQU_REQUIRE_ADMIN_AUTH` | `true` | 强制 token 认证 |
 | `YEQU_YCR_BACKEND` | `http` | YCR 运行形态；当前只支持独立 HTTP 服务 |
 | `YEQU_YCR_BASE_URL` | `http://127.0.0.1:9810` | Center 调用 YCR 的内部地址 |
+| `YEQU_YCR_TIMEOUT_SEC` | `45` | Center 调用 YCR 的 HTTP 超时 |
 | `YEQU_YCR_SERVICE_TOKEN` | — | Center 与 YCR 共用的内部 Bearer token |
 | `YEQU_YCR_EMBEDDING_BASE_URL` | — | OpenAI-compatible embedding endpoint |
 | `YEQU_YCR_EMBEDDING_API_KEY` | — | Embedding API Key |
 | `YEQU_YCR_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding 模型名 |
+| `YEQU_YCR_EMBEDDING_TIMEOUT_SEC` | `60` | YCR 调用 embedding endpoint 的超时 |
 | `YEQU_YCR_RERANK_MODEL` | `BAAI/bge-reranker-base` | Rerank 模型名 |
+| `YEQU_YCR_RERANK_TIMEOUT_SEC` | `90` | YCR 调用 rerank endpoint 的超时 |
 
 ## 本地启动
 

@@ -66,13 +66,14 @@ class Settings(BaseSettings):
     # YeQu Context Router
     ycr_backend: str = "http"
     ycr_base_url: str = "http://127.0.0.1:9810"
-    ycr_timeout_sec: float = 10.0
+    ycr_timeout_sec: float = 45.0
     ycr_fail_closed: bool = True
     ycr_service_token: str = ""
     ycr_embedding_provider: str = "openai_compatible"
     ycr_embedding_model: str = "BAAI/bge-m3"
     ycr_embedding_base_url: str = ""
     ycr_embedding_api_key: str = ""
+    ycr_embedding_timeout_sec: float = 60.0
     ycr_vector_dimensions: int = 1024
     ycr_projection_inline_bytes: int = 12000
     ycr_projection_preview_chars: int = 1200
@@ -83,6 +84,7 @@ class Settings(BaseSettings):
     ycr_max_raw_ref_bytes: int = 100 * 1024 * 1024
     ycr_rerank_model: str = "BAAI/bge-reranker-base"
     ycr_rerank_top_k: int = 20
+    ycr_rerank_timeout_sec: float = 90.0
 
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var
