@@ -82,7 +82,8 @@ async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient,
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
     from yequ.config import get_settings
-    from yequ.ycr.budget import budget_profile_from_settings
+    from yequ.db import async_session_factory
+    from yequ.ycr.budget import projection_profile_from_settings
     from yequ.ycr.context_packet import build_agent_context_packet
 
     provider = FakeAgentProvider("turn-ycr-budget-test")
@@ -108,17 +109,19 @@ async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient,
 
     class FakeYcrClient:
         async def build_turn(self, **payload):
-            return build_agent_context_packet(
-                session_id=str(payload["session_id"]),
-                actor_id=str(payload.get("actor_id") or ""),
-                provider=str(payload["provider"]),
-                model=str(payload.get("model") or ""),
-                messages=list(payload.get("messages") or []),
-                available_functions=list(payload.get("available_functions") or []),
-                capability_context=dict(payload.get("capability_context") or {}),
-                budget=budget_profile_from_settings(get_settings()),
-                step=int(payload.get("step") or 1),
-            )
+            async with async_session_factory() as session:
+                return await build_agent_context_packet(
+                    session,
+                    session_id=str(payload["session_id"]),
+                    actor_id=str(payload.get("actor_id") or ""),
+                    provider=str(payload["provider"]),
+                    model=str(payload.get("model") or ""),
+                    messages=list(payload.get("messages") or []),
+                    available_functions=list(payload.get("available_functions") or []),
+                    capability_context=dict(payload.get("capability_context") or {}),
+                    profile=projection_profile_from_settings(get_settings()),
+                    step=int(payload.get("step") or 1),
+                )
 
     import yequ.agent.agent_stream as agent_stream_module
 

@@ -121,7 +121,7 @@ class CenterExecutionRuntime:
                 node_id=node_id,
             )
         except ValueError as exc:
-            return runtime_error(command, "capability_source_unresolved", str(exc))
+            return runtime_error(command, _capability_invoke_error_code(exc), str(exc))
 
         delegated = RuntimeCommand(
             function_name=target.registered_name,
@@ -758,6 +758,17 @@ def _as_runtime_command(command: RuntimeCommand | ExecuteToolCommand) -> Runtime
     if isinstance(command, RuntimeCommand):
         return command
     return RuntimeCommand.from_execute_tool_command(command)
+
+
+def _capability_invoke_error_code(exc: ValueError) -> str:
+    message = str(exc).lower()
+    if "ambiguous" in message:
+        return "ambiguous_capability_source"
+    if "no active capability source matches" in message:
+        return "capability_source_unavailable"
+    if "capability_ref or source_id is required" in message:
+        return "invalid_input"
+    return "capability_not_found"
 
 
 def _guard_error(

@@ -83,8 +83,14 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
     case "agent.ycr.context":
       return appendYcrContextTrace(state, event, data, createdAt);
 
-    case "agent.ycr.tool_projection":
-      return appendYcrToolProjectionTrace(state, event, data, createdAt);
+    case "agent.tool_observation.stored":
+      return appendYcrToolStorageTrace(state, event, data, createdAt);
+
+    case "agent.ycr.projection":
+      return appendYcrProjectionTrace(state, event, data, createdAt);
+
+    case "agent.ycr.error":
+      return appendYcrErrorTrace(state, event, data, createdAt);
 
     case "agent.output.delta":
       return appendAssistantDelta(state, String(data.content ?? ""), createdAt, event.event_id);
@@ -565,7 +571,49 @@ function appendYcrContextTrace(
   return appendYcrTraceItem(state, item, summary);
 }
 
-function appendYcrToolProjectionTrace(
+function appendYcrToolStorageTrace(
+  state: TranscriptState,
+  event: SseEvent,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const rawTokens = optionalNumber(data.raw_estimated_tokens) ?? 0;
+  const rawRef = asRecord(data.raw_ref);
+  const callId = optionalString(data.call_id);
+  const item: YcrTraceItem = {
+    id: `ycr:${event.event_id}`,
+    kind: "tool_storage",
+    label: "Tool result stored",
+    created_at: createdAt,
+    step: optionalNumber(data.step),
+    toolName: optionalString(data.name),
+    callId,
+    targetNodeId: optionalString(data.target_node_id),
+    projectionPolicy: optionalString(asRecord(data.ycr).projection_policy),
+    summary: optionalString(rawRef.summary),
+    rawEstimatedTokens: rawTokens,
+    rawSizeBytes: optionalNumber(data.raw_size_bytes),
+    projectedSizeBytes: optionalNumber(data.shell_size_bytes),
+    refCount: rawRef.ref_id ? 1 : undefined,
+    data,
+  };
+  const next = callId
+    ? patchToolCall(state, { call_id: callId }, (tool) => ({
+        ...tool,
+        rawRefId: optionalString(rawRef.ref_id) ?? tool.rawRefId,
+        rawSizeBytes: item.rawSizeBytes ?? tool.rawSizeBytes,
+        shellSizeBytes: optionalNumber(data.shell_size_bytes) ?? tool.shellSizeBytes,
+        ycrStorage: data,
+      }))
+    : state;
+  const summary = {
+    ...next.ycrTokenSummary,
+    toolRawEstimatedTokens: next.ycrTokenSummary.toolRawEstimatedTokens + rawTokens,
+  };
+  return appendYcrTraceItem(next, item, summary);
+}
+
+function appendYcrProjectionTrace(
   state: TranscriptState,
   event: SseEvent,
   data: Record<string, unknown>,
@@ -573,14 +621,16 @@ function appendYcrToolProjectionTrace(
 ): TranscriptState {
   const rawTokens = optionalNumber(data.raw_estimated_tokens) ?? 0;
   const projectedTokens = optionalNumber(data.projected_estimated_tokens) ?? 0;
+  const refs = Array.isArray(data.refs) ? data.refs : [];
+  const callId = optionalString(data.call_id);
   const item: YcrTraceItem = {
     id: `ycr:${event.event_id}`,
-    kind: "tool_projection",
-    label: "Tool projection",
+    kind: "provider_projection",
+    label: "Provider projection",
     created_at: createdAt,
     step: optionalNumber(data.step),
     toolName: optionalString(data.name),
-    callId: optionalString(data.call_id),
+    callId,
     targetNodeId: optionalString(data.target_node_id),
     projectionPolicy: optionalString(data.projection_policy),
     summary: optionalString(data.summary),
@@ -588,20 +638,45 @@ function appendYcrToolProjectionTrace(
     projectedEstimatedTokens: projectedTokens,
     rawSizeBytes: optionalNumber(data.raw_size_bytes),
     projectedSizeBytes: optionalNumber(data.projected_size_bytes),
-    refCount: optionalNumber(data.ref_count),
+    refCount: refs.length || optionalNumber(data.ref_count),
     omittedCount: optionalNumber(data.omitted_count),
     data,
   };
+  const next = callId
+    ? patchToolCall(state, { call_id: callId }, (tool) => ({
+        ...tool,
+        projectedEstimatedTokens: projectedTokens || tool.projectedEstimatedTokens,
+        projectedSizeBytes: item.projectedSizeBytes ?? tool.projectedSizeBytes,
+        ycrProjection: data,
+      }))
+    : state;
   const summary = {
-    ...state.ycrTokenSummary,
-    toolRawEstimatedTokens: state.ycrTokenSummary.toolRawEstimatedTokens + rawTokens,
+    ...next.ycrTokenSummary,
     toolProjectedEstimatedTokens:
-      state.ycrTokenSummary.toolProjectedEstimatedTokens + projectedTokens,
+      next.ycrTokenSummary.toolProjectedEstimatedTokens + projectedTokens,
     toolSavedEstimatedTokens:
-      state.ycrTokenSummary.toolSavedEstimatedTokens + Math.max(0, rawTokens - projectedTokens),
-    projectionCount: state.ycrTokenSummary.projectionCount + 1,
+      next.ycrTokenSummary.toolSavedEstimatedTokens + Math.max(0, rawTokens - projectedTokens),
+    projectionCount: next.ycrTokenSummary.projectionCount + 1,
   };
-  return appendYcrTraceItem(state, item, summary);
+  return appendYcrTraceItem(next, item, summary);
+}
+
+function appendYcrErrorTrace(
+  state: TranscriptState,
+  event: SseEvent,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const item: YcrTraceItem = {
+    id: `ycr:${event.event_id}`,
+    kind: "error",
+    label: "YCR error",
+    created_at: createdAt,
+    step: optionalNumber(data.step),
+    summary: optionalString(data.message) ?? optionalString(data.error_code),
+    data,
+  };
+  return appendYcrTraceItem(state, item, state.ycrTokenSummary);
 }
 
 function appendYcrTraceItem(
@@ -678,6 +753,13 @@ function patchToolMessage(blocks: ChatBlock[], message: AgentSessionMessage): vo
       errorMessage: parsed.error ? String(parsed.error) : updated[idx].errorMessage,
       approvalId: parsed.approval_id ? String(parsed.approval_id) : updated[idx].approvalId,
       targetNodeId: optionalString(parsed.target_node_id) ?? updated[idx].targetNodeId,
+      rawRefId:
+        optionalString(asRecord(parsed.ycr).raw_ref) ??
+        optionalString(parsed.raw_ref_id) ??
+        updated[idx].rawRefId,
+      ycrStorage: asRecord(parsed.ycr).raw_ref
+        ? { shell: parsed, raw_ref: { ref_id: asRecord(parsed.ycr).raw_ref } }
+        : updated[idx].ycrStorage,
     };
     blocks[i] = { ...block, tool_calls: updated };
     return;
@@ -696,6 +778,13 @@ function toolCallFromPersisted(item: Record<string, unknown>): ToolCallState {
     result: asRecord(item.result),
     errorCode: item.error_code ? String(item.error_code) : undefined,
     errorMessage: item.error_message ? String(item.error_message) : undefined,
+    ycrStorage: asRecord(item.ycr_storage),
+    ycrProjection: asRecord(item.ycr_projection),
+    rawRefId: optionalString(item.raw_ref_id),
+    rawSizeBytes: optionalNumber(item.raw_size_bytes),
+    shellSizeBytes: optionalNumber(item.shell_size_bytes),
+    projectedSizeBytes: optionalNumber(item.projected_size_bytes),
+    projectedEstimatedTokens: optionalNumber(item.projected_estimated_tokens),
   };
 }
 

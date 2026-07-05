@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,7 +37,6 @@ class YcrContextRef(Base, TimestampMixin):
         mapped_column(JSON, nullable=True)
     )
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class YcrContextChunk(Base, TimestampMixin):
@@ -74,6 +72,7 @@ class YcrContextLedger(Base, TimestampMixin):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     raw_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     projected_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -103,3 +102,23 @@ class YcrCapabilityIndex(Base, TimestampMixin):
     embedding_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sparse_json: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)
+
+
+class YcrCapabilityIndexJob(Base, TimestampMixin):
+    """Background indexing job for one capability search document."""
+
+    __tablename__ = "ycr_capability_index_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    index_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    canonical_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    capability_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    document_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    document_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    index_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -115,15 +115,22 @@ mypy src/                # 类型检查
 | `YEQU_YCR_SERVICE_TOKEN` | — | Center 与 YCR 共用的内部 Bearer token |
 | `YEQU_YCR_EMBEDDING_BASE_URL` | — | OpenAI-compatible embedding endpoint |
 | `YEQU_YCR_EMBEDDING_API_KEY` | — | Embedding API Key |
-| `YEQU_YCR_EMBEDDING_MODEL` | `bge-m3` | Embedding 模型名 |
+| `YEQU_YCR_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding 模型名 |
+| `YEQU_YCR_RERANK_MODEL` | `BAAI/bge-reranker-base` | Rerank 模型名 |
 
 ## 本地启动
 
-YCR 是独立服务，需要和 Center 分两个终端启动，并使用同一个 `.env`。
+YCR 是独立服务，需要和 Center、Embedder 分终端启动，并使用同一个 `.env`。
 
 ```bash
 docker compose up -d postgres
 alembic upgrade head
+./scripts/start-ycr-embedder.sh
+```
+
+另开一个终端：
+
+```bash
 ./scripts/start-ycr.sh
 ```
 

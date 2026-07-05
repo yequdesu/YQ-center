@@ -11,12 +11,31 @@ from yequ.agent.runtime_state import (
     AgentToolObservationCollector,
 )
 from yequ.runtime.agent_status import status_for_stream_event
-from yequ.ycr import project_tool_observation
+from yequ.ycr.projection import tool_observation_shell
 
 
 class FakeYcrClient:
-    async def project_tool_observation(self, **payload):
-        return project_tool_observation(**payload)
+    async def store_tool_observation(self, **payload):
+        raw_ref = {
+            "ref_id": f"ctxref_{payload.get('call_id')}",
+            "ref_type": "tool_result",
+            "source_anchor": {"type": "tool_call", "id": payload.get("call_id")},
+            "path": "$",
+            "trust_level": "node_reported_fact",
+        }
+        return {
+            "raw_ref": raw_ref,
+            "shell": tool_observation_shell(
+                name=str(payload.get("name") or ""),
+                call_id=str(payload.get("call_id") or ""),
+                status=str(payload.get("status") or "succeeded"),
+                raw_ref=raw_ref,
+                target_node_id=payload.get("target_node_id"),
+                error=payload.get("error"),
+                error_code=payload.get("error_code"),
+                error_details=payload.get("error_details"),
+            ),
+        }
 
 
 def test_runtime_rejects_depth_exceeded():
@@ -154,6 +173,8 @@ def test_turn_status_mapping_uses_runtime_state_names():
 async def test_tool_observation_collector_preserves_provider_call_order():
     collector = AgentToolObservationCollector(
         {"call_b": 0, "call_a": 1},
+        session_id="sess_1",
+        actor_id="agent",
         ycr_client=FakeYcrClient(),
     )
 
@@ -182,16 +203,20 @@ async def test_tool_observation_collector_preserves_provider_call_order():
     assert [result["call_id"] for result in ordered] == ["call_b", "call_a"]
     assert ordered[0]["status"] == "failed"
     assert ordered[0]["target_node_id"] == "winClient"
-    assert ordered[0]["ycr"]["projected"] is True
-    assert ordered[0]["result"]["projection_policy"] == "tool_observation_summary_v1"
+    assert ordered[0]["ycr"]["kind"] == "tool_observation_shell"
+    assert ordered[0]["ycr"]["raw_ref"] == "ctxref_call_b"
     assert ordered[1]["status"] == "succeeded"
     assert ordered[1]["target_node_id"] == "linux-node-01"
-    assert ordered[1]["ycr"]["projected"] is True
-    assert ordered[1]["result"]["facts"] == {"ok": True}
+    assert ordered[1]["ycr"]["kind"] == "tool_observation_shell"
 
 
 async def test_tool_observation_collector_projects_large_completed_result():
-    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
+    collector = AgentToolObservationCollector(
+        {"call_1": 0},
+        session_id="sess_1",
+        actor_id="agent",
+        ycr_client=FakeYcrClient(),
+    )
 
     await collector.record_event(
         "agent.tool_call.completed",
@@ -204,15 +229,19 @@ async def test_tool_observation_collector_projects_large_completed_result():
     )
 
     ordered = collector.ordered_results()
-    result = ordered[0]["result"]
-    assert result["truncated"] is True
-    assert result["refs"]
-    assert result["facts"]["stdout"]["chars"] == 5000
+    result = ordered[0]
+    assert result["ycr"]["kind"] == "tool_observation_shell"
+    assert result["ycr"]["raw_ref"] == "ctxref_call_1"
     assert "x" * 2000 not in str(ordered[0])
 
 
 async def test_tool_observation_collector_tracks_waiting_approval():
-    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
+    collector = AgentToolObservationCollector(
+        {"call_1": 0},
+        session_id="sess_1",
+        actor_id="agent",
+        ycr_client=FakeYcrClient(),
+    )
 
     await collector.record_event(
         "agent.tool_call.waiting_approval",
@@ -231,11 +260,16 @@ async def test_tool_observation_collector_tracks_waiting_approval():
     assert result["status"] == "waiting_approval"
     assert result["approval_id"] == "ap_1"
     assert result["target_node_id"] == "winClient"
-    assert result["ycr"]["projected"] is True
+    assert result["ycr"]["kind"] == "tool_observation_shell"
 
 
 async def test_tool_observation_collector_tracks_waiting_operation():
-    collector = AgentToolObservationCollector({"call_1": 0}, ycr_client=FakeYcrClient())
+    collector = AgentToolObservationCollector(
+        {"call_1": 0},
+        session_id="sess_1",
+        actor_id="agent",
+        ycr_client=FakeYcrClient(),
+    )
 
     await collector.record_event(
         "agent.tool_call.waiting_operation",
@@ -256,4 +290,4 @@ async def test_tool_observation_collector_tracks_waiting_operation():
     assert result["operation_id"] == "op_1"
     assert result["wait_handle"] == {"operation_id": "op_1"}
     assert result["target_node_id"] is None
-    assert result["ycr"]["projected"] is True
+    assert result["ycr"]["kind"] == "tool_observation_shell"

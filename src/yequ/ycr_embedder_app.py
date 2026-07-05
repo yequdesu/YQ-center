@@ -9,20 +9,39 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="YeQu Local Embedder", version="1.0.0")
-
 _model: Any | None = None
+_reranker: Any | None = None
 _model_lock = asyncio.Lock()
+_reranker_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    await _load_model()
+    await _load_reranker()
+    yield
+
+
+app = FastAPI(title="YeQu Local Embedder", version="2.0.0", lifespan=lifespan)
 
 
 class EmbeddingRequest(BaseModel):
     model: str = Field(default="BAAI/bge-m3")
     input: str | list[str]
+
+
+class RerankRequest(BaseModel):
+    model: str = Field(default="BAAI/bge-reranker-base")
+    query: str
+    documents: list[str] = Field(default_factory=list)
+    top_n: int = Field(default=10, ge=1, le=100)
 
 
 def _require_embedder_auth(authorization: str | None) -> None:
@@ -39,6 +58,7 @@ async def healthz() -> dict[str, object]:
         "status": "ok",
         "component": "ycr-embedder",
         "model": os.getenv("YEQU_EMBEDDER_MODEL", "BAAI/bge-m3"),
+        "rerank_model": os.getenv("YEQU_YCR_RERANK_MODEL", "BAAI/bge-reranker-base"),
         "device": os.getenv("YEQU_EMBEDDER_DEVICE", "cpu"),
     }
 
@@ -69,6 +89,29 @@ async def embeddings(
     }
 
 
+@app.post("/v1/rerank")
+async def rerank(
+    body: RerankRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_embedder_auth(authorization)
+    if not body.query.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="query is required")
+    if not body.documents:
+        return {"object": "list", "model": body.model, "results": []}
+    reranker = await _load_reranker()
+    scores = await asyncio.to_thread(_rerank_scores, reranker, body.query, body.documents)
+    ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)[: body.top_n]
+    return {
+        "object": "list",
+        "model": body.model,
+        "results": [
+            {"index": index, "relevance_score": float(score)}
+            for index, score in ranked
+        ],
+    }
+
+
 async def _load_model() -> Any:
     global _model
     if _model is not None:
@@ -95,6 +138,26 @@ async def _load_model() -> Any:
         return _model
 
 
+async def _load_reranker() -> Any:
+    global _reranker
+    if _reranker is not None:
+        return _reranker
+    async with _reranker_lock:
+        if _reranker is not None:
+            return _reranker
+        try:
+            from FlagEmbedding import FlagReranker
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="FlagEmbedding is not installed. Install the embedder dependencies.",
+            ) from exc
+        model_name = os.getenv("YEQU_YCR_RERANK_MODEL", "BAAI/bge-reranker-base")
+        use_fp16 = os.getenv("YEQU_EMBEDDER_USE_FP16", "false").lower() in {"1", "true", "yes"}
+        _reranker = await asyncio.to_thread(FlagReranker, model_name, use_fp16=use_fp16)
+        return _reranker
+
+
 def _encode(model: Any, inputs: list[str]) -> list[dict[str, object]]:
     output = model.encode(
         inputs,
@@ -113,3 +176,11 @@ def _encode(model: Any, inputs: list[str]) -> list[dict[str, object]]:
         }
         for dense, sparse in zip(dense_vectors, sparse_vectors, strict=True)
     ]
+
+
+def _rerank_scores(reranker: Any, query: str, documents: list[str]) -> list[float]:
+    pairs = [[query, document] for document in documents]
+    scores = reranker.compute_score(pairs, normalize=True)
+    if isinstance(scores, float):
+        return [scores]
+    return [float(score) for score in scores]

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from typing import Any
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.config import get_settings
 from yequ.models.ycr import YcrCapabilityIndex
 from yequ.services.capability_registry import capability_describe, capability_search
-from yequ.ycr.embedding import EmbeddingError, embed_text_full
+from yequ.ycr.embedding import EmbeddingError, embed_text_full, rerank_documents
 from yequ.ycr.retrieval import TOKEN_RE, cosine_similarity
 
 TOOL_RAG_CANDIDATE_LIMIT = 500
@@ -21,7 +21,6 @@ RETRIEVAL_TOP_K = 50
 RRF_K = 60
 RRF_RELATIVE_SCORE_FLOOR = 0.70
 DENSE_ONLY_MIN_SCORE = 0.50
-MAX_INDEX_BUILDS_PER_SEARCH = 12
 
 
 async def search_capability_registry(
@@ -57,6 +56,10 @@ async def search_capability_registry(
             query=query.strip(),
             filters=common_filters,
             limit=limit,
+        )
+    if not _has_structured_filter(common_filters):
+        raise ValueError(
+            "invalid_capability_search_request: capability.search requires query or filter"
         )
     capabilities = await capability_search(
         db,
@@ -145,9 +148,10 @@ async def _search_capability_rag(
             },
         }
 
+    indexed = await _load_ready_capability_indexes(db, index_candidates)
+    if not indexed:
+        raise ValueError("capability_index_not_ready: matching capability index is not ready")
     try:
-        index_result = await _ensure_capability_indexes(db, index_candidates)
-        indexed = index_result.indexed
         query_embedding = await embed_text_full(query)
     except EmbeddingError as exc:
         raise ValueError(f"capability_rag_unavailable: {exc}") from exc
@@ -164,11 +168,9 @@ async def _search_capability_rag(
             [float(value) for value in index.embedding_json],
         )
         sparse_score = _sparse_dot(query_embedding.sparse, index.sparse_json or {})
-        field_matches = _field_evidence(query, index.document_json or {})
         trace_by_name[index.canonical_name] = {
             "dense_score": dense_score,
             "sparse_score": sparse_score,
-            "field_matches": field_matches,
             "index": index,
         }
         dense_rows.append((index.canonical_name, dense_score))
@@ -180,12 +182,34 @@ async def _search_capability_rag(
         top_k=RETRIEVAL_TOP_K,
     )
 
-    matches: list[dict[str, object]] = []
-    for name, rrf_score, ranks in ranked_names[: _bounded_limit(limit)]:
+    coarse_rows = ranked_names[: max(_bounded_limit(limit), get_settings().ycr_rerank_top_k)]
+    rerank_documents_text: list[str] = []
+    coarse_payloads: list[
+        tuple[str, float, dict[str, int], YcrCapabilityIndex, dict[str, Any]]
+    ] = []
+    for name, rrf_score, ranks in coarse_rows:
         trace = trace_by_name.get(name)
         if trace is None:
             continue
         index = trace["index"]
+        coarse_payloads.append((name, rrf_score, ranks, index, trace))
+        rerank_documents_text.append(index.index_text)
+
+    try:
+        reranked = await rerank_documents(
+            query,
+            rerank_documents_text,
+            top_n=_bounded_limit(limit),
+        )
+    except EmbeddingError as exc:
+        raise ValueError(f"capability_rerank_unavailable: {exc}") from exc
+
+    matches: list[dict[str, object]] = []
+    for rerank_item in reranked:
+        try:
+            name, rrf_score, ranks, index, trace = coarse_payloads[rerank_item.index]
+        except IndexError:
+            continue
         candidate = return_by_name.get(name)
         if candidate is None:
             candidate = next(
@@ -194,13 +218,13 @@ async def _search_capability_rag(
         output = dict(candidate)
         output["retrieval"] = {
             "strategy": "tool_rag_bge_m3_rrf_v1",
-            "score": rrf_score,
+            "score": rerank_item.score,
             "rrf_score": rrf_score,
+            "rerank_score": rerank_item.score,
             "dense_rank": ranks.get("dense_rank"),
             "dense_score": trace["dense_score"],
             "sparse_rank": ranks.get("sparse_rank"),
             "sparse_score": trace["sparse_score"],
-            "field_matches": trace["field_matches"],
             "index_id": index.index_id,
             "document_hash": index.document_hash,
         }
@@ -217,12 +241,7 @@ async def _search_capability_rag(
             "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
             "requested_projection": requested_projection,
             "indexed_count": len(indexed),
-            "index_build": {
-                "built_count": index_result.built_count,
-                "stale_or_missing_count": index_result.stale_or_missing_count,
-                "skipped_locked_count": index_result.skipped_locked_count,
-                "deferred_count": index_result.deferred_count,
-            },
+            "reranked_count": len(reranked),
             "semantic": {
                 "enabled": True,
                 "provider": query_embedding.provider,
@@ -279,31 +298,10 @@ def _apply_relative_score_floor(rows: list[tuple[str, float]]) -> list[tuple[str
     return [row for row in rows if row[1] >= floor]
 
 
-class CapabilityIndexBuildResult:
-    def __init__(
-        self,
-        *,
-        indexed: list[YcrCapabilityIndex],
-        built_count: int,
-        stale_or_missing_count: int,
-        skipped_locked_count: int,
-        deferred_count: int,
-    ) -> None:
-        self.indexed = indexed
-        self.built_count = built_count
-        self.stale_or_missing_count = stale_or_missing_count
-        self.skipped_locked_count = skipped_locked_count
-        self.deferred_count = deferred_count
-
-
-async def _ensure_capability_indexes(
+async def _load_ready_capability_indexes(
     db: AsyncSession,
     candidates: list[dict[str, object]],
-) -> CapabilityIndexBuildResult:
-    indexed: list[YcrCapabilityIndex] = []
-    build_count = 0
-    skipped_locked_count = 0
-    deferred_count = 0
+) -> list[YcrCapabilityIndex]:
     candidate_docs = []
     for candidate in candidates:
         document = _capability_index_document(candidate)
@@ -322,8 +320,8 @@ async def _ensure_capability_indexes(
         db,
         [item[1] for item in candidate_docs],
     )
-    stale_or_missing_count = 0
-    for candidate, index_id, document, index_text, document_hash in candidate_docs:
+    indexed: list[YcrCapabilityIndex] = []
+    for _candidate, index_id, _document, _index_text, document_hash in candidate_docs:
         record = records_by_index_id.get(index_id)
         if (
             record is not None
@@ -333,48 +331,7 @@ async def _ensure_capability_indexes(
             and record.sparse_json
         ):
             indexed.append(record)
-            continue
-        stale_or_missing_count += 1
-        if build_count >= MAX_INDEX_BUILDS_PER_SEARCH:
-            deferred_count += 1
-            continue
-        if not await _try_capability_index_lock(db, index_id):
-            skipped_locked_count += 1
-            continue
-        embedding = await embed_text_full(index_text)
-        if record is None:
-            record = YcrCapabilityIndex(index_id=index_id)
-            db.add(record)
-        record.capability_id = str(candidate.get("capability_id") or "")
-        record.canonical_name = str(candidate.get("canonical_name") or "")
-        record.capability_type = str(candidate.get("capability_type") or "function")
-        record.index_version = CAPABILITY_INDEX_VERSION
-        record.document_hash = document_hash
-        record.document_json = document
-        record.index_text = index_text
-        record.embedding_json = embedding.dense
-        record.embedding_provider = embedding.provider
-        record.embedding_model = embedding.model
-        record.sparse_json = embedding.sparse
-        await db.flush()
-        if db.bind and db.bind.dialect.name == "postgresql":
-            await db.execute(
-                text(
-                    "UPDATE ycr_capability_index "
-                    "SET embedding_vector = CAST(:embedding AS vector) "
-                    "WHERE index_id = :index_id"
-                ),
-                {"embedding": _vector_literal(embedding.dense), "index_id": index_id},
-            )
-        indexed.append(record)
-        build_count += 1
-    return CapabilityIndexBuildResult(
-        indexed=indexed,
-        built_count=build_count,
-        stale_or_missing_count=stale_or_missing_count,
-        skipped_locked_count=skipped_locked_count,
-        deferred_count=deferred_count,
-    )
+    return indexed
 
 
 async def _load_capability_index_records(
@@ -390,16 +347,6 @@ async def _load_capability_index_records(
         {"index_ids": index_ids},
     )
     return {record.index_id: record for record in result.scalars().all()}
-
-
-async def _try_capability_index_lock(db: AsyncSession, index_id: str) -> bool:
-    if not db.bind or db.bind.dialect.name != "postgresql":
-        return True
-    result = await db.execute(
-        text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"ycr_capability_index:{index_id}"},
-    )
-    return bool(result.scalar_one())
 
 
 def _capability_index_document(candidate: dict[str, object]) -> dict[str, Any]:
@@ -490,46 +437,12 @@ def _index_id(candidate: dict[str, object]) -> str:
     return f"capidx_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
 
 
-def _field_evidence(query: str, document: dict[str, Any]) -> list[str]:
-    query_terms = _query_terms(query)
-    if not query_terms:
-        return []
-    fields = [
-        "identity",
-        "intent_text",
-        "schema_text",
-        "examples_text",
-        "constraints_text",
-    ]
-    matches: list[str] = []
-    for term in query_terms:
-        for field in fields:
-            tokens = _field_tokens(document.get(field))
-            if term in tokens:
-                matches.append(f"{field}:{term}")
-                break
-    return matches[:8]
-
-
 def _query_terms(query: str) -> list[str]:
     return [
         token
         for token in TOKEN_RE.findall(query.lower())
         if len(token) > 1 and not token.isdigit()
     ]
-
-
-def _field_tokens(value: object) -> set[str]:
-    text_value = _stringify_for_lexical(value).lower()
-    raw_tokens = TOKEN_RE.findall(text_value)
-    tokens: set[str] = set()
-    for token in raw_tokens:
-        if len(token) > 1:
-            tokens.add(token)
-        for part in re.split(r"[_\-.\\/]+", token):
-            if len(part) > 1:
-                tokens.add(part)
-    return tokens
 
 
 def _stringify_for_lexical(value: object) -> str:
@@ -578,3 +491,17 @@ def _vector_literal(values: list[float]) -> str:
 
 def _bounded_limit(value: int) -> int:
     return max(1, min(int(value), 50))
+
+
+def _has_structured_filter(filters: dict[str, object]) -> bool:
+    ignored = {"projection", "capability_type", "include_inactive"}
+    for key, value in filters.items():
+        if key in ignored:
+            continue
+        if isinstance(value, list) and value:
+            return True
+        if isinstance(value, bool):
+            return True
+        if value not in (None, "", [], {}):
+            return True
+    return False

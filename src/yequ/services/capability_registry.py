@@ -108,6 +108,7 @@ async def sync_capability_runtime_snapshot(
             touched_definition_ids.add(source.definition_id)
 
     await _refresh_definition_statuses(db, touched_definition_ids)
+    await _enqueue_touched_capability_indexes(db, touched_definition_ids)
 
 
 async def node_list(db: AsyncSession) -> list[JsonObject]:
@@ -744,6 +745,26 @@ async def _refresh_definition_statuses(
         definition = await db.get(CapabilityDefinition, definition_id)
         if definition is not None:
             definition.status = "active" if has_active_source else "inactive"
+
+
+async def _enqueue_touched_capability_indexes(
+    db: AsyncSession,
+    definition_ids: set[str],
+) -> None:
+    if not definition_ids:
+        return
+    result = await db.execute(
+        select(CapabilityDefinition.capability_id).where(
+            CapabilityDefinition.id.in_(definition_ids),
+            CapabilityDefinition.capability_type == "function",
+        )
+    )
+    capability_ids = {str(item) for item in result.scalars().all()}
+    if not capability_ids:
+        return
+    from yequ.ycr.capability_index_jobs import enqueue_capability_index_jobs
+
+    await enqueue_capability_index_jobs(db, capability_ids=capability_ids)
 
 
 def _definition_search_summary(

@@ -10,8 +10,15 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.api.agent_schemas import AgentContextRef
+from yequ.config import get_settings
 from yequ.shared_types import JsonObject
-from yequ.ycr.client import get_ycr_client
+from yequ.ycr.budget import projection_profile_from_settings
+from yequ.ycr.projection import (
+    agent_run_resume_prompt,
+    operation_resume_prompt,
+    project_context_blocks,
+    prompt_with_projected_context,
+)
 
 
 async def _with_context_block_events(
@@ -35,7 +42,7 @@ async def _with_context_block_events(
             "data": {
                 "context_blocks": [
                     _context_block_summary(block)
-                    for block in await get_ycr_client().project_context_blocks(context_blocks)
+                    for block in project_context_blocks(context_blocks, profile=_ycr_profile())
                 ],
             },
         }
@@ -114,7 +121,7 @@ async def _prompt_with_context_refs(
     prompt: str,
     context_blocks: list[dict[str, object]],
 ) -> str:
-    return await get_ycr_client().prompt_with_context(prompt, context_blocks)
+    return prompt_with_projected_context(prompt, context_blocks, profile=_ycr_profile())
 
 
 
@@ -184,9 +191,10 @@ async def _agent_run_resume_prompt(
     *,
     operation_observation: dict[str, object] | None,
 ) -> str:
-    return await get_ycr_client().agent_run_resume_prompt(
+    return agent_run_resume_prompt(
         run_projection,
         operation_observation=operation_observation,
+        profile=_ycr_profile(),
     )
 
 
@@ -196,7 +204,12 @@ async def _operation_resume_prompt(
     *,
     user_message: str = "",
 ) -> str:
-    return await get_ycr_client().operation_resume_prompt(
+    return operation_resume_prompt(
         operation_observation,
         user_message=user_message,
+        profile=_ycr_profile(),
     )
+
+
+def _ycr_profile():
+    return projection_profile_from_settings(get_settings())

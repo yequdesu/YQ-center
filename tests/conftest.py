@@ -104,72 +104,53 @@ def override_settings(monkeypatch, db_engine):
             return {"status": "ready", "mode": "test"}
 
         async def build_turn(self, **payload):
-            from yequ.ycr.budget import budget_profile_from_settings
+            from yequ.ycr.budget import projection_profile_from_settings
             from yequ.ycr.context_packet import build_agent_context_packet
 
-            return build_agent_context_packet(
-                session_id=str(payload["session_id"]),
-                actor_id=str(payload.get("actor_id") or ""),
-                provider=str(payload["provider"]),
-                model=str(payload.get("model") or ""),
-                messages=list(payload.get("messages") or []),
-                available_functions=list(payload.get("available_functions") or []),
-                capability_context=dict(payload.get("capability_context") or {}),
-                budget=budget_profile_from_settings(test_settings),
-                step=int(payload.get("step") or 1),
-            )
+            async with yequ.db.async_session_factory() as session:
+                return await build_agent_context_packet(
+                    session,
+                    session_id=str(payload["session_id"]),
+                    actor_id=str(payload.get("actor_id") or ""),
+                    provider=str(payload["provider"]),
+                    model=str(payload.get("model") or ""),
+                    messages=list(payload.get("messages") or []),
+                    available_functions=list(payload.get("available_functions") or []),
+                    capability_context=dict(payload.get("capability_context") or {}),
+                    profile=projection_profile_from_settings(test_settings),
+                    step=int(payload.get("step") or 1),
+                )
 
-        async def project_tool_observation(self, **payload):
-            from yequ.ycr import projection
-            from yequ.ycr.budget import budget_profile_from_settings
+        async def store_tool_observation(self, **payload):
+            from yequ.ycr.projection import tool_observation_shell
+            from yequ.ycr.ref_store import upsert_ref
 
-            return projection.project_tool_observation(
-                name=str(payload.get("name") or ""),
-                call_id=str(payload.get("call_id") or ""),
-                status=str(payload.get("status") or "succeeded"),
-                result=payload.get("result"),
-                target_node_id=payload.get("target_node_id"),
-                budget=budget_profile_from_settings(test_settings),
-            )
-
-        async def project_context_blocks(self, blocks):
-            from yequ.ycr import projection
-            from yequ.ycr.budget import budget_profile_from_settings
-
-            return projection.project_context_blocks(
-                blocks,
-                budget=budget_profile_from_settings(test_settings),
-            )
-
-        async def prompt_with_context(self, prompt, context_blocks):
-            from yequ.ycr import projection
-            from yequ.ycr.budget import budget_profile_from_settings
-
-            return projection.prompt_with_projected_context(
-                prompt,
-                context_blocks,
-                budget=budget_profile_from_settings(test_settings),
-            )
-
-        async def operation_resume_prompt(self, observation, *, user_message=""):
-            from yequ.ycr import projection
-            from yequ.ycr.budget import budget_profile_from_settings
-
-            return projection.operation_resume_prompt(
-                observation,
-                user_message=user_message,
-                budget=budget_profile_from_settings(test_settings),
-            )
-
-        async def agent_run_resume_prompt(self, run_projection, *, operation_observation):
-            from yequ.ycr import projection
-            from yequ.ycr.budget import budget_profile_from_settings
-
-            return projection.agent_run_resume_prompt(
-                run_projection,
-                operation_observation=operation_observation,
-                budget=budget_profile_from_settings(test_settings),
-            )
+            async with yequ.db.async_session_factory() as session:
+                raw_ref = await upsert_ref(
+                    session,
+                    ref_type="tool_result",
+                    source_type="tool_call",
+                    source_id=str(payload.get("call_id") or ""),
+                    path="$",
+                    value=payload.get("result"),
+                    summary=f"{payload.get('name')} {payload.get('status')}",
+                    actor_id=str(payload.get("actor_id") or "") or None,
+                    session_id=str(payload.get("session_id") or "") or None,
+                    trust_level="node_reported_fact",
+                    projection_policy="tool_observation_raw_ref_v1",
+                )
+                shell = tool_observation_shell(
+                    name=str(payload.get("name") or ""),
+                    call_id=str(payload.get("call_id") or ""),
+                    status=str(payload.get("status") or "succeeded"),
+                    raw_ref=raw_ref,
+                    target_node_id=payload.get("target_node_id"),
+                    error=payload.get("error"),
+                    error_code=payload.get("error_code"),
+                    error_details=payload.get("error_details"),
+                )
+                await session.commit()
+                return {"raw_ref": raw_ref, "shell": shell}
 
         async def tool_search(
             self,
@@ -235,17 +216,17 @@ def override_settings(monkeypatch, db_engine):
             async with yequ.db.async_session_factory() as session:
                 return await schema_ref(session, ref_id, path=path)
 
-        async def search(self, ref_id, *, query, limit=10):
-            from yequ.ycr.ref_store import search_ref
+        async def search(self, ref_id=None, *, query, limit=10, session_id=None):
+            from yequ.ycr.ref_store import search_context
 
             async with yequ.db.async_session_factory() as session:
-                return await search_ref(session, ref_id, query=query, limit=limit)
-
-        async def rehydrate(self, ref_id):
-            from yequ.ycr.ref_store import rehydrate_ref
-
-            async with yequ.db.async_session_factory() as session:
-                return await rehydrate_ref(session, ref_id)
+                return await search_context(
+                    session,
+                    ref_id=ref_id,
+                    session_id=session_id,
+                    query=query,
+                    limit=limit,
+                )
 
     fake_ycr_client = TestYcrClient()
     import yequ.ycr.client

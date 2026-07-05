@@ -36,39 +36,19 @@ class YcrClient(Protocol):
 
     async def schema(self, ref_id: str, *, path: str = "$") -> dict[str, object]: ...
 
-    async def search(self, ref_id: str, *, query: str, limit: int = 10) -> dict[str, object]:
+    async def search(
+        self,
+        ref_id: str | None = None,
+        *,
+        query: str,
+        limit: int = 10,
+        session_id: str | None = None,
+    ) -> dict[str, object]:
         ...
-
-    async def rehydrate(self, ref_id: str) -> dict[str, object]: ...
 
     async def build_turn(self, **payload: object) -> dict[str, object]: ...
 
-    async def project_tool_observation(self, **payload: object) -> dict[str, object]: ...
-
-    async def prompt_with_context(
-        self,
-        prompt: str,
-        context_blocks: list[dict[str, object]],
-    ) -> str: ...
-
-    async def project_context_blocks(
-        self,
-        blocks: list[dict[str, object]],
-    ) -> list[dict[str, object]]: ...
-
-    async def operation_resume_prompt(
-        self,
-        observation: dict[str, object],
-        *,
-        user_message: str = "",
-    ) -> str: ...
-
-    async def agent_run_resume_prompt(
-        self,
-        run_projection: dict[str, object],
-        *,
-        operation_observation: dict[str, object] | None,
-    ) -> str: ...
+    async def store_tool_observation(self, **payload: object) -> dict[str, object]: ...
 
     async def tool_search(
         self,
@@ -155,77 +135,24 @@ class HttpYcrClient:
     async def schema(self, ref_id: str, *, path: str = "$") -> dict[str, object]:
         return await self._post("/v1/context/schema", {"ref_id": ref_id, "path": path})
 
-    async def search(self, ref_id: str, *, query: str, limit: int = 10) -> dict[str, object]:
+    async def search(
+        self,
+        ref_id: str | None = None,
+        *,
+        query: str,
+        limit: int = 10,
+        session_id: str | None = None,
+    ) -> dict[str, object]:
         return await self._post(
             "/v1/context/search",
-            {"ref_id": ref_id, "query": query, "limit": limit},
+            {"ref_id": ref_id, "session_id": session_id, "query": query, "limit": limit},
         )
-
-    async def rehydrate(self, ref_id: str) -> dict[str, object]:
-        return await self._post("/v1/context/rehydrate", {"ref_id": ref_id})
 
     async def build_turn(self, **payload: object) -> dict[str, object]:
         return await self._post("/v1/context/build-turn", dict(payload))
 
-    async def project_tool_observation(self, **payload: object) -> dict[str, object]:
-        return await self._post("/v1/project/tool-observation", dict(payload))
-
-    async def prompt_with_context(
-        self,
-        prompt: str,
-        context_blocks: list[dict[str, object]],
-    ) -> str:
-        data = await self._post(
-            "/v1/project/prompt-with-context",
-            {"prompt": prompt, "context_blocks": context_blocks},
-        )
-        projected = data.get("prompt")
-        if not isinstance(projected, str):
-            raise YcrError("context_router_invalid_response", "YCR projected prompt is invalid")
-        return projected
-
-    async def project_context_blocks(
-        self,
-        blocks: list[dict[str, object]],
-    ) -> list[dict[str, object]]:
-        data = await self._post("/v1/project/context-blocks", {"blocks": blocks})
-        projected = data.get("blocks")
-        if not isinstance(projected, list):
-            raise YcrError("context_router_invalid_response", "YCR projected blocks are invalid")
-        return [item for item in projected if isinstance(item, dict)]
-
-    async def operation_resume_prompt(
-        self,
-        observation: dict[str, object],
-        *,
-        user_message: str = "",
-    ) -> str:
-        data = await self._post(
-            "/v1/project/operation-resume-prompt",
-            {"observation": observation, "user_message": user_message},
-        )
-        prompt = data.get("prompt")
-        if not isinstance(prompt, str):
-            raise YcrError("context_router_invalid_response", "YCR resume prompt is invalid")
-        return prompt
-
-    async def agent_run_resume_prompt(
-        self,
-        run_projection: dict[str, object],
-        *,
-        operation_observation: dict[str, object] | None,
-    ) -> str:
-        data = await self._post(
-            "/v1/project/agent-run-resume-prompt",
-            {
-                "run_projection": run_projection,
-                "operation_observation": operation_observation,
-            },
-        )
-        prompt = data.get("prompt")
-        if not isinstance(prompt, str):
-            raise YcrError("context_router_invalid_response", "YCR resume prompt is invalid")
-        return prompt
+    async def store_tool_observation(self, **payload: object) -> dict[str, object]:
+        return await self._post("/v1/tool-observations", dict(payload))
 
     async def tool_search(
         self,

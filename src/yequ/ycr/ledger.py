@@ -16,6 +16,7 @@ async def write_ledger(
     event_type: str,
     source_type: str,
     source_id: str,
+    session_id: str | None = None,
     ref_id: str | None = None,
     raw_value: object | None = None,
     projected_value: object | None = None,
@@ -30,6 +31,7 @@ async def write_ledger(
             event_type=event_type,
             source_type=source_type,
             source_id=source_id,
+            session_id=session_id,
             ref_id=ref_id,
             raw_size_bytes=_json_size(raw_value) if raw_value is not None else None,
             projected_size_bytes=(

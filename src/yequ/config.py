@@ -74,8 +74,15 @@ class Settings(BaseSettings):
     ycr_embedding_base_url: str = ""
     ycr_embedding_api_key: str = ""
     ycr_vector_dimensions: int = 1024
-    ycr_default_input_token_budget: int = 24000
-    ycr_reserved_response_tokens: int = 4000
+    ycr_projection_inline_bytes: int = 12000
+    ycr_projection_preview_chars: int = 1200
+    ycr_tool_result_inline_bytes: int = 12000
+    ycr_tool_result_preview_chars: int = 1200
+    ycr_context_block_inline_bytes: int = 16000
+    ycr_context_block_preview_chars: int = 1600
+    ycr_max_raw_ref_bytes: int = 100 * 1024 * 1024
+    ycr_rerank_model: str = "BAAI/bge-reranker-base"
+    ycr_rerank_top_k: int = 20
 
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var

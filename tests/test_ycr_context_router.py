@@ -4,25 +4,43 @@ import pytest
 
 from yequ.api.agent_tool_catalog import _center_meta_functions
 from yequ.services.result_ingestion import guard_job_output
-from yequ.ycr import project_tool_observation
-from yequ.ycr.budget import budget_profile_from_settings
+from yequ.ycr.budget import projection_profile_from_settings
 from yequ.ycr.context_packet import build_agent_context_packet
-from yequ.ycr.ref_store import expand_ref, inspect_ref, search_ref, tail_ref, upsert_ref
+from yequ.ycr.projection import project_tool_observation_from_ref, tool_observation_shell
+from yequ.ycr.ref_store import (
+    expand_ref,
+    index_ref_chunks,
+    inspect_ref,
+    search_ref,
+    tail_ref,
+    upsert_ref,
+)
 
 
-def test_ycr_tool_projection_refs_large_stdout() -> None:
-    projected = project_tool_observation(
+async def test_ycr_tool_projection_refs_large_stdout(db_session) -> None:
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_1",
+        path="$",
+        value={"stdout": "x" * 20000, "status": "ok"},
+        summary="linux.logs.tail succeeded",
+        session_id="sess_1",
+    )
+    projected = project_tool_observation_from_ref(
         name="linux.logs.tail",
         call_id="call_1",
         status="succeeded",
-        result={"stdout": "x" * 5000, "status": "ok"},
+        result={"stdout": "x" * 20000, "status": "ok"},
+        raw_ref=raw_ref,
         target_node_id="linux-node-01",
     )
 
     result = projected["result"]
-    assert result["truncated"] is True
     assert result["refs"]
-    assert result["facts"]["stdout"]["chars"] == 5000
+    assert result["facts"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["facts"]["path"] == "$"
 
 
 async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
@@ -37,6 +55,8 @@ async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
     )
     await db_session.commit()
     ref_id = str(ref["ref_id"])
+    await index_ref_chunks(db_session, ref_id)
+    await db_session.commit()
 
     inspected = await inspect_ref(db_session, ref_id)
     expanded = await expand_ref(db_session, ref_id)
@@ -62,9 +82,13 @@ def test_center_meta_functions_include_ycr_context_tools() -> None:
     assert "context.status" in names
 
 
-def test_ycr_build_turn_rejects_unprojected_tool_message(override_settings) -> None:
+async def test_ycr_build_turn_rejects_unprojected_tool_message(
+    db_session,
+    override_settings,
+) -> None:
     with pytest.raises(ValueError, match="unprojected_tool_observation"):
-        build_agent_context_packet(
+        await build_agent_context_packet(
+            db_session,
             session_id="sess_1",
             actor_id="agent",
             provider="test",
@@ -78,19 +102,31 @@ def test_ycr_build_turn_rejects_unprojected_tool_message(override_settings) -> N
             ],
             available_functions=[],
             capability_context={},
-            budget=budget_profile_from_settings(override_settings),
+            profile=projection_profile_from_settings(override_settings),
             step=1,
         )
 
 
-def test_ycr_build_turn_returns_provider_packet(override_settings) -> None:
-    projected = project_tool_observation(
+async def test_ycr_build_turn_returns_provider_packet(db_session, override_settings) -> None:
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_1",
+        path="$",
+        value={"node_id": "node-1", "status": "online"},
+        summary="node.status succeeded",
+        session_id="sess_1",
+    )
+    await db_session.commit()
+    shell = tool_observation_shell(
         name="node.status",
         call_id="call_1",
         status="succeeded",
-        result={"node_id": "node-1", "status": "online"},
+        raw_ref=raw_ref,
     )
-    packet = build_agent_context_packet(
+    packet = await build_agent_context_packet(
+        db_session,
         session_id="sess_1",
         actor_id="agent",
         provider="test",
@@ -100,18 +136,18 @@ def test_ycr_build_turn_returns_provider_packet(override_settings) -> None:
             {
                 "role": "tool",
                 "tool_call_id": "call_1",
-                "content": json.dumps(projected),
+                "content": json.dumps(shell),
             },
         ],
         available_functions=[{"name": "node.status", "input_schema": {}}],
         capability_context={"nodes": []},
-        budget=budget_profile_from_settings(override_settings),
+        profile=projection_profile_from_settings(override_settings),
         step=1,
     )
 
     assert packet["packet_id"].startswith("ctxpkt_")
-    assert packet["ycr"]["projection_policy"] == "agent_context_packet_v1"
-    assert packet["budget"]["estimated_input_tokens"] > 0
+    assert packet["ycr"]["projection_policy"] == "agent_context_packet_v2"
+    assert packet["context_estimate"]["estimated_input_tokens"] > 0
 
 
 def test_result_ingestion_preserves_small_output() -> None:
@@ -140,6 +176,8 @@ async def test_ycr_persistent_ref_store_searches_chunks(db_session) -> None:
         value="alpha\nbeta failure\nomega",
         summary="Persisted stdout",
     )
+    await db_session.commit()
+    await index_ref_chunks(db_session, str(ref["ref_id"]))
     await db_session.commit()
 
     expanded = await expand_ref(db_session, str(ref["ref_id"]))
@@ -174,6 +212,9 @@ async def test_ycr_http_service_refs_and_search() -> None:
         assert created.status_code == 200
         ref_id = created.json()["ref_id"]
 
+        indexed = await client.post("/v1/context/index", json={"ref_id": ref_id})
+        assert indexed.status_code == 200
+
         searched = await client.post(
             "/v1/context/search",
             json={"ref_id": ref_id, "query": "failure", "limit": 3},
@@ -182,15 +223,15 @@ async def test_ycr_http_service_refs_and_search() -> None:
         assert searched.json()["matches"]
 
 
-async def test_ycr_http_tool_projection_materializes_refs() -> None:
+async def test_ycr_http_tool_observation_stores_raw_ref_shell() -> None:
     from httpx import ASGITransport, AsyncClient
 
     from yequ.ycr_app import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://ycr-test") as client:
-        projected = await client.post(
-            "/v1/project/tool-observation",
+        stored = await client.post(
+            "/v1/tool-observations",
             json={
                 "name": "capability.search",
                 "call_id": "call_projection_ref",
@@ -200,13 +241,14 @@ async def test_ycr_http_tool_projection_materializes_refs() -> None:
                 },
             },
         )
-        assert projected.status_code == 200
-        refs = projected.json()["result"]["refs"]
-        assert refs
+        assert stored.status_code == 200
+        raw_ref = stored.json()["raw_ref"]
+        shell = stored.json()["shell"]
+        assert shell["ycr"]["kind"] == "tool_observation_shell"
 
         expanded = await client.post(
             "/v1/context/expand",
-            json={"ref_id": refs[0]["ref_id"], "path": "$", "limit": 20},
+            json={"ref_id": raw_ref["ref_id"], "path": "$.capabilities", "limit": 20},
         )
         assert expanded.status_code == 200
         assert expanded.json()["value"][0]["canonical_name"] == "tool.0"

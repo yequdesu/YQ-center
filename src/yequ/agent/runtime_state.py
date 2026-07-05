@@ -245,12 +245,18 @@ class AgentToolObservationCollector:
         self,
         provider_call_order: dict[str, int],
         *,
+        session_id: str,
+        actor_id: str | None,
         ycr_client: YcrClient | None = None,
     ) -> None:
         self._provider_call_order = dict(provider_call_order)
+        self._session_id = session_id
+        self._actor_id = actor_id
         self._ycr_client = ycr_client or get_ycr_client()
         self._results: list[dict[str, object]] = []
         self._latest_result: dict[str, object] | None = None
+        self._latest_storage: dict[str, object] | None = None
+        self._storage_by_call_id: dict[str, dict[str, object]] = {}
         self.has_waiting_approval = False
         self.has_waiting_operation = False
 
@@ -258,7 +264,14 @@ class AgentToolObservationCollector:
     def latest_result(self) -> dict[str, object] | None:
         return self._latest_result
 
-    async def _project_observation(
+    @property
+    def latest_storage(self) -> dict[str, object] | None:
+        return self._latest_storage
+
+    def storage_for_call(self, call_id: str) -> dict[str, object] | None:
+        return self._storage_by_call_id.get(call_id)
+
+    async def _store_observation(
         self,
         *,
         name: str,
@@ -266,45 +279,35 @@ class AgentToolObservationCollector:
         status: str,
         result: object,
         target_node_id: object = None,
+        error: object = None,
+        error_code: object = None,
+        error_details: object = None,
     ) -> dict[str, object]:
-        try:
-            return await self._ycr_client.project_tool_observation(
-                name=name,
-                call_id=call_id,
-                status=status,
-                result=result,
-                target_node_id=target_node_id,
+        stored = await self._ycr_client.store_tool_observation(
+            name=name,
+            call_id=call_id,
+            status=status,
+            result=result,
+            target_node_id=target_node_id,
+            actor_id=self._actor_id,
+            session_id=self._session_id,
+            error=error,
+            error_code=error_code,
+            error_details=error_details,
+        )
+        shell = stored.get("shell")
+        if not isinstance(shell, dict):
+            raise YcrError(
+                "context_router_invalid_response",
+                "YCR tool observation store did not return a shell",
             )
-        except YcrError as exc:
-            return {
-                "name": name,
-                "call_id": call_id,
-                "status": "failed",
-                "result": {
-                    "kind": "tool_observation",
-                    "summary": f"YCR projection failed: {exc.message}",
-                    "facts": {
-                        "error_code": exc.code,
-                        "message": exc.message,
-                    },
-                    "refs": [],
-                    "omitted": [],
-                    "truncated": False,
-                    "trust_level": "center_runtime_error",
-                    "projection_policy": "tool_observation_projection_error_v1",
-                },
-                "target_node_id": target_node_id,
-                "error": exc.message,
-                "error_code": exc.code,
-                "ycr": {
-                    "projected": True,
-                    "projection_policy": "tool_observation_projection_error_v1",
-                    "projection_version": 1,
-                },
-            }
+        self._latest_storage = stored
+        self._storage_by_call_id[call_id] = stored
+        return shell
 
     async def record_event(self, event_type: str, data: dict[str, object]) -> bool:
         self._latest_result = None
+        self._latest_storage = None
         if event_type not in {
             "agent.tool_call.completed",
             "agent.tool_call.failed",
@@ -316,15 +319,15 @@ class AgentToolObservationCollector:
         call_id = str(data.get("call_id", ""))
         name = str(data.get("name", ""))
         if event_type == "agent.tool_call.completed":
-            projected = await self._project_observation(
+            shell = await self._store_observation(
                 name=name,
                 call_id=call_id,
                 status="succeeded",
                 result=data.get("result"),
                 target_node_id=data.get("target_node_id"),
             )
-            self._results.append(projected)
-            self._latest_result = projected
+            self._results.append(shell)
+            self._latest_result = shell
             return True
         if event_type == "agent.tool_call.failed":
             failed_result = {
@@ -333,18 +336,18 @@ class AgentToolObservationCollector:
                 "error_details": data.get("details"),
                 "status": data.get("status") or "failed",
             }
-            projected = await self._project_observation(
+            shell = await self._store_observation(
                 name=name,
                 call_id=call_id,
                 status="failed",
                 result=failed_result,
                 target_node_id=data.get("target_node_id"),
+                error=data.get("message"),
+                error_code=data.get("error_code"),
+                error_details=data.get("details"),
             )
-            projected["error"] = data.get("message")
-            projected["error_code"] = data.get("error_code")
-            projected["error_details"] = data.get("details")
-            self._results.append(projected)
-            self._latest_result = projected
+            self._results.append(shell)
+            self._latest_result = shell
             return True
 
         if event_type == "agent.tool_call.waiting_operation":
@@ -354,17 +357,17 @@ class AgentToolObservationCollector:
                 "wait_handle": data.get("wait_handle"),
                 "status": "waiting_operation",
             }
-            projected = await self._project_observation(
+            shell = await self._store_observation(
                 name=name,
                 call_id=call_id,
                 status="waiting_operation",
                 result=waiting_result,
                 target_node_id=data.get("target_node_id"),
             )
-            projected["operation_id"] = data.get("operation_id")
-            projected["wait_handle"] = data.get("wait_handle")
-            self._results.append(projected)
-            self._latest_result = projected
+            shell["operation_id"] = data.get("operation_id")
+            shell["wait_handle"] = data.get("wait_handle")
+            self._results.append(shell)
+            self._latest_result = shell
             return True
 
         self.has_waiting_approval = True
@@ -373,16 +376,16 @@ class AgentToolObservationCollector:
             "message": data.get("message") or "Approval required",
             "status": "waiting_approval",
         }
-        projected = await self._project_observation(
+        shell = await self._store_observation(
             name=name,
             call_id=call_id,
             status="waiting_approval",
             result=waiting_result,
             target_node_id=data.get("target_node_id"),
         )
-        projected["approval_id"] = data.get("approval_id")
-        self._results.append(projected)
-        self._latest_result = projected
+        shell["approval_id"] = data.get("approval_id")
+        self._results.append(shell)
+        self._latest_result = shell
         return True
 
     def ordered_results(self) -> list[dict[str, object]]:

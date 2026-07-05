@@ -1103,6 +1103,7 @@ function WithYcrInline({
   const upload = trace.reduce((sum, item) => sum + (item.uploadEstimatedTokens ?? 0), 0);
   const download = trace.reduce((sum, item) => sum + (item.downloadEstimatedTokens ?? 0), 0);
   const saved = trace.reduce((sum, item) => {
+    if (item.kind !== "provider_projection") return sum;
     const raw = item.rawEstimatedTokens ?? 0;
     const projected = item.projectedEstimatedTokens ?? 0;
     return sum + Math.max(0, raw - projected);
@@ -1408,15 +1409,21 @@ function YcrMetric({
 function YcrTraceRow({ item }: { item: YcrTraceItem }) {
   const step = item.step ? `step ${item.step}` : "step ?";
   const title =
-    item.kind === "tool_projection"
+    item.kind === "tool_storage"
       ? item.toolName ?? "tool result"
-      : `${item.providerName ?? "provider"} ${item.kind === "provider_input" ? "input" : "output"}`;
+      : item.kind === "provider_projection"
+        ? item.toolName ?? "provider projection"
+        : item.kind === "error"
+          ? "YCR error"
+          : `${item.providerName ?? "provider"} ${item.kind === "provider_input" ? "input" : "output"}`;
   return (
     <details className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2 text-[12px]">
       <summary className="cursor-pointer list-none">
         <div className="flex items-center gap-2">
-          {item.kind === "tool_projection" ? (
+          {item.kind === "tool_storage" || item.kind === "provider_projection" ? (
             <Database size={12} className="text-[var(--accent)]" />
+          ) : item.kind === "error" ? (
+            <XCircle size={12} className="text-[var(--danger)]" />
           ) : item.kind === "provider_input" ? (
             <Upload size={12} className="text-[var(--info)]" />
           ) : (
@@ -2063,6 +2070,8 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
       toolCall.jobId ||
       toolCall.targetNodeId ||
       toolCall.operationId ||
+      toolCall.ycrStorage ||
+      toolCall.ycrProjection ||
       Object.keys(toolCall.input).length > 0 ||
       toolCall.status === "waiting_approval" ||
       toolCall.status === "waiting_operation",
@@ -2129,6 +2138,35 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
             <p className="text-[11px] font-mono text-[var(--text-subtle)]">
               operation: {toolCall.operationId}
             </p>
+          )}
+          {toolCall.ycrStorage && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2">
+              <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">YCR Storage</p>
+              <div className="space-y-0.5 font-mono text-[10px] text-[var(--text-subtle)]">
+                {toolCall.rawRefId && <p>raw ref: {toolCall.rawRefId}</p>}
+                {toolCall.rawSizeBytes !== undefined && <p>raw: {formatBytes(toolCall.rawSizeBytes)}</p>}
+                {toolCall.shellSizeBytes !== undefined && <p>provider shell: {formatBytes(toolCall.shellSizeBytes)}</p>}
+              </div>
+            </div>
+          )}
+          {toolCall.ycrProjection && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2">
+              <p className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">Provider Projection</p>
+              <div className="space-y-0.5 font-mono text-[10px] text-[var(--text-subtle)]">
+                {typeof toolCall.ycrProjection.projection_policy === "string" && (
+                  <p>policy: {toolCall.ycrProjection.projection_policy}</p>
+                )}
+                {toolCall.projectedEstimatedTokens !== undefined && (
+                  <p>tokens: {formatTokenCount(toolCall.projectedEstimatedTokens)}</p>
+                )}
+                {toolCall.projectedSizeBytes !== undefined && (
+                  <p>bytes: {formatBytes(toolCall.projectedSizeBytes)}</p>
+                )}
+              </div>
+              <div className="mt-1.5">
+                <JsonView data={toolCall.ycrProjection} />
+              </div>
+            </div>
           )}
           {Object.keys(toolCall.input).length > 0 && (
             <div>

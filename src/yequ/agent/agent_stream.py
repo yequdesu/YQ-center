@@ -31,7 +31,7 @@ from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 from yequ.config import get_settings
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
-from yequ.ycr.budget import budget_profile_from_settings, estimate_tokens
+from yequ.ycr.budget import estimate_tokens, projection_profile_from_settings
 from yequ.ycr.client import YcrError, get_ycr_client
 
 log = get_logger(__name__)
@@ -229,10 +229,9 @@ def _ycr_context_event_data(
     tool_calls: list[dict[str, object]] | None = None,
     usage: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    budget = budget_profile_from_settings(get_settings())
+    profile = projection_profile_from_settings(get_settings())
     if context_packet is not None:
-        packet_budget = _as_object_dict(context_packet.get("budget", {}))
-        budget_report = _as_object_dict(context_packet.get("budget_report", {}))
+        context_estimate = _as_object_dict(context_packet.get("context_estimate", {}))
         usage = usage or {}
         completion_payload: dict[str, object] = {
             "assistant_text": assistant_text,
@@ -245,12 +244,12 @@ def _ycr_context_event_data(
             "packet_id": context_packet.get("packet_id"),
             "provider_name": provider.provider_name(),
             "model": _provider_model_name(provider)
-            or str(packet_budget.get("model") or budget.model),
+            or str(context_estimate.get("model") or profile.model),
             "message_count": len(messages),
             "tool_count": len(available_functions),
-            "budget": packet_budget,
+            "context_estimate": context_estimate,
             "tokens": {
-                "upload_estimated": _optional_int(packet_budget.get("estimated_input_tokens")),
+                "upload_estimated": _optional_int(context_estimate.get("estimated_input_tokens")),
                 "download_estimated": (
                     estimate_tokens(completion_payload) if phase == "provider_output" else None
                 ),
@@ -259,13 +258,13 @@ def _ycr_context_event_data(
                 "total_actual": _optional_int(usage.get("total_tokens")),
             },
             "breakdown": {
-                "messages": _optional_int(budget_report.get("messages_tokens")),
-                "tool_schema": _optional_int(budget_report.get("tool_schema_tokens")),
+                "messages": _optional_int(context_estimate.get("messages_tokens")),
+                "tool_schema": _optional_int(context_estimate.get("tool_schema_tokens")),
                 "capability_context": _optional_int(
-                    budget_report.get("capability_context_tokens")
+                    context_estimate.get("capability_context_tokens")
                 ),
             },
-            "truncated_paths": budget_report.get("truncated_paths") or [],
+            "projections": context_packet.get("projections") or [],
             "ycr": context_packet.get("ycr")
             or {
                 "projected": True,
@@ -302,16 +301,17 @@ def _ycr_context_event_data(
         "phase": phase,
         "step": step,
         "provider_name": provider.provider_name(),
-        "model": _provider_model_name(provider) or budget.model,
+        "model": _provider_model_name(provider) or profile.model,
         "message_count": len(messages),
         "tool_count": len(available_functions),
-        "budget": {
-            "provider": budget.provider,
-            "model": budget.model,
-            "max_input_tokens": budget.max_input_tokens,
-            "reserved_response_tokens": budget.reserved_response_tokens,
-            "max_tool_observation_tokens": budget.max_tool_observation_tokens,
-            "max_context_block_tokens": budget.max_context_block_tokens,
+        "context_estimate": {
+            "provider": profile.provider,
+            "model": profile.model,
+            "estimated_input_tokens": upload_estimated,
+            "raw_estimated_tokens": upload_estimated,
+            "projected_estimated_tokens": upload_estimated,
+            "saved_estimated_tokens": 0,
+            "ref_count": 0,
         },
         "tokens": {
             "upload_estimated": upload_estimated,
@@ -330,43 +330,37 @@ def _ycr_context_event_data(
         },
         "ycr": {
             "projected": True,
-            "projection_policy": "provider_context_budget_v1",
+            "projection_policy": "provider_context_estimate_v1",
         },
     }
 
 
-def _ycr_tool_projection_event_data(
-    projection: dict[str, object],
+def _ycr_tool_storage_event_data(
+    stored: dict[str, object],
     *,
     raw_event_data: dict[str, object],
     step: int,
 ) -> dict[str, object]:
-    result = _as_object_dict(projection.get("result", {}))
-    refs = result.get("refs")
-    omitted = result.get("omitted")
-    budget = _as_object_dict(result.get("budget", {}))
+    raw_ref = _as_object_dict(stored.get("raw_ref", {}))
+    shell = _as_object_dict(stored.get("shell", {}))
     raw_result = raw_event_data.get("result")
     if raw_result is None:
         raw_result = raw_event_data
     return {
-        "kind": "tool_projection",
+        "kind": "tool_observation_storage",
         "step": step,
-        "call_id": projection.get("call_id"),
-        "name": projection.get("name"),
-        "status": projection.get("status"),
-        "target_node_id": projection.get("target_node_id"),
-        "projection_policy": result.get("projection_policy"),
-        "summary": result.get("summary"),
+        "call_id": shell.get("call_id"),
+        "name": shell.get("name"),
+        "status": shell.get("status"),
+        "target_node_id": shell.get("target_node_id"),
+        "raw_ref": raw_ref,
         "raw_estimated_tokens": estimate_tokens(raw_result),
-        "projected_estimated_tokens": _optional_int(budget.get("estimated_tokens")),
         "raw_size_bytes": _safe_json_size_bytes(raw_result),
-        "projected_size_bytes": _safe_json_size_bytes(projection),
-        "ref_count": len(refs) if isinstance(refs, list) else 0,
-        "omitted_count": len(omitted) if isinstance(omitted, list) else 0,
-        "projection": projection,
+        "shell_size_bytes": _safe_json_size_bytes(shell),
+        "shell": shell,
         "ycr": {
-            "projected": True,
-            "projection_policy": "tool_projection_telemetry_v1",
+            "stored": True,
+            "projection_policy": "tool_observation_storage_telemetry_v1",
         },
     }
 
@@ -632,6 +626,18 @@ async def agent_invoke_stream(
                     context_packet=context_packet,
                 ),
             )
+            for projection_item in context_packet.get("projections") or []:
+                if isinstance(projection_item, dict):
+                    yield _event(
+                        "agent.ycr.projection",
+                        session_id,
+                        trace_id,
+                        {
+                            "kind": "provider_projection",
+                            "step": current_step,
+                            **projection_item,
+                        },
+                    )
 
             # Call provider with streaming --text deltas are yielded in real-time
             assistant_text = ""
@@ -682,6 +688,7 @@ async def agent_invoke_stream(
                     status="failed",
                     error_code="llm_error",
                     error_message=provider_error,
+                    context_packet=context_packet,
                 )
                 await _update_agent_run_checkpoint(
                     agent_run_id,
@@ -725,6 +732,7 @@ async def agent_invoke_stream(
                 assistant_text=assistant_text,
                 tool_calls=provider_tool_calls,
                 status="succeeded",
+                context_packet=context_packet,
             )
             provider_decision = run_graph.decide_provider_output(
                 assistant_text=assistant_text,
@@ -789,6 +797,8 @@ async def agent_invoke_stream(
 
             observation_collector = AgentToolObservationCollector(
                 provider_call_order,
+                session_id=session_id,
+                actor_id=session_actor_id,
                 ycr_client=get_ycr_client(),
             )
             # Use a short-lived session for the preflight + execution block so
@@ -814,18 +824,45 @@ async def agent_invoke_stream(
                     yield ev
                     # Collect results from completed/failed/waiting_approval events
                     ev_data = _as_object_dict(ev.get("data", {}))
-                    recorded_observation = await observation_collector.record_event(
-                        str(ev["event_type"]),
-                        ev_data,
-                    )
-                    latest_projection = observation_collector.latest_result
-                    if latest_projection is not None:
+                    try:
+                        recorded_observation = await observation_collector.record_event(
+                            str(ev["event_type"]),
+                            ev_data,
+                        )
+                    except YcrError as exc:
+                        await _update_agent_run_checkpoint(
+                            agent_run_id,
+                            status="failed",
+                            error_code=exc.code,
+                            error_message=exc.message,
+                        )
                         yield _event(
-                            "agent.ycr.tool_projection",
+                            "agent.ycr.error",
                             session_id,
                             trace_id,
-                            _ycr_tool_projection_event_data(
-                                latest_projection,
+                            {
+                                "phase": "tool_observation_storage",
+                                "error_code": exc.code,
+                                "message": exc.message,
+                            },
+                        )
+                        yield _event(
+                            "agent.failed",
+                            session_id,
+                            trace_id,
+                            {"error_code": exc.code, "message": exc.message},
+                        )
+                        _mark_stream_inactive(session_id)
+                        yield _event("stream.close", session_id, trace_id)
+                        return
+                    latest_storage = observation_collector.latest_storage
+                    if latest_storage is not None:
+                        yield _event(
+                            "agent.tool_observation.stored",
+                            session_id,
+                            trace_id,
+                            _ycr_tool_storage_event_data(
+                                latest_storage,
                                 raw_event_data=ev_data,
                                 step=current_step,
                             ),
@@ -853,6 +890,9 @@ async def agent_invoke_stream(
                     agent_run_id,
                     step_index=current_step * 100 + 10 + result_index,
                     result=tc_result,
+                    ycr_storage=observation_collector.storage_for_call(
+                        str(tc_result.get("call_id") or "")
+                    ),
                 )
                 if tc_result.get("status") == "waiting_approval":
                     loop_state = run_graph.observe_tool_results([tc_result]).status
@@ -974,6 +1014,7 @@ async def _record_agent_run_provider_step(
     status: str,
     error_code: str | None = None,
     error_message: str | None = None,
+    context_packet: dict[str, object] | None = None,
 ) -> None:
     if not run_id:
         return
@@ -998,6 +1039,7 @@ async def _record_agent_run_provider_step(
             },
             error_code=error_code,
             error_message=error_message,
+            metadata=_agent_run_provider_ycr_metadata(context_packet),
         )
         await db.commit()
 
@@ -1007,6 +1049,7 @@ async def _record_agent_run_tool_step(
     *,
     step_index: int,
     result: dict[str, object],
+    ycr_storage: dict[str, object] | None = None,
 ) -> None:
     if not run_id:
         return
@@ -1037,6 +1080,7 @@ async def _record_agent_run_tool_step(
                 "operation_id": result.get("operation_id"),
                 "approval_id": result.get("approval_id"),
                 "target_node_id": result.get("target_node_id"),
+                **_agent_run_tool_ycr_metadata(result, ycr_storage),
             },
         )
         await db.commit()
@@ -1068,6 +1112,39 @@ async def _record_agent_run_final_step(
             output_data={"message": final_message},
         )
         await db.commit()
+
+
+def _agent_run_provider_ycr_metadata(
+    context_packet: dict[str, object] | None,
+) -> dict[str, object]:
+    if not context_packet:
+        return {}
+    return {
+        "ycr": {
+            "packet_id": context_packet.get("packet_id"),
+            "context_estimate": context_packet.get("context_estimate"),
+            "refs": context_packet.get("refs") or [],
+            "projections": context_packet.get("projections") or [],
+        }
+    }
+
+
+def _agent_run_tool_ycr_metadata(
+    result: dict[str, object],
+    ycr_storage: dict[str, object] | None,
+) -> dict[str, object]:
+    raw_ref = result.get("raw_ref")
+    if isinstance(raw_ref, str):
+        metadata: dict[str, object] = {"raw_ref_id": raw_ref}
+    else:
+        metadata = {}
+    if ycr_storage:
+        metadata["ycr_storage"] = ycr_storage
+        stored_ref = ycr_storage.get("raw_ref")
+        if isinstance(stored_ref, dict):
+            metadata["raw_ref_id"] = stored_ref.get("ref_id")
+            metadata["raw_ref"] = stored_ref
+    return metadata
 
 
 async def _update_agent_run_checkpoint(

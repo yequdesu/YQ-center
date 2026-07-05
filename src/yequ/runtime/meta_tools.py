@@ -137,9 +137,10 @@ async def execute_inline_meta_tool(
         elif command.function_name == "context.search":
             output = {
                 "context": await ycr_client.search(
-                    required_string(input_data.get("ref_id"), "ref_id"),
+                    string_or_none(input_data.get("ref_id")),
                     query=required_string(input_data.get("query"), "query"),
                     limit=int_or_default(input_data.get("limit"), 10),
+                    session_id=command.session_id,
                 )
             }
         elif command.function_name == "artifact.list":

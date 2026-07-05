@@ -21,9 +21,11 @@ if [ -f .env ]; then
 fi
 
 export YEQU_EMBEDDER_MODEL="${YEQU_EMBEDDER_MODEL:-BAAI/bge-m3}"
+export YEQU_YCR_RERANK_MODEL="${YEQU_YCR_RERANK_MODEL:-BAAI/bge-reranker-base}"
 export YEQU_EMBEDDER_DEVICE="${YEQU_EMBEDDER_DEVICE:-cpu}"
 export YEQU_EMBEDDER_USE_FP16="${YEQU_EMBEDDER_USE_FP16:-false}"
 
 echo "Starting YeQu local embedder on http://127.0.0.1:${PORT}"
 echo "Model: ${YEQU_EMBEDDER_MODEL} device=${YEQU_EMBEDDER_DEVICE} fp16=${YEQU_EMBEDDER_USE_FP16}"
+echo "Reranker: ${YEQU_YCR_RERANK_MODEL}"
 exec python -m uvicorn yequ.ycr_embedder_app:app --host 127.0.0.1 --port "${PORT}"

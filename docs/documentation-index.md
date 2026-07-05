@@ -1,7 +1,7 @@
 # 文档索引
 
 状态：当前文档入口
-更新时间：2026-07-03
+更新时间：2026-07-06
 
 本文是 YeQu Center 文档系统的唯一入口。当前开发只应引用“当前权威文档”和“活跃待办”；`docs/archive/` 下内容只解释历史演进，不能覆盖当前代码、协议和合同。
 
@@ -12,6 +12,7 @@
 | `README.md` | 项目入口、快速启动、API 概览、开发命令和配置说明。 |
 | `YQP-Node-Protocol.md` | Node 接入 Center 的权威协议合同。Windows/Linux/未来 Node Daemon 必须以此为准。 |
 | `docs/current-project-overview.md` | 当前项目全貌、架构边界、能力状态和下一阶段主线。 |
+| `docs/ycr-current-state.md` | YCR 当前实现现状：按代码描述独立服务、Agent 接入链路、Tool RAG、ContextRef/Result Ref、投影、错误语义和运行边界。 |
 | `docs/node-capability-contract.md` | 面向多平台 Node 接入的 capability 合同。约束 manifest、runtime requirements、preflight、progress、cancel/resume、错误码、artifact/transfer 能力和 Guard/Policy 边界。 |
 | `docs/linux-node-development-contract.md` | Linux Node 当前实现合同、权限模型和能力范围。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
@@ -24,6 +25,7 @@
 |---|---|
 | `docs/todos/README.md` | 当前待办目录说明。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性和错误传播门禁。 |
+| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 三阶段重构实施计划：清理旧实现、按新决策重建、文档一致性收口。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、连通性探测、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
 ## 3. 设计提案

@@ -19,6 +19,11 @@ class YcrEmbedding(BaseModel):
     model: str
 
 
+class RerankItem(BaseModel):
+    index: int
+    score: float
+
+
 async def embed_text(
     text: str,
     *,
@@ -44,12 +49,15 @@ async def embed_text_full(
             timeout=settings.ycr_timeout_sec,
             headers={"Authorization": f"Bearer {settings.ycr_embedding_api_key}"},
         ) as client:
-            response = await client.post(
-                "/v1/embeddings",
-                json={"model": model, "input": text},
-            )
-            response.raise_for_status()
-            payload = response.json()
+            try:
+                response = await client.post(
+                    "/v1/embeddings",
+                    json={"model": model, "input": text},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPError as exc:
+                raise EmbeddingError(f"Embedding request failed: {exc}") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list) or not data:
             raise EmbeddingError("Embedding response has no data")
@@ -73,3 +81,54 @@ async def embed_text_full(
             model=model,
         )
     raise EmbeddingError(f"Unsupported YCR embedding provider: {provider}")
+
+
+async def rerank_documents(
+    query: str,
+    documents: list[str],
+    *,
+    settings: Settings | None = None,
+    top_n: int = 20,
+) -> list[RerankItem]:
+    settings = settings or get_settings()
+    if not documents:
+        return []
+    if settings.ycr_embedding_provider != "openai_compatible":
+        raise EmbeddingError(
+            f"Unsupported YCR rerank provider: {settings.ycr_embedding_provider}"
+        )
+    if not settings.ycr_embedding_base_url or not settings.ycr_embedding_api_key:
+        raise EmbeddingError("YCR rerank endpoint is not configured")
+    async with httpx.AsyncClient(
+        base_url=settings.ycr_embedding_base_url,
+        timeout=settings.ycr_timeout_sec,
+        headers={"Authorization": f"Bearer {settings.ycr_embedding_api_key}"},
+    ) as client:
+        try:
+            response = await client.post(
+                "/v1/rerank",
+                json={
+                    "model": settings.ycr_rerank_model,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": top_n,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPError as exc:
+            raise EmbeddingError(f"Rerank request failed: {exc}") from exc
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise EmbeddingError("Rerank response has no results")
+    output: list[RerankItem] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        output.append(
+            RerankItem(
+                index=int(item.get("index") or 0),
+                score=float(item.get("relevance_score") or item.get("score") or 0),
+            )
+        )
+    return output

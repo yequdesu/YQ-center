@@ -57,26 +57,27 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 
 `PolicyEngine` 不合并进 `ExecutionGuard`。Guard 管事实，Policy 管授权，Admission 管执行形态。
 
-### 3.3 Capability Discovery 与未来 Tool RAG
+### 3.3 Capability Discovery 与 YCR Tool RAG
 
-当前阶段的 `capability.search` / `capability.describe` 是 **结构化能力发现层**，不是完整 Tool RAG。
+当前阶段的 `capability.search` / `capability.describe` 由结构化能力发现层和 YCR Tool RAG 共同服务。
 
 ```text
 Capability Registry
-  -> Capability Index / Structured Discovery
-  -> Capability Context Builder
-  -> Agent 当前任务所需的少量工具上下文
+  -> YCR capability index jobs
+  -> BGE-M3 dense/sparse retrieval
+  -> reranker
+  -> structured validation / projection
+  -> capability.invoke
 ```
 
-它负责按 Node、平台、risk/effect、runtime、progress/cancel/resume、artifact 输入输出和 projection
-精确筛选能力，减少无关工具占用上下文。
+无 query 时，`capability.search` 只做 registry-backed structured filter，并且必须带至少一个过滤条件。带 query 时，YCR 只读取 ready capability index，不在用户请求路径临时构建索引；embedding 或 reranker 不可用时返回明确错误，不做字符串 fallback。
 
-未来 Tool RAG 只作为候选召回增强层接入：
+Tool RAG 只负责候选召回增强：
 
 ```text
 自然语言任务
-  -> semantic retrieval 得到候选 capability / 示例 / 参数模式
-  -> structured discovery 二次过滤
+  -> semantic retrieval + rerank 得到候选 capability
+  -> registry/source/runtime 事实二次校验
   -> ExecutionGuard / PolicyEngine / Admission
   -> Runtime execution
 ```
@@ -128,7 +129,7 @@ tool call
 7. Agent 上下文预算：工具 schema、tool result、history、context_refs、resume prompt 都必须有预算、投影和摘要策略。
 8. 边界测试扩展：import boundary、fallback residue、meta tool output size、Node onboarding 和 capability onboarding 都应进入测试。
 
-SubAgent、更多 Node 能力和未来 Tool RAG 应在质量门禁通过后再进入主线。
+SubAgent 和更多 Node 能力应在质量门禁通过后再进入主线。
 
 ## 5. 当前权威文档
 

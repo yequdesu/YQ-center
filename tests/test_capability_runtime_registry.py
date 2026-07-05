@@ -1257,7 +1257,7 @@ async def test_capability_invoke_requires_disambiguation_for_multiple_sources(
     )
 
     assert ambiguous.status == "failed"
-    assert ambiguous.error_code == "capability_source_unresolved"
+    assert ambiguous.error_code == "ambiguous_capability_source"
     assert "ambiguous" in (ambiguous.error_message or "")
 
     resolved = await CenterExecutionRuntime(db_session).execute(

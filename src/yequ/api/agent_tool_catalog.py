@@ -184,7 +184,10 @@ def _center_meta_functions() -> list[AgentFunction]:
         ),
         AgentFunction(
             name="context.search",
-            description="Search within a YCR context ref using bounded local retrieval.",
+            description=(
+                "Search YCR context refs using vector retrieval. If ref_id is omitted, "
+                "Center searches refs attached to the current Agent session."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -192,7 +195,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "default": 10, "maximum": 50},
                 },
-                "required": ["ref_id", "query"],
+                "required": ["query"],
             },
             risk="safe",
             effect="read",
@@ -634,42 +637,8 @@ async def _available_functions(
 
     Tests that need static tools must register a fake provider explicitly.
     """
-    from sqlalchemy.orm import joinedload
-
-    from yequ.config import get_settings
-    from yequ.services.node_liveness_service import is_node_schedulable
-
-    settings = get_settings()
-    available = _center_meta_functions()
-    if not settings.test_mode:
-        return available
-
-    existing = {f.name: f for f in available}
-
-    cap_result = await db.execute(
-        select(Capability)
-        .where(
-            Capability.capability_type == "function",
-            Capability.is_active == True,  # noqa: E712
-        )
-        .options(joinedload(Capability.node))
-    )
-    for cap in cap_result.unique().scalars().all():
-        # Skip capabilities on non-schedulable nodes
-        if cap.node is None:
-            continue
-        if target_node_id and not settings.test_mode and cap.node.node_id != target_node_id:
-            continue
-        schedulable, _ = is_node_schedulable(cap.node, settings)
-        if not schedulable:
-            continue
-        if cap.name in existing:
-            if cap.node.node_id not in existing[cap.name].source_nodes:
-                existing[cap.name].source_nodes.append(cap.node.node_id)
-            continue
-        available.append(_agent_function_from_capability(cap))
-        existing[cap.name] = available[-1]
-    return available
+    del db, target_node_id
+    return _center_meta_functions()
 
 
 async def _default_target_node_id(db: AsyncSession) -> str:

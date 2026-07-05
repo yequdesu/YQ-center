@@ -92,6 +92,13 @@ export interface ToolCallState {
   result?: Record<string, unknown>;
   errorCode?: string;
   errorMessage?: string;
+  ycrStorage?: Record<string, unknown>;
+  ycrProjection?: Record<string, unknown>;
+  rawRefId?: string;
+  rawSizeBytes?: number;
+  shellSizeBytes?: number;
+  projectedSizeBytes?: number;
+  projectedEstimatedTokens?: number;
 }
 
 export interface ToolCallPatch {
@@ -106,6 +113,13 @@ export interface ToolCallPatch {
   result?: Record<string, unknown>;
   errorCode?: string | null;
   errorMessage?: string | null;
+  ycrStorage?: Record<string, unknown>;
+  ycrProjection?: Record<string, unknown>;
+  rawRefId?: string;
+  rawSizeBytes?: number;
+  shellSizeBytes?: number;
+  projectedSizeBytes?: number;
+  projectedEstimatedTokens?: number;
 }
 
 export interface PlanStepState {
@@ -135,7 +149,7 @@ export interface PromptContextData {
 
 export interface YcrTraceItem {
   id: string;
-  kind: "provider_input" | "provider_output" | "tool_projection";
+  kind: "provider_input" | "provider_output" | "tool_storage" | "provider_projection" | "error";
   label: string;
   created_at: string;
   step?: number;

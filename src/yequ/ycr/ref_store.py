@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.config import get_settings
 from yequ.models.ycr import YcrContextChunk, YcrContextRef
-from yequ.ycr.embedding import embed_text
+from yequ.ycr.budget import json_size_bytes
+from yequ.ycr.embedding import EmbeddingError, embed_text
 from yequ.ycr.ledger import write_ledger
 from yequ.ycr.retrieval import cosine_similarity
-from yequ.ycr.source_adapter import load_source_value
 
 
 def stable_ref_id(*, source_type: str, source_id: str, path: str) -> str:
@@ -36,12 +37,15 @@ async def upsert_ref(
     trust_level: str = "node_reported_fact",
     projection_policy: str = "context_ref_v1",
     projection_version: int = 1,
-    ttl_sec: int = 86400,
     embedding_provider: str | None = None,
     embedding_model: str | None = None,
 ) -> dict[str, object]:
+    size = json_size_bytes(value)
+    max_size = get_settings().ycr_max_raw_ref_bytes
+    if size > max_size:
+        raise ValueError(f"raw_result_too_large: raw_size_bytes={size} max={max_size}")
+
     ref_id = stable_ref_id(source_type=source_type, source_id=source_id, path=path)
-    now = datetime.now(UTC)
     existing = await db.execute(select(YcrContextRef).where(YcrContextRef.ref_id == ref_id))
     record = existing.scalar_one_or_none()
     if record is None:
@@ -59,45 +63,14 @@ async def upsert_ref(
     record.trust_level = trust_level
     record.summary = summary
     record.value_json = _jsonable(value)
-    record.metadata_json = {"source_hash": record.source_version}
-    record.expires_at = now + timedelta(seconds=max(60, ttl_sec))
-    await db.flush()
-
-    await db.execute(delete(YcrContextChunk).where(YcrContextChunk.ref_id == ref_id))
-    chunks = _chunks(record.value_json)
-    for index, chunk in enumerate(chunks):
-        chunk_seed = f"{ref_id}:{index}:{chunk[0]}"
-        chunk_id = f"ctxchk_{hashlib.sha256(chunk_seed.encode()).hexdigest()[:16]}"
-        embedding, actual_provider, actual_model = await embed_text(chunk[1])
-        db.add(
-            YcrContextChunk(
-                chunk_id=chunk_id,
-                ref_id=ref_id,
-                path=chunk[0],
-                text=chunk[1],
-                token_estimate=max(1, len(chunk[1]) // 4),
-                trust_level=trust_level,
-                embedding_json=embedding,
-                embedding_model=actual_model,
-            )
-        )
-        await db.flush()
-        if db.bind and db.bind.dialect.name == "postgresql":
-            await db.execute(
-                text(
-                    "UPDATE ycr_context_chunks "
-                    "SET embedding_vector = CAST(:embedding AS vector) "
-                    "WHERE chunk_id = :chunk_id"
-                ),
-                {"embedding": _vector_literal(embedding), "chunk_id": chunk_id},
-            )
-        embedding_provider = actual_provider
-        embedding_model = actual_model
     record.metadata_json = {
         "source_hash": record.source_version,
         "embedding_provider": embedding_provider,
         "embedding_model": embedding_model,
     }
+    await db.flush()
+
+    await _replace_chunks_without_embeddings(db, record)
     ref = ref_to_dict(record)
     await write_ledger(
         db,
@@ -110,41 +83,50 @@ async def upsert_ref(
         projection_policy=projection_policy,
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
-        metadata={"chunk_count": len(chunks)},
+        session_id=session_id,
+        metadata={"chunk_count": len(_chunks(record.value_json))},
     )
     return ref
 
 
-async def rehydrate_ref(db: AsyncSession, ref_id: str) -> dict[str, object]:
+async def index_ref_chunks(db: AsyncSession, ref_id: str) -> dict[str, object]:
     record = await _require_record(db, ref_id)
-    source_value = await load_source_value(
-        db,
-        source_type=record.source_type,
-        source_id=record.source_id,
-    )
-    value = _select_path(source_value, record.source_path)
-    return await upsert_ref(
-        db,
-        ref_type=record.ref_type,
-        source_type=record.source_type,
-        source_id=record.source_id,
-        path=record.source_path,
-        value=value,
-        summary=record.summary or "Rehydrated YCR context ref.",
-        actor_id=record.actor_id,
-        session_id=record.session_id,
-        trust_level=record.trust_level,
-        projection_policy=record.projection_policy,
-        projection_version=record.projection_version,
-    )
+    result = await db.execute(select(YcrContextChunk).where(YcrContextChunk.ref_id == ref_id))
+    chunks = result.scalars().all()
+    indexed = 0
+    provider = None
+    model = None
+    try:
+        for chunk in chunks:
+            if chunk.embedding_json:
+                continue
+            embedding, provider, model = await embed_text(chunk.text)
+            chunk.embedding_json = embedding
+            chunk.embedding_model = model
+            await db.flush()
+            if db.bind and db.bind.dialect.name == "postgresql":
+                await db.execute(
+                    text(
+                        "UPDATE ycr_context_chunks "
+                        "SET embedding_vector = CAST(:embedding AS vector) "
+                        "WHERE chunk_id = :chunk_id"
+                    ),
+                    {"embedding": _vector_literal(embedding), "chunk_id": chunk.chunk_id},
+                )
+            indexed += 1
+    except EmbeddingError as exc:
+        raise ValueError(f"context_search_unavailable: {exc}") from exc
+    record.metadata_json = {
+        **(record.metadata_json or {}),
+        "embedding_provider": provider,
+        "embedding_model": model,
+        "indexed_at": datetime.now(UTC).isoformat(),
+    }
+    return {"ref_id": ref_id, "indexed_chunks": indexed, "chunk_count": len(chunks)}
 
 
 async def get_ref(db: AsyncSession, ref_id: str) -> dict[str, object]:
-    result = await db.execute(select(YcrContextRef).where(YcrContextRef.ref_id == ref_id))
-    record = result.scalar_one_or_none()
-    if record is None:
-        raise ValueError(f"Context ref not found: {ref_id}")
-    return ref_to_dict(record)
+    return ref_to_dict(await _require_record(db, ref_id))
 
 
 async def inspect_ref(db: AsyncSession, ref_id: str) -> dict[str, object]:
@@ -198,6 +180,135 @@ async def schema_ref(db: AsyncSession, ref_id: str, *, path: str = "$") -> dict[
     return {"ref_id": ref_id, "path": path or "$", "schema": _schema_summary(value)}
 
 
+async def search_context(
+    db: AsyncSession,
+    *,
+    query: str,
+    ref_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 10,
+) -> dict[str, object]:
+    if not query.strip():
+        raise ValueError("context_search_unavailable: query is required")
+    query_embedding, embedding_provider, embedding_model = await _embed_query(query)
+    bounded_limit = max(1, min(limit, 50))
+    ref = await get_ref(db, ref_id) if ref_id else None
+
+    if db.bind and db.bind.dialect.name == "postgresql":
+        where = ["embedding_vector IS NOT NULL"]
+        params: dict[str, object] = {
+            "embedding": _vector_literal(query_embedding),
+            "limit": bounded_limit,
+        }
+        if ref_id:
+            where.append("ref_id = :ref_id")
+            params["ref_id"] = ref_id
+        elif session_id:
+            where.append(
+                "ref_id IN (SELECT ref_id FROM ycr_context_refs WHERE session_id = :session_id)"
+            )
+            params["session_id"] = session_id
+        else:
+            raise ValueError("context_search_unavailable: ref_id or session_id is required")
+        rows = await db.execute(
+            text(
+                "SELECT chunk_id, ref_id, path, text, trust_level, "
+                "1 - (embedding_vector <=> CAST(:embedding AS vector)) AS score "
+                "FROM ycr_context_chunks "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY embedding_vector <=> CAST(:embedding AS vector) "
+                "LIMIT :limit"
+            ),
+            params,
+        )
+        matches = [
+            _match_dict(
+                chunk_id=row.chunk_id,
+                ref_id=row.ref_id,
+                path=row.path,
+                score=float(row.score or 0),
+                text=row.text,
+                query=query,
+                trust_level=row.trust_level,
+            )
+            for row in rows
+        ]
+    else:
+        stmt = select(YcrContextChunk)
+        if ref_id:
+            stmt = stmt.where(YcrContextChunk.ref_id == ref_id)
+        elif session_id:
+            refs = await db.execute(
+                select(YcrContextRef.ref_id).where(YcrContextRef.session_id == session_id)
+            )
+            ref_ids = [str(item) for item in refs.scalars().all()]
+            if not ref_ids:
+                matches = []
+                return _search_output(
+                    query=query,
+                    matches=matches,
+                    ref=ref,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                    limit=limit,
+                )
+            stmt = stmt.where(YcrContextChunk.ref_id.in_(ref_ids))
+        else:
+            raise ValueError("context_search_unavailable: ref_id or session_id is required")
+        result = await db.execute(stmt)
+        matches = []
+        for chunk in result.scalars().all():
+            if not isinstance(chunk.embedding_json, list):
+                continue
+            score = cosine_similarity(
+                query_embedding,
+                [float(value) for value in chunk.embedding_json],
+            )
+            if score <= 0:
+                continue
+            matches.append(
+                _match_dict(
+                    chunk_id=chunk.chunk_id,
+                    ref_id=chunk.ref_id,
+                    path=chunk.path,
+                    score=score,
+                    text=chunk.text,
+                    query=query,
+                    trust_level=chunk.trust_level,
+                )
+            )
+        matches.sort(key=lambda item: float(item["score"]), reverse=True)
+        matches = matches[:bounded_limit]
+
+    if not matches:
+        indexed = await _has_indexed_chunks(db, ref_id=ref_id, session_id=session_id)
+        if not indexed:
+            raise ValueError("context_search_unavailable: context chunks are not indexed")
+    output = _search_output(
+        query=query,
+        matches=matches,
+        ref=ref,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        limit=limit,
+    )
+    await write_ledger(
+        db,
+        event_type="ref_search",
+        source_type=str(ref["source_anchor"]["type"]) if ref else "session",
+        source_id=str(ref["source_anchor"]["id"]) if ref else str(session_id or ""),
+        ref_id=ref_id,
+        raw_value={"query": query},
+        projected_value=output,
+        projection_policy="context_search_vector_v2",
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        session_id=session_id or (str(ref.get("session_id")) if ref else None),
+        metadata={"limit": limit},
+    )
+    return output
+
+
 async def search_ref(
     db: AsyncSession,
     ref_id: str,
@@ -205,97 +316,54 @@ async def search_ref(
     query: str,
     limit: int = 10,
 ) -> dict[str, object]:
-    ref = await get_ref(db, ref_id)
-    query_embedding, embedding_provider, embedding_model = await embed_text(query)
-    if db.bind and db.bind.dialect.name == "postgresql":
-        rows = await db.execute(
-            text(
-                "SELECT chunk_id, path, text, trust_level, "
-                "1 - (embedding_vector <=> CAST(:embedding AS vector)) AS score "
-                "FROM ycr_context_chunks "
-                "WHERE ref_id = :ref_id AND embedding_vector IS NOT NULL "
-                "ORDER BY embedding_vector <=> CAST(:embedding AS vector) "
-                "LIMIT :limit"
-            ),
-            {
-                "embedding": _vector_literal(query_embedding),
-                "ref_id": ref_id,
-                "limit": max(1, min(limit, 50)),
-            },
+    return await search_context(db, ref_id=ref_id, query=query, limit=limit)
+
+
+async def _replace_chunks_without_embeddings(db: AsyncSession, record: YcrContextRef) -> None:
+    await db.execute(delete(YcrContextChunk).where(YcrContextChunk.ref_id == record.ref_id))
+    for index, chunk in enumerate(_chunks(record.value_json)):
+        chunk_seed = f"{record.ref_id}:{index}:{chunk[0]}:{_hash_value(chunk[1])}"
+        chunk_id = f"ctxchk_{hashlib.sha256(chunk_seed.encode()).hexdigest()[:16]}"
+        db.add(
+            YcrContextChunk(
+                chunk_id=chunk_id,
+                ref_id=record.ref_id,
+                path=chunk[0],
+                text=chunk[1],
+                token_estimate=max(1, len(chunk[1]) // 4),
+                trust_level=record.trust_level,
+                embedding_json=None,
+                embedding_model=None,
+            )
         )
-        matches = [
-            {
-                "chunk_id": row.chunk_id,
-                "path": row.path,
-                "score": float(row.score or 0),
-                "snippet": _snippet(row.text, query),
-                "trust_level": row.trust_level,
-            }
-            for row in rows
-        ]
-        output = {
-            "ref_id": ref_id,
-            "query": query,
-            "matches": matches,
-            "match_count": len(matches),
-            "ref": ref,
-        }
-        await write_ledger(
-            db,
-            event_type="ref_search",
-            source_type=str(ref["source_anchor"]["type"]),
-            source_id=str(ref["source_anchor"]["id"]),
-            ref_id=ref_id,
-            raw_value={"query": query},
-            projected_value=output,
-            projection_policy="context_search_pgvector_v1",
-            embedding_provider=embedding_provider,
-            embedding_model=embedding_model,
-            metadata={"limit": limit},
+
+
+async def _embed_query(query: str) -> tuple[list[float], str, str]:
+    try:
+        return await embed_text(query)
+    except EmbeddingError as exc:
+        raise ValueError(f"context_search_unavailable: {exc}") from exc
+
+
+async def _has_indexed_chunks(
+    db: AsyncSession,
+    *,
+    ref_id: str | None,
+    session_id: str | None,
+) -> bool:
+    stmt = select(YcrContextChunk).where(YcrContextChunk.embedding_json.is_not(None)).limit(1)
+    if ref_id:
+        stmt = stmt.where(YcrContextChunk.ref_id == ref_id)
+    elif session_id:
+        refs = await db.execute(
+            select(YcrContextRef.ref_id).where(YcrContextRef.session_id == session_id)
         )
-        return output
-    result = await db.execute(select(YcrContextChunk).where(YcrContextChunk.ref_id == ref_id))
-    matches = []
-    for chunk in result.scalars().all():
-        if not isinstance(chunk.embedding_json, list):
-            continue
-        chunk_embedding = chunk.embedding_json
-        score = cosine_similarity(query_embedding, [float(value) for value in chunk_embedding])
-        if query.lower() in chunk.text.lower():
-            score += 1.0
-        if score <= 0:
-            continue
-        matches.append(
-            {
-                "chunk_id": chunk.chunk_id,
-                "path": chunk.path,
-                "score": score,
-                "snippet": _snippet(chunk.text, query),
-                "trust_level": chunk.trust_level,
-            }
-        )
-    matches.sort(key=lambda item: float(item["score"]), reverse=True)
-    output = {
-        "ref_id": ref_id,
-        "query": query,
-        "matches": matches[: max(1, min(limit, 50))],
-        "match_count": len(matches),
-        "ref": ref,
-    }
-    await write_ledger(
-        db,
-        event_type="ref_search",
-        source_type=str(ref["source_anchor"]["type"]),
-        source_id=str(ref["source_anchor"]["id"]),
-        ref_id=ref_id,
-        raw_value={"query": query},
-        projected_value=output,
-        projection_policy="context_search_vector_v1",
-        embedding_provider=embedding_provider,
-        embedding_model=embedding_model,
-        metadata={"limit": limit},
-    )
-    return output
+        ref_ids = [str(item) for item in refs.scalars().all()]
+        if not ref_ids:
+            return True
+        stmt = stmt.where(YcrContextChunk.ref_id.in_(ref_ids))
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none() is not None
 
 
 async def _require_record(db: AsyncSession, ref_id: str) -> YcrContextRef:
@@ -311,12 +379,14 @@ def ref_to_dict(record: YcrContextRef) -> dict[str, object]:
         "ref_id": record.ref_id,
         "ref_type": record.ref_type,
         "source_anchor": {"type": record.source_type, "id": record.source_id},
+        "source_type": record.source_type,
+        "source_id": record.source_id,
+        "session_id": record.session_id,
         "path": record.source_path,
         "summary": record.summary,
         "trust_level": record.trust_level,
         "projection_policy": record.projection_policy,
         "projection_version": record.projection_version,
-        "expires_at": record.expires_at.isoformat() if record.expires_at else None,
         "available_ops": ["inspect", "expand", "tail", "schema", "search"],
     }
 
@@ -325,7 +395,7 @@ def _chunks(value: object, *, path: str = "$") -> list[tuple[str, str]]:
     if isinstance(value, dict):
         chunks: list[tuple[str, str]] = []
         for key, item in value.items():
-            chunks.extend(_chunks(item, path=f"{path}.{key}"))
+            chunks.extend(_chunks(item, path=_child_path(path, str(key))))
         return chunks
     if isinstance(value, list):
         chunks = []
@@ -347,11 +417,53 @@ def _jsonable(value: object) -> Any:
 
 
 def _hash_value(value: object) -> str:
-    try:
-        payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except TypeError:
-        payload = str(value)
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _match_dict(
+    *,
+    chunk_id: str,
+    ref_id: str,
+    path: str,
+    score: float,
+    text: str,
+    query: str,
+    trust_level: str,
+) -> dict[str, object]:
+    return {
+        "chunk_id": chunk_id,
+        "ref_id": ref_id,
+        "path": path,
+        "score": score,
+        "snippet": _snippet(text, query),
+        "trust_level": trust_level,
+    }
+
+
+def _search_output(
+    *,
+    query: str,
+    matches: list[dict[str, object]],
+    ref: dict[str, object] | None,
+    embedding_provider: str,
+    embedding_model: str,
+    limit: int,
+) -> dict[str, object]:
+    output: dict[str, object] = {
+        "query": query,
+        "matches": matches[: max(1, min(limit, 50))],
+        "match_count": len(matches),
+        "retrieval": {
+            "strategy": "context_vector_search_v2",
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+        },
+    }
+    if ref is not None:
+        output["ref_id"] = ref["ref_id"]
+        output["ref"] = ref
+    return output
 
 
 def _snippet(text: str, query: str) -> str:
@@ -364,7 +476,7 @@ def _snippet(text: str, query: str) -> str:
 
 
 def _vector_literal(values: list[float]) -> str:
-    return "[" + ",".join(f"{value:.8f}" for value in values[:256]) + "]"
+    return "[" + ",".join(f"{value:.8f}" for value in values[:1024]) + "]"
 
 
 def _preview_value(value: object) -> object:
@@ -427,3 +539,7 @@ def _select_path(value: object, path: str) -> object:
             raise ValueError(f"Cannot select {path}: {part} is not an object")
         current = current[part]
     return current
+
+
+def _child_path(path: str, key: str) -> str:
+    return f"{path}.{key}" if path != "$" else f"$.{key}"

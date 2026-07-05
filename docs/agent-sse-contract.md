@@ -1,7 +1,7 @@
 # Agent SSE 事件合同
 
 状态：当前前后端流式事件合同
-更新时间：2026-06-30
+更新时间：2026-07-06
 
 Agent 流式事件通过 `POST /agent/invoke/stream` 和
 `POST /agent/plan/stream` 返回，响应类型为 `text/event-stream`。
@@ -32,6 +32,9 @@ Agent 流式事件通过 `POST /agent/invoke/stream` 和
 | `agent.loop.started` | `prompt.received` 后 | `max_steps`, `max_duration_sec` | ReAct loop 开始。 |
 | `agent.loop.iteration` | 每轮循环 | `iteration`, `max_steps` | 新一轮迭代开始。 |
 | `agent.provider.started` | 每次 provider 调用 | `provider_name` | LLM 调用开始。 |
+| `agent.ycr.context` | 每次 provider 调用前后 | `phase`, `step`, `packet_id`, `context_estimate`, `tokens`, `projections`, `refs` | YCR 对 provider 输入/输出的估算和上下文包信息。前端用于 token 观测和侧边栏 trace。 |
+| `agent.ycr.projection` | provider 调用前，每个 projected tool observation | `call_id`, `name`, `projection_policy`, `raw_estimated_tokens`, `projected_estimated_tokens`, `raw_size_bytes`, `projected_size_bytes`, `refs` | YCR 已把历史 tool shell 转换为 provider-visible observation。 |
+| `agent.ycr.error` | YCR 调用或投影失败 | `phase`, `error_code`, `message`, `step` | YCR fail-closed 错误。不能静默降级为 raw tool result。 |
 | `agent.output.delta` | 每轮 0 次或多次 | `content` | LLM 文本流片段。同一轮里，如果有工具调用，文本片段应先于工具调用事件出现。 |
 | `agent.tool_call.created` | 每个 tool call | `call_id`, `name`, `sanitized_name`, `input` | 工具调用创建。对可并发工具，同组所有 created 事件应先于第一个执行事件出现。 |
 | `agent.tool_call.arguments` | `created` 后 | `call_id`, `name`, `input` | 工具入参。 |
@@ -40,6 +43,7 @@ Agent 流式事件通过 `POST /agent/invoke/stream` 和
 | `agent.job.running` | 每个 tool call | `call_id`, `name`, `job_id`, `status` | Job 正在执行。 |
 | `agent.job.finished` | 每个 tool call | `call_id`, `name`, `job_id`, `status` | Job 进入终态。 |
 | `agent.tool_call.completed` | 成功工具 | `call_id`, `name`, `result` | 工具成功并返回结果。 |
+| `agent.tool_observation.stored` | 成功工具结果写入 YCR 后 | `call_id`, `name`, `raw_ref`, `shell`, `raw_estimated_tokens`, `raw_size_bytes`, `shell_size_bytes` | raw result 已保存为 YCR ContextRef，Agent history 只保存 shell。 |
 | `agent.tool_call.failed` | 失败工具 | `call_id`, `name`, `error_code`, `message` | 工具失败。 |
 | `agent.tool_call.waiting_approval` | 需要审批的工具 | `call_id`, `name`, `approval_id`, `status`, `message` | 写操作需要审批。前端必须渲染交互式 ApprovalCard。 |
 | `agent.tool_call.waiting_operation` | 工具已创建可等待 Operation | `call_id`, `name`, `operation_id`, `wait_handle`, `result` | 调试轨迹事件。前端可在 tool-call 块内保留，但用户主要视图必须是独立 OperationCard。 |
@@ -66,6 +70,8 @@ stream.open
   ┌─ 第 N 轮 ─┐
   │ agent.loop.iteration
   │ agent.provider.started
+  │ agent.ycr.context              # phase=provider_input
+  │ agent.ycr.projection           # 可选，每个历史 shell 一条
   │ agent.output.delta              # LLM 文本，可选，可出现多次
   │ ├─ 工具块 ─┤                    # 每个 tool call 一个块
   │ │ agent.tool_call.created       # 并发工具时，同组 created 先全部出现
@@ -75,8 +81,10 @@ stream.open
   │ │ agent.job.running
   │ │ agent.job.finished
   │ │ agent.tool_call.completed / .failed / .waiting_approval
+  │ │ agent.tool_observation.stored # 成功结果写入 YCR 后出现
   │ └──────────┘
   │ agent.observing                 # 本轮全部工具结束后
+  │ agent.ycr.context               # phase=provider_output
   └────────────┘
   agent.synthesizing
   agent.completed
@@ -124,6 +132,10 @@ stream.close
 | `agent.prompt_context` | diagnostics/debug panel | 存入诊断面板，不渲染成 assistant 正文。 |
 | `agent.tool_call.created` | `tool_group` | 追加到当前 tool group，或创建新 tool group。 |
 | `agent.tool_call.completed` | 更新 `tool_group` | 将工具状态更新为 succeeded。 |
+| `agent.tool_observation.stored` | 更新 `tool_group` + YCR trace | 在对应 ToolCallCard 上显示 raw ref、raw bytes、shell bytes。 |
+| `agent.ycr.projection` | 更新 `tool_group` + YCR trace | 在对应 ToolCallCard 上显示 provider projection、投影 token/bytes 和 refs。 |
+| `agent.ycr.context` | YCR side panel + bubble token estimate | 更新 upload/download token estimate、provider call count、context estimate。 |
+| `agent.ycr.error` | YCR side panel + `system_event` | 显示 YCR fail-closed 错误。 |
 | `agent.tool_call.completed` 且 `name == "artifact.present"` | `artifact_presentation` + 更新 `tool_group` | 更新工具状态，并把返回的 artifacts 渲染为独立媒体块，不能只放在 tool-call 卡片里。 |
 | `agent.tool_call.failed` | 更新 `tool_group` | 将工具状态更新为 failed。 |
 | `agent.tool_call.waiting_approval` | 更新 `tool_group` + `system_event` | 将工具状态更新为 waiting_approval，并渲染 ApprovalCard。 |
@@ -149,3 +161,5 @@ stream.close
 9. `artifact.present` 是展示型元工具。它返回的 artifacts 应渲染成独立聊天媒体/内容块；tool-call 卡片只保留执行和调试记录，不能成为展示媒体的唯一位置。
 10. `agent.operation.*` 是 Center Execution Runtime v2 的等待/恢复事件。OperationCard 必须独立于 `tool_group`，因为 Operation 可能由 transfer、maintenance、approval、long job 或 future subagent 触发。
 11. Agent 因 Operation 等待而关闭 stream 时，这是正常暂停，不是失败。前端应保留 wait handle，并允许后续查询、取消或恢复。
+12. Tool raw result 不允许直接进入 provider history。前端可以展示 tool result，但 provider 可见内容必须来自 YCR `agent.ycr.projection`。
+13. YCR 搜索、投影或 ref 展开失败时，前端必须展示明确错误，不得显示“看似成功但无内容”的伪状态。
