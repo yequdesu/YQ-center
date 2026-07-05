@@ -38,8 +38,8 @@ def projection_profile_from_settings(settings: Settings) -> ProjectionProfile:
         ),
         source_limits={
             "tool_result": ProjectionLimit(
-                inline_bytes=max(default_inline, int(settings.ycr_tool_result_inline_bytes)),
-                preview_chars=max(default_preview, int(settings.ycr_tool_result_preview_chars)),
+                inline_bytes=max(256, int(settings.ycr_tool_result_inline_bytes)),
+                preview_chars=max(0, int(settings.ycr_tool_result_preview_chars)),
             ),
             "operation_observation": ProjectionLimit(
                 inline_bytes=max(default_inline, int(settings.ycr_context_block_inline_bytes)),

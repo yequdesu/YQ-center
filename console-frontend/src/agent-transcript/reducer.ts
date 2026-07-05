@@ -619,8 +619,19 @@ function appendYcrProjectionTrace(
   data: Record<string, unknown>,
   createdAt: string,
 ): TranscriptState {
-  const rawTokens = optionalNumber(data.raw_estimated_tokens) ?? 0;
-  const projectedTokens = optionalNumber(data.projected_estimated_tokens) ?? 0;
+  const estimate = asRecord(data.context_estimate);
+  const rawTokens =
+    optionalNumber(data.raw_estimated_tokens) ??
+    optionalNumber(estimate.raw_estimated_tokens) ??
+    0;
+  const projectedTokens =
+    optionalNumber(data.projected_estimated_tokens) ??
+    optionalNumber(estimate.projected_estimated_tokens) ??
+    0;
+  const rawSizeBytes =
+    optionalNumber(data.raw_size_bytes) ?? optionalNumber(estimate.raw_size_bytes);
+  const projectedSizeBytes =
+    optionalNumber(data.projected_size_bytes) ?? optionalNumber(estimate.projected_size_bytes);
   const refs = Array.isArray(data.refs) ? data.refs : [];
   const callId = optionalString(data.call_id);
   const item: YcrTraceItem = {
@@ -636,17 +647,18 @@ function appendYcrProjectionTrace(
     summary: optionalString(data.summary),
     rawEstimatedTokens: rawTokens,
     projectedEstimatedTokens: projectedTokens,
-    rawSizeBytes: optionalNumber(data.raw_size_bytes),
-    projectedSizeBytes: optionalNumber(data.projected_size_bytes),
-    refCount: refs.length || optionalNumber(data.ref_count),
-    omittedCount: optionalNumber(data.omitted_count),
+    rawSizeBytes,
+    projectedSizeBytes,
+    refCount: refs.length || optionalNumber(data.ref_count) || optionalNumber(estimate.ref_count),
+    omittedCount: optionalNumber(data.omitted_count) || optionalNumber(estimate.omitted_count),
     data,
   };
   const next = callId
     ? patchToolCall(state, { call_id: callId }, (tool) => ({
         ...tool,
         projectedEstimatedTokens: projectedTokens || tool.projectedEstimatedTokens,
-        projectedSizeBytes: item.projectedSizeBytes ?? tool.projectedSizeBytes,
+        rawSizeBytes: rawSizeBytes ?? tool.rawSizeBytes,
+        projectedSizeBytes: projectedSizeBytes ?? tool.projectedSizeBytes,
         ycrProjection: data,
       }))
     : state;

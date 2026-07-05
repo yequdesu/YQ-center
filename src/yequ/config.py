@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     ycr_vector_dimensions: int = 1024
     ycr_projection_inline_bytes: int = 12000
     ycr_projection_preview_chars: int = 1200
-    ycr_tool_result_inline_bytes: int = 12000
+    ycr_tool_result_inline_bytes: int = 2048
     ycr_tool_result_preview_chars: int = 1200
     ycr_context_block_inline_bytes: int = 16000
     ycr_context_block_preview_chars: int = 1600

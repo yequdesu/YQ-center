@@ -43,6 +43,40 @@ async def test_ycr_tool_projection_refs_large_stdout(db_session) -> None:
     assert result["facts"]["path"] == "$"
 
 
+async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> None:
+    value = {
+        "capabilities": [
+            {
+                "canonical_name": f"tool.{index}",
+                "description": "diagnostic capability " * 12,
+            }
+            for index in range(30)
+        ]
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_meta",
+        path="$",
+        value=value,
+        summary="capability.search succeeded",
+        session_id="sess_1",
+    )
+    projected = project_tool_observation_from_ref(
+        name="capability.search",
+        call_id="call_meta",
+        status="succeeded",
+        result=value,
+        raw_ref=raw_ref,
+    )
+
+    result = projected["result"]
+    assert result["refs"]
+    assert result["facts"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["context_estimate"]["saved_estimated_tokens"] > 0
+
+
 async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
     ref = await upsert_ref(
         db_session,
