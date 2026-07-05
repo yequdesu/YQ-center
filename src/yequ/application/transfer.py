@@ -537,13 +537,16 @@ class TransferApplicationService:
         await self.db.commit()
         return self._session_dict(session, receive_result=receive_result, send_result=send_result)
 
-    async def status(self, transfer_id: str) -> dict[str, object]:
+    async def status(self, transfer_id: str, *, projection: str = "detail") -> dict[str, object]:
         session = await self._get_session(transfer_id)
         source_job = await self._get_job(session.source_job_id)
         target_job = await self._get_job(session.target_job_id)
         await self._refresh_status_from_jobs(session, source_job, target_job)
         await self.db.commit()
-        return self._session_dict(session, source_job=source_job, target_job=target_job)
+        detail = self._session_dict(session, source_job=source_job, target_job=target_job)
+        if projection == "summary":
+            return transfer_session_summary(detail)
+        return detail
 
     async def cancel(
         self,
@@ -1190,3 +1193,50 @@ class TransferApplicationService:
             data["target_job"] = _job_dict(target_job)
         data["summary"] = _transfer_summary(data)
         return data
+
+
+def transfer_session_summary(transfer: dict[str, object]) -> dict[str, object]:
+    source_job = transfer.get("source_job")
+    target_job = transfer.get("target_job")
+    return {
+        "transfer_id": transfer.get("transfer_id"),
+        "transport": transfer.get("transport"),
+        "mode": transfer.get("mode"),
+        "status": transfer.get("status"),
+        "source_node_id": transfer.get("source_node_id"),
+        "target_node_id": transfer.get("target_node_id"),
+        "source_path": transfer.get("source_path"),
+        "target_path": transfer.get("target_path"),
+        "target_output_dir": transfer.get("target_output_dir"),
+        "resume_mode": transfer.get("resume_mode"),
+        "attempt": transfer.get("attempt"),
+        "size_bytes": transfer.get("size_bytes"),
+        "sha256": transfer.get("sha256"),
+        "route_policy": transfer.get("route_policy"),
+        "resumable": transfer.get("resumable"),
+        "last_resumable_error": transfer.get("last_resumable_error"),
+        "resume_hint": transfer.get("resume_hint"),
+        "error_code": transfer.get("error_code"),
+        "error_message": transfer.get("error_message"),
+        "created_at": transfer.get("created_at"),
+        "started_at": transfer.get("started_at"),
+        "completed_at": transfer.get("completed_at"),
+        "summary": transfer.get("summary"),
+        "source_job": _job_status_summary(source_job),
+        "target_job": _job_status_summary(target_job),
+    }
+
+
+def _job_status_summary(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "job_id": value.get("job_id"),
+        "node_id": value.get("node_id"),
+        "function_name": value.get("function_name"),
+        "status": value.get("status"),
+        "progress_pct": value.get("progress_pct"),
+        "progress_message": value.get("progress_message"),
+        "error_code": value.get("error_code"),
+        "error_message": value.get("error_message"),
+    }

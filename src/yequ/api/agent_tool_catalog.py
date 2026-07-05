@@ -137,12 +137,19 @@ def _center_meta_functions() -> list[AgentFunction]:
         ),
         AgentFunction(
             name="context.expand",
-            description="Expand a bounded slice from a YCR context ref.",
+            description=(
+                "Expand a bounded, path-specific slice from a YCR context ref. "
+                "Use context.inspect or context.schema before expanding broad roots."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "ref_id": {"type": "string"},
-                    "path": {"type": "string", "default": "$"},
+                    "path": {
+                        "type": "string",
+                        "default": "$",
+                        "description": "Prefer a specific JSON path instead of broad root $.",
+                    },
                     "limit": {"type": "integer", "default": 20, "maximum": 100},
                 },
                 "required": ["ref_id"],
@@ -257,6 +264,11 @@ def _center_meta_functions() -> list[AgentFunction]:
                     "node_id": {"type": "string"},
                     "artifact_type": {"type": "string"},
                     "limit": {"type": "integer", "default": 20, "maximum": 50},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
+                    },
                 },
             },
             risk="safe",
@@ -268,7 +280,14 @@ def _center_meta_functions() -> list[AgentFunction]:
             description="Inspect one Center-managed artifact by artifact_id.",
             input_schema={
                 "type": "object",
-                "properties": {"artifact_id": {"type": "string"}},
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
+                    },
+                },
                 "required": ["artifact_id"],
             },
             risk="safe",
@@ -290,6 +309,11 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "type": "array",
                         "items": {"type": "string"},
                         "maxItems": 10,
+                    },
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
                     },
                 },
             },
@@ -377,7 +401,14 @@ def _center_meta_functions() -> list[AgentFunction]:
             ),
             input_schema={
                 "type": "object",
-                "properties": {"operation_id": {"type": "string"}},
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
+                    },
+                },
                 "required": ["operation_id"],
             },
             risk="safe",
@@ -566,7 +597,14 @@ def _center_meta_functions() -> list[AgentFunction]:
             description="Inspect one Center-managed TransferSession and its sender/receiver jobs.",
             input_schema={
                 "type": "object",
-                "properties": {"transfer_id": {"type": "string"}},
+                "properties": {
+                    "transfer_id": {"type": "string"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "detail"],
+                        "default": "summary",
+                    },
+                },
                 "required": ["transfer_id"],
             },
             risk="safe",

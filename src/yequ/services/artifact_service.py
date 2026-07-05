@@ -197,27 +197,34 @@ async def resolve_download(
     return ArtifactDownload(artifact=artifact, blob=blob, path=path)
 
 
-def artifact_to_dict(artifact: Artifact) -> dict[str, object]:
+def artifact_to_dict(artifact: Artifact, *, projection: str = "detail") -> dict[str, object]:
     blob = artifact.blobs[0] if artifact.blobs else None
-    return {
+    data: dict[str, object] = {
         "artifact_id": artifact.artifact_id,
         "artifact_type": artifact.artifact_type,
         "title": artifact.title,
         "summary": artifact.summary,
-        "metadata": artifact.metadata_json,
         "session_id": artifact.session_id,
         "invocation_id": artifact.invocation_id,
         "job_id": artifact.job_id,
         "node_id": artifact.node_id,
-        "capability_source_id": artifact.capability_source_id,
         "content_type": artifact.content_type,
         "size_bytes": artifact.size_bytes,
-        "sha256": artifact.sha256,
         "status": artifact.status,
         "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
-        "blob_id": blob.blob_id if blob else None,
         "download_url": f"/admin/artifacts/{artifact.artifact_id}/download",
     }
+    if projection == "summary":
+        return data
+    data.update(
+        {
+            "metadata": artifact.metadata_json,
+            "capability_source_id": artifact.capability_source_id,
+            "sha256": artifact.sha256,
+            "blob_id": blob.blob_id if blob else None,
+        }
+    )
+    return data
 
 
 def _storage_key(artifact_id: str, sha256: str) -> str:

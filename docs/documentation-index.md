@@ -26,6 +26,7 @@
 | `docs/todos/README.md` | 当前待办目录说明。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性和错误传播门禁。 |
 | `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 三阶段重构实施计划：清理旧实现、按新决策重建、文档一致性收口。 |
+| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | YCR/Agent 行为修正：通用 Tool RAG 排序、递归 projection 粒度、Linux yq-croc receive 误报失败、meta tool 职责边界收敛和空错误传播。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、连通性探测、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
 ## 3. 设计提案

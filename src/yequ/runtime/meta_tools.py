@@ -144,6 +144,7 @@ async def execute_inline_meta_tool(
                 )
             }
         elif command.function_name == "artifact.list":
+            projection = string_or_none(input_data.get("projection")) or "summary"
             artifacts = await list_artifacts(
                 db,
                 session_id=string_or_none(input_data.get("session_id")) or command.session_id,
@@ -153,13 +154,22 @@ async def execute_inline_meta_tool(
                 artifact_type=string_or_none(input_data.get("artifact_type")),
                 limit=int_or_default(input_data.get("limit"), 20),
             )
-            output = {"artifacts": [artifact_to_dict(artifact) for artifact in artifacts]}
+            output = {
+                "artifacts": [
+                    artifact_to_dict(artifact, projection=projection) for artifact in artifacts
+                ],
+                "projection": projection,
+            }
         elif command.function_name == "artifact.get":
             artifact_id = string_or_none(input_data.get("artifact_id"))
             if not artifact_id:
                 return runtime_error(command, "invalid_input", "artifact_id is required")
             artifact = await get_artifact(db, artifact_id)
-            output = {"artifact": artifact_to_dict(artifact)}
+            projection = string_or_none(input_data.get("projection")) or "summary"
+            output = {
+                "artifact": artifact_to_dict(artifact, projection=projection),
+                "projection": projection,
+            }
         elif command.function_name == "artifact.present":
             artifact_ids = string_list(input_data.get("artifact_ids"))
             artifact_id = string_or_none(input_data.get("artifact_id"))
@@ -178,8 +188,9 @@ async def execute_inline_meta_tool(
                     "invalid_input",
                     "artifact.present can show at most 10 artifacts",
                 )
+            projection = string_or_none(input_data.get("projection")) or "summary"
             artifacts = [
-                artifact_to_dict(await get_artifact(db, artifact_id))
+                artifact_to_dict(await get_artifact(db, artifact_id), projection=projection)
                 for artifact_id in artifact_ids
             ]
             output = {
@@ -188,6 +199,7 @@ async def execute_inline_meta_tool(
                     "kind": "artifact_gallery",
                     "count": len(artifacts),
                 },
+                "projection": projection,
             }
         elif command.function_name == "artifact.deploy.preflight":
             from yequ.application.artifact_deploy import (
@@ -222,7 +234,10 @@ async def execute_inline_meta_tool(
             }
         elif command.function_name == "operation.status":
             operation_id = required_string(input_data.get("operation_id"), "operation_id")
-            output = await OperationService(db).status(operation_id)
+            output = await OperationService(db).status(
+                operation_id,
+                projection=string_or_none(input_data.get("projection")) or "summary",
+            )
         elif command.function_name == "operation.cancel":
             operation_id = required_string(input_data.get("operation_id"), "operation_id")
             output = await OperationService(db).cancel(
@@ -264,7 +279,12 @@ async def execute_inline_meta_tool(
             }
         elif command.function_name == "transfer.status":
             transfer_id = required_string(input_data.get("transfer_id"), "transfer_id")
-            output = {"transfer": await TransferApplicationService(db).status(transfer_id)}
+            output = {
+                "transfer": await TransferApplicationService(db).status(
+                    transfer_id,
+                    projection=string_or_none(input_data.get("projection")) or "summary",
+                )
+            }
         elif command.function_name == "transfer.cancel":
             transfer_id = required_string(input_data.get("transfer_id"), "transfer_id")
             output = {

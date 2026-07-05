@@ -211,7 +211,7 @@ class OperationService:
         await self.db.commit()
         return result
 
-    async def status(self, operation_id: str) -> dict[str, object]:
+    async def status(self, operation_id: str, *, projection: str = "detail") -> dict[str, object]:
         operation = await self._get(operation_id)
         handler = OperationHandlerRegistry(self.db).resolve(
             kind=operation.kind,
@@ -227,6 +227,8 @@ class OperationService:
             )
         result = {"operation": self.operation_dict(operation), **ref}
         await self.db.commit()
+        if projection == "summary":
+            return operation_status_summary(result)
         return result
 
     async def cancel(
@@ -341,4 +343,67 @@ def wait_handle_for_operation(operation: dict[str, object]) -> dict[str, object]
         "status": operation["status"],
         "resume_policy": operation.get("resume_policy") or "manual",
         "cancel_supported": bool(operation.get("cancel_supported", False)),
+    }
+
+
+def operation_status_summary(value: dict[str, object]) -> dict[str, object]:
+    operation = value.get("operation")
+    operation_dict = operation if isinstance(operation, dict) else {}
+    output: dict[str, object] = {"operation": operation_dict}
+    if isinstance(value.get("transfer"), dict):
+        from yequ.application.transfer import transfer_session_summary
+
+        output["transfer"] = transfer_session_summary(value["transfer"])
+    if isinstance(value.get("job"), dict):
+        output["job"] = _job_summary(value["job"])
+    if isinstance(value.get("artifacts"), list):
+        output["artifacts"] = [
+            _artifact_summary(item) for item in value["artifacts"] if isinstance(item, dict)
+        ]
+    if isinstance(value.get("approval"), dict):
+        output["approval"] = value["approval"]
+    if isinstance(value.get("maintenance_run"), dict):
+        output["maintenance_run"] = _maintenance_summary(value["maintenance_run"])
+    return output
+
+
+def _job_summary(value: dict[str, object]) -> dict[str, object]:
+    return {
+        "job_id": value.get("job_id"),
+        "invocation_id": value.get("invocation_id"),
+        "node_id": value.get("node_id"),
+        "runtime_id": value.get("runtime_id"),
+        "function_name": value.get("function_name"),
+        "status": value.get("status"),
+        "error_code": value.get("error_code"),
+        "error_message": value.get("error_message"),
+        "created_at": value.get("created_at"),
+        "started_at": value.get("started_at"),
+        "finished_at": value.get("finished_at"),
+    }
+
+
+def _artifact_summary(value: dict[str, object]) -> dict[str, object]:
+    return {
+        "artifact_id": value.get("artifact_id"),
+        "artifact_type": value.get("artifact_type"),
+        "title": value.get("title"),
+        "summary": value.get("summary"),
+        "content_type": value.get("content_type"),
+        "size_bytes": value.get("size_bytes"),
+        "status": value.get("status"),
+        "node_id": value.get("node_id"),
+        "created_at": value.get("created_at"),
+    }
+
+
+def _maintenance_summary(value: dict[str, object]) -> dict[str, object]:
+    return {
+        "run_id": value.get("run_id"),
+        "plan_id": value.get("plan_id"),
+        "status": value.get("status"),
+        "progress_pct": value.get("progress_pct"),
+        "progress_message": value.get("progress_message"),
+        "error_code": value.get("error_code"),
+        "error_message": value.get("error_message"),
     }

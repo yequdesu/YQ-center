@@ -288,26 +288,7 @@ def _project_node(
     profile: ProjectionProfile,
     stats: ProjectionStats,
 ) -> object:
-    raw_size = json_size_bytes(value)
     limit = profile.limit_for(source_kind)
-    if raw_size > limit.inline_bytes:
-        ref = _make_value_ref(
-            value,
-            ref_id=ref_id,
-            source_kind=source_kind,
-            source_id=source_id,
-            path=path,
-            limit=limit,
-        )
-        ref_size = json_size_bytes(ref)
-        saved_ratio = 1.0 - (ref_size / max(raw_size, 1))
-        if saved_ratio >= profile.min_ref_savings_ratio:
-            stats.ref_count += 1
-            stats.refs.append(ref)
-            preview = ref.get("preview")
-            if isinstance(preview, str) and preview:
-                stats.preview_estimated_tokens += estimate_tokens(preview)
-            return ref
 
     if isinstance(value, dict):
         return {
@@ -322,8 +303,9 @@ def _project_node(
             )
             for key, item in value.items()
         }
+
     if isinstance(value, list):
-        return [
+        projected = [
             _project_node(
                 item,
                 ref_id=ref_id,
@@ -335,7 +317,55 @@ def _project_node(
             )
             for index, item in enumerate(value)
         ]
+        if path == "$" or json_size_bytes(projected) <= limit.inline_bytes:
+            return projected
+        ref = _make_value_ref(
+            value,
+            ref_id=ref_id,
+            source_kind=source_kind,
+            source_id=source_id,
+            path=path,
+            limit=limit,
+        )
+        if _ref_saves_enough(ref, value, profile=profile):
+            stats.ref_count += 1
+            stats.refs.append(ref)
+            preview = ref.get("preview")
+            if isinstance(preview, str) and preview:
+                stats.preview_estimated_tokens += estimate_tokens(preview)
+            return ref
+        return projected
+
+    raw_size = json_size_bytes(value)
+    if raw_size > limit.inline_bytes:
+        ref = _make_value_ref(
+            value,
+            ref_id=ref_id,
+            source_kind=source_kind,
+            source_id=source_id,
+            path=path,
+            limit=limit,
+        )
+        if _ref_saves_enough(ref, value, profile=profile):
+            stats.ref_count += 1
+            stats.refs.append(ref)
+            preview = ref.get("preview")
+            if isinstance(preview, str) and preview:
+                stats.preview_estimated_tokens += estimate_tokens(preview)
+            return ref
     return value
+
+
+def _ref_saves_enough(
+    ref: JsonDict,
+    value: object,
+    *,
+    profile: ProjectionProfile,
+) -> bool:
+    raw_size = json_size_bytes(value)
+    ref_size = json_size_bytes(ref)
+    saved_ratio = 1.0 - (ref_size / max(raw_size, 1))
+    return saved_ratio >= profile.min_ref_savings_ratio
 
 
 def _make_value_ref(

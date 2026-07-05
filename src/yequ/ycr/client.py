@@ -97,10 +97,20 @@ class HttpYcrClient:
                 response.raise_for_status()
                 data = response.json()
         except httpx.HTTPStatusError as exc:
-            code, message = _error_from_response(exc.response)
+            code, message = _error_from_response(exc.response, method=method, path=path)
             raise YcrError(code, message) from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise YcrError("context_router_unavailable", f"YCR request failed: {exc}") from exc
+        except httpx.HTTPError as exc:
+            message = str(exc) or exc.__class__.__name__
+            raise YcrError(
+                "context_router_unavailable",
+                f"YCR {method} {path} request failed: {message}",
+            ) from exc
+        except ValueError as exc:
+            message = str(exc) or exc.__class__.__name__
+            raise YcrError(
+                "context_router_invalid_response",
+                f"YCR {method} {path} returned invalid JSON: {message}",
+            ) from exc
         if not isinstance(data, dict):
             raise YcrError("context_router_invalid_response", "YCR returned a non-object response")
         if data.get("status") == "failed" and isinstance(data.get("error"), dict):
@@ -211,13 +221,18 @@ def ycr_error_payload(exc: YcrError) -> str:
     return json.dumps({"status": "failed", "ycr_error": exc.to_dict()}, ensure_ascii=False)
 
 
-def _error_from_response(response: httpx.Response) -> tuple[str, str]:
+def _error_from_response(
+    response: httpx.Response,
+    *,
+    method: str = "HTTP",
+    path: str = "",
+) -> tuple[str, str]:
     try:
         data = response.json()
     except ValueError:
         return (
             f"context_router_http_{response.status_code}",
-            f"YCR request failed with HTTP {response.status_code}",
+            f"YCR {method} {path} failed with HTTP {response.status_code}",
         )
     if isinstance(data, dict):
         detail = data.get("detail")
@@ -239,5 +254,5 @@ def _error_from_response(response: httpx.Response) -> tuple[str, str]:
             )
     return (
         f"context_router_http_{response.status_code}",
-        f"YCR request failed with HTTP {response.status_code}",
+        f"YCR {method} {path} failed with HTTP {response.status_code}",
     )

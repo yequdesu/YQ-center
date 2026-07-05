@@ -16,7 +16,7 @@ from yequ.ycr.embedding import EmbeddingError, embed_text_full, rerank_documents
 from yequ.ycr.retrieval import TOKEN_RE, cosine_similarity
 
 TOOL_RAG_CANDIDATE_LIMIT = 500
-CAPABILITY_INDEX_VERSION = 2
+CAPABILITY_INDEX_VERSION = 3
 RETRIEVAL_TOP_K = 50
 RRF_K = 60
 
@@ -353,11 +353,40 @@ def _capability_index_document(candidate: dict[str, object]) -> dict[str, Any]:
         candidate.get("value_schema"),
     )
     examples = candidate.get("examples") or []
+    identity_terms = _capability_name_terms(
+        candidate.get("canonical_name"),
+        *(candidate.get("aliases") or []),
+        *registered_names,
+    )
+    artifact_text = " ".join(
+        item
+        for item in [
+            _compact_json_text(candidate.get("artifact_inputs") or []),
+            _compact_json_text(candidate.get("artifact_outputs") or []),
+        ]
+        if item
+    )
+    source_text = _compact_json_text(
+        [
+            {
+                "registered_name": source.get("registered_name"),
+                "platform_os": source.get("platform_os"),
+                "dispatchable": source.get("dispatchable"),
+                "execution_requirements": source.get("execution_requirements"),
+                "resource_keys": source.get("resource_keys"),
+                "supports_progress": source.get("supports_progress"),
+                "supports_cancel": source.get("supports_cancel"),
+                "supports_resume": source.get("supports_resume"),
+            }
+            for source in sources
+        ]
+    )
     return {
         "identity": " ".join(
             str(value)
             for value in [
                 candidate.get("canonical_name"),
+                identity_terms,
                 *(candidate.get("aliases") or []),
                 *registered_names,
             ]
@@ -375,14 +404,17 @@ def _capability_index_document(candidate: dict[str, object]) -> dict[str, Any]:
         ),
         "schema_text": schema_text,
         "examples_text": _compact_json_text(examples),
+        "io_contract_text": " ".join(
+            item for item in [schema_text, artifact_text] if item
+        ),
+        "runtime_contract_text": source_text,
         "constraints_text": " ".join(
             str(value)
             for value in [
                 candidate.get("capability_type"),
                 candidate.get("risk"),
                 candidate.get("effect"),
-                _compact_json_text(candidate.get("artifact_inputs") or []),
-                _compact_json_text(candidate.get("artifact_outputs") or []),
+                artifact_text,
             ]
             if value
         ),
@@ -410,11 +442,23 @@ def _capability_index_text(document: dict[str, Any]) -> str:
     sections = [
         ("identity", document.get("identity")),
         ("intent", document.get("intent_text")),
-        ("schema", document.get("schema_text")),
+        ("io", document.get("io_contract_text") or document.get("schema_text")),
         ("examples", document.get("examples_text")),
+        ("runtime", document.get("runtime_contract_text")),
         ("constraints", document.get("constraints_text")),
     ]
     return "\n".join(f"{name}: {text}" for name, text in sections if text)
+
+
+def _capability_name_terms(*values: object) -> str:
+    terms: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        for token in TOKEN_RE.findall(str(value).replace(".", " ").replace("_", " ").lower()):
+            if len(token) > 1:
+                terms.append(token)
+    return " ".join(dict.fromkeys(terms))
 
 
 def _stable_hash(value: dict[str, Any]) -> str:

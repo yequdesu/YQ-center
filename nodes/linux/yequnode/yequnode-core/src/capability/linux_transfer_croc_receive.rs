@@ -181,6 +181,7 @@ impl Capability for LinuxTransferCrocReceive {
             )
             .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
 
+        let receive_started_at = std::time::SystemTime::now();
         let run_result = run_yq_croc(
             yq_croc_config,
             YqCrocRun {
@@ -207,32 +208,14 @@ impl Capability for LinuxTransferCrocReceive {
 
         match run_result {
             Ok(result) => {
-                let received_path =
-                    finalize_received_path(&output_dir, target_path.as_deref(), &resume_mode)?;
-                let received_meta = compute_received_metadata(Path::new(&received_path))?;
-                if let Some(expected) = expected_sha256.as_deref() {
-                    if received_meta.sha256.as_deref() != Some(expected) {
-                        ledger
-                            .update_status(
-                                &transfer_id,
-                                crate::transfer_ledger::TransferStatus::Failed,
-                                None,
-                                Some((
-                                    "integrity_mismatch",
-                                    "received file sha256 does not match expected_sha256",
-                                )),
-                            )
-                            .map_err(|e| {
-                                CapabilityError::Internal(format!("ledger update failed: {}", e))
-                            })?;
-                        return Err(CapabilityError::IntegrityMismatch {
-                            detail: format!(
-                                "expected {}, got {:?}",
-                                expected, received_meta.sha256
-                            ),
-                        });
-                    }
-                }
+                let (received_path, received_meta) = finalize_and_verify_received(
+                    &output_dir,
+                    target_path.as_deref(),
+                    &resume_mode,
+                    expected_size_bytes,
+                    expected_sha256.as_deref(),
+                    None,
+                )?;
                 ledger
                     .update_status(
                         &transfer_id,
@@ -261,6 +244,51 @@ impl Capability for LinuxTransferCrocReceive {
                 }))
             }
             Err(err) => {
+                let can_recover = matches!(&err, CapabilityError::FunctionExecutionFailed { .. })
+                    && (expected_size_bytes.is_some() || expected_sha256.is_some());
+                if can_recover {
+                    if let Ok((received_path, received_meta)) = finalize_and_verify_received(
+                        &output_dir,
+                        target_path.as_deref(),
+                        &resume_mode,
+                        expected_size_bytes,
+                        expected_sha256.as_deref(),
+                        Some(receive_started_at),
+                    ) {
+                        ledger
+                            .update_status(
+                                &transfer_id,
+                                crate::transfer_ledger::TransferStatus::Succeeded,
+                                None,
+                                None,
+                            )
+                            .map_err(|e| {
+                                CapabilityError::Internal(format!("ledger update failed: {}", e))
+                            })?;
+                        let exit_code = match &err {
+                            CapabilityError::FunctionExecutionFailed { exit_code, .. } => {
+                                *exit_code
+                            }
+                            _ => None,
+                        };
+                        return Ok(json!({
+                            "runtime": "yq-croc",
+                            "transfer_id": transfer_id,
+                            "attempt": attempt,
+                            "status": "succeeded",
+                            "role": "receiver",
+                            "received_path": received_path,
+                            "received_kind": received_meta.kind,
+                            "size_bytes": received_meta.size_bytes,
+                            "sha256": received_meta.sha256,
+                            "started_at": null,
+                            "completed_at": chrono::Utc::now().to_rfc3339(),
+                            "exit_code": exit_code,
+                            "verified_after_runtime_nonzero_exit": true,
+                            "runtime_error_message": err.error_message(),
+                        }));
+                    }
+                }
                 let error_code = err.error_code().to_string();
                 let error_message = err.error_message();
                 ledger
@@ -304,6 +332,47 @@ fn validate_target(
         }
     }
     Ok(())
+}
+
+fn finalize_and_verify_received(
+    output_dir: &str,
+    target_path: Option<&str>,
+    resume_mode: &str,
+    expected_size_bytes: Option<u64>,
+    expected_sha256: Option<&str>,
+    min_modified_at: Option<std::time::SystemTime>,
+) -> Result<(String, ReceivedMetadata), CapabilityError> {
+    let received_path = finalize_received_path(output_dir, target_path, resume_mode)?;
+    if let Some(min_modified_at) = min_modified_at {
+        let modified = std::fs::metadata(&received_path)
+            .and_then(|meta| meta.modified())
+            .map_err(|e| {
+                CapabilityError::Internal(format!("failed to read received mtime: {}", e))
+            })?;
+        if modified < min_modified_at {
+            return Err(CapabilityError::FunctionExecutionFailed {
+                message: "received path was not modified by this receive attempt".into(),
+                exit_code: None,
+                stderr: None,
+            });
+        }
+    }
+    let received_meta = compute_received_metadata(Path::new(&received_path))?;
+    if let (Some(expected), Some(actual)) = (expected_size_bytes, received_meta.size_bytes) {
+        if actual != expected {
+            return Err(CapabilityError::IntegrityMismatch {
+                detail: format!("expected size {}, got {}", expected, actual),
+            });
+        }
+    }
+    if let Some(expected) = expected_sha256 {
+        if received_meta.sha256.as_deref() != Some(expected) {
+            return Err(CapabilityError::IntegrityMismatch {
+                detail: format!("expected {}, got {:?}", expected, received_meta.sha256),
+            });
+        }
+    }
+    Ok((received_path, received_meta))
 }
 
 fn finalize_received_path(

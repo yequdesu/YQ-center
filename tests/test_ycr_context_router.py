@@ -39,8 +39,9 @@ async def test_ycr_tool_projection_refs_large_stdout(db_session) -> None:
 
     result = projected["result"]
     assert result["refs"]
-    assert result["facts"]["$ycr_ref"] == raw_ref["ref_id"]
-    assert result["facts"]["path"] == "$"
+    assert result["facts"]["status"] == "ok"
+    assert result["facts"]["stdout"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["facts"]["stdout"]["path"] == "$.stdout"
 
 
 async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> None:
@@ -73,8 +74,49 @@ async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> N
 
     result = projected["result"]
     assert result["refs"]
-    assert result["facts"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["facts"]["capabilities"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["facts"]["capabilities"]["path"] == "$.capabilities"
     assert result["context_estimate"]["saved_estimated_tokens"] > 0
+
+
+async def test_ycr_projection_keeps_many_small_decision_fields_inline(db_session) -> None:
+    value = {
+        "preflight": {
+            "allowed": True,
+            "decision": "allow",
+            "preflight_id": "tpf_test",
+            "failed_preconditions": [],
+            "source": {"path": "E:\\file.zip", "found": True, "readable": True},
+            "target": {"path": "/home/user/", "exists": True, "writable": True},
+            "source_runtime": {
+                f"fact_{index}": f"value_{index}"
+                for index in range(80)
+            },
+        }
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_preflight",
+        path="$",
+        value=value,
+        summary="transfer.preflight succeeded",
+        session_id="sess_1",
+    )
+    projected = project_tool_observation_from_ref(
+        name="transfer.preflight",
+        call_id="call_preflight",
+        status="succeeded",
+        result=value,
+        raw_ref=raw_ref,
+    )
+
+    facts = projected["result"]["facts"]
+    assert facts["preflight"]["allowed"] is True
+    assert facts["preflight"]["preflight_id"] == "tpf_test"
+    assert facts["preflight"]["source"]["path"] == "E:\\file.zip"
+    assert "$ycr_ref" not in facts
 
 
 async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
