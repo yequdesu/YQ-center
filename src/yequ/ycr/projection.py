@@ -33,38 +33,64 @@ SENSITIVE_FIELD_NAMES = {
 }
 SUMMARY_FIELDS = {
     "allowed",
+    "agent_description",
+    "aliases",
     "bytes_transferred",
+    "canonical_name",
+    "capability_id",
+    "capability_ref",
+    "capability_type",
     "code",
     "completed_at",
     "decision",
+    "description",
+    "device",
+    "dispatchable",
+    "dispatchable_source_count",
+    "effect",
     "error_code",
     "error_message",
     "exists",
     "failed_preconditions",
+    "free",
+    "fstype",
     "id",
+    "input_schema",
+    "invoke",
     "job_id",
     "kind",
     "last_error_code",
     "last_error_message",
     "message",
+    "mountpoint",
     "name",
     "node_id",
+    "output_schema",
     "operation_id",
     "path",
+    "percent",
+    "platform_os",
     "phase",
     "preflight_id",
     "progress_pct",
     "readable",
+    "registered_name",
     "ref_id",
     "ref_type",
     "resume_mode",
+    "risk",
     "size_bytes",
     "source_node_id",
+    "source_count",
+    "source_id",
     "started_at",
     "status",
+    "tags",
     "target_node_id",
+    "total",
     "transfer_id",
     "updated_at",
+    "used",
     "writable",
 }
 LARGE_FIELD_NAMES = {
@@ -190,12 +216,12 @@ def prompt_with_projected_context(
                 "source_hash": digest,
                 "refs": [
                     _make_ref(
-                    source_kind="context_blocks",
-                    source_id=digest,
-                    path="$",
-                    summary="Projected context blocks omitted from prompt due to budget.",
-                    value=projected_blocks,
-                )
+                        source_kind="context_blocks",
+                        source_id=digest,
+                        path="$",
+                        summary="Projected context blocks omitted from prompt due to budget.",
+                        value=projected_blocks,
+                    )
                 ],
                 "truncated": True,
             },
@@ -224,10 +250,7 @@ def project_operation_observation(
     operation = observation.get("operation")
     operation_dict = operation if isinstance(operation, dict) else {}
     durable_id = str(
-        operation_id
-        or operation_dict.get("operation_id")
-        or observation.get("operation_id")
-        or ""
+        operation_id or operation_dict.get("operation_id") or observation.get("operation_id") or ""
     )
     projected, refs, omitted, truncated = _project_value(
         observation,
@@ -617,7 +640,10 @@ def _is_large(value: object) -> bool:
 
 def _large_field_summary(value: object) -> JsonDict:
     if isinstance(value, list):
-        return {"count": len(value), "sample": value[: min(len(value), 3)]}
+        return {
+            "count": len(value),
+            "sample": [_preview_value(item) for item in value[: min(len(value), 3)]],
+        }
     if isinstance(value, str):
         return {"chars": len(value), "preview": value[: min(len(value), 240)]}
     if isinstance(value, dict):
@@ -645,6 +671,38 @@ def _make_ref(
     _REF_STORE[str(ref["ref_id"])] = {**deepcopy(ref), "value": deepcopy(value)}
     _METRICS["refs_created"] += 1
     return ref
+
+
+def transient_ref_payload(ref_id: str) -> JsonDict | None:
+    """Return a projection-time ref payload for HTTP materialization."""
+
+    stored = _REF_STORE.get(ref_id)
+    return deepcopy(stored) if stored is not None else None
+
+
+def _preview_value(value: object) -> object:
+    if isinstance(value, dict):
+        preview: JsonDict = {}
+        for raw_key, raw_item in list(value.items())[:8]:
+            key = str(raw_key)
+            if key.lower() in SENSITIVE_FIELD_NAMES:
+                continue
+            if isinstance(raw_item, str):
+                preview[key] = raw_item[:160]
+            elif isinstance(raw_item, (int, float, bool)) or raw_item is None:
+                preview[key] = raw_item
+            elif isinstance(raw_item, list):
+                preview[key] = {"count": len(raw_item)}
+            elif isinstance(raw_item, dict):
+                preview[key] = {"key_count": len(raw_item), "keys": list(raw_item.keys())[:6]}
+            else:
+                preview[key] = str(raw_item)[:160]
+        return preview
+    if isinstance(value, list):
+        return {"count": len(value), "sample": [_preview_value(item) for item in value[:3]]}
+    if isinstance(value, str):
+        return value[:240]
+    return value
 
 
 def _summary_text(*, name: str, status: str, value: object) -> str:

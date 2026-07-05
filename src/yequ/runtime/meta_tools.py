@@ -78,13 +78,12 @@ async def execute_inline_meta_tool(
                             "preflight_supported": input_data.get("preflight_supported"),
                             "artifact_input": input_data.get("artifact_input"),
                             "artifact_output": input_data.get("artifact_output"),
-                            "projection": string_or_none(input_data.get("projection"))
-                            or "summary",
+                            "projection": string_or_none(input_data.get("projection")) or "summary",
                             "capability_type": string_or_none(input_data.get("capability_type"))
                             or "function",
                             "include_inactive": bool(input_data.get("include_inactive", False)),
                         },
-                        limit=int_or_default(input_data.get("limit"), 5),
+                        limit=min(int_or_default(input_data.get("limit"), 5), 5),
                     )
                 ).get("matches", [])
             }

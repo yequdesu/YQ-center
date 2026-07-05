@@ -182,6 +182,36 @@ async def test_ycr_http_service_refs_and_search() -> None:
         assert searched.json()["matches"]
 
 
+async def test_ycr_http_tool_projection_materializes_refs() -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from yequ.ycr_app import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://ycr-test") as client:
+        projected = await client.post(
+            "/v1/project/tool-observation",
+            json={
+                "name": "capability.search",
+                "call_id": "call_projection_ref",
+                "status": "succeeded",
+                "result": {
+                    "capabilities": [{"canonical_name": f"tool.{index}"} for index in range(12)]
+                },
+            },
+        )
+        assert projected.status_code == 200
+        refs = projected.json()["result"]["refs"]
+        assert refs
+
+        expanded = await client.post(
+            "/v1/context/expand",
+            json={"ref_id": refs[0]["ref_id"], "path": "$", "limit": 20},
+        )
+        assert expanded.status_code == 200
+        assert expanded.json()["value"][0]["canonical_name"] == "tool.0"
+
+
 def test_ycr_missing_ref_maps_to_structured_404() -> None:
     from fastapi import HTTPException
 

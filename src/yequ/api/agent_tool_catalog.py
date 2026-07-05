@@ -50,7 +50,8 @@ def _center_meta_functions() -> list[AgentFunction]:
             description=(
                 "Search Center capability definitions with structured filters. "
                 "Use projection=summary for discovery and projection=invoke_ready "
-                "before invoking a concrete source."
+                "before invoking a concrete source. Returns at most five compact "
+                "candidates; use capability.describe for full schema."
             ),
             input_schema={
                 "type": "object",
@@ -77,7 +78,7 @@ def _center_meta_functions() -> list[AgentFunction]:
                         "default": "summary",
                     },
                     "capability_type": {"type": "string", "default": "function"},
-                    "limit": {"type": "integer", "default": 5, "maximum": 20},
+                    "limit": {"type": "integer", "default": 5, "maximum": 5},
                 },
             },
             risk="safe",
@@ -620,8 +621,6 @@ def _center_meta_functions() -> list[AgentFunction]:
     ]
 
 
-
-
 async def _available_functions(
     db: AsyncSession,
     *,
@@ -822,4 +821,3 @@ def _agent_debug_metadata(
         ),
         "available_functions": [_function_debug_summary(f) for f in available_functions],
     }
-

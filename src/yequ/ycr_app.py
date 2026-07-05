@@ -346,7 +346,7 @@ async def rehydrate_ref(body: RefRequest) -> dict[str, object]:
 
 @app.post("/v1/project/tool-observation", dependencies=[Depends(_require_ycr_auth)])
 async def project_tool_observation(body: ToolObservationRequest) -> dict[str, object]:
-    return projection.project_tool_observation(
+    projected = projection.project_tool_observation(
         name=body.name,
         call_id=body.call_id,
         status=body.status,
@@ -354,6 +354,34 @@ async def project_tool_observation(body: ToolObservationRequest) -> dict[str, ob
         target_node_id=body.target_node_id,
         budget=_budget(),
     )
+    result = projected.get("result")
+    refs = result.get("refs") if isinstance(result, dict) else []
+    if isinstance(refs, list) and refs:
+        async with async_session_factory() as db:
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                ref_id = str(ref.get("ref_id") or "")
+                stored = projection.transient_ref_payload(ref_id)
+                if not stored:
+                    continue
+                raw_anchor = ref.get("source_anchor")
+                anchor = raw_anchor if isinstance(raw_anchor, dict) else {}
+                value = stored.get("value")
+                await upsert_ref(
+                    db,
+                    ref_type=str(ref.get("ref_type") or "tool_result"),
+                    source_type=str(anchor.get("type") or ref.get("ref_type") or "tool_result"),
+                    source_id=str(anchor.get("id") or body.call_id),
+                    path=str(ref.get("path") or "$"),
+                    value=value,
+                    summary=str(ref.get("summary") or "Tool observation detail"),
+                    trust_level="node_reported_fact",
+                    projection_policy="tool_observation_summary_v1",
+                    ttl_sec=86400,
+                )
+            await db.commit()
+    return projected
 
 
 @app.post("/v1/project/tool-message", dependencies=[Depends(_require_ycr_auth)])
