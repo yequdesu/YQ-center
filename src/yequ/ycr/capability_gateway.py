@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.ycr import YcrCapabilityIndex
@@ -21,6 +21,7 @@ RETRIEVAL_TOP_K = 50
 RRF_K = 60
 RRF_RELATIVE_SCORE_FLOOR = 0.70
 DENSE_ONLY_MIN_SCORE = 0.50
+MAX_INDEX_BUILDS_PER_SEARCH = 12
 
 
 async def search_capability_registry(
@@ -137,7 +138,7 @@ async def _search_capability_rag(
             "matches": [],
             "match_count": 0,
             "retrieval": {
-                "strategy": "tool_rag_hybrid_v1",
+                "strategy": "tool_rag_bge_m3_rrf_v1",
                 "candidate_count": 0,
                 "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
                 "semantic": {"enabled": True, "match_count": 0},
@@ -145,7 +146,8 @@ async def _search_capability_rag(
         }
 
     try:
-        indexed = await _ensure_capability_indexes(db, index_candidates)
+        index_result = await _ensure_capability_indexes(db, index_candidates)
+        indexed = index_result.indexed
         query_embedding = await embed_text_full(query)
     except EmbeddingError as exc:
         raise ValueError(f"capability_rag_unavailable: {exc}") from exc
@@ -215,6 +217,12 @@ async def _search_capability_rag(
             "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
             "requested_projection": requested_projection,
             "indexed_count": len(indexed),
+            "index_build": {
+                "built_count": index_result.built_count,
+                "stale_or_missing_count": index_result.stale_or_missing_count,
+                "skipped_locked_count": index_result.skipped_locked_count,
+                "deferred_count": index_result.deferred_count,
+            },
             "semantic": {
                 "enabled": True,
                 "provider": query_embedding.provider,
@@ -271,20 +279,52 @@ def _apply_relative_score_floor(rows: list[tuple[str, float]]) -> list[tuple[str
     return [row for row in rows if row[1] >= floor]
 
 
+class CapabilityIndexBuildResult:
+    def __init__(
+        self,
+        *,
+        indexed: list[YcrCapabilityIndex],
+        built_count: int,
+        stale_or_missing_count: int,
+        skipped_locked_count: int,
+        deferred_count: int,
+    ) -> None:
+        self.indexed = indexed
+        self.built_count = built_count
+        self.stale_or_missing_count = stale_or_missing_count
+        self.skipped_locked_count = skipped_locked_count
+        self.deferred_count = deferred_count
+
+
 async def _ensure_capability_indexes(
     db: AsyncSession,
     candidates: list[dict[str, object]],
-) -> list[YcrCapabilityIndex]:
+) -> CapabilityIndexBuildResult:
     indexed: list[YcrCapabilityIndex] = []
+    build_count = 0
+    skipped_locked_count = 0
+    deferred_count = 0
+    candidate_docs = []
     for candidate in candidates:
         document = _capability_index_document(candidate)
-        index_text = _capability_index_text(document)
-        document_hash = _stable_hash(document)
         index_id = _index_id(candidate)
-        result = await db.execute(
-            select(YcrCapabilityIndex).where(YcrCapabilityIndex.index_id == index_id)
+        candidate_docs.append(
+            (
+                candidate,
+                index_id,
+                document,
+                _capability_index_text(document),
+                _stable_hash(document),
+            )
         )
-        record = result.scalar_one_or_none()
+
+    records_by_index_id = await _load_capability_index_records(
+        db,
+        [item[1] for item in candidate_docs],
+    )
+    stale_or_missing_count = 0
+    for candidate, index_id, document, index_text, document_hash in candidate_docs:
+        record = records_by_index_id.get(index_id)
         if (
             record is not None
             and record.index_version == CAPABILITY_INDEX_VERSION
@@ -293,6 +333,13 @@ async def _ensure_capability_indexes(
             and record.sparse_json
         ):
             indexed.append(record)
+            continue
+        stale_or_missing_count += 1
+        if build_count >= MAX_INDEX_BUILDS_PER_SEARCH:
+            deferred_count += 1
+            continue
+        if not await _try_capability_index_lock(db, index_id):
+            skipped_locked_count += 1
             continue
         embedding = await embed_text_full(index_text)
         if record is None:
@@ -320,7 +367,39 @@ async def _ensure_capability_indexes(
                 {"embedding": _vector_literal(embedding.dense), "index_id": index_id},
             )
         indexed.append(record)
-    return indexed
+        build_count += 1
+    return CapabilityIndexBuildResult(
+        indexed=indexed,
+        built_count=build_count,
+        stale_or_missing_count=stale_or_missing_count,
+        skipped_locked_count=skipped_locked_count,
+        deferred_count=deferred_count,
+    )
+
+
+async def _load_capability_index_records(
+    db: AsyncSession,
+    index_ids: list[str],
+) -> dict[str, YcrCapabilityIndex]:
+    if not index_ids:
+        return {}
+    result = await db.execute(
+        select(YcrCapabilityIndex).where(
+            YcrCapabilityIndex.index_id.in_(bindparam("index_ids", expanding=True))
+        ),
+        {"index_ids": index_ids},
+    )
+    return {record.index_id: record for record in result.scalars().all()}
+
+
+async def _try_capability_index_lock(db: AsyncSession, index_id: str) -> bool:
+    if not db.bind or db.bind.dialect.name != "postgresql":
+        return True
+    result = await db.execute(
+        text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"ycr_capability_index:{index_id}"},
+    )
+    return bool(result.scalar_one())
 
 
 def _capability_index_document(candidate: dict[str, object]) -> dict[str, Any]:

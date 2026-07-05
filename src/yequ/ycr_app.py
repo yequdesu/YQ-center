@@ -217,7 +217,7 @@ async def context_status() -> dict[str, object]:
         "embedding_provider": settings.ycr_embedding_provider,
         "embedding_model": settings.ycr_embedding_model,
         "capability_discovery": {
-            "strategies": ["registry_filter_v1", "tool_rag_hybrid_v1"],
+            "strategies": ["registry_filter_v1", "tool_rag_bge_m3_rrf_v1"],
             "tool_rag": (
                 "enabled"
                 if settings.ycr_embedding_provider == "openai_compatible"
