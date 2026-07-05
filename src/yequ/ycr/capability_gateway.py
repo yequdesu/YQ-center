@@ -19,8 +19,6 @@ TOOL_RAG_CANDIDATE_LIMIT = 500
 CAPABILITY_INDEX_VERSION = 2
 RETRIEVAL_TOP_K = 50
 RRF_K = 60
-RRF_RELATIVE_SCORE_FLOOR = 0.70
-DENSE_ONLY_MIN_SCORE = 0.50
 
 
 async def search_capability_registry(
@@ -262,9 +260,10 @@ def _rrf_fusion(
 ) -> list[tuple[str, float, dict[str, int]]]:
     if not sparse_rows:
         dense_ranked = sorted(dense_rows, key=lambda item: item[1], reverse=True)[:top_k]
-        if not dense_ranked or dense_ranked[0][1] < DENSE_ONLY_MIN_SCORE:
-            return []
-        return [(dense_ranked[0][0], dense_ranked[0][1], {"dense_rank": 1})]
+        return [
+            (name, score, {"dense_rank": rank})
+            for rank, (name, score) in enumerate(dense_ranked, start=1)
+        ]
 
     scores: dict[str, float] = {}
     ranks: dict[str, dict[str, int]] = {}
@@ -277,9 +276,7 @@ def _rrf_fusion(
             ranks.setdefault(name, {})[f"{channel}_rank"] = rank
     return [
         (name, score, ranks.get(name, {}))
-        for name, score in _apply_relative_score_floor(
-            sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        )
+        for name, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
     ]
 
 
@@ -289,13 +286,6 @@ def _sparse_dot(left: dict[str, float], right: dict[str, float]) -> float:
     if len(left) > len(right):
         left, right = right, left
     return sum(float(value) * float(right.get(key, 0.0)) for key, value in left.items())
-
-
-def _apply_relative_score_floor(rows: list[tuple[str, float]]) -> list[tuple[str, float]]:
-    if not rows:
-        return []
-    floor = rows[0][1] * RRF_RELATIVE_SCORE_FLOOR
-    return [row for row in rows if row[1] >= floor]
 
 
 async def _load_ready_capability_indexes(
