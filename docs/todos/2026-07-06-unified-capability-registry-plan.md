@@ -12,7 +12,7 @@
 receive 误报失败、Provider registry 分别由对应活跃待办负责。
 
 RAG cache 相关项已经进入实现：`query embedding cache` 与 `rerank cache` 已落地；
-precompute 热路径收敛和前后台资源调度已落地；retrieval candidate cache 继续按本文待办推进。
+precompute 热路径收敛、前后台资源调度和 retrieval candidate cache 已落地。
 
 ## 0. 当前实现差距
 
@@ -179,7 +179,7 @@ Tool RAG / lightweight retrieval 的索引文档必须来自 capability 合同�
 | T12 | 索引未就绪等待报告（后端已完成，前端待接入） | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 后端不在前台同步 precompute；`capability.search` 返回 `retrieval.index.status=not_ready`、`retryable` 和 `retry_after_seconds`；`context.status` 返回 capability index 的 indexes 与 queued/running/succeeded/failed 统计。前端显示仍待接入。 |
 | T13 | 前后台资源调度（已完成） | 所有 embedding/rerank 调用进入 YCR scheduler，前台优先，后台让路。 | Tool RAG、Context RAG、capability index precompute、ref chunk indexing 均通过 scheduler；embedder 侧有 embedding/rerank 并发阀门；`context.status` 暴露 scheduler 观测指标。 |
 | T14 | 精确 token accounting | 用 provider/model 对应 tokenizer 计算精确 prompt token；provider 返回 usage 后回填 actual。 | 前端不再显示 `16k/24k` 这类粗略值，显示精确 prompt/completion/total 及 per-block breakdown。 |
-| T15 | Retrieval candidate cache | 缓存向量/稀疏检索候选集，key 必须包含 query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version。 | 重复 query 在 corpus 未变时不重新跑完整 retrieval。 |
+| T15 | Retrieval candidate cache（已完成） | 缓存向量/稀疏检索候选集，key 必须包含 query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version。 | 重复 query 在 corpus 未变时不重新跑完整 retrieval。 |
 | T16 | 清理旧直接 meta tool 路径 | 删除不再需要的直接 meta tool provider 暴露路径，不保留 fallback/shim。 | Agent 能力调用只依赖 bootstrap tools + registry capability。 |
 
 ## 6. RAG 层缓存设计

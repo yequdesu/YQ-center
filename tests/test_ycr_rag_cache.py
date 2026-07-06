@@ -1,7 +1,11 @@
 from yequ.models.ycr import YcrCapabilityIndex
 from yequ.ycr import capability_gateway
 from yequ.ycr.embedding import RerankItem, YcrEmbedding
-from yequ.ycr.rag_cache import cached_query_embedding, cached_rerank
+from yequ.ycr.rag_cache import (
+    cached_query_embedding,
+    cached_rerank,
+    cached_retrieval_candidates,
+)
 
 
 async def test_query_embedding_cache_reuses_persistent_record(db_session) -> None:
@@ -60,6 +64,47 @@ async def test_rerank_cache_reuses_persistent_record(db_session) -> None:
     assert second.cache_status == "hit"
     assert second.items[0].index == 0
     assert second.items[0].score == 0.98
+
+
+async def test_retrieval_candidate_cache_reuses_persistent_record(db_session) -> None:
+    calls = 0
+
+    async def compute() -> list[dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "canonical_name": "screen.capture",
+                "rrf_score": 0.12,
+                "ranks": {"dense_rank": 1, "sparse_rank": 1},
+                "dense_score": 0.9,
+                "sparse_score": 1.0,
+            }
+        ]
+
+    first = await cached_retrieval_candidates(
+        db_session,
+        normalized_query_hash="query_hash",
+        query_embedding_hash="embedding_hash",
+        corpus_fingerprint="corpus_hash",
+        filters_hash="filters_hash",
+        top_k=50,
+        compute=compute,
+    )
+    second = await cached_retrieval_candidates(
+        db_session,
+        normalized_query_hash="query_hash",
+        query_embedding_hash="embedding_hash",
+        corpus_fingerprint="corpus_hash",
+        filters_hash="filters_hash",
+        top_k=50,
+        compute=compute,
+    )
+
+    assert calls == 1
+    assert first.cache_status == "miss"
+    assert second.cache_status == "hit"
+    assert second.rows[0]["canonical_name"] == "screen.capture"
 
 
 async def test_capability_ready_index_load_does_not_rebuild_document(

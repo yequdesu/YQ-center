@@ -14,19 +14,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import Settings, get_settings
-from yequ.models.ycr import YcrQueryEmbeddingCache, YcrRerankCache
+from yequ.models.ycr import (
+    YcrQueryEmbeddingCache,
+    YcrRerankCache,
+    YcrRetrievalCandidateCache,
+)
 from yequ.ycr.embedding import RerankItem, YcrEmbedding
 
 QUERY_NORMALIZE_VERSION = 1
 EMBEDDING_CACHE_VERSION = 1
 RERANK_CACHE_VERSION = 1
+RETRIEVAL_CACHE_VERSION = 1
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _query_locks: dict[str, asyncio.Lock] = {}
 _rerank_locks: dict[str, asyncio.Lock] = {}
+_retrieval_locks: dict[str, asyncio.Lock] = {}
 _stats = {
     "query_embedding": {"hit": 0, "miss": 0},
     "rerank": {"hit": 0, "miss": 0},
+    "retrieval": {"hit": 0, "miss": 0},
 }
 
 
@@ -44,6 +51,16 @@ class CachedRerank:
     cache_key: str
     cache_status: str
     document_hashes_hash: str
+
+
+@dataclass(slots=True)
+class CachedRetrievalCandidates:
+    rows: list[dict[str, object]]
+    cache_key: str
+    cache_status: str
+    corpus_fingerprint: str
+    filters_hash: str
+    query_embedding_hash: str
 
 
 async def cached_query_embedding(
@@ -175,18 +192,87 @@ async def cached_rerank(
         )
 
 
+async def cached_retrieval_candidates(
+    db: AsyncSession,
+    *,
+    normalized_query_hash: str,
+    query_embedding_hash: str,
+    corpus_fingerprint: str,
+    filters_hash: str,
+    top_k: int,
+    compute: Callable[[], Awaitable[list[dict[str, object]]]],
+) -> CachedRetrievalCandidates:
+    cache_key = _hash_object(
+        {
+            "kind": "retrieval_candidates",
+            "normalized_query_hash": normalized_query_hash,
+            "query_embedding_hash": query_embedding_hash,
+            "corpus_fingerprint": corpus_fingerprint,
+            "filters_hash": filters_hash,
+            "retrieval_version": RETRIEVAL_CACHE_VERSION,
+            "top_k": top_k,
+        }
+    )
+    lock = _lock_for(_retrieval_locks, cache_key)
+    async with lock:
+        record = await _load_retrieval_cache(db, cache_key)
+        if record is not None:
+            _record_hit("retrieval")
+            record.hit_count += 1
+            record.last_used_at = datetime.now(UTC)
+            return CachedRetrievalCandidates(
+                rows=[dict(item) for item in record.result_json],
+                cache_key=cache_key,
+                cache_status="hit",
+                corpus_fingerprint=corpus_fingerprint,
+                filters_hash=filters_hash,
+                query_embedding_hash=query_embedding_hash,
+            )
+        _record_miss("retrieval")
+        rows = await compute()
+        db.add(
+            YcrRetrievalCandidateCache(
+                cache_key=cache_key,
+                normalized_query_hash=normalized_query_hash,
+                query_embedding_hash=query_embedding_hash,
+                corpus_fingerprint=corpus_fingerprint,
+                filters_hash=filters_hash,
+                retrieval_version=RETRIEVAL_CACHE_VERSION,
+                top_k=top_k,
+                result_json=rows,
+                last_used_at=datetime.now(UTC),
+                hit_count=0,
+            )
+        )
+        await db.flush()
+        return CachedRetrievalCandidates(
+            rows=rows,
+            cache_key=cache_key,
+            cache_status="miss",
+            corpus_fingerprint=corpus_fingerprint,
+            filters_hash=filters_hash,
+            query_embedding_hash=query_embedding_hash,
+        )
+
+
 def normalize_query(query: str) -> str:
     return _WHITESPACE_RE.sub(" ", query.strip()).lower()
+
+
+def hash_rag_object(value: object) -> str:
+    return _hash_object(value)
 
 
 def rag_cache_stats() -> dict[str, object]:
     return {
         "query_embedding": dict(_stats["query_embedding"]),
         "rerank": dict(_stats["rerank"]),
+        "retrieval": dict(_stats["retrieval"]),
         "versions": {
             "query_normalize": QUERY_NORMALIZE_VERSION,
             "embedding_cache": EMBEDDING_CACHE_VERSION,
             "rerank_cache": RERANK_CACHE_VERSION,
+            "retrieval_cache": RETRIEVAL_CACHE_VERSION,
         },
     }
 
@@ -203,6 +289,18 @@ async def _load_query_embedding_cache(
 
 async def _load_rerank_cache(db: AsyncSession, cache_key: str) -> YcrRerankCache | None:
     result = await db.execute(select(YcrRerankCache).where(YcrRerankCache.cache_key == cache_key))
+    return result.scalar_one_or_none()
+
+
+async def _load_retrieval_cache(
+    db: AsyncSession,
+    cache_key: str,
+) -> YcrRetrievalCandidateCache | None:
+    result = await db.execute(
+        select(YcrRetrievalCandidateCache).where(
+            YcrRetrievalCandidateCache.cache_key == cache_key
+        )
+    )
     return result.scalar_one_or_none()
 
 

@@ -26,11 +26,12 @@ from yequ.models.session import Session
 from yequ.models.timeline import TimelineEvent
 from yequ.models.transfer import TransferAttempt, TransferPreflight, TransferSession
 from yequ.models.ycr import (
-    YcrCapabilityIndexJob,
     YcrCapabilityIndex,
+    YcrCapabilityIndexJob,
     YcrContextChunk,
     YcrContextLedger,
     YcrContextRef,
+    YcrRetrievalCandidateCache,
 )
 from yequ.models.yqp_message import YqpMessage
 
@@ -73,5 +74,6 @@ __all__ = [
     "YcrContextRef",
     "YcrCapabilityIndex",
     "YcrCapabilityIndexJob",
+    "YcrRetrievalCandidateCache",
     "generate_uuid",
 ]

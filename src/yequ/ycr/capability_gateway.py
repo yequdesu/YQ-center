@@ -17,7 +17,12 @@ from yequ.ycr.embedding import (
     RerankItem,
     YcrEmbedding,
 )
-from yequ.ycr.rag_cache import cached_query_embedding, cached_rerank
+from yequ.ycr.rag_cache import (
+    cached_query_embedding,
+    cached_rerank,
+    cached_retrieval_candidates,
+    hash_rag_object,
+)
 from yequ.ycr.retrieval import TOKEN_RE, cosine_similarity
 from yequ.ycr.scheduler import (
     PRIORITY_FOREGROUND_CAPABILITY_EMBEDDING,
@@ -187,41 +192,38 @@ async def _search_capability_rag(
         raise ValueError(f"capability_rag_unavailable: {exc}") from exc
 
     return_by_name = {str(item.get("canonical_name") or ""): item for item in return_candidates}
-    dense_rows: list[tuple[str, float]] = []
-    sparse_rows: list[tuple[str, float]] = []
-    trace_by_name: dict[str, dict[str, Any]] = {}
-    for index in indexed:
-        if not isinstance(index.embedding_json, list):
-            continue
-        dense_score = cosine_similarity(
-            query_embedding.dense,
-            [float(value) for value in index.embedding_json],
-        )
-        sparse_score = _sparse_dot(query_embedding.sparse, index.sparse_json or {})
-        trace_by_name[index.canonical_name] = {
-            "dense_score": dense_score,
-            "sparse_score": sparse_score,
-            "index": index,
-        }
-        dense_rows.append((index.canonical_name, dense_score))
-        if sparse_score > 0:
-            sparse_rows.append((index.canonical_name, sparse_score))
-    ranked_names = _rrf_fusion(
-        dense_rows,
-        sparse_rows,
+    index_by_name = {index.canonical_name: index for index in indexed}
+    corpus_fingerprint = _corpus_fingerprint(return_candidates, indexed)
+    filters_hash = _retrieval_filters_hash(filters)
+    query_embedding_hash = hash_rag_object(
+        {"dense": query_embedding.dense, "sparse": query_embedding.sparse}
+    )
+    cached_retrieval = await cached_retrieval_candidates(
+        db,
+        normalized_query_hash=cached_embedding.normalized_query_hash,
+        query_embedding_hash=query_embedding_hash,
+        corpus_fingerprint=corpus_fingerprint,
+        filters_hash=filters_hash,
         top_k=RETRIEVAL_TOP_K,
+        compute=lambda: _compute_retrieval_candidate_rows(query_embedding, indexed),
     )
 
-    coarse_rows = ranked_names[: max(_bounded_limit(limit), get_settings().ycr_rerank_top_k)]
     rerank_documents_text: list[str] = []
     coarse_payloads: list[
         tuple[str, float, dict[str, int], YcrCapabilityIndex, dict[str, Any]]
     ] = []
-    for name, rrf_score, ranks in coarse_rows:
-        trace = trace_by_name.get(name)
-        if trace is None:
+    for row in cached_retrieval.rows[: max(_bounded_limit(limit), get_settings().ycr_rerank_top_k)]:
+        name = str(row.get("canonical_name") or "")
+        index = index_by_name.get(name)
+        if index is None:
             continue
-        index = trace["index"]
+        ranks = _rank_dict(row.get("ranks"))
+        trace = {
+            "dense_score": float(row.get("dense_score") or 0.0),
+            "sparse_score": float(row.get("sparse_score") or 0.0),
+            "index": index,
+        }
+        rrf_score = float(row.get("rrf_score") or 0.0)
         coarse_payloads.append((name, rrf_score, ranks, index, trace))
         rerank_documents_text.append(index.index_text)
 
@@ -281,14 +283,20 @@ async def _search_capability_rag(
                 "enabled": True,
                 "provider": query_embedding.provider,
                 "model": query_embedding.model,
-                "dense_result_count": len(dense_rows),
-                "sparse_result_count": len(sparse_rows),
+                "coarse_result_count": len(cached_retrieval.rows),
                 "match_count": len(matches),
             },
             "cache": {
                 "query_embedding": {
                     "status": cached_embedding.cache_status,
                     "cache_key": cached_embedding.cache_key,
+                },
+                "retrieval": {
+                    "status": cached_retrieval.cache_status,
+                    "cache_key": cached_retrieval.cache_key,
+                    "query_embedding_hash": cached_retrieval.query_embedding_hash,
+                    "corpus_fingerprint": cached_retrieval.corpus_fingerprint,
+                    "filters_hash": cached_retrieval.filters_hash,
                 },
                 "rerank": {
                     "status": cached_reranked.cache_status,
@@ -298,6 +306,45 @@ async def _search_capability_rag(
             },
         },
     }
+
+
+async def _compute_retrieval_candidate_rows(
+    query_embedding: YcrEmbedding,
+    indexed: list[YcrCapabilityIndex],
+) -> list[dict[str, object]]:
+    dense_rows: list[tuple[str, float]] = []
+    sparse_rows: list[tuple[str, float]] = []
+    trace_by_name: dict[str, dict[str, float]] = {}
+    for index in indexed:
+        if not isinstance(index.embedding_json, list):
+            continue
+        dense_score = cosine_similarity(
+            query_embedding.dense,
+            [float(value) for value in index.embedding_json],
+        )
+        sparse_score = _sparse_dot(query_embedding.sparse, index.sparse_json or {})
+        trace_by_name[index.canonical_name] = {
+            "dense_score": dense_score,
+            "sparse_score": sparse_score,
+        }
+        dense_rows.append((index.canonical_name, dense_score))
+        if sparse_score > 0:
+            sparse_rows.append((index.canonical_name, sparse_score))
+    ranked_rows = _rrf_fusion(
+        dense_rows,
+        sparse_rows,
+        top_k=RETRIEVAL_TOP_K,
+    )
+    return [
+        {
+            "canonical_name": name,
+            "rrf_score": score,
+            "ranks": ranks,
+            "dense_score": trace_by_name.get(name, {}).get("dense_score", 0.0),
+            "sparse_score": trace_by_name.get(name, {}).get("sparse_score", 0.0),
+        }
+        for name, score, ranks in ranked_rows
+    ]
 
 
 async def _compute_query_embedding(query: str) -> YcrEmbedding:
@@ -353,6 +400,65 @@ def _sparse_dot(left: dict[str, float], right: dict[str, float]) -> float:
     if len(left) > len(right):
         left, right = right, left
     return sum(float(value) * float(right.get(key, 0.0)) for key, value in left.items())
+
+
+def _rank_dict(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, int] = {}
+    for key, item in value.items():
+        if item is not None:
+            output[str(key)] = int(item)
+    return output
+
+
+def _corpus_fingerprint(
+    candidates: list[dict[str, object]],
+    indexed: list[YcrCapabilityIndex],
+) -> str:
+    document_hash_by_name = {index.canonical_name: index.document_hash for index in indexed}
+    rows: list[dict[str, object]] = []
+    for candidate in candidates:
+        name = str(candidate.get("canonical_name") or "")
+        rows.append(
+            {
+                "capability_id": candidate.get("capability_id"),
+                "canonical_name": name,
+                "document_hash": document_hash_by_name.get(name),
+                "sources": _source_fingerprint_rows(candidate.get("sources")),
+            }
+        )
+    return hash_rag_object({"version": CAPABILITY_INDEX_VERSION, "candidates": rows})
+
+
+def _source_fingerprint_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "source_id": item.get("source_id"),
+                "node_id": item.get("node_id"),
+                "registered_name": item.get("registered_name"),
+                "status": item.get("status"),
+                "dispatchable": item.get("dispatchable"),
+                "unavailable_reasons": item.get("unavailable_reasons"),
+            }
+        )
+    return rows
+
+
+def _retrieval_filters_hash(filters: dict[str, object]) -> str:
+    return hash_rag_object(
+        {
+            key: value
+            for key, value in sorted(filters.items())
+            if key != "projection"
+        }
+    )
 
 
 async def _load_ready_capability_indexes(

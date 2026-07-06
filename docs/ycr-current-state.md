@@ -142,11 +142,13 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
    `context.search` 复用同一 normalized query cache。
 6. reranker 通过 `ycr_rerank_cache` 持久缓存，cache key 包含 query hash、
    ordered document hashes、rerank model/version 和 top_n。
-7. 匹配候选存在但 index 尚未 ready 时，`capability.search` 返回
+7. 粗召回候选通过 `ycr_retrieval_candidate_cache` 持久缓存，cache key 包含
+   query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version 和 top_k。
+8. 匹配候选存在但 index 尚未 ready 时，`capability.search` 返回
    `retrieval.index.status=not_ready`、`retryable=true` 和 `retry_after_seconds`，
    不在前台同步建索引，也不把该状态伪装成无匹配。
-8. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
-9. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
+9. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
+10. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
 
 当前 provider 直接看到的是 `src/yequ/api/agent_tool_catalog.py` 中的稳定 Center
 工具面：`node.*`、`capability.search/describe/invoke`、`context.*`、`artifact.*`、

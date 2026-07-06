@@ -159,3 +159,21 @@ class YcrRerankCache(Base, TimestampMixin):
     result_json: Mapped[list[dict[str, float | int]]] = mapped_column(JSON, nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class YcrRetrievalCandidateCache(Base, TimestampMixin):
+    """Persistent coarse retrieval candidate cache before rerank."""
+
+    __tablename__ = "ycr_retrieval_candidate_cache"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    normalized_query_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    query_embedding_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    corpus_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    filters_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    retrieval_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
