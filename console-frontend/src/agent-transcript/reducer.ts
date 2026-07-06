@@ -140,13 +140,14 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         result: asRecord(data.result),
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
+      let updated = next;
       if (String(data.name ?? "") === "capability.search") {
-        return appendRegistrySearchTrace(next, event, data, createdAt);
+        updated = appendRegistrySearchTrace(updated, event, data, createdAt);
       }
-      if (String(data.name ?? "") === "artifact.present") {
-        return appendArtifactPresentation(next, data, createdAt);
+      if (hasArtifacts(data.result)) {
+        updated = appendArtifactPresentation(updated, data, createdAt);
       }
-      return next;
+      return updated;
     }
 
     case "agent.tool_call.waiting_approval":
@@ -444,7 +445,7 @@ function appendArtifactPresentation(
   createdAt: string,
 ): TranscriptState {
   const result = asRecord(data.result);
-  const artifacts = asArtifactList(result.artifacts);
+  const artifacts = collectArtifactList(result);
   const callId = String(data.call_id ?? "");
   if (!callId || artifacts.length === 0) return state;
   return appendBlockOnce(state, {
@@ -871,14 +872,61 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function asArtifactList(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.filter(
-    (item): item is Record<string, unknown> =>
-      Boolean(item) &&
-      typeof item === "object" &&
-      !Array.isArray(item) &&
-      typeof (item as Record<string, unknown>).artifact_id === "string",
+function hasArtifacts(value: unknown): boolean {
+  return collectArtifactList(value).length > 0;
+}
+
+function collectArtifactList(value: unknown): Array<Record<string, unknown>> {
+  const found: Array<Record<string, unknown>> = [];
+  collectArtifacts(value, found, 0);
+  const seen = new Set<string>();
+  return found.filter((artifact) => {
+    const key = String(artifact.artifact_id ?? artifact.download_url ?? "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function collectArtifacts(value: unknown, found: Array<Record<string, unknown>>, depth: number): void {
+  if (depth > 5 || value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifacts(item, found, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  if (isArtifactRecord(record)) {
+    found.push(record);
+  }
+
+  const artifact = record.artifact;
+  if (artifact && typeof artifact === "object" && !Array.isArray(artifact)) {
+    const artifactRecord = artifact as Record<string, unknown>;
+    if (isArtifactRecord(artifactRecord)) found.push(artifactRecord);
+  }
+
+  const artifacts = record.artifacts;
+  if (Array.isArray(artifacts)) {
+    for (const item of artifacts) {
+      if (item && typeof item === "object" && !Array.isArray(item) && isArtifactRecord(item as Record<string, unknown>)) {
+        found.push(item as Record<string, unknown>);
+      } else {
+        collectArtifacts(item, found, depth + 1);
+      }
+    }
+  }
+
+  for (const key of ["result", "output", "data"]) {
+    collectArtifacts(record[key], found, depth + 1);
+  }
+}
+
+function isArtifactRecord(record: Record<string, unknown>): boolean {
+  return (
+    typeof record.artifact_id === "string" &&
+    (typeof record.download_url === "string" || typeof record.content_type === "string")
   );
 }
 

@@ -800,7 +800,7 @@ export function AgentChatPage() {
                 }
               />
             ) : (
-              <div className="mx-auto max-w-3xl space-y-3">
+              <div className="mx-auto max-w-5xl space-y-3">
                 {conversationBlocks.map((block) => (
                   <ChatTimelineBlock
                     key={block.id}
@@ -1253,8 +1253,8 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
       <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
         <Bot size={14} />
       </div>
-      <div className="w-full max-w-[75%]">
-        <ArtifactList artifacts={block.artifacts} />
+      <div className="w-full max-w-[calc(100%-2.5rem)]">
+        <ArtifactList artifacts={block.artifacts} mode="presentation" />
       </div>
     </div>
   );

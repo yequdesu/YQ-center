@@ -4,22 +4,36 @@ import { getConfig } from "@/api/client";
 import type { CenterArtifactDetail } from "@/api/types";
 
 type ArtifactLike = Partial<CenterArtifactDetail>;
+type ArtifactDisplayMode = "compact" | "presentation";
 
-export function ArtifactList({ artifacts }: { artifacts: ArtifactLike[] }) {
+export function ArtifactList({
+  artifacts,
+  mode = "compact",
+}: {
+  artifacts: ArtifactLike[];
+  mode?: ArtifactDisplayMode;
+}) {
   if (artifacts.length === 0) return null;
   return (
-    <div className="space-y-2">
+    <div className={mode === "presentation" ? "space-y-3" : "space-y-2"}>
       {artifacts.map((artifact, index) => (
         <ArtifactCard
           key={String(artifact.artifact_id ?? artifact.download_url ?? index)}
           artifact={artifact}
+          mode={mode}
         />
       ))}
     </div>
   );
 }
 
-export function ArtifactCard({ artifact }: { artifact: ArtifactLike }) {
+export function ArtifactCard({
+  artifact,
+  mode = "compact",
+}: {
+  artifact: ArtifactLike;
+  mode?: ArtifactDisplayMode;
+}) {
   const contentType = optionalString(artifact.content_type);
   const title =
     optionalString(artifact.title) ||
@@ -31,7 +45,13 @@ export function ArtifactCard({ artifact }: { artifact: ArtifactLike }) {
   const Icon = isImage ? ImageIcon : isJson ? FileJson : FileText;
 
   return (
-    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)]/60 p-2.5">
+    <div
+      className={
+        mode === "presentation"
+          ? "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 shadow-sm"
+          : "rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)]/60 p-2.5"
+      }
+    >
       <div className="flex items-start gap-2">
         <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] text-[var(--text-muted)]">
           <Icon size={14} />
@@ -55,7 +75,7 @@ export function ArtifactCard({ artifact }: { artifact: ArtifactLike }) {
               <span className="font-mono">job {String(artifact.job_id)}</span>
             )}
           </div>
-          {isImage && <ArtifactImage artifact={artifact} alt={title} />}
+          {isImage && <ArtifactImage artifact={artifact} alt={title} mode={mode} />}
           {artifact.summary && typeof artifact.summary === "object" && (
             <div className="mt-2 flex flex-wrap gap-1">
               {Object.entries(artifact.summary as Record<string, unknown>).map(([key, value]) => (
@@ -78,7 +98,7 @@ export function ArtifactCard({ artifact }: { artifact: ArtifactLike }) {
           <Download size={14} />
         </button>
       </div>
-      {(isJson || isText) && (
+      {(isImage || isJson || isText) && (
         <button
           type="button"
           onClick={() => void openArtifact(artifact)}
@@ -92,7 +112,15 @@ export function ArtifactCard({ artifact }: { artifact: ArtifactLike }) {
   );
 }
 
-function ArtifactImage({ artifact, alt }: { artifact: ArtifactLike; alt: string }) {
+function ArtifactImage({
+  artifact,
+  alt,
+  mode,
+}: {
+  artifact: ArtifactLike;
+  alt: string;
+  mode: ArtifactDisplayMode;
+}) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const downloadUrl = optionalString(artifact.download_url);
@@ -125,8 +153,22 @@ function ArtifactImage({ artifact, alt }: { artifact: ArtifactLike; alt: string 
   }
   if (!src) return null;
   return (
-    <div className="mt-2 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)]">
-      <img src={src} alt={alt} className="max-h-[320px] w-full object-contain" />
+    <div
+      className={
+        mode === "presentation"
+          ? "mt-3 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)]"
+          : "mt-2 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)]"
+      }
+    >
+      <img
+        src={src}
+        alt={alt}
+        className={
+          mode === "presentation"
+            ? "max-h-[72vh] w-full object-contain"
+            : "max-h-[320px] w-full object-contain"
+        }
+      />
     </div>
   );
 }
