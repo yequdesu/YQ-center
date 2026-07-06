@@ -101,7 +101,7 @@ async def test_available_functions_preserve_registered_tool_contract(db_session)
     await db_session.commit()
 
     funcs = await _available_functions(db_session)
-    func = next(f for f in funcs if f.name == "contract.user.desktop_shortcuts")
+    names = [func.name for func in funcs]
 
-    assert "interactive user's Desktop" in func.description
-    assert func.input_schema["properties"] == {"limit": {"type": "integer", "default": 50}}
+    assert names == ["capability.search", "capability.describe", "capability.invoke"]
+    assert "contract.user.desktop_shortcuts" not in names

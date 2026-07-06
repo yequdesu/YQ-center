@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from yequ.config import get_settings
-from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.services.node_liveness_service import is_node_schedulable
 
@@ -36,7 +35,6 @@ async def build_capability_context(
     """Build the structured node/capability context for one Agent turn."""
 
     routing_mode = "pinned" if target_node_id else "auto"
-    function_names = {func.name for func in available_functions}
     source_nodes_by_name: dict[str, set[str]] = defaultdict(set)
     for func in available_functions:
         for node_id in func.source_nodes:
@@ -54,27 +52,15 @@ async def build_capability_context(
         if target_node_id and node.node_id != target_node_id:
             continue
 
-        executable_capabilities = []
-        for cap in sorted(node.capabilities, key=lambda item: item.name):
-            if (
-                cap.capability_type != "function"
-                or not cap.is_active
-                or cap.name not in function_names
-            ):
-                continue
-            if not schedulable:
-                continue
-            executable_capabilities.append(_capability_summary(cap))
-            source_nodes_by_name[cap.name].add(node.node_id)
-
-        if not executable_capabilities and target_node_id and node.node_id == target_node_id:
-            # Keep a pinned node visible even if it currently has no executable
-            # Agent functions; this makes diagnostics explain the empty tool set.
-            pass
-        elif not executable_capabilities and not target_node_id:
+        active_function_count = sum(
+            1
+            for cap in node.capabilities
+            if cap.capability_type == "function" and cap.is_active
+        )
+        if not target_node_id and not schedulable:
             continue
 
-        tool_count_by_node[node.node_id] = len(executable_capabilities)
+        tool_count_by_node[node.node_id] = active_function_count if schedulable else 0
         nodes.append(
             {
                 "node_id": node.node_id,
@@ -90,7 +76,8 @@ async def build_capability_context(
                         node.runtime_instances, key=lambda item: item.runtime_id
                     )
                 ],
-                "capabilities": executable_capabilities,
+                "registered_capability_count": active_function_count,
+                "capabilities": [],
             }
         )
 
@@ -133,7 +120,7 @@ def render_capability_context_prompt(
         lines.append("No single current node is pinned.")
 
     lines.append("")
-    lines.append("Nodes and capabilities:")
+    lines.append("Nodes:")
     nodes = capability_context.get("nodes")
     if not isinstance(nodes, list) or not nodes:
         lines.append("- No executable node capabilities are currently available.")
@@ -155,19 +142,10 @@ def render_capability_context_prompt(
             lines.append(f"Schedulable: false ({reason})")
         else:
             lines.append("Schedulable: true")
-        lines.append("Capabilities:")
-        capabilities = node.get("capabilities")
-        if not isinstance(capabilities, list) or not capabilities:
-            lines.append("- none")
-            continue
-        for cap in capabilities:
-            if not isinstance(cap, dict):
-                continue
-            name = str(cap.get("name") or "")
-            description = str(cap.get("description") or name)
-            effect = str(cap.get("effect") or "read")
-            risk = str(cap.get("risk") or "safe")
-            lines.append(f"- {name}: {description} (effect={effect}, risk={risk})")
+        count = node.get("registered_capability_count")
+        if isinstance(count, int):
+            lines.append(f"Registered capability count: {count}")
+        lines.append("Use capability.search to discover callable capabilities.")
 
     same_name = capability_context.get("same_name_capabilities")
     if isinstance(same_name, dict) and same_name:
@@ -180,15 +158,3 @@ def render_capability_context_prompt(
     return "\n".join(lines)
 
 
-def _capability_summary(cap: Capability) -> JsonDict:
-    return {
-        "name": cap.name,
-        "capability_id": cap.id,
-        "plugin_id": cap.plugin_id,
-        "plugin_version": cap.plugin_version,
-        "description": (cap.agent_description or cap.description or "").strip(),
-        "effect": cap.effect or "read",
-        "risk": cap.risk or "safe",
-        "timeout_sec": cap.timeout_sec or 30,
-        "execution_context": cap.execution_context,
-    }

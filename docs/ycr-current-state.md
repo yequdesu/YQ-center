@@ -150,15 +150,16 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 9. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
 10. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
 
-当前 provider 直接看到的是 `src/yequ/api/agent_tool_catalog.py` 中的稳定 Center
-工具面：`node.*`、`capability.search/describe/invoke`、`context.*`、`artifact.*`、
-`operation.*` 和 `transfer.*`。Node runtime capability 不作为 provider 直接工具注入，
-而是通过 `capability.search` / `capability.describe` 发现，并由
-`capability.invoke` 经 Center runtime、policy、job dispatch 路径执行。
+当前 provider 默认只直接看到 `capability.search`、`capability.describe`、
+`capability.invoke` 三个 bootstrap protocol tools。Center meta tools 与 Node runtime
+capability 都统一注册到 capability registry：`node.*`、`context.*`、`artifact.*`、
+`operation.*`、`transfer.*` 是 `scope=center` capability；Node 上报能力是
+`scope=node` capability。Agent 通过 search/describe/invoke 发现并调用能力，调用仍经
+Center runtime、policy、operation/job dispatch 路径执行。
 
-目标态的“所有 Center meta tools 也统一注册为 capability，并让 provider 默认只暴露
-`capability.search` / `capability.describe` / `capability.invoke`”属于
-`docs/todos/2026-07-06-unified-capability-registry-plan.md`，不是当前已完成事实。
+Unified registry 的完整收敛已由
+`docs/todos/2026-07-06-unified-capability-registry-plan.md` 完成；后续只在行为修正文档中
+继续跟踪具体质量问题。
 
 ## 6.1 YCR Model Scheduler
 

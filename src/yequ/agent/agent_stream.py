@@ -31,7 +31,11 @@ from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 from yequ.config import get_settings
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
-from yequ.ycr.budget import estimate_tokens, projection_profile_from_settings
+from yequ.ycr.budget import (
+    estimate_tokens,
+    projection_profile_from_settings,
+    token_accounting_metadata,
+)
 from yequ.ycr.client import YcrError, get_ycr_client
 
 log = get_logger(__name__)
@@ -230,6 +234,8 @@ def _ycr_context_event_data(
     usage: dict[str, object] | None = None,
 ) -> dict[str, object]:
     profile = projection_profile_from_settings(get_settings())
+    model_name = _provider_model_name(provider) or profile.model
+    token_accounting = token_accounting_metadata(model=model_name)
     if context_packet is not None:
         context_estimate = _as_object_dict(context_packet.get("context_estimate", {}))
         usage = usage or {}
@@ -243,15 +249,16 @@ def _ycr_context_event_data(
             "step": step,
             "packet_id": context_packet.get("packet_id"),
             "provider_name": provider.provider_name(),
-            "model": _provider_model_name(provider)
-            or str(context_estimate.get("model") or profile.model),
+            "model": model_name,
             "message_count": len(messages),
             "tool_count": len(available_functions),
             "context_estimate": context_estimate,
             "tokens": {
                 "upload_estimated": _optional_int(context_estimate.get("estimated_input_tokens")),
                 "download_estimated": (
-                    estimate_tokens(completion_payload) if phase == "provider_output" else None
+                    estimate_tokens(completion_payload, model=model_name)
+                    if phase == "provider_output"
+                    else None
                 ),
                 "upload_actual": _optional_int(usage.get("prompt_tokens")),
                 "download_actual": _optional_int(usage.get("completion_tokens")),
@@ -263,6 +270,8 @@ def _ycr_context_event_data(
                 "capability_context": _optional_int(
                     context_estimate.get("capability_context_tokens")
                 ),
+                "token_accounting": context_estimate.get("token_accounting")
+                or token_accounting,
             },
             "projections": context_packet.get("projections") or [],
             "ycr": context_packet.get("ycr")
@@ -281,10 +290,10 @@ def _ycr_context_event_data(
         }
         for func in available_functions
     ]
-    message_tokens = estimate_tokens(message_payloads)
-    system_tokens = estimate_tokens(system_prompt)
-    tool_schema_tokens = estimate_tokens(tool_schema_payload)
-    capability_context_tokens = estimate_tokens(capability_context or {})
+    message_tokens = estimate_tokens(message_payloads, model=model_name)
+    system_tokens = estimate_tokens(system_prompt, model=model_name)
+    tool_schema_tokens = estimate_tokens(tool_schema_payload, model=model_name)
+    capability_context_tokens = estimate_tokens(capability_context or {}, model=model_name)
     upload_estimated = (
         message_tokens
         + system_tokens
@@ -301,7 +310,7 @@ def _ycr_context_event_data(
         "phase": phase,
         "step": step,
         "provider_name": provider.provider_name(),
-        "model": _provider_model_name(provider) or profile.model,
+        "model": model_name,
         "message_count": len(messages),
         "tool_count": len(available_functions),
         "context_estimate": {
@@ -312,11 +321,14 @@ def _ycr_context_event_data(
             "projected_estimated_tokens": upload_estimated,
             "saved_estimated_tokens": 0,
             "ref_count": 0,
+            "token_accounting": token_accounting,
         },
         "tokens": {
             "upload_estimated": upload_estimated,
             "download_estimated": (
-                estimate_tokens(completion_payload) if phase == "provider_output" else None
+                estimate_tokens(completion_payload, model=model_name)
+                if phase == "provider_output"
+                else None
             ),
             "upload_actual": _optional_int(usage.get("prompt_tokens")),
             "download_actual": _optional_int(usage.get("completion_tokens")),
@@ -327,6 +339,7 @@ def _ycr_context_event_data(
             "system_prompt": system_tokens,
             "tool_schema": tool_schema_tokens,
             "capability_context": capability_context_tokens,
+            "token_accounting": token_accounting,
         },
         "ycr": {
             "projected": True,

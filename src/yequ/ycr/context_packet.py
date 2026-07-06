@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.provider import sanitize_tool_payload_for_agent
 from yequ.models.ycr import YcrContextRef
-from yequ.ycr.budget import ProjectionProfile, estimate_tokens
+from yequ.ycr.budget import ProjectionProfile, estimate_tokens, token_accounting_metadata
 from yequ.ycr.projection import project_tool_observation_from_ref
 
 JsonDict = dict[str, object]
@@ -38,9 +38,11 @@ async def build_agent_context_packet(
     projected_capability_context = _project_capability_context(capability_context or {})
     tool_definitions = [_project_tool_definition(item) for item in available_functions]
 
-    message_tokens = estimate_tokens(projected_messages)
-    tool_tokens = estimate_tokens(tool_definitions)
-    capability_tokens = estimate_tokens(projected_capability_context)
+    model_name = model or profile.model
+    token_accounting = token_accounting_metadata(model=model_name)
+    message_tokens = estimate_tokens(projected_messages, model=model_name)
+    tool_tokens = estimate_tokens(tool_definitions, model=model_name)
+    capability_tokens = estimate_tokens(projected_capability_context, model=model_name)
     estimated_input_tokens = message_tokens + tool_tokens + capability_tokens
     ref_count = sum(
         int(event.get("context_estimate", {}).get("ref_count") or 0)
@@ -64,7 +66,7 @@ async def build_agent_context_packet(
         "session_id": session_id,
         "actor_id": actor_id,
         "provider": provider,
-        "model": model or profile.model,
+        "model": model_name,
         "step": step,
         "messages": projected_messages,
         "tool_definitions": tool_definitions,
@@ -83,6 +85,7 @@ async def build_agent_context_packet(
             "projected_estimated_tokens": projected_tokens,
             "saved_estimated_tokens": saved_tokens,
             "ref_count": ref_count,
+            "token_accounting": token_accounting,
         },
         "projections": projection_events,
         "refs": [

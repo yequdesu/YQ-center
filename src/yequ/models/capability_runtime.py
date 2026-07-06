@@ -38,6 +38,15 @@ class CapabilityDefinition(Base, TimestampMixin):
     value_schema: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     risk: Mapped[str | None] = mapped_column(String(32), nullable=True)
     effect: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="node")
+    plane: Mapped[str] = mapped_column(String(32), nullable=False, default="node_runtime")
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="node_job")
+    agent_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    invocation_surface: Mapped[str] = mapped_column(String(32), nullable=False, default="agent")
+    workflow_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    artifact_contract: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    operation_contract: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     artifact_inputs: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list
     )

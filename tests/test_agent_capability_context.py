@@ -44,16 +44,17 @@ async def test_capability_context_groups_by_node(db_session):
     nodes = {node["node_id"]: node for node in context["nodes"]}
     assert nodes["winClient"]["platform_os"] == "windows"
     assert nodes["linux-node-01"]["platform_os"] == "linux"
-    assert [cap["name"] for cap in nodes["winClient"]["capabilities"]] == ["system.info"]
-    assert [cap["name"] for cap in nodes["linux-node-01"]["capabilities"]] == [
-        "linux.system.info"
-    ]
+    assert nodes["winClient"]["registered_capability_count"] == 1
+    assert nodes["linux-node-01"]["registered_capability_count"] == 1
+    assert nodes["winClient"]["capabilities"] == []
+    assert nodes["linux-node-01"]["capabilities"] == []
 
     prompt = render_capability_context_prompt(context, functions)
     assert "Routing mode: auto" in prompt
     assert "No single current node is pinned." in prompt
     assert "Node: winClient" in prompt
     assert "Node: linux-node-01" in prompt
+    assert "Use capability.search to discover callable capabilities." in prompt
 
 
 @pytest.mark.asyncio
@@ -85,11 +86,12 @@ async def test_pinned_capability_context_excludes_other_nodes(db_session):
     assert context["target_node_id"] == "linux-node-01"
     assert [node["node_id"] for node in context["nodes"]] == ["linux-node-01"]
     assert context["tool_count_by_node"] == {"linux-node-01": 1}
+    assert context["nodes"][0]["capabilities"] == []
 
     prompt = render_capability_context_prompt(context, functions)
     assert "Current pinned node: linux-node-01" in prompt
     assert "Node: winClient" not in prompt
-    assert "linux.system.info" in prompt
+    assert "Registered capability count: 1" in prompt
 
 
 async def _add_node_capability(

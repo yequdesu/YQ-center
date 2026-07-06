@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import get_settings
 from yequ.models.ycr import YcrCapabilityIndex
-from yequ.services.capability_registry import capability_describe, capability_search
+from yequ.services.capability_registry import (
+    capability_describe,
+    capability_search,
+    sync_center_capability_definitions,
+)
 from yequ.ycr.embedding import (
     EmbeddingError,
     RerankItem,
@@ -47,6 +51,7 @@ async def search_capability_registry(
     limit: int = 10,
 ) -> dict[str, object]:
     filters = filters or {}
+    await sync_center_capability_definitions(db)
     common_filters = {
         "node_id": node_id,
         "platform_os": platform_os,
@@ -63,6 +68,8 @@ async def search_capability_registry(
         "projection": _str_or_none(filters.get("projection")) or "summary",
         "capability_type": _str_or_none(filters.get("capability_type")) or "function",
         "include_inactive": bool(filters.get("include_inactive", False)),
+        "agent_visible": _bool_filter(filters.get("agent_visible"), default=True),
+        "invocation_surface": _str_or_none(filters.get("invocation_surface")) or "agent",
     }
     if query and query.strip():
         return await _search_capability_rag(
@@ -101,6 +108,7 @@ async def describe_capability_registry(
     sections: list[str] | None = None,
     projection: str = "invoke_ready",
 ) -> dict[str, object]:
+    await sync_center_capability_definitions(db)
     return {
         "kind": "capability_registry_description",
         "capability": await capability_describe(
@@ -123,6 +131,10 @@ def _str_or_none(value: object) -> str | None:
 
 def _bool_or_none(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _bool_filter(value: object, *, default: bool | None) -> bool | None:
+    return value if isinstance(value, bool) else default
 
 
 async def _search_capability_rag(

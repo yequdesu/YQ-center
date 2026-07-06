@@ -149,7 +149,13 @@ export interface PromptContextData {
 
 export interface YcrTraceItem {
   id: string;
-  kind: "provider_input" | "provider_output" | "tool_storage" | "provider_projection" | "error";
+  kind:
+    | "provider_input"
+    | "provider_output"
+    | "tool_storage"
+    | "provider_projection"
+    | "registry_search"
+    | "error";
   label: string;
   created_at: string;
   step?: number;
@@ -171,6 +177,8 @@ export interface YcrTraceItem {
   projectedSizeBytes?: number;
   refCount?: number;
   omittedCount?: number;
+  registryMatches?: Array<Record<string, unknown>>;
+  retrieval?: Record<string, unknown>;
   data?: Record<string, unknown>;
 }
 

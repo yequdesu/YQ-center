@@ -591,7 +591,7 @@ async def test_tool_lifecycle_events_include_target_node_id(client: AsyncClient)
 async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
     client: AsyncClient,
 ):
-    """Prompt context keeps same-name capability sources transparent."""
+    """Prompt context keeps nodes visible without injecting raw capability tools."""
     from datetime import UTC, datetime
 
     from yequ.agent.fake_provider import FakeAgentProvider
@@ -659,8 +659,17 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
     events = _parse_sse_events(stream_resp.text)
     prompt_context = next(e for e in events if e["event_type"] == "agent.prompt_context")
     functions = prompt_context["data"]["available_functions"]
-    duplicate = next(f for f in functions if f["name"] == "test.duplicate.capability")
-    assert set(duplicate["source_nodes"]) == {"source-node-a", "source-node-b"}
+    assert [f["name"] for f in functions] == [
+        "capability.search",
+        "capability.describe",
+        "capability.invoke",
+    ]
+    nodes = {
+        node["node_id"]: node
+        for node in prompt_context["data"]["capability_context"]["nodes"]
+    }
+    assert nodes["source-node-a"]["registered_capability_count"] == 1
+    assert nodes["source-node-b"]["registered_capability_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -719,17 +728,7 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
         await db_gen.aclose()
 
     names = {func.name for func in funcs}
-    assert "node.list" in names
-    assert "node.status" in names
-    assert "capability.search" in names
-    assert "capability.describe" in names
-    assert "capability.invoke" in names
-    assert "artifact.list" in names
-    assert "artifact.get" in names
-    assert "artifact.present" in names
-    assert "transfer.create" in names
-    assert "transfer.status" in names
-    assert "transfer.cancel" in names
+    assert names == {"capability.search", "capability.describe", "capability.invoke"}
     assert "linux.system.info" not in names
     assert "system.info" not in names
 

@@ -1,6 +1,6 @@
 # Unified Capability Registry 实施计划
 
-状态：活跃待办
+状态：已完成
 日期：2026-07-06
 适用范围：YCR Tool RAG / Agent 工具面收敛
 
@@ -14,18 +14,16 @@ receive 误报失败、Provider registry 分别由对应活跃待办负责。
 RAG cache 相关项已经进入实现：`query embedding cache` 与 `rerank cache` 已落地；
 precompute 热路径收敛、前后台资源调度和 retrieval candidate cache 已落地。
 
-## 0. 当前实现差距
+## 0. 当前实现状态
 
-本文定义目标态，不描述当前已完成事实。2026-07-06 当前代码中，provider 仍直接看到
-`src/yequ/application/meta_tools.py` 登记的 Center meta tools，包括 `node.*`、
-`capability.search/describe`、`context.*`、`artifact.*`、`operation.*` 和
-`transfer.*`。`capability.invoke` 当前已经可执行具体 Node capability；本文未完成的是
-把 Center meta tools 也统一注册为 capability，并最终收窄为
-`capability.search` / `capability.describe` / `capability.invoke` 这三个
-bootstrap protocol tools。
+2026-07-06 已完成本文 T01-T16：Provider 默认只直接看到
+`capability.search` / `capability.describe` / `capability.invoke` 三个 bootstrap protocol
+tools；Center meta tools 与 Node capabilities 均进入 unified capability registry；
+Agent 通过 search/describe/invoke 发现和调用能力。`src/yequ/application/meta_tools.py`
+仍保存 Center-owned meta tool 的执行名集合，但它不再等同于 provider 默认工具面。
 
-因此本文 T01-T16 在未显式标记完成前均视为待办；执行时必须逐项改代码、验收并
-更新本表状态，不能把目标态文字当作当前现状引用。
+后续不得把本文早期目标态描述误读为未完成事实；剩余行为质量问题转入
+`2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。
 
 ## 1. 背景问题
 
@@ -165,22 +163,22 @@ Tool RAG / lightweight retrieval 的索引文档必须来自 capability 合同�
 
 | 序号 | 待办 | 硬性要求 | 验收 |
 |---|---|---|---|
-| T01 | 定义 Unified Capability 字段 | 为 Center/Node capability 增加 `scope`、`plane`、`provider`、`dispatch_kind`、`agent_visible`、`invocation_surface`、`workflow_kind`、artifact/operation contract。 | registry 中 Center 和 Node capability 都能用同一结构表达。 |
-| T02 | 注册 Center capabilities | 将全部 Center meta tools 注册为 `scope=center` capabilities。 | `node.list`、`transfer.create`、`artifact.present`、`context.inspect` 等都可被 `capability.describe` 描述。 |
-| T03 | 标注内部能力边界 | 将底层 send/receive/runtime/diagnostic 能力标记为 `invocation_surface=center_internal` 或 `diagnostic`。 | 默认 `capability.search` 不返回底层 `linux.transfer.croc.receive` 这类内部能力。 |
-| T04 | 统一 search 输入 | `capability.search` 默认只搜 `agent_visible=true` 且 `invocation_surface=agent` 的 Center + Node capabilities。 | 搜“传输文件”返回 Center transfer workflow capability，不返回底层 send/receive。 |
-| T05 | 统一 describe | `capability.describe` 支持 Center capability 和 Node capability。 | Center workflow 和 Node runtime capability 描述 shape 一致。 |
-| T06 | 完善统一 invoke dispatch | 保留当前 `capability.invoke` 的 Node capability 调用能力，并扩展到 `inline`、`workflow`、`node_job`、`operation` 的统一 dispatch。 | Agent 可通过 `capability.invoke(capability_ref="transfer.create")` 创建 transfer。 |
-| T07 | 收窄 Provider bootstrap tools | Provider 默认只暴露 `capability.search`、`capability.describe`、`capability.invoke`。 | 默认 tools 数量降到 3，其他 Center tools 不再直接暴露。 |
-| T08 | 前端显示 registry 命中 | 前端右侧显示本轮 registry search 命中的能力、scope、plane、surface、cache 状态。 | 用户能看到 Agent 为什么拿到某能力。 |
+| T01 | 定义 Unified Capability 字段（已完成） | `CapabilityDefinition` 已增加 `scope`、`plane`、`provider`、`dispatch_kind`、`agent_visible`、`invocation_surface`、`workflow_kind`、artifact/operation contract，并提供 Alembic 迁移。 | registry 中 Center 和 Node capability 都能用同一结构表达。 |
+| T02 | 注册 Center capabilities（已完成） | `sync_center_capability_definitions()` 将全部 Center meta tools 注册为 `scope=center` capabilities。 | `node.list`、`transfer.create`、`artifact.present`、`context.inspect` 等都可被 `capability.describe` 描述。 |
+| T03 | 标注内部能力边界（已完成） | Node capability manifest 支持显式 `agent_visible/invocation_surface`；缺省分类把底层 transfer send/receive 标为 `center_internal`，状态/诊断能力标为 `diagnostic`。 | 默认 `capability.search` 不返回底层 `linux.transfer.croc.receive` 这类内部能力。 |
+| T04 | 统一 search 输入（已完成） | `capability.search` 默认只搜 `agent_visible=true` 且 `invocation_surface=agent` 的 Center + Node capabilities；admin search 默认全量诊断。 | 搜“传输文件”返回 Center transfer workflow capability，不返回底层 send/receive。 |
+| T05 | 统一 describe（已完成） | `capability.describe` 支持 Center capability 和 Node capability；Center capability 使用虚拟 `source_id=center:<name>`。 | Center workflow 和 Node runtime capability 描述 shape 一致。 |
+| T06 | 完善统一 invoke dispatch（已完成） | `capability.invoke` 保留 Node capability 调用能力，并支持 Center inline/workflow/operation capability 统一转发。 | Agent 可通过 `capability.invoke(capability_ref="transfer.create")` 创建 transfer。 |
+| T07 | 收窄 Provider bootstrap tools（已完成） | Provider 默认只暴露 `capability.search`、`capability.describe`、`capability.invoke`；初始 capability context 只保留节点摘要和能力数量。 | 默认 tools 数量降到 3，其他 Center tools 不再直接暴露。 |
+| T08 | 前端显示 registry 命中（已完成） | 前端右侧 YCR 面板显示 `capability.search` 的命中能力、scope、plane、surface、dispatch、retrieval/cache/index 状态。 | 用户能看到 Agent 为什么拿到某能力。 |
 | T09 | RAG 层 query embedding cache（已完成） | `ycr_query_embedding_cache` 持久缓存 normalized query 的 dense/sparse embedding，供 Tool RAG 和 Context RAG 复用。 | 重复 query 不再重复调用 embedding 模型；`context.status` 暴露 hit/miss。 |
 | T10 | RAG 层 rerank cache（已完成） | `ycr_rerank_cache` 持久缓存 query hash、document hashes、rerank model/version、top_n 对应的 rerank 结果。 | 重复候选集不再重复调用 reranker；`capability.search` 返回 cache hit/miss。 |
 | T11 | Precompute capability index（已完成） | capability document、hash、index_text、projection、embedding、fingerprint 全部后台生成。 | `capability.search` 热路径不再生成 capability document 或 schema projection。 |
-| T12 | 索引未就绪等待报告（后端已完成，前端待接入） | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 后端不在前台同步 precompute；`capability.search` 返回 `retrieval.index.status=not_ready`、`retryable` 和 `retry_after_seconds`；`context.status` 返回 capability index 的 indexes 与 queued/running/succeeded/failed 统计。前端显示仍待接入。 |
+| T12 | 索引未就绪等待报告（已完成） | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 后端不在前台同步 precompute；`capability.search` 返回 `retrieval.index.status=not_ready`、`retryable` 和 `retry_after_seconds`；`context.status` 返回 capability index 的 indexes 与 queued/running/succeeded/failed 统计；前端 YCR 面板显示 index not ready 和 retry 秒数。 |
 | T13 | 前后台资源调度（已完成） | 所有 embedding/rerank 调用进入 YCR scheduler，前台优先，后台让路。 | Tool RAG、Context RAG、capability index precompute、ref chunk indexing 均通过 scheduler；embedder 侧有 embedding/rerank 并发阀门；`context.status` 暴露 scheduler 观测指标。 |
-| T14 | 精确 token accounting | 用 provider/model 对应 tokenizer 计算精确 prompt token；provider 返回 usage 后回填 actual。 | 前端不再显示 `16k/24k` 这类粗略值，显示精确 prompt/completion/total 及 per-block breakdown。 |
+| T14 | 精确 token accounting（已完成） | 引入 provider/model token counter；安装 `tiktoken` 后按 tokenizer 计数并标记 `precise=true`，provider 返回 usage 后回填 actual。 | 前端不再显示 `16k/24k` 这类粗略值，显示整数 prompt/completion/total 及 per-block breakdown。 |
 | T15 | Retrieval candidate cache（已完成） | 缓存向量/稀疏检索候选集，key 必须包含 query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version。 | 重复 query 在 corpus 未变时不重新跑完整 retrieval。 |
-| T16 | 清理旧直接 meta tool 路径 | 删除不再需要的直接 meta tool provider 暴露路径，不保留 fallback/shim。 | Agent 能力调用只依赖 bootstrap tools + registry capability。 |
+| T16 | 清理旧直接 meta tool 路径（已完成） | `_available_functions()` 默认只返回 bootstrap 三件套；旧 Center meta tools 通过 registry search/describe/invoke 进入 Agent。 | Agent 能力调用只依赖 bootstrap tools + registry capability。 |
 
 ## 6. RAG 层缓存设计
 

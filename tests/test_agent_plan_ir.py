@@ -16,9 +16,9 @@ def _uid():
 @pytest.fixture(autouse=True)
 def _register_fake_provider():
     """Register FakeAgentProvider for plan endpoint so it doesn't 404."""
+    from tests.fakes.agent_functions import default_agent_functions
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from tests.fakes.agent_functions import default_agent_functions
     from yequ.api.routes.agent import register_provider
 
     # Clear any existing provider and create fresh

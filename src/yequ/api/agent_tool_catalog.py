@@ -669,16 +669,15 @@ async def _available_functions(
 ) -> list[AgentFunction]:
     """Build the Agent tool list.
 
-    Production exposes stable Center meta tools. Raw Node capabilities remain
-    in Center's registry and are reached through capability.search,
-    capability.describe, and capability.invoke. The later registry milestone is
-    to register Center meta tools in the same catalog and shrink the provider
-    tool surface to the three bootstrap protocol tools.
+    Production exposes only stable bootstrap protocol tools. Center meta tools
+    and raw Node capabilities remain in Center's registry and are reached
+    through capability.search, capability.describe, and capability.invoke.
 
     Tests that need static tools must register a fake provider explicitly.
     """
     del db, target_node_id
-    return _center_meta_functions()
+    bootstrap = {"capability.search", "capability.describe", "capability.invoke"}
+    return [function for function in _center_meta_functions() if function.name in bootstrap]
 
 
 async def _default_target_node_id(db: AsyncSession) -> str:

@@ -93,7 +93,11 @@ class CenterExecutionRuntime:
         self,
         command: RuntimeCommand,
     ) -> ExecuteToolResult:
-        from yequ.services.capability_registry import resolve_capability_invoke_target
+        from yequ.services.capability_registry import (
+            resolve_capability_invoke_target,
+            resolve_center_capability_name,
+            sync_center_capability_definitions,
+        )
 
         input_data = dict(command.input_data)
         capability_ref = string_or_none(input_data.get("capability_ref")) or string_or_none(
@@ -112,6 +116,41 @@ class CenterExecutionRuntime:
                 "invalid_input",
                 "capability.invoke input must be an object",
             )
+
+        await sync_center_capability_definitions(self.db)
+        center_function = await resolve_center_capability_name(
+            self.db,
+            capability_ref=capability_ref,
+            source_id=source_id,
+        )
+        if center_function:
+            if center_function == "capability.invoke":
+                return runtime_error(
+                    command,
+                    "invalid_input",
+                    "capability.invoke cannot invoke itself",
+                )
+            delegated = RuntimeCommand(
+                function_name=center_function,
+                input_data=dict(tool_input),
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                session_id=command.session_id,
+                target_node_id=node_id,
+                execution_mode=command.execution_mode,
+                max_depth=command.max_depth,
+                max_steps=command.max_steps,
+                max_total_duration_sec=command.max_total_duration_sec,
+                call_path=list(command.call_path or []) + ["capability.invoke"],
+                approval_id=command.approval_id,
+                dry_run=command.dry_run,
+                wait_for_result=command.wait_for_result,
+                deadline=command.deadline,
+                timeout_sec=command.timeout_sec,
+                lease_sec=command.lease_sec,
+                suppress_operation=command.suppress_operation,
+            )
+            return await self.execute(delegated)
 
         try:
             target = await resolve_capability_invoke_target(

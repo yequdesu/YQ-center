@@ -97,6 +97,8 @@ class ToolSearchRequest(BaseModel):
     preflight_supported: bool | None = None
     artifact_input: bool | None = None
     artifact_output: bool | None = None
+    agent_visible: bool | None = True
+    invocation_surface: str | None = "agent"
     projection: str = "summary"
     capability_type: str = "function"
     include_inactive: bool = False

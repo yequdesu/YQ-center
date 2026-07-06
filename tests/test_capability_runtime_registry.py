@@ -764,6 +764,93 @@ async def test_center_meta_tool_executes_without_node_job(
 
 
 @pytest.mark.asyncio
+async def test_center_capabilities_are_registered_and_describable(
+    db_session,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "transfer.create",
+                "projection": "invoke_ready",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    capability = result.output_data["capability"]
+    assert capability["canonical_name"] == "transfer.create"
+    assert capability["scope"] == "center"
+    assert capability["dispatch_kind"] == "workflow"
+    assert capability["invocation_surface"] == "agent"
+    assert capability["invoke"]["source_id"] == "center:transfer.create"
+
+
+@pytest.mark.asyncio
+async def test_center_capability_search_discovers_workflow_without_node_source(
+    db_session,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "effect": "external",
+                "projection": "summary",
+                "limit": 5,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    names = [item["canonical_name"] for item in result.output_data["capabilities"]]
+    assert "transfer.create" in names
+    assert result.output_data["retrieval"]["strategy"] == "registry_filter_v1"
+
+
+@pytest.mark.asyncio
+async def test_capability_invoke_dispatches_center_inline_capability(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.invoke",
+            input_data={
+                "capability_ref": "node.list",
+                "input": {},
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.invocation_id is None
+    assert result.job_id is None
+    assert result.output_data is not None
+    assert any(item["node_id"] == node.node_id for item in result.output_data["nodes"])
+
+
+@pytest.mark.asyncio
 async def test_ycr_tool_search_accepts_filter_only_discovery(
     client: AsyncClient,
     provisioned_node,
@@ -890,13 +977,14 @@ async def test_capability_search_supports_structured_filters_and_projection(
         ExecuteToolCommand(
             function_name="capability.search",
             input_data={
-                "query": "transfer receive",
                 "platform_os": "linux",
                 "effect": "external",
                 "runtime_kind": "privileged",
                 "runtime_labels": ["transfer"],
                 "supports_progress": True,
                 "preflight_supported": True,
+                "agent_visible": False,
+                "invocation_surface": "center_internal",
                 "projection": "invoke_ready",
                 "limit": 5,
             },
@@ -911,8 +999,6 @@ async def test_capability_search_supports_structured_filters_and_projection(
     assert len(capabilities) == 1
     capability = capabilities[0]
     assert capability["canonical_name"] == "transfer.croc.receive"
-    assert capability["retrieval"]["strategy"] == "tool_rag_bge_m3_rrf_v1"
-    assert capability["retrieval"]["sparse_rank"] == 1
     assert "filter:platform_os=linux" in capability["match_reasons"]
     assert "input_schema" not in capability
     source = capability["sources"][0]
@@ -1041,9 +1127,10 @@ async def test_capability_search_reports_unavailable_reasons_for_offline_node(
         ExecuteToolCommand(
             function_name="capability.search",
             input_data={
-                "query": "transfer receive",
                 "projection": "diagnostics",
                 "include_inactive": True,
+                "agent_visible": False,
+                "invocation_surface": "center_internal",
             },
             actor_type="agent",
             actor_id="test-agent",

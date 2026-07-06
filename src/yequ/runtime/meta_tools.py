@@ -59,33 +59,37 @@ async def execute_inline_meta_tool(
                 )
             }
         elif command.function_name == "capability.search":
+            search_result = await ycr_client.tool_search(
+                query=string_or_none(input_data.get("query"))
+                or string_or_none(input_data.get("q")),
+                node_id=string_or_none(input_data.get("node_id")),
+                platform_os=string_or_none(input_data.get("platform_os")),
+                filters={
+                    "effect": string_or_none(input_data.get("effect")),
+                    "risk": string_or_none(input_data.get("risk")),
+                    "runtime_kind": string_or_none(input_data.get("runtime_kind")),
+                    "runtime_labels": string_list(input_data.get("runtime_labels"))
+                    or string_list(input_data.get("labels")),
+                    "supports_progress": input_data.get("supports_progress"),
+                    "supports_cancel": input_data.get("supports_cancel"),
+                    "supports_resume": input_data.get("supports_resume"),
+                    "preflight_supported": input_data.get("preflight_supported"),
+                    "artifact_input": input_data.get("artifact_input"),
+                    "artifact_output": input_data.get("artifact_output"),
+                    "agent_visible": input_data.get("agent_visible"),
+                    "invocation_surface": string_or_none(input_data.get("invocation_surface")),
+                    "projection": string_or_none(input_data.get("projection")) or "summary",
+                    "capability_type": string_or_none(input_data.get("capability_type"))
+                    or "function",
+                    "include_inactive": bool(input_data.get("include_inactive", False)),
+                },
+                limit=min(int_or_default(input_data.get("limit"), 5), 5),
+            )
             output = {
-                "capabilities": (
-                    await ycr_client.tool_search(
-                        query=string_or_none(input_data.get("query"))
-                        or string_or_none(input_data.get("q")),
-                        node_id=string_or_none(input_data.get("node_id")),
-                        platform_os=string_or_none(input_data.get("platform_os")),
-                        filters={
-                            "effect": string_or_none(input_data.get("effect")),
-                            "risk": string_or_none(input_data.get("risk")),
-                            "runtime_kind": string_or_none(input_data.get("runtime_kind")),
-                            "runtime_labels": string_list(input_data.get("runtime_labels"))
-                            or string_list(input_data.get("labels")),
-                            "supports_progress": input_data.get("supports_progress"),
-                            "supports_cancel": input_data.get("supports_cancel"),
-                            "supports_resume": input_data.get("supports_resume"),
-                            "preflight_supported": input_data.get("preflight_supported"),
-                            "artifact_input": input_data.get("artifact_input"),
-                            "artifact_output": input_data.get("artifact_output"),
-                            "projection": string_or_none(input_data.get("projection")) or "summary",
-                            "capability_type": string_or_none(input_data.get("capability_type"))
-                            or "function",
-                            "include_inactive": bool(input_data.get("include_inactive", False)),
-                        },
-                        limit=min(int_or_default(input_data.get("limit"), 5), 5),
-                    )
-                ).get("matches", [])
+                "capabilities": search_result.get("matches", []),
+                "query": search_result.get("query", ""),
+                "match_count": search_result.get("match_count", 0),
+                "retrieval": search_result.get("retrieval", {}),
             }
         elif command.function_name == "capability.describe":
             capability_ref = string_or_none(input_data.get("capability_ref")) or string_or_none(

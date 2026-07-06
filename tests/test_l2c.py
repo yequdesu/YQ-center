@@ -1191,9 +1191,9 @@ async def test_agent_plan_includes_rollback_hint(client: AsyncClient, l2c_setup)
     node_id, token, auth = l2c_setup
 
     # Override provider for check_and_fix
+    from tests.fakes.agent_functions import default_agent_functions
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from tests.fakes.agent_functions import default_agent_functions
     from yequ.api.routes.agent import register_provider
 
     # Always create a fresh provider to avoid cross-test contamination
@@ -1232,9 +1232,9 @@ async def test_rollback_hint_for_vague_target_requires_manual_review(
     """Planner must not invent a platform-specific target when the prompt is vague."""
     node_id, token, auth = l2c_setup
 
+    from tests.fakes.agent_functions import default_agent_functions
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import AgentResult
-    from tests.fakes.agent_functions import default_agent_functions
     from yequ.api.routes.agent import register_provider
 
     # Always create a fresh provider to avoid cross-test contamination

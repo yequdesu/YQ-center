@@ -17,10 +17,10 @@
 
 ## 当前最近执行顺序
 
-1. 继续执行 `2026-07-06-unified-capability-registry-plan.md`：
-   T09/T10/T11/T12 后端/T13/T15 已完成，下一步进入 registry 主线。
-2. 再执行同一文档中的 registry 主线：
-   Center capabilities 注册、bootstrap tools 收窄、统一 describe/invoke、前端 registry 命中展示。
+1. `2026-07-06-unified-capability-registry-plan.md` 的 T01-T16 主线已完成：
+   Center capabilities 已统一入 registry，Provider 默认工具面已收窄到 `capability.search/describe/invoke`，前端已显示 registry 命中、index-not-ready 和整数 token accounting。
+2. 下一步按 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 处理剩余行为缺陷：
+   Linux yq-croc receive 成功误判失败、TransferSession fact 继承、复杂任务过度探索等。
 3. 再回到 `2026-07-06-ycr-clean-rebuild-and-docs-plan.md` 里未完成的 YCR core data path
    项，清理已被前两份文档吸收或取代的描述。
 4. `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 只在新的截图/传输验收暴露行为回归时继续更新。

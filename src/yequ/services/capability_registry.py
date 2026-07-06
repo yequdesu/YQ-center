@@ -225,6 +225,42 @@ async def node_status(
     }
 
 
+async def sync_center_capability_definitions(db: AsyncSession) -> None:
+    """Ensure Center meta tools are represented as registry definitions."""
+
+    from yequ.api.agent_tool_catalog import _center_meta_functions
+
+    touched_definition_ids: set[str] = set()
+    for function in _center_meta_functions():
+        definition = await _get_or_create_definition(
+            db,
+            canonical_name=function.name,
+            capability_type="function",
+        )
+        manifest: JsonObject = {
+            "name": function.name,
+            "display_name": function.name,
+            "description": function.description,
+            "agent_description": function.description,
+            "input_schema": function.input_schema or {},
+            "output_schema": function.output_schema or {},
+            "risk": function.risk,
+            "effect": function.effect,
+            "scope": "center",
+            "plane": _center_plane(function.name),
+            "provider": "center",
+            "dispatch_kind": _center_dispatch_kind(function.name),
+            "agent_visible": True,
+            "invocation_surface": "agent",
+            "workflow_kind": _center_workflow_kind(function.name),
+            "tags": _tags_from_name(function.name),
+        }
+        _merge_definition_manifest(definition, function.name, manifest, "function")
+        definition.status = "active"
+        touched_definition_ids.add(definition.id)
+    await _enqueue_touched_capability_indexes(db, touched_definition_ids)
+
+
 async def capability_search(
     db: AsyncSession,
     *,
@@ -241,6 +277,8 @@ async def capability_search(
     preflight_supported: bool | None = None,
     artifact_input: bool | None = None,
     artifact_output: bool | None = None,
+    agent_visible: bool | None = True,
+    invocation_surface: str | None = "agent",
     projection: str = "summary",
     capability_type: str = "function",
     include_inactive: bool = False,
@@ -260,34 +298,48 @@ async def capability_search(
         stmt = stmt.where(CapabilityDefinition.effect == effect)
     if risk:
         stmt = stmt.where(CapabilityDefinition.risk == risk)
+    if agent_visible is not None:
+        stmt = stmt.where(CapabilityDefinition.agent_visible == agent_visible)
+    if invocation_surface:
+        stmt = stmt.where(CapabilityDefinition.invocation_surface == invocation_surface)
 
     result = await db.execute(stmt)
     definitions = result.unique().scalars().all()
     terms = _terms(query)
     matches: list[JsonObject] = []
+    source_filter_requested = any(
+        item is not None
+        for item in (
+            node_id,
+            platform_os,
+            runtime_kind,
+            supports_progress,
+            supports_cancel,
+            supports_resume,
+            preflight_supported,
+        )
+    ) or bool(runtime_labels)
 
     for definition in definitions:
+        if definition.scope == "center" and source_filter_requested:
+            continue
         if artifact_input is not None and bool(definition.artifact_inputs) != artifact_input:
             continue
         if artifact_output is not None and bool(definition.artifact_outputs) != artifact_output:
             continue
-        sources = [
-            source
-            for source in definition.sources
-            if _source_visible(
-                source,
-                node_id=node_id,
-                platform_os=platform_os,
-                runtime_kind=runtime_kind,
-                runtime_labels=runtime_labels,
-                supports_progress=supports_progress,
-                supports_cancel=supports_cancel,
-                supports_resume=supports_resume,
-                preflight_supported=preflight_supported,
-                include_inactive=include_inactive,
-            )
-        ]
-        if not sources:
+        sources = _visible_sources(
+            definition,
+            node_id=node_id,
+            platform_os=platform_os,
+            runtime_kind=runtime_kind,
+            runtime_labels=runtime_labels,
+            supports_progress=supports_progress,
+            supports_cancel=supports_cancel,
+            supports_resume=supports_resume,
+            preflight_supported=preflight_supported,
+            include_inactive=include_inactive,
+        )
+        if not sources and definition.scope != "center":
             continue
         if terms and not _definition_matches(definition, sources, terms):
             continue
@@ -310,6 +362,8 @@ async def capability_search(
                     "preflight_supported": preflight_supported,
                     "artifact_input": artifact_input,
                     "artifact_output": artifact_output,
+                    "agent_visible": agent_visible,
+                    "invocation_surface": invocation_surface,
                 },
             )
         )
@@ -354,22 +408,18 @@ async def capability_describe(
     if definition is None:
         raise ValueError(f"Capability {capability_ref!r} not found")
 
-    sources = [
-        source
-        for source in definition.sources
-        if _source_visible(
-            source,
-            node_id=node_id,
-            platform_os=None,
-            runtime_kind=None,
-            runtime_labels=None,
-            supports_progress=None,
-            supports_cancel=None,
-            supports_resume=None,
-            preflight_supported=None,
-            include_inactive=include_inactive,
-        )
-    ]
+    sources = _visible_sources(
+        definition,
+        node_id=node_id,
+        platform_os=None,
+        runtime_kind=None,
+        runtime_labels=None,
+        supports_progress=None,
+        supports_cancel=None,
+        supports_resume=None,
+        preflight_supported=None,
+        include_inactive=include_inactive,
+    )
     return _definition_detail(definition, sources, sections=sections, projection=projection)
 
 
@@ -438,6 +488,41 @@ async def resolve_capability_invoke_target(
         effect=definition.effect or "read",
         timeout_sec=source.timeout_sec,
     )
+
+
+async def resolve_center_capability_name(
+    db: AsyncSession,
+    *,
+    capability_ref: str | None = None,
+    source_id: str | None = None,
+) -> str | None:
+    if source_id and source_id.startswith("center:"):
+        capability_ref = source_id.removeprefix("center:")
+    if not capability_ref:
+        return None
+    result = await db.execute(
+        select(CapabilityDefinition).where(
+            CapabilityDefinition.scope == "center",
+            CapabilityDefinition.capability_type == "function",
+            (
+                (CapabilityDefinition.capability_id == capability_ref)
+                | (CapabilityDefinition.canonical_name == capability_ref)
+            ),
+        )
+    )
+    definition = result.scalar_one_or_none()
+    if definition is not None:
+        return definition.canonical_name
+    alias_result = await db.execute(
+        select(CapabilityDefinition).where(
+            CapabilityDefinition.scope == "center",
+            CapabilityDefinition.capability_type == "function",
+        )
+    )
+    for candidate in alias_result.scalars().all():
+        if capability_ref in (candidate.aliases or []):
+            return candidate.canonical_name
+    return None
 
 
 async def _upsert_source(
@@ -615,6 +700,15 @@ async def _upsert_definition_row(
                 aliases=[],
                 examples=[],
                 tags=[],
+                scope="node",
+                plane="node_runtime",
+                provider=None,
+                dispatch_kind="node_job",
+                agent_visible=True,
+                invocation_surface="agent",
+                workflow_kind=None,
+                artifact_contract=None,
+                operation_contract=None,
                 artifact_inputs=[],
                 artifact_outputs=[],
                 status="active",
@@ -709,6 +803,27 @@ def _merge_definition_manifest(
         definition.value_schema = (
             _json_object_or_none(manifest.get("value_schema")) or definition.value_schema
         )
+    definition.scope = _string_or_none(manifest.get("scope")) or definition.scope or "node"
+    definition.plane = (
+        _string_or_none(manifest.get("plane"))
+        or _default_plane(definition.canonical_name, definition.scope)
+    )
+    definition.provider = _string_or_none(manifest.get("provider")) or definition.provider
+    definition.dispatch_kind = (
+        _string_or_none(manifest.get("dispatch_kind"))
+        or _default_dispatch_kind(definition.scope)
+    )
+    definition.agent_visible = _bool_or_default(
+        manifest.get("agent_visible"),
+        _default_agent_visible(definition.canonical_name, definition.scope),
+    )
+    definition.invocation_surface = (
+        _string_or_none(manifest.get("invocation_surface"))
+        or _default_invocation_surface(definition.canonical_name, definition.scope)
+    )
+    definition.workflow_kind = _string_or_none(manifest.get("workflow_kind"))
+    definition.artifact_contract = _json_object_or_none(manifest.get("artifact_contract"))
+    definition.operation_contract = _json_object_or_none(manifest.get("operation_contract"))
     definition.artifact_inputs = _list_of_dicts(manifest.get("artifact_inputs"))
     artifact_outputs = _list_of_dicts(manifest.get("artifact_outputs"))
     definition.artifact_outputs = artifact_outputs or _infer_artifact_outputs(
@@ -782,6 +897,13 @@ def _definition_search_summary(
         "capability_type": definition.capability_type,
         "risk": definition.risk,
         "effect": definition.effect,
+        "scope": definition.scope,
+        "plane": definition.plane,
+        "provider": definition.provider,
+        "dispatch_kind": definition.dispatch_kind,
+        "agent_visible": definition.agent_visible,
+        "invocation_surface": definition.invocation_surface,
+        "workflow_kind": definition.workflow_kind,
         "source_count": len(sources),
         "match_reasons": _definition_match_reasons(
             definition,
@@ -800,11 +922,21 @@ def _definition_search_summary(
         "canonical_name": definition.canonical_name,
         "source_count": len(sources),
         "dispatchable_source_count": len(dispatchable_sources),
+        "dispatch_kind": definition.dispatch_kind,
         "rule": (
             "Use capability_ref exactly as provided. If source_id is present, "
             "prefer source_id for capability.invoke."
         ),
     }
+    if definition.scope == "center":
+        invoke.update(
+            {
+                "source_id": f"center:{definition.canonical_name}",
+                "registered_name": definition.canonical_name,
+                "node_id": None,
+                "dispatchable_source_count": 1,
+            }
+        )
     if len(dispatchable_sources) == 1:
         only_source = dispatchable_sources[0]
         invoke.update(
@@ -834,6 +966,8 @@ def _definition_search_summary(
                 "value_schema": definition.value_schema,
                 "artifact_inputs": list(definition.artifact_inputs or []),
                 "artifact_outputs": list(definition.artifact_outputs or []),
+                "artifact_contract": definition.artifact_contract,
+                "operation_contract": definition.operation_contract,
             }
         )
     if projection == "diagnostics":
@@ -1044,6 +1178,39 @@ def _source_visible(
         preflight_supported is not None
         and source.preflight_supported != preflight_supported
     )
+
+
+def _visible_sources(
+    definition: CapabilityDefinition,
+    *,
+    node_id: str | None,
+    platform_os: str | None,
+    runtime_kind: str | None,
+    runtime_labels: list[str] | None,
+    supports_progress: bool | None,
+    supports_cancel: bool | None,
+    supports_resume: bool | None,
+    preflight_supported: bool | None,
+    include_inactive: bool,
+) -> list[CapabilitySource]:
+    if definition.scope == "center":
+        return []
+    return [
+        source
+        for source in definition.sources
+        if _source_visible(
+            source,
+            node_id=node_id,
+            platform_os=platform_os,
+            runtime_kind=runtime_kind,
+            runtime_labels=runtime_labels,
+            supports_progress=supports_progress,
+            supports_cancel=supports_cancel,
+            supports_resume=supports_resume,
+            preflight_supported=preflight_supported,
+            include_inactive=include_inactive,
+        )
+    ]
 
 
 def _definition_matches(
@@ -1416,6 +1583,66 @@ def _execution_requirements_from_context(context: str | None) -> JsonObject | No
 
 def _tags_from_name(name: str) -> list[str]:
     return [part for part in name.replace("_", ".").split(".") if part]
+
+
+def _center_plane(name: str) -> str:
+    if name.startswith("transfer.") or name.startswith("artifact.deploy"):
+        return "workflow"
+    if name.startswith("context."):
+        return "data"
+    return "control"
+
+
+def _center_dispatch_kind(name: str) -> str:
+    if name in {"transfer.create", "transfer.resume", "artifact.deploy"}:
+        return "workflow"
+    if name.startswith("operation."):
+        return "operation"
+    return "inline"
+
+
+def _center_workflow_kind(name: str) -> str | None:
+    if name.startswith("transfer."):
+        return "transfer"
+    if name.startswith("artifact.deploy"):
+        return "artifact_deploy"
+    if name.startswith("context."):
+        return "context_ref"
+    if name.startswith("operation."):
+        return "operation"
+    return None
+
+
+def _default_plane(canonical_name: str, scope: str) -> str:
+    if scope == "center":
+        return _center_plane(canonical_name)
+    if canonical_name.endswith(".status") or canonical_name.endswith(".reconcile"):
+        return "diagnostic"
+    return "node_runtime"
+
+
+def _default_dispatch_kind(scope: str) -> str:
+    return "inline" if scope == "center" else "node_job"
+
+
+def _default_agent_visible(canonical_name: str, scope: str) -> bool:
+    if scope == "center":
+        return True
+    return _default_invocation_surface(canonical_name, scope) == "agent"
+
+
+def _default_invocation_surface(canonical_name: str, scope: str) -> str:
+    if scope == "center":
+        return "agent"
+    if canonical_name in {"transfer.croc.send", "transfer.croc.receive"}:
+        return "center_internal"
+    if canonical_name.endswith(".status") or canonical_name.endswith(".reconcile"):
+        return "diagnostic"
+    return "agent"
+
+
+def _bool_or_default(value: object, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 def _terms(query: str | None) -> list[str]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any
 
 from yequ.config import Settings
 
@@ -53,8 +55,20 @@ def projection_profile_from_settings(settings: Settings) -> ProjectionProfile:
     )
 
 
-def estimate_tokens(value: object) -> int:
-    return max(1, json_size_bytes(value) // 4)
+def estimate_tokens(value: object, *, model: str | None = None) -> int:
+    text = _token_text(value)
+    counter = _token_counter(model)
+    if counter is not None:
+        return max(1, len(counter.encode(text)))
+    return max(1, len(text.encode()) // 4)
+
+
+def token_accounting_metadata(*, model: str | None = None) -> dict[str, object]:
+    return {
+        "method": "tiktoken" if _token_counter(model) is not None else "byte_div_4",
+        "model": model or "",
+        "precise": _token_counter(model) is not None,
+    }
 
 
 def json_size_bytes(value: object) -> int:
@@ -62,3 +76,30 @@ def json_size_bytes(value: object) -> int:
         return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode())
     except TypeError:
         return len(str(value).encode())
+
+
+def _token_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return str(value)
+
+
+@lru_cache(maxsize=16)
+def _token_counter(model: str | None) -> Any | None:
+    try:
+        import tiktoken  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    model_name = (model or "").strip()
+    try:
+        if model_name:
+            return tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        pass
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None

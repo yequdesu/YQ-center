@@ -1413,14 +1413,18 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
       ? item.toolName ?? "tool result"
       : item.kind === "provider_projection"
         ? item.toolName ?? "provider projection"
-        : item.kind === "error"
-          ? "YCR error"
-          : `${item.providerName ?? "provider"} ${item.kind === "provider_input" ? "input" : "output"}`;
+        : item.kind === "registry_search"
+          ? "registry search"
+          : item.kind === "error"
+            ? "YCR error"
+            : `${item.providerName ?? "provider"} ${item.kind === "provider_input" ? "input" : "output"}`;
   return (
     <details className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2 text-[12px]">
       <summary className="cursor-pointer list-none">
         <div className="flex items-center gap-2">
-          {item.kind === "tool_storage" || item.kind === "provider_projection" ? (
+          {item.kind === "tool_storage" ||
+          item.kind === "provider_projection" ||
+          item.kind === "registry_search" ? (
             <Database size={12} className="text-[var(--accent)]" />
           ) : item.kind === "error" ? (
             <XCircle size={12} className="text-[var(--danger)]" />
@@ -1463,9 +1467,59 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
             bytes: {formatBytes(item.rawSizeBytes)} {"->"} {formatBytes(item.projectedSizeBytes)}
           </p>
         )}
+        {item.kind === "registry_search" && (
+          <RegistrySearchSummary item={item} />
+        )}
         {item.data && <JsonView data={item.data} />}
       </div>
     </details>
+  );
+}
+
+function RegistrySearchSummary({ item }: { item: YcrTraceItem }) {
+  const retrieval = item.retrieval ?? {};
+  const index = asPanelRecord(retrieval.index);
+  const cache = asPanelRecord(retrieval.cache);
+  const matches = item.registryMatches ?? [];
+  const strategy = String(retrieval.strategy ?? "registry");
+  const indexStatus = String(index.status ?? "ready");
+  const cacheStatus = typeof cache.status === "string" ? cache.status : "";
+  const retryAfter =
+    typeof index.retry_after_seconds === "number" ? index.retry_after_seconds : undefined;
+  return (
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-1.5 font-mono text-[10px] text-[var(--text-subtle)]">
+        <span>strategy: {strategy}</span>
+        <span>index: {indexStatus}</span>
+        {cacheStatus && <span>cache: {cacheStatus}</span>}
+        {retryAfter !== undefined && <span>retry: {retryAfter}s</span>}
+      </div>
+      {indexStatus === "not_ready" && (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-2 py-1 text-[11px] text-[var(--warning)]">
+          Capability index is not ready. Waiting for YCR background indexing before semantic tool search can return matches.
+        </div>
+      )}
+      {matches.length > 0 && (
+        <div className="space-y-1">
+          {matches.slice(0, 5).map((match, index) => (
+            <div
+              key={`${String(match.canonical_name ?? "capability")}:${index}`}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] px-2 py-1"
+            >
+              <div className="truncate font-mono text-[11px] text-[var(--text)]">
+                {String(match.canonical_name ?? "unknown")}
+              </div>
+              <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-[var(--text-subtle)]">
+                <span>scope {String(match.scope ?? "-")}</span>
+                <span>plane {String(match.plane ?? "-")}</span>
+                <span>surface {String(match.invocation_surface ?? "-")}</span>
+                <span>dispatch {String(match.dispatch_kind ?? "-")}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1825,9 +1879,13 @@ function formatBytes(value: number) {
 
 function formatTokenCount(value: number) {
   if (!Number.isFinite(value) || value <= 0) return "0";
-  if (value < 1000) return String(Math.round(value));
-  if (value < 1_000_000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
-  return `${(value / 1_000_000).toFixed(1)}m`;
+  return Math.round(value).toLocaleString("en-US");
+}
+
+function asPanelRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function formatPhase(value: string) {

@@ -241,7 +241,7 @@ find a specific capability."
 
 ### Q2：provider 工具 schema 绕过 YCR
 
-**结论**：provider 只注入 meta tools（capability.search、capability.describe、capability.invoke、context.expand 等），不注入 capability 工具定义。Agent 通过 meta tools 按需发现和调用 capability。工具 schema token 从 N 个 capability × 每个几百 token，变成十几个 meta tools × 每个几十 token。
+**当前决策（2026-07-06 覆盖）**：provider 默认只注入 `capability.search`、`capability.describe`、`capability.invoke` 三个 bootstrap protocol tools，不直接注入 `context.expand` 等其他 Center meta tools。`context.*`、`node.*`、`artifact.*`、`operation.*`、`transfer.*` 均作为 `scope=center` capability 进入 registry，由 Agent 通过 search/describe/invoke 访问。
 
 ### Q3：Result RAG 只能搜单个 ref
 

@@ -140,6 +140,9 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         result: asRecord(data.result),
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
+      if (String(data.name ?? "") === "capability.search") {
+        return appendRegistrySearchTrace(next, event, data, createdAt);
+      }
       if (String(data.name ?? "") === "artifact.present") {
         return appendArtifactPresentation(next, data, createdAt);
       }
@@ -687,6 +690,44 @@ function appendYcrErrorTrace(
     step: optionalNumber(data.step),
     summary: optionalString(data.message) ?? optionalString(data.error_code),
     data,
+  };
+  return appendYcrTraceItem(state, item, state.ycrTokenSummary);
+}
+
+function appendRegistrySearchTrace(
+  state: TranscriptState,
+  event: SseEvent,
+  data: Record<string, unknown>,
+  createdAt: string,
+): TranscriptState {
+  const result = asRecord(data.result);
+  const capabilities = Array.isArray(result.capabilities)
+    ? result.capabilities.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+  const retrieval = asRecord(result.retrieval);
+  const index = asRecord(retrieval.index);
+  const strategy = optionalString(retrieval.strategy);
+  const indexStatus = optionalString(index.status);
+  const retryAfter = optionalNumber(index.retry_after_seconds);
+  const summary =
+    indexStatus === "not_ready"
+      ? `Capability index not ready; retry after ${retryAfter ?? 5}s.`
+      : `${capabilities.length} registry match(es)${strategy ? ` via ${strategy}` : ""}.`;
+  const item: YcrTraceItem = {
+    id: `registry:${event.event_id}`,
+    kind: "registry_search",
+    label: "Registry search",
+    created_at: createdAt,
+    step: optionalNumber(data.step),
+    toolName: "capability.search",
+    callId: optionalString(data.call_id),
+    summary,
+    registryMatches: capabilities,
+    retrieval,
+    data: result,
   };
   return appendYcrTraceItem(state, item, state.ycrTokenSummary);
 }
