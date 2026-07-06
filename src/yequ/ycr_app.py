@@ -14,6 +14,7 @@ from yequ.config import get_settings
 from yequ.db import async_session_factory
 from yequ.ycr.budget import projection_profile_from_settings
 from yequ.ycr.projection import tool_observation_shell
+from yequ.ycr.rag_cache import rag_cache_stats
 from yequ.ycr.ref_store import (
     expand_ref as expand_ref_store,
 )
@@ -245,11 +246,15 @@ async def healthz() -> dict[str, object]:
 
 @app.get("/v1/context/status", dependencies=[Depends(_require_ycr_auth)])
 async def context_status() -> dict[str, object]:
+    from yequ.ycr.capability_index_jobs import capability_index_status
+
     settings = get_settings()
     database_url = settings.database_url.lower()
     vector_backend = (
         "postgresql_pgvector" if database_url.startswith("postgresql") else "local_vector_scan"
     )
+    async with async_session_factory() as db:
+        index_status = await capability_index_status(db)
     return {
         "status": "ready",
         "mode": "standalone",
@@ -265,6 +270,8 @@ async def context_status() -> dict[str, object]:
                 and bool(settings.ycr_embedding_base_url)
                 else "unavailable"
             ),
+            "rag_cache": rag_cache_stats(),
+            "index": index_status,
         },
         "projection": {
             "provider": _profile().provider,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.ycr import YcrCapabilityIndex, YcrCapabilityIndexJob
@@ -123,6 +123,27 @@ async def run_capability_index_jobs_once(db: AsyncSession, *, limit: int = 10) -
             job.last_error_message = str(exc)[:1000]
             failed += 1
     return {"processed": len(jobs), "succeeded": succeeded, "failed": failed}
+
+
+async def capability_index_status(db: AsyncSession) -> dict[str, object]:
+    job_rows = await db.execute(
+        select(YcrCapabilityIndexJob.status, func.count(YcrCapabilityIndexJob.job_id)).group_by(
+            YcrCapabilityIndexJob.status
+        )
+    )
+    counts = {str(status): int(count) for status, count in job_rows.all()}
+    index_count = await db.scalar(select(func.count(YcrCapabilityIndex.index_id)))
+    pending = counts.get("queued", 0) + counts.get("running", 0)
+    return {
+        "status": "ready" if pending == 0 else "indexing",
+        "indexes": int(index_count or 0),
+        "jobs": {
+            "queued": counts.get("queued", 0),
+            "running": counts.get("running", 0),
+            "succeeded": counts.get("succeeded", 0),
+            "failed": counts.get("failed", 0),
+        },
+    }
 
 
 def _job_id(*, index_id: str, document_hash: str) -> str:

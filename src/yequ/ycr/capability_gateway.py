@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.config import get_settings
 from yequ.models.ycr import YcrCapabilityIndex
 from yequ.services.capability_registry import capability_describe, capability_search
-from yequ.ycr.embedding import EmbeddingError, embed_text_full, rerank_documents
+from yequ.ycr.embedding import (
+    EmbeddingError,
+    RerankItem,
+    YcrEmbedding,
+    embed_text_full,
+    rerank_documents,
+)
+from yequ.ycr.rag_cache import cached_query_embedding, cached_rerank
 from yequ.ycr.retrieval import TOKEN_RE, cosine_similarity
 
 TOOL_RAG_CANDIDATE_LIMIT = 500
@@ -117,14 +124,6 @@ async def _search_capability_rag(
     limit: int,
 ) -> dict[str, object]:
     requested_projection = str(filters.get("projection") or "summary")
-    index_filters = {**filters, "projection": "schema"}
-    index_candidates = await capability_search(
-        db,
-        query=None,
-        **index_filters,
-        limit=TOOL_RAG_CANDIDATE_LIMIT,
-        max_limit=TOOL_RAG_CANDIDATE_LIMIT,
-    )
     return_candidates = await capability_search(
         db,
         query=None,
@@ -132,7 +131,7 @@ async def _search_capability_rag(
         limit=TOOL_RAG_CANDIDATE_LIMIT,
         max_limit=TOOL_RAG_CANDIDATE_LIMIT,
     )
-    if not index_candidates:
+    if not return_candidates:
         return {
             "kind": "capability_tool_rag_result",
             "query": query,
@@ -146,11 +145,40 @@ async def _search_capability_rag(
             },
         }
 
-    indexed = await _load_ready_capability_indexes(db, index_candidates)
+    indexed = await _load_ready_capability_indexes(db, return_candidates)
     if not indexed:
-        raise ValueError("capability_index_not_ready: matching capability index is not ready")
+        return {
+            "kind": "capability_tool_rag_result",
+            "query": query,
+            "matches": [],
+            "match_count": 0,
+            "retrieval": {
+                "strategy": "tool_rag_bge_m3_rrf_v1",
+                "candidate_count": len(return_candidates),
+                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
+                "requested_projection": requested_projection,
+                "indexed_count": 0,
+                "unindexed_count": len(return_candidates),
+                "semantic": {
+                    "enabled": True,
+                    "status": "not_ready",
+                    "match_count": 0,
+                },
+                "index": {
+                    "status": "not_ready",
+                    "reason": "matching capability indexes are not ready",
+                    "retryable": True,
+                    "retry_after_seconds": 5,
+                },
+            },
+        }
     try:
-        query_embedding = await embed_text_full(query)
+        cached_embedding = await cached_query_embedding(
+            db,
+            query,
+            compute=_compute_query_embedding,
+        )
+        query_embedding = cached_embedding.embedding
     except EmbeddingError as exc:
         raise ValueError(f"capability_rag_unavailable: {exc}") from exc
 
@@ -194,11 +222,15 @@ async def _search_capability_rag(
         rerank_documents_text.append(index.index_text)
 
     try:
-        reranked = await rerank_documents(
+        cached_reranked = await cached_rerank(
+            db,
             query,
             rerank_documents_text,
+            document_hashes=[payload[3].document_hash for payload in coarse_payloads],
             top_n=_bounded_limit(limit),
+            compute=_compute_rerank,
         )
+        reranked = cached_reranked.items
     except EmbeddingError as exc:
         raise ValueError(f"capability_rerank_unavailable: {exc}") from exc
 
@@ -211,7 +243,7 @@ async def _search_capability_rag(
         candidate = return_by_name.get(name)
         if candidate is None:
             candidate = next(
-                item for item in index_candidates if str(item.get("canonical_name") or "") == name
+                item for item in return_candidates if str(item.get("canonical_name") or "") == name
             )
         output = dict(candidate)
         output["retrieval"] = {
@@ -235,10 +267,11 @@ async def _search_capability_rag(
         "match_count": len(matches),
         "retrieval": {
             "strategy": "tool_rag_bge_m3_rrf_v1",
-            "candidate_count": len(index_candidates),
+            "candidate_count": len(return_candidates),
             "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
             "requested_projection": requested_projection,
             "indexed_count": len(indexed),
+            "unindexed_count": len(return_candidates) - len(indexed),
             "reranked_count": len(reranked),
             "semantic": {
                 "enabled": True,
@@ -248,8 +281,27 @@ async def _search_capability_rag(
                 "sparse_result_count": len(sparse_rows),
                 "match_count": len(matches),
             },
+            "cache": {
+                "query_embedding": {
+                    "status": cached_embedding.cache_status,
+                    "cache_key": cached_embedding.cache_key,
+                },
+                "rerank": {
+                    "status": cached_reranked.cache_status,
+                    "cache_key": cached_reranked.cache_key,
+                    "document_hashes_hash": cached_reranked.document_hashes_hash,
+                },
+            },
         },
     }
+
+
+async def _compute_query_embedding(query: str) -> YcrEmbedding:
+    return await embed_text_full(query)
+
+
+async def _compute_rerank(query: str, documents: list[str], top_n: int) -> list[RerankItem]:
+    return await rerank_documents(query, documents, top_n=top_n)
 
 
 def _rrf_fusion(
@@ -292,31 +344,19 @@ async def _load_ready_capability_indexes(
     db: AsyncSession,
     candidates: list[dict[str, object]],
 ) -> list[YcrCapabilityIndex]:
-    candidate_docs = []
-    for candidate in candidates:
-        document = _capability_index_document(candidate)
-        index_id = _index_id(candidate)
-        candidate_docs.append(
-            (
-                candidate,
-                index_id,
-                document,
-                _capability_index_text(document),
-                _stable_hash(document),
-            )
-        )
-
+    index_ids = [_index_id(candidate) for candidate in candidates]
     records_by_index_id = await _load_capability_index_records(
         db,
-        [item[1] for item in candidate_docs],
+        index_ids,
     )
     indexed: list[YcrCapabilityIndex] = []
-    for _candidate, index_id, _document, _index_text, document_hash in candidate_docs:
+    for candidate, index_id in zip(candidates, index_ids, strict=False):
         record = records_by_index_id.get(index_id)
         if (
             record is not None
             and record.index_version == CAPABILITY_INDEX_VERSION
-            and record.document_hash == document_hash
+            and record.capability_id == str(candidate.get("capability_id") or "")
+            and record.canonical_name == str(candidate.get("canonical_name") or "")
             and record.embedding_json
             and record.sparse_json
         ):

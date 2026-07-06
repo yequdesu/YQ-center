@@ -12,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import get_settings
 from yequ.models.ycr import YcrContextChunk, YcrContextRef
+from yequ.ycr import embedding as embedding_module
 from yequ.ycr.budget import json_size_bytes
-from yequ.ycr.embedding import EmbeddingError, embed_text
+from yequ.ycr.embedding import EmbeddingError, YcrEmbedding, embed_text
 from yequ.ycr.ledger import write_ledger
+from yequ.ycr.rag_cache import cached_query_embedding
 from yequ.ycr.retrieval import cosine_similarity
 
 
@@ -153,7 +155,10 @@ async def expand_ref(
             "ref_id": ref_id,
             "path": selected_path,
             "status": "path_required",
-            "message": "Root value is too large to expand inline; request a specific path, tail, schema, or search.",
+            "message": (
+                "Root value is too large to expand inline; request a specific path, "
+                "tail, schema, or search."
+            ),
             "schema": _schema_summary(value),
             "preview": _preview_shape(value, limit=limit),
             "available_paths": _available_child_paths(value, limit=limit),
@@ -201,7 +206,7 @@ async def search_context(
 ) -> dict[str, object]:
     if not query.strip():
         raise ValueError("context_search_unavailable: query is required")
-    query_embedding, embedding_provider, embedding_model = await _embed_query(query)
+    query_embedding, embedding_provider, embedding_model = await _embed_query(db, query)
     bounded_limit = max(1, min(limit, 50))
     ref = await get_ref(db, ref_id) if ref_id else None
 
@@ -349,11 +354,24 @@ async def _replace_chunks_without_embeddings(db: AsyncSession, record: YcrContex
         )
 
 
-async def _embed_query(query: str) -> tuple[list[float], str, str]:
+async def _embed_query(db: AsyncSession, query: str) -> tuple[list[float], str, str]:
     try:
-        return await embed_text(query)
+        cached = await cached_query_embedding(
+            db,
+            query,
+            compute=_compute_context_query_embedding,
+        )
+        return cached.embedding.dense, cached.embedding.provider, cached.embedding.model
     except EmbeddingError as exc:
         raise ValueError(f"context_search_unavailable: {exc}") from exc
+
+
+async def _compute_context_query_embedding(query: str) -> YcrEmbedding:
+    try:
+        return await embedding_module.embed_text_full(query)
+    except EmbeddingError:
+        dense, provider, model = await embed_text(query)
+        return YcrEmbedding(dense=dense, sparse={}, provider=provider, model=model)
 
 
 async def _has_indexed_chunks(

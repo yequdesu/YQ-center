@@ -42,7 +42,7 @@ import yequ.models.yqp_message  # noqa: F401
 from yequ.api.app import create_app
 from yequ.config import Settings
 from yequ.models.base import Base
-from yequ.ycr.embedding import YcrEmbedding
+from yequ.ycr.embedding import RerankItem, YcrEmbedding
 
 TEST_DB_PATH = "test_yequ.db"
 
@@ -81,6 +81,25 @@ def override_settings(monkeypatch, db_engine):
         embedding = await test_embed_text_full(text, settings=settings)
         return embedding.dense, embedding.provider, embedding.model
 
+    async def test_rerank_documents(
+        query: str,
+        documents: list[str],
+        *,
+        settings=None,
+        top_n: int = 20,
+    ):
+        query_terms = set(query.lower().replace(".", " ").replace("_", " ").split())
+        scored = []
+        for index, document in enumerate(documents):
+            document_terms = set(document.lower().replace(".", " ").replace("_", " ").split())
+            overlap = len(query_terms & document_terms)
+            scored.append((index, float(overlap), -index))
+        scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
+        return [
+            RerankItem(index=index, score=score)
+            for index, score, _ in scored[: max(1, min(top_n, len(scored)))]
+        ]
+
     monkeypatch.setattr("yequ.config._settings", test_settings)
     monkeypatch.setattr(yequ.db, "_settings", test_settings)
     monkeypatch.setattr(yequ.db, "engine", db_engine)
@@ -96,7 +115,13 @@ def override_settings(monkeypatch, db_engine):
     monkeypatch.setattr(yequ.api.deps, "_get_settings", lambda: test_settings)
     monkeypatch.setattr(yequ.ycr.embedding, "embed_text", test_embed_text)
     monkeypatch.setattr(yequ.ycr.embedding, "embed_text_full", test_embed_text_full)
+    monkeypatch.setattr(yequ.ycr.embedding, "rerank_documents", test_rerank_documents)
     monkeypatch.setattr(yequ.ycr.capability_gateway, "embed_text_full", test_embed_text_full)
+    monkeypatch.setattr(
+        yequ.ycr.capability_gateway,
+        "rerank_documents",
+        test_rerank_documents,
+    )
     monkeypatch.setattr(yequ.ycr.ref_store, "embed_text", test_embed_text)
 
     class TestYcrClient:

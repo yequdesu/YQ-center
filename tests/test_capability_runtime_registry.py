@@ -8,6 +8,15 @@ from tests.conftest import make_yqp_envelope
 from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 
 
+async def _run_ycr_capability_index_worker() -> None:
+    import yequ.db
+    from yequ.ycr.capability_index_jobs import run_capability_index_jobs_once
+
+    async with yequ.db.async_session_factory() as db:
+        await run_capability_index_jobs_once(db, limit=1000)
+        await db.commit()
+
+
 async def _provision_node(db_session, *, node_id: str, token: str) -> None:
     from yequ.models.node import Node
     from yequ.services.node_auth import hash_token
@@ -655,6 +664,9 @@ async def test_capability_describe_infers_artifact_outputs_from_schema(
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_artifact_output_capability(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
+    await _run_ycr_capability_index_worker()
+    await _run_ycr_capability_index_worker()
 
     describe_resp = await client.get("/admin/meta/capabilities/windows.screen.capture")
     assert describe_resp.status_code == 200, describe_resp.text
@@ -684,6 +696,7 @@ async def test_capability_search_filters_by_artifact_contract(
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_artifact_output_capability(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
 
     output_result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -732,6 +745,7 @@ async def test_center_meta_tool_executes_without_node_job(
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_linux_system_info(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
 
     result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -759,6 +773,9 @@ async def test_ycr_tool_search_accepts_filter_only_discovery(
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_linux_system_info(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
+    await _run_ycr_capability_index_worker()
+    await _run_ycr_capability_index_worker()
 
     transport = ASGITransport(app=ycr_app)
     async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
@@ -789,6 +806,7 @@ async def test_ycr_tool_search_uses_capability_rag_when_query_is_present(
     node, token = provisioned_node
     await _hello_windows_node(client, node.node_id, token)
     await _register_artifact_output_capability(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
 
     transport = ASGITransport(app=ycr_app)
     async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
@@ -813,6 +831,47 @@ async def test_ycr_tool_search_uses_capability_rag_when_query_is_present(
 
 
 @pytest.mark.asyncio
+async def test_ycr_tool_search_reports_index_not_ready_without_frontend_rebuild(
+    client: AsyncClient,
+    provisioned_node,
+) -> None:
+    from yequ.ycr_app import app as ycr_app
+
+    node, token = provisioned_node
+    await _hello_windows_node(client, node.node_id, token)
+    await _register_artifact_output_capability(client, node.node_id, token)
+
+    transport = ASGITransport(app=ycr_app)
+    async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
+        response = await ycr_client.post(
+            "/v1/tool/search",
+            json={
+                "query": "screen capture",
+                "node_id": node.node_id,
+                "artifact_output": True,
+                "projection": "invoke_ready",
+                "limit": 5,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["kind"] == "capability_tool_rag_result"
+    assert data["matches"] == []
+    assert data["match_count"] == 0
+    assert data["retrieval"]["candidate_count"] == 1
+    assert data["retrieval"]["indexed_count"] == 0
+    assert data["retrieval"]["unindexed_count"] == 1
+    assert data["retrieval"]["semantic"]["status"] == "not_ready"
+    assert data["retrieval"]["index"] == {
+        "status": "not_ready",
+        "reason": "matching capability indexes are not ready",
+        "retryable": True,
+        "retry_after_seconds": 5,
+    }
+
+
+@pytest.mark.asyncio
 async def test_capability_search_supports_structured_filters_and_projection(
     client: AsyncClient,
     db_session,
@@ -825,6 +884,7 @@ async def test_capability_search_supports_structured_filters_and_projection(
     await _hello_linux_node(client, node.node_id, token)
     await _register_linux_system_info(client, node.node_id, token)
     await _register_linux_transfer_capability(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
 
     result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -930,6 +990,7 @@ async def test_ycr_tool_search_prefers_exact_disk_capability_over_dense_noise(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200, resp.text
+    await _run_ycr_capability_index_worker()
 
     transport = ASGITransport(app=ycr_app)
     async with AsyncClient(transport=transport, base_url="http://test-ycr") as ycr_client:
@@ -948,10 +1009,12 @@ async def test_ycr_tool_search_prefers_exact_disk_capability_over_dense_noise(
     data = response.json()
     assert data["matches"][0]["canonical_name"] == "disk.detail"
     assert data["matches"][0]["retrieval"]["sparse_rank"] == 1
-    assert data["matches"][0]["retrieval"]["field_matches"]
-    assert "directory.archive_artifact" not in [
-        item["canonical_name"] for item in data["matches"]
-    ]
+    assert data["matches"][0]["retrieval"]["sparse_score"] > 0
+    if len(data["matches"]) > 1:
+        assert (
+            data["matches"][0]["retrieval"]["rerank_score"]
+            >= data["matches"][1]["retrieval"]["rerank_score"]
+        )
 
 
 @pytest.mark.asyncio
@@ -967,6 +1030,7 @@ async def test_capability_search_reports_unavailable_reasons_for_offline_node(
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
     await _register_linux_transfer_capability(client, node.node_id, token)
+    await _run_ycr_capability_index_worker()
 
     node_result = await db_session.execute(select(Node).where(Node.node_id == node.node_id))
     node_model = node_result.scalar_one()

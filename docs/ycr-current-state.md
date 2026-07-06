@@ -55,7 +55,7 @@ Agent Runtime
 | 接口 | 行为 |
 |---|---|
 | `GET /healthz` | 无鉴权健康检查。 |
-| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、投影配置和能力列表。 |
+| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、RAG cache、capability index 队列统计、投影配置和能力列表。 |
 | `POST /v1/context/refs` | 写入 raw ContextRef，提交后异步索引 ref chunks。 |
 | `POST /v1/tool-observations` | 保存 tool raw result，返回 `raw_ref` 和 provider history 可保存的 shell。 |
 | `POST /v1/context/build-turn` | 将 Agent history 中的 shell 统一转换为 provider-visible projected messages。 |
@@ -133,8 +133,15 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 2. YCR service 后台 worker 消费 index job，调用 embedder 写入 `ycr_capability_index`。
 3. `capability.search(query)` 只读取 ready index，不在搜索请求内临时构建索引。
 4. 搜索流程为 BGE-M3 dense/sparse 召回，然后调用 reranker 二阶段排序。
-5. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
-6. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
+5. query embedding 通过 `ycr_query_embedding_cache` 持久缓存，Tool RAG 与
+   `context.search` 复用同一 normalized query cache。
+6. reranker 通过 `ycr_rerank_cache` 持久缓存，cache key 包含 query hash、
+   ordered document hashes、rerank model/version 和 top_n。
+7. 匹配候选存在但 index 尚未 ready 时，`capability.search` 返回
+   `retrieval.index.status=not_ready`、`retryable=true` 和 `retry_after_seconds`，
+   不在前台同步建索引，也不把该状态伪装成无匹配。
+8. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
+9. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
 
 当前 provider 直接看到的是 `src/yequ/api/agent_tool_catalog.py` 中的稳定 Center
 工具面：`node.*`、`capability.search/describe/invoke`、`context.*`、`artifact.*`、
@@ -156,6 +163,9 @@ Result RAG 位于 `src/yequ/ycr/ref_store.py`。
 - `session_id + query`：在当前 Agent session 已保存并已索引的 tool result refs 中检索。
 
 Raw ref 写入不依赖 embedding；索引失败只影响 `context.search`，不影响保存、inspect、expand、tail、schema 或 build-turn projection。
+
+`context.search` 的 query embedding 复用 YCR RAG 层 query embedding cache；chunk
+embedding 仍由 ref indexing 生成，不在 raw ref 写入事务中强制完成。
 
 ## 8. SSE 与前端展示
 

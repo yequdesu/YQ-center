@@ -11,8 +11,8 @@
 `capability.invoke`。YCR raw ContextRef / Result RAG core data path、Linux yq-croc
 receive 误报失败、Provider registry 分别由对应活跃待办负责。
 
-RAG cache 相关项已登记为设计约束，但当前最近执行项先聚焦非 cache 主线；cache
-实现不阻塞统一 capability registry 的字段、注册、describe/invoke 和前端可观测性。
+RAG cache 相关项已经进入实现：`query embedding cache` 与 `rerank cache` 已落地；
+前后台资源调度、precompute 热路径收敛和 retrieval candidate cache 继续按本文待办推进。
 
 ## 0. 当前实现差距
 
@@ -173,10 +173,10 @@ Tool RAG / lightweight retrieval 的索引文档必须来自 capability 合同�
 | T06 | 完善统一 invoke dispatch | 保留当前 `capability.invoke` 的 Node capability 调用能力，并扩展到 `inline`、`workflow`、`node_job`、`operation` 的统一 dispatch。 | Agent 可通过 `capability.invoke(capability_ref="transfer.create")` 创建 transfer。 |
 | T07 | 收窄 Provider bootstrap tools | Provider 默认只暴露 `capability.search`、`capability.describe`、`capability.invoke`。 | 默认 tools 数量降到 3，其他 Center tools 不再直接暴露。 |
 | T08 | 前端显示 registry 命中 | 前端右侧显示本轮 registry search 命中的能力、scope、plane、surface、cache 状态。 | 用户能看到 Agent 为什么拿到某能力。 |
-| T09 | RAG 层 query embedding cache | 实现 query embedding cache，供 Tool RAG 和 Context RAG 复用。 | 重复 query 不再重复调用 embedding 模型。 |
-| T10 | RAG 层 rerank cache | 实现 rerank cache，key 包含 query hash、document hashes、rerank model/version、top_n。 | 重复候选集不再重复调用 reranker。 |
-| T11 | Precompute capability index | capability document、hash、index_text、projection、embedding、fingerprint 全部后台生成。 | `capability.search` 热路径不再生成 capability document 或 schema projection。 |
-| T12 | 索引未就绪等待报告 | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 不在前台同步 precompute；前端显示 queued/running/failed 和预计可重试状态。 |
+| T09 | RAG 层 query embedding cache（已完成） | `ycr_query_embedding_cache` 持久缓存 normalized query 的 dense/sparse embedding，供 Tool RAG 和 Context RAG 复用。 | 重复 query 不再重复调用 embedding 模型；`context.status` 暴露 hit/miss。 |
+| T10 | RAG 层 rerank cache（已完成） | `ycr_rerank_cache` 持久缓存 query hash、document hashes、rerank model/version、top_n 对应的 rerank 结果。 | 重复候选集不再重复调用 reranker；`capability.search` 返回 cache hit/miss。 |
+| T11 | Precompute capability index（已完成） | capability document、hash、index_text、projection、embedding、fingerprint 全部后台生成。 | `capability.search` 热路径不再生成 capability document 或 schema projection。 |
+| T12 | 索引未就绪等待报告（后端已完成，前端待接入） | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 后端不在前台同步 precompute；`capability.search` 返回 `retrieval.index.status=not_ready`、`retryable` 和 `retry_after_seconds`；`context.status` 返回 capability index 的 indexes 与 queued/running/succeeded/failed 统计。前端显示仍待接入。 |
 | T13 | 前后台资源调度 | 所有 embedding/rerank 调用进入 YCR scheduler，前台优先，后台让路。 | rebuild 期间前台 search 不被后台任务拖到超时。 |
 | T14 | 精确 token accounting | 用 provider/model 对应 tokenizer 计算精确 prompt token；provider 返回 usage 后回填 actual。 | 前端不再显示 `16k/24k` 这类粗略值，显示精确 prompt/completion/total 及 per-block breakdown。 |
 | T15 | Retrieval candidate cache | 缓存向量/稀疏检索候选集，key 必须包含 query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version。 | 重复 query 在 corpus 未变时不重新跑完整 retrieval。 |
@@ -211,7 +211,7 @@ normalized_query
 - embedding algorithm version 变化。
 - query normalize version 变化。
 
-缓存表建议：
+已实现缓存表：
 
 ```text
 ycr_query_embedding_cache
@@ -253,17 +253,15 @@ normalized_query_hash
 - 任一 candidate document_hash 变化。
 - candidate document 顺序或 top_n 变化。
 
-缓存表建议：
+已实现缓存表：
 
 ```text
 ycr_rerank_cache
 - cache_key
-- query_hash
-- normalized_query
+- normalized_query_hash
 - rerank_model
 - rerank_version
 - document_hashes_hash
-- document_count
 - top_n
 - result_json
 - created_at

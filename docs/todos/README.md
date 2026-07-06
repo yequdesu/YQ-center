@@ -12,18 +12,18 @@
 | `2026-07-03-documentation-and-architecture-quality-gate.md` | 全局质量门禁：文档系统收口、架构边界审查、Node/capability 插拔性、错误传播、无静默 fallback。 | 不承载具体 YCR、transfer、provider 的实现步骤。 |
 | `2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径：raw ContextRef、provider-visible projection、Result RAG、YCR API、启动/部署脚本和 YCR 文档一致性。 | 不定义 Agent 工具面最终形态；不修具体 transfer bug；不定义 provider registry。 |
 | `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正：Tool RAG 通用排序质量、递归 projection 粒度、Linux yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出和空错误传播。 | 不设计统一 capability registry 数据模型；不做 YCR core storage 重建；不做 provider 系统。 |
-| `2026-07-06-unified-capability-registry-plan.md` | 能力目录与 Agent 工具面：Center meta tools 与 Node capabilities 统一注册、`agent_visible/invocation_surface` 分层、固定 bootstrap tools、统一 `capability.invoke`。 | 不处理具体 Linux receive bug；不处理 Provider registry；RAG cache 项已登记但不是当前最近执行项。 |
+| `2026-07-06-unified-capability-registry-plan.md` | 能力目录与 Agent 工具面：Center meta tools 与 Node capabilities 统一注册、`agent_visible/invocation_surface` 分层、固定 bootstrap tools、统一 `capability.invoke`；同时承载 Tool RAG cache、precompute 和前后台资源调度。 | 不处理具体 Linux receive bug；不处理 Provider registry。 |
 | `2026-06-29-agent-provider-system.md` | Provider 系统：provider registry、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 | 不定义 capability registry；不处理 YCR projection；不处理 Node transfer 逻辑。 |
 
 ## 当前最近执行顺序
 
-1. 先完成 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 中剩余行为项：
-   Windows 截图和 Windows -> Linux 传输端到端验收。
-2. 再执行 `2026-07-06-unified-capability-registry-plan.md` 中的非 cache 主线：
+1. 继续执行 `2026-07-06-unified-capability-registry-plan.md`：
+   T09/T10 已完成，下一步是 T11/T13/T15 的 precompute、前后台资源调度和 retrieval candidate cache。
+2. 再执行同一文档中的 registry 主线：
    Center capabilities 注册、bootstrap tools 收窄、统一 describe/invoke、前端 registry 命中展示。
 3. 再回到 `2026-07-06-ycr-clean-rebuild-and-docs-plan.md` 里未完成的 YCR core data path
    项，清理已被前两份文档吸收或取代的描述。
-4. RAG cache / retrieval candidate cache 暂时只登记为设计约束，不作为最近执行项。
+4. `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 只在新的截图/传输验收暴露行为回归时继续更新。
 
 ## 已归档待办
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -122,3 +123,39 @@ class YcrCapabilityIndexJob(Base, TimestampMixin):
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class YcrQueryEmbeddingCache(Base, TimestampMixin):
+    """Persistent normalized query embedding cache for YCR retrieval."""
+
+    __tablename__ = "ycr_query_embedding_cache"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    normalized_query: Mapped[str] = mapped_column(Text, nullable=False)
+    query_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    normalize_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    embedding_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    dense_json: Mapped[list[float]] = mapped_column(JSON, nullable=False)
+    sparse_json: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class YcrRerankCache(Base, TimestampMixin):
+    """Persistent rerank cache keyed by query and ordered candidate documents."""
+
+    __tablename__ = "ycr_rerank_cache"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    normalized_query_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    rerank_model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    rerank_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_hashes_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    top_n: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_json: Mapped[list[dict[str, float | int]]] = mapped_column(JSON, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
