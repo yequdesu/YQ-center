@@ -52,9 +52,7 @@ def override_settings(monkeypatch, db_engine):
     """Override settings for test environment — uses db_engine's single engine."""
     import yequ.api.deps
     import yequ.db
-    import yequ.ycr.capability_gateway
     import yequ.ycr.embedding
-    import yequ.ycr.ref_store
 
     test_settings = Settings(
         database_url=f"sqlite+aiosqlite:///{TEST_DB_PATH}",
@@ -116,13 +114,6 @@ def override_settings(monkeypatch, db_engine):
     monkeypatch.setattr(yequ.ycr.embedding, "embed_text", test_embed_text)
     monkeypatch.setattr(yequ.ycr.embedding, "embed_text_full", test_embed_text_full)
     monkeypatch.setattr(yequ.ycr.embedding, "rerank_documents", test_rerank_documents)
-    monkeypatch.setattr(yequ.ycr.capability_gateway, "embed_text_full", test_embed_text_full)
-    monkeypatch.setattr(
-        yequ.ycr.capability_gateway,
-        "rerank_documents",
-        test_rerank_documents,
-    )
-    monkeypatch.setattr(yequ.ycr.ref_store, "embed_text", test_embed_text)
 
     class TestYcrClient:
         async def status(self):

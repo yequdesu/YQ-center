@@ -16,11 +16,15 @@ from yequ.ycr.embedding import (
     EmbeddingError,
     RerankItem,
     YcrEmbedding,
-    embed_text_full,
-    rerank_documents,
 )
 from yequ.ycr.rag_cache import cached_query_embedding, cached_rerank
 from yequ.ycr.retrieval import TOKEN_RE, cosine_similarity
+from yequ.ycr.scheduler import (
+    PRIORITY_FOREGROUND_CAPABILITY_EMBEDDING,
+    PRIORITY_FOREGROUND_CAPABILITY_RERANK,
+    scheduled_embed_text_full,
+    scheduled_rerank_documents,
+)
 
 TOOL_RAG_CANDIDATE_LIMIT = 500
 CAPABILITY_INDEX_VERSION = 3
@@ -297,11 +301,22 @@ async def _search_capability_rag(
 
 
 async def _compute_query_embedding(query: str) -> YcrEmbedding:
-    return await embed_text_full(query)
+    return await scheduled_embed_text_full(
+        query,
+        priority=PRIORITY_FOREGROUND_CAPABILITY_EMBEDDING,
+        purpose="capability.search.query_embedding",
+        cache_key=query,
+    )
 
 
 async def _compute_rerank(query: str, documents: list[str], top_n: int) -> list[RerankItem]:
-    return await rerank_documents(query, documents, top_n=top_n)
+    return await scheduled_rerank_documents(
+        query,
+        documents,
+        priority=PRIORITY_FOREGROUND_CAPABILITY_RERANK,
+        purpose="capability.search.rerank",
+        top_n=top_n,
+    )
 
 
 def _rrf_fusion(

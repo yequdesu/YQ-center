@@ -32,6 +32,7 @@ from yequ.ycr.ref_store import (
 from yequ.ycr.ref_store import (
     tail_ref as tail_ref_store,
 )
+from yequ.ycr.scheduler import scheduler_status
 
 log = logging.getLogger(__name__)
 _capability_index_worker_task: asyncio.Task[None] | None = None
@@ -135,7 +136,10 @@ async def _capability_index_worker() -> None:
     while True:
         try:
             async with async_session_factory() as db:
-                await run_capability_index_jobs_once(db, limit=10)
+                await run_capability_index_jobs_once(
+                    db,
+                    limit=get_settings().ycr_scheduler_background_batch_size,
+                )
                 await db.commit()
         except Exception:
             log.exception("YCR capability index worker failed")
@@ -271,6 +275,7 @@ async def context_status() -> dict[str, object]:
                 else "unavailable"
             ),
             "rag_cache": rag_cache_stats(),
+            "scheduler": scheduler_status(),
             "index": index_status,
         },
         "projection": {

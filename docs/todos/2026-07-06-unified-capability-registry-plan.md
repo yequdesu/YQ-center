@@ -12,7 +12,7 @@
 receive 误报失败、Provider registry 分别由对应活跃待办负责。
 
 RAG cache 相关项已经进入实现：`query embedding cache` 与 `rerank cache` 已落地；
-前后台资源调度、precompute 热路径收敛和 retrieval candidate cache 继续按本文待办推进。
+precompute 热路径收敛和前后台资源调度已落地；retrieval candidate cache 继续按本文待办推进。
 
 ## 0. 当前实现差距
 
@@ -177,7 +177,7 @@ Tool RAG / lightweight retrieval 的索引文档必须来自 capability 合同�
 | T10 | RAG 层 rerank cache（已完成） | `ycr_rerank_cache` 持久缓存 query hash、document hashes、rerank model/version、top_n 对应的 rerank 结果。 | 重复候选集不再重复调用 reranker；`capability.search` 返回 cache hit/miss。 |
 | T11 | Precompute capability index（已完成） | capability document、hash、index_text、projection、embedding、fingerprint 全部后台生成。 | `capability.search` 热路径不再生成 capability document 或 schema projection。 |
 | T12 | 索引未就绪等待报告（后端已完成，前端待接入） | 索引未就绪时返回稳定状态，由前端显示并等待后台完成。 | 后端不在前台同步 precompute；`capability.search` 返回 `retrieval.index.status=not_ready`、`retryable` 和 `retry_after_seconds`；`context.status` 返回 capability index 的 indexes 与 queued/running/succeeded/failed 统计。前端显示仍待接入。 |
-| T13 | 前后台资源调度 | 所有 embedding/rerank 调用进入 YCR scheduler，前台优先，后台让路。 | rebuild 期间前台 search 不被后台任务拖到超时。 |
+| T13 | 前后台资源调度（已完成） | 所有 embedding/rerank 调用进入 YCR scheduler，前台优先，后台让路。 | Tool RAG、Context RAG、capability index precompute、ref chunk indexing 均通过 scheduler；embedder 侧有 embedding/rerank 并发阀门；`context.status` 暴露 scheduler 观测指标。 |
 | T14 | 精确 token accounting | 用 provider/model 对应 tokenizer 计算精确 prompt token；provider 返回 usage 后回填 actual。 | 前端不再显示 `16k/24k` 这类粗略值，显示精确 prompt/completion/total 及 per-block breakdown。 |
 | T15 | Retrieval candidate cache | 缓存向量/稀疏检索候选集，key 必须包含 query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version。 | 重复 query 在 corpus 未变时不重新跑完整 retrieval。 |
 | T16 | 清理旧直接 meta tool 路径 | 删除不再需要的直接 meta tool provider 暴露路径，不保留 fallback/shim。 | Agent 能力调用只依赖 bootstrap tools + registry capability。 |
@@ -471,7 +471,14 @@ P0-P3 为前台交互任务；P5-P7 为后台任务。后台任务必须让路�
 
 ### 8.2 YCR 侧 scheduler
 
-实现 YCR 服务内 `EmbeddingScheduler`：
+已实现 `src/yequ/ycr/scheduler.py`：
+
+- `scheduled_embed_text_full`
+- `scheduled_embed_text`
+- `scheduled_rerank_documents`
+- `scheduler_status`
+
+行为：
 
 - 所有 `embed_text_full`、`embed_text`、`rerank_documents` 调用必须经过 scheduler。
 - scheduler 输入包含 `priority`、`purpose`、`deadline_sec`、`cache_key`。
@@ -479,14 +486,23 @@ P0-P3 为前台交互任务；P5-P7 为后台任务。后台任务必须让路�
 - 后台任务分批执行，单批数量受限。
 - 前台队列非空时，后台任务暂停提交新模型请求。
 
+当前已覆盖调用点：
+
+- `capability.search` query embedding：P0。
+- `capability.search` rerank：P1。
+- `context.search` query embedding：P2。
+- capability index precompute：P5。
+- context ref chunk indexing：P6。
+
 ### 8.3 Embedder 侧限制
 
-本地 embedder 仍保持单进程 CPU 模型。YCR scheduler 必须先完成；embedder 服务内也要实现：
+本地 embedder 仍保持单进程 CPU 模型。embedder 服务内已实现：
 
 - embedding semaphore。
 - rerank semaphore。
-- priority queue。
-- request timeout / cancellation。
+
+embedder 不做业务优先级判断；优先级由 YCR scheduler 在调用 embedder 之前完成。embedder
+只负责把实际模型推理并发限制在可控范围，默认 embedding/rerank 并发均为 1。
 
 ### 8.4 后台 job 运行规则
 

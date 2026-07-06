@@ -18,7 +18,7 @@
 ## 当前最近执行顺序
 
 1. 继续执行 `2026-07-06-unified-capability-registry-plan.md`：
-   T09/T10 已完成，下一步是 T11/T13/T15 的 precompute、前后台资源调度和 retrieval candidate cache。
+   T09/T10/T11/T12 后端/T13 已完成，下一步是 T15 retrieval candidate cache，或进入 registry 主线。
 2. 再执行同一文档中的 registry 主线：
    Center capabilities 注册、bootstrap tools 收窄、统一 describe/invoke、前端 registry 命中展示。
 3. 再回到 `2026-07-06-ycr-clean-rebuild-and-docs-plan.md` 里未完成的 YCR core data path

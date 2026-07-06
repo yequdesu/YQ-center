@@ -12,12 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import get_settings
 from yequ.models.ycr import YcrContextChunk, YcrContextRef
-from yequ.ycr import embedding as embedding_module
 from yequ.ycr.budget import json_size_bytes
-from yequ.ycr.embedding import EmbeddingError, YcrEmbedding, embed_text
+from yequ.ycr.embedding import EmbeddingError, YcrEmbedding
 from yequ.ycr.ledger import write_ledger
 from yequ.ycr.rag_cache import cached_query_embedding
 from yequ.ycr.retrieval import cosine_similarity
+from yequ.ycr.scheduler import (
+    PRIORITY_BACKGROUND_CONTEXT_INDEX,
+    PRIORITY_FOREGROUND_CONTEXT_EMBEDDING,
+    scheduled_embed_text,
+    scheduled_embed_text_full,
+)
 
 
 def stable_ref_id(*, source_type: str, source_id: str, path: str) -> str:
@@ -102,7 +107,12 @@ async def index_ref_chunks(db: AsyncSession, ref_id: str) -> dict[str, object]:
         for chunk in chunks:
             if chunk.embedding_json:
                 continue
-            embedding, provider, model = await embed_text(chunk.text)
+            embedding, provider, model = await scheduled_embed_text(
+                chunk.text,
+                priority=PRIORITY_BACKGROUND_CONTEXT_INDEX,
+                purpose="context.ref.index",
+                cache_key=chunk.chunk_id,
+            )
             chunk.embedding_json = embedding
             chunk.embedding_model = model
             await db.flush()
@@ -367,11 +377,12 @@ async def _embed_query(db: AsyncSession, query: str) -> tuple[list[float], str, 
 
 
 async def _compute_context_query_embedding(query: str) -> YcrEmbedding:
-    try:
-        return await embedding_module.embed_text_full(query)
-    except EmbeddingError:
-        dense, provider, model = await embed_text(query)
-        return YcrEmbedding(dense=dense, sparse={}, provider=provider, model=model)
+    return await scheduled_embed_text_full(
+        query,
+        priority=PRIORITY_FOREGROUND_CONTEXT_EMBEDDING,
+        purpose="context.search.query_embedding",
+        cache_key=query,
+    )
 
 
 async def _has_indexed_chunks(

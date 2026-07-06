@@ -46,6 +46,11 @@ Agent Runtime
 | `YEQU_YCR_EMBEDDING_TIMEOUT_SEC` | YCR 调用 embedding endpoint 的超时，默认 60 秒。 |
 | `YEQU_YCR_RERANK_MODEL` | 默认 `BAAI/bge-reranker-base`。 |
 | `YEQU_YCR_RERANK_TIMEOUT_SEC` | YCR 调用 rerank endpoint 的超时，默认 90 秒。 |
+| `YEQU_YCR_SCHEDULER_EMBEDDING_CONCURRENCY` | YCR scheduler 允许同时提交的 embedding 请求数，默认 1。 |
+| `YEQU_YCR_SCHEDULER_RERANK_CONCURRENCY` | YCR scheduler 允许同时提交的 rerank 请求数，默认 1。 |
+| `YEQU_YCR_SCHEDULER_BACKGROUND_BATCH_SIZE` | capability index 后台 worker 单轮处理数量，默认 5。 |
+| `YEQU_EMBEDDER_EMBEDDING_CONCURRENCY` | embedder 服务内 embedding 模型推理并发，默认 1。 |
+| `YEQU_EMBEDDER_RERANK_CONCURRENCY` | embedder 服务内 reranker 模型推理并发，默认 1。 |
 | `YEQU_YCR_PROJECTION_INLINE_BYTES` | 默认投影 inline 上限。 |
 | `YEQU_YCR_PROJECTION_PREVIEW_CHARS` | `$ycr_ref` preview 字符数。 |
 | `YEQU_YCR_MAX_RAW_REF_BYTES` | 单个 raw ref 最大写入大小。 |
@@ -55,7 +60,7 @@ Agent Runtime
 | 接口 | 行为 |
 |---|---|
 | `GET /healthz` | 无鉴权健康检查。 |
-| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、RAG cache、capability index 队列统计、投影配置和能力列表。 |
+| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、RAG cache、scheduler 状态、capability index 队列统计、投影配置和能力列表。 |
 | `POST /v1/context/refs` | 写入 raw ContextRef，提交后异步索引 ref chunks。 |
 | `POST /v1/tool-observations` | 保存 tool raw result，返回 `raw_ref` 和 provider history 可保存的 shell。 |
 | `POST /v1/context/build-turn` | 将 Agent history 中的 shell 统一转换为 provider-visible projected messages。 |
@@ -152,6 +157,30 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 目标态的“所有 Center meta tools 也统一注册为 capability，并让 provider 默认只暴露
 `capability.search` / `capability.describe` / `capability.invoke`”属于
 `docs/todos/2026-07-06-unified-capability-registry-plan.md`，不是当前已完成事实。
+
+## 6.1 YCR Model Scheduler
+
+所有会真正调用 embedding/rerank 模型的 YCR 路径都经过 `src/yequ/ycr/scheduler.py`：
+
+| 路径 | 优先级 | 性质 |
+|---|---:|---|
+| `capability.search` query embedding | P0 | 前台 |
+| `capability.search` rerank | P1 | 前台 |
+| `context.search` query embedding | P2 | 前台 |
+| capability index precompute | P5 | 后台 |
+| context ref chunk indexing | P6 | 后台 |
+
+调度行为：
+
+- 前台任务进入时，后台任务暂停提交新的模型请求。
+- 后台任务只在没有前台等待/运行时继续推进。
+- 同一 `cache_key` 的并发 miss 会合并为一个 in-flight future。
+- embedding 与 rerank 分别受并发阀门控制，默认并发为 1。
+- `/v1/context/status` 的 `capability_discovery.scheduler` 暴露 foreground/background
+  waiting、active、completed、last wait/duration 和 inflight dedup 计数。
+
+embedder 服务 `src/yequ/ycr_embedder_app.py` 内也有 embedding/rerank semaphore。embedder
+不判断业务优先级；优先级已经由 YCR scheduler 在请求到达 embedder 前完成。
 
 ## 7. Result RAG
 

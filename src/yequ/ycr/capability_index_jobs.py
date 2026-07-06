@@ -18,7 +18,11 @@ from yequ.ycr.capability_gateway import (
     _stable_hash,
     _vector_literal,
 )
-from yequ.ycr.embedding import EmbeddingError, embed_text_full
+from yequ.ycr.embedding import EmbeddingError
+from yequ.ycr.scheduler import (
+    PRIORITY_BACKGROUND_CAPABILITY_INDEX,
+    scheduled_embed_text_full,
+)
 
 
 async def enqueue_capability_index_jobs(
@@ -84,7 +88,12 @@ async def run_capability_index_jobs_once(db: AsyncSession, *, limit: int = 10) -
         job.attempt += 1
         await db.flush()
         try:
-            embedding = await embed_text_full(job.index_text)
+            embedding = await scheduled_embed_text_full(
+                job.index_text,
+                priority=PRIORITY_BACKGROUND_CAPABILITY_INDEX,
+                purpose="capability.index.precompute",
+                cache_key=job.document_hash,
+            )
             record_result = await db.execute(
                 select(YcrCapabilityIndex).where(YcrCapabilityIndex.index_id == job.index_id)
             )

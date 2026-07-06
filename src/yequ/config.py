@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     ycr_rerank_model: str = "BAAI/bge-reranker-base"
     ycr_rerank_top_k: int = 20
     ycr_rerank_timeout_sec: float = 90.0
+    ycr_scheduler_embedding_concurrency: int = 1
+    ycr_scheduler_rerank_concurrency: int = 1
+    ycr_scheduler_background_batch_size: int = 5
 
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var

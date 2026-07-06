@@ -19,6 +19,8 @@ _model: Any | None = None
 _reranker: Any | None = None
 _model_lock = asyncio.Lock()
 _reranker_lock = asyncio.Lock()
+_embedding_semaphore: asyncio.Semaphore | None = None
+_rerank_semaphore: asyncio.Semaphore | None = None
 
 
 @asynccontextmanager
@@ -60,6 +62,8 @@ async def healthz() -> dict[str, object]:
         "model": os.getenv("YEQU_EMBEDDER_MODEL", "BAAI/bge-m3"),
         "rerank_model": os.getenv("YEQU_YCR_RERANK_MODEL", "BAAI/bge-reranker-base"),
         "device": os.getenv("YEQU_EMBEDDER_DEVICE", "cpu"),
+        "embedding_concurrency": _embedding_concurrency(),
+        "rerank_concurrency": _rerank_concurrency(),
     }
 
 
@@ -73,7 +77,8 @@ async def embeddings(
     if not inputs:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="input is required")
     model = await _load_model()
-    vectors = await asyncio.to_thread(_encode, model, inputs)
+    async with _embedding_limit():
+        vectors = await asyncio.to_thread(_encode, model, inputs)
     return {
         "object": "list",
         "model": body.model,
@@ -100,7 +105,8 @@ async def rerank(
     if not body.documents:
         return {"object": "list", "model": body.model, "results": []}
     reranker = await _load_reranker()
-    scores = await asyncio.to_thread(_rerank_scores, reranker, body.query, body.documents)
+    async with _rerank_limit():
+        scores = await asyncio.to_thread(_rerank_scores, reranker, body.query, body.documents)
     ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)[: body.top_n]
     return {
         "object": "list",
@@ -184,3 +190,32 @@ def _rerank_scores(reranker: Any, query: str, documents: list[str]) -> list[floa
     if isinstance(scores, float):
         return [scores]
     return [float(score) for score in scores]
+
+
+def _embedding_limit() -> asyncio.Semaphore:
+    global _embedding_semaphore
+    if _embedding_semaphore is None:
+        _embedding_semaphore = asyncio.Semaphore(_embedding_concurrency())
+    return _embedding_semaphore
+
+
+def _rerank_limit() -> asyncio.Semaphore:
+    global _rerank_semaphore
+    if _rerank_semaphore is None:
+        _rerank_semaphore = asyncio.Semaphore(_rerank_concurrency())
+    return _rerank_semaphore
+
+
+def _embedding_concurrency() -> int:
+    return _env_int("YEQU_EMBEDDER_EMBEDDING_CONCURRENCY", 1)
+
+
+def _rerank_concurrency() -> int:
+    return _env_int("YEQU_EMBEDDER_RERANK_CONCURRENCY", 1)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
