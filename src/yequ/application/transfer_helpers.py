@@ -637,6 +637,16 @@ def _first_str(*values: object) -> str | None:
     return None
 
 
+def _first_sha256(*values: object) -> str | None:
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip().lower()
+        if len(candidate) == 64 and all(ch in "0123456789abcdef" for ch in candidate):
+            return candidate
+    return None
+
+
 def _max_str(*values: object) -> str | None:
     strings = [value for value in values if isinstance(value, str) and value]
     return max(strings) if strings else None

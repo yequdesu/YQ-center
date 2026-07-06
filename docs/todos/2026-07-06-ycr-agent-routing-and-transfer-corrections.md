@@ -4,9 +4,36 @@
 日期：2026-07-06
 适用阶段：YCR 清理重建后的行为质量修正
 
-本文记录 2026-07-06 复盘复杂 Agent 交互后确认的问题和修复路线。本文是
-`2026-07-06-ycr-clean-rebuild-and-docs-plan.md` 的补充约束，不替代 YCR
-总体设计。
+本文记录 2026-07-06 复盘复杂 Agent 交互后确认的问题和修复路线。本文只负责
+已暴露的行为缺陷修正：Tool RAG 通用排序质量、递归 projection 粒度、Linux
+yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出和空错误
+传播。
+
+职责边界：
+
+- YCR raw ContextRef、provider-visible projection、Result RAG、YCR API 和启动/部署
+  归属 `2026-07-06-ycr-clean-rebuild-and-docs-plan.md`。
+- Center meta tools 与 Node capabilities 统一入 registry、Agent bootstrap tools
+  收窄和 `capability.invoke` 归属 `2026-07-06-unified-capability-registry-plan.md`。
+- Provider registry、模型发现和 provider 错误展示归属
+  `2026-06-29-agent-provider-system.md`。
+
+## 0. 当前实现核对
+
+本表按 2026-07-06 当前代码核对。本文后续章节保留问题背景和目标约束；执行时以
+本表的“剩余动作”为准，不能把已完成项重复当作待办。
+
+| 项 | 当前状态 | 代码事实 | 剩余动作 |
+|---|---|---|---|
+| 递归 projection 粒度 | 已完成 | `src/yequ/ycr/projection.py` 已递归处理 dict/list，只把超限子值替换为 `$ycr_ref`；`tests/test_ycr_context_router.py` 已覆盖大 stdout、medium meta tool output、多小字段对象不 root-ref。 | 无。 |
+| `transfer.preflight` 关键事实 inline | 已完成 | 测试已覆盖 `allowed`、`preflight_id`、`source.path` 等关键字段直接可见，根对象不会因多个小字段累计到 5KB 而整体 ref。 | 无。 |
+| `node.status` 默认 summary | 已完成 | `src/yequ/runtime/meta_tools.py` 默认 projection 为 `summary`；registry summary 返回 node facts、capability 数量和名称预览，不返回完整 `capability_sources`。 | 只需继续审计描述与前端展示是否一致。 |
+| `artifact.*` / `operation.status` / `transfer.status` 默认 summary | 已完成当前审计 | runtime meta tools 已为 artifact、operation、transfer 状态类工具设置 summary 默认值；artifact summary 不返回完整 metadata/blob 细节；`capability.invoke` 当前已实现且必须保留，用于执行具体 Node capability。 | 后续 unified registry 只负责把 Center meta tools 也注册为 capability，并收窄 provider 默认工具面。 |
+| YCR/meta tool 错误传播 | 已完成当前审计 | `YcrClient` 已把 HTTP/网络/JSON 异常转成 `YcrError(code, message)`；runtime meta tools 和 Agent stream 会向前端传播 code/message；已补测试覆盖 YCR error code/message 不为空。 | 端到端交互继续观察前端展示。 |
+| Tool RAG 通用排序质量 | 部分完成 | 当前索引文档由 capability 合同字段生成，没有截图类同义词特判；但统一 capability registry 和最终工具面尚未完成，复杂任务仍可能过度探索。 | 按 `2026-07-06-unified-capability-registry-plan.md` 继续收敛工具面，并用截图/传输任务验收排序质量。 |
+| Center transfer fact 继承 | 已完成 | `transfer.create` 会从 preflight source fact 继承 size/hash，写入 `TransferSession.size_bytes/sha256`，并向 receive input 下发 `expected_size_bytes` / `expected_sha256`。 | 无。 |
+| Linux receive 成功误判失败 | 已完成 | Linux receive wrapper 不再使用 `target_mtime >= receive_started_at`；overwrite 指定目标会在启动 yq-croc 前清理旧目标，runtime 非零退出后只用 size/hash 校验判定是否可恢复为 succeeded。 | 无。 |
+| `context.expand` 默认全量展开风险 | 已完成 | `context.expand` 对过大的根路径 `$` 返回 `path_required`、schema、preview shape 和 available paths；指定子路径仍可展开。 | 无。 |
 
 ## 1. 已确认问题
 
@@ -49,12 +76,29 @@
 - Linux receive 端报告 `yq-croc receive failed with exit code Some(1)`。
 - 后续文件系统检查显示目标文件存在，大小和 SHA256 与源文件一致。
 - Agent 最终文字说传输成功，但 Operation 面板显示 failed。
+- 已复盘的一次 Windows -> Linux 传输中，Center 显示 receiver failed，但 Linux
+  目标文件 `/home/yequdesu/SillyTavern-1.17.0.zip` 实际存在：
+  - `size=38399221`；
+  - `sha256=870df5d7151edec8d700deaee6144e49415dd6f48e206191874863dcdb97deb2`；
+  - size/hash 与 source preflight 完全一致；
+  - ctime 正好落在本次传输完成时间；
+  - mtime 保留为源文件原始修改时间。
+- 这说明 yq-croc/croc 接收完成后可能保留源文件 mtime。Linux receive wrapper
+  若用 `target_mtime >= receive_started_at` 判断“本次写入”，会把实际成功误判为
+  失败。
+- 同次复盘还发现 `TransferSession.size_bytes` / `sha256` 仍为 null，虽然 preflight
+  和 receiver input 已经具备 size 信息；receiver input 只带 `expected_size_bytes`，
+  没有继承 preflight 计算出的 `expected_sha256`。
 
 结论：
 
 - 不引入 `completed_with_runtime_error`、`succeeded_with_warning` 等中间状态。
 - Center transfer 状态继续保持清晰：成功是 `succeeded`，失败是 `failed`。
 - 当前问题优先定位为 Linux Node / yq-croc receive 包装逻辑的失败判定错误。
+- Linux receive 成功判定不得依赖目标文件 mtime。
+- Center `transfer.create` 必须从 preflight 继承 source size/hash，并写入
+  `TransferSession`。
+- receive job input 必须同时带 `expected_size_bytes` 和 `expected_sha256`。
 - Agent 不得自行用文件存在或 SHA256 校验覆盖 Center transfer domain 状态。
 
 ### 1.4 node.status 职责过宽
@@ -154,17 +198,43 @@
 修改目标：
 
 - 在 Linux Node 的 yq-croc receive wrapper 中定位 exit code 1 来源。
-- 如果文件已经完整写入且 yq-croc 协议层实际完成，Node 端不得上报 failed。
+- Linux receive wrapper 不再使用 mtime 判断目标文件是否由本次传输写入。
+- overwrite 模式下，在 receive 前记录目标文件快照或清理/隔离既有目标文件；
+  receive 后以 size/hash 校验结果作为成功判定依据。
+- `expected_size_bytes` 存在时，接收后 size 必须一致。
+- `expected_sha256` 存在时，接收后 sha256 必须一致。
+- 如果文件已经完整写入且 size/hash 校验通过，Node 端不得上报 failed。
 - 如果确实失败，必须保留失败状态并上报稳定错误码、stderr 摘要和可诊断事件。
 
 验收标准：
 
 - 同一文件从 Windows Node 传到 Linux Node 后，Operation 与 TransferSession
   都进入 succeeded。
+- yq-croc 保留源文件 mtime 时，Linux receive 仍能正确判定成功。
 - 不再需要 Agent 额外调用文件 stat/hash 来“纠正” Center transfer 状态。
 - Linux receive 失败时，前端显示明确错误原因，而不是泛化 exit code。
 
-### 2.4 收窄 node.status 默认输出
+### 2.4 修 Center transfer fact 继承
+
+修改目标：
+
+- `transfer.create` 基于 preflight 创建 TransferSession 时，必须从 preflight source
+  fact 继承 `size_bytes` 和 `sha256`。
+- TransferSession 持久化字段必须记录 expected source size/hash，供 UI、恢复、
+  校验和错误解释使用。
+- 创建 source/target jobs 时，receiver input 必须继承：
+  - `expected_size_bytes`；
+  - `expected_sha256`。
+- 如果用户显式传入 expected hash，则显式参数优先；否则使用 preflight source fact。
+
+验收标准：
+
+- preflight 已计算 sha256 时，TransferSession 中不再出现 `size_bytes=null` /
+  `sha256=null`。
+- Linux receive job input 同时包含 expected size 和 expected sha256。
+- 前端 transfer 详情可以直接展示预期 size/hash，不需要 Agent 再查文件补事实。
+
+### 2.5 收窄 node.status 默认输出
 
 修改目标：
 
@@ -178,7 +248,7 @@
 - 查询能力必须走 `capability.search`，查看具体能力必须走 `capability.describe`。
 - 管理 UI 仍可通过显式 diagnostics/detail 获取完整诊断信息。
 
-### 2.5 审计并收敛所有 meta tool 的职责边界
+### 2.6 审计并收敛所有 meta tool 的职责边界
 
 修改目标：
 
@@ -213,7 +283,7 @@
 - 需要大对象时，通过 `$ycr_ref`、path-specific expand、detail/diagnostics projection
   显式获取。
 
-### 2.6 修空错误传播
+### 2.7 修空错误传播
 
 修改目标：
 
@@ -240,13 +310,8 @@
 
 ## 4. 推荐实施顺序
 
-1. 重写 YCR projection 递归粒度，并补测试。
-2. 审计并收敛所有 Agent 可见 meta tool 的默认返回、projection 和描述。
-3. 收窄 `node.status` 默认输出，隔离 diagnostics/detail。
-4. 修 YCR/meta tool 空错误传播。
-5. 改 Tool RAG capability index/reranker 输入，验证截图类查询只是通用案例之一。
-6. 定位并修复 Linux Node yq-croc receive 误报失败。
-7. 用一次 Windows -> Linux 文件传输和一次 Windows 截图任务做端到端验收。
+1. 用一次 Windows -> Linux 文件传输和一次 Windows 截图任务做端到端验收。
+2. 按 unified capability registry 计划继续收敛 Tool RAG 工具面，并验证截图类查询只是通用案例之一。
 
 ## 5. 完成判定
 
@@ -255,6 +320,9 @@
 - Agent 截图任务不再绕到无关 workflow capability。
 - transfer.preflight 关键决策事实无需 `context.expand` 即可被 Agent 使用。
 - Windows -> Linux yq-croc 传输成功时 Center Operation 显示 succeeded。
+- yq-croc 保留源文件 mtime 时，Linux receive 不再误报 failed。
+- TransferSession 能展示从 preflight 继承的 expected size/hash。
+- receive job input 包含 expected size/hash。
 - Agent 聊天结论与 Operation/TransferSession 状态一致。
 - `node.status` 默认输出稳定小，不随 capability source 详情膨胀。
 - `operation.status`、`transfer.status`、`artifact.*`、`context.*`、

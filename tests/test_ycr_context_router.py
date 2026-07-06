@@ -147,11 +147,34 @@ async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
     assert status["status"] == "ready"
 
 
+async def test_ycr_expand_large_root_requires_specific_path(db_session, override_settings) -> None:
+    override_settings.ycr_projection_inline_bytes = 512
+    ref = await upsert_ref(
+        db_session,
+        ref_type="job_output",
+        source_type="job",
+        source_id="job_large_root",
+        path="$",
+        value={"stdout": "alpha" * 300, "status": "succeeded"},
+        summary="Large root output",
+    )
+    await db_session.commit()
+
+    root = await expand_ref(db_session, str(ref["ref_id"]))
+    stdout = await expand_ref(db_session, str(ref["ref_id"]), path="$.stdout")
+
+    assert root["status"] == "path_required"
+    assert "$.stdout" in root["available_paths"]
+    assert "value" not in root
+    assert "alpha" in stdout["value"]
+
+
 def test_center_meta_functions_include_ycr_context_tools() -> None:
     names = {function.name for function in _center_meta_functions()}
 
     assert "capability.search" in names
     assert "capability.describe" in names
+    assert "capability.invoke" in names
     assert "capability.recommend" not in names
     assert "context.inspect" in names
     assert "context.search" in names

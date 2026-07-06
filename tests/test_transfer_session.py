@@ -1150,14 +1150,14 @@ async def test_transfer_create_rejects_preflight_relay_url_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_transfer_create_passes_preflight_size_to_receiver(
+async def test_transfer_create_inherits_preflight_size_and_sha256(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from yequ.application.transfer import TransferApplicationService
 
     async def fake_stat(self, command, *, node_id: str, path: str, include_sha256: bool):
-        del self, command, node_id, path, include_sha256
+        del self, command, node_id, path
         return ExecuteToolResult(
             status="succeeded",
             function_name="capability.invoke",
@@ -1167,6 +1167,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "parent_exists": True,
                 "writable": True,
                 "size_bytes": 12345,
+                "sha256": "a" * 64 if include_sha256 else None,
                 "free_bytes": 54321,
             },
         )
@@ -1201,6 +1202,7 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
                 "source_path": "E:\\test\\1.mp3",
                 "target_output_dir": "/tmp/yequ-transfer",
                 "resume_mode": "resume",
+                "include_sha256": True,
             },
             actor_type="agent",
             actor_id="test-agent",
@@ -1228,6 +1230,12 @@ async def test_transfer_create_passes_preflight_size_to_receiver(
     assert result.status == "waiting_operation"
     assert "expected_size_bytes" not in captured_inputs[0]
     assert captured_inputs[1]["expected_size_bytes"] == 12345
+    assert captured_inputs[1]["expected_sha256"] == "a" * 64
+
+    sessions = (await db_session.execute(select(TransferSession))).scalars().all()
+    assert len(sessions) == 1
+    assert sessions[0].size_bytes == 12345
+    assert sessions[0].sha256 == "a" * 64
 
 
 @pytest.mark.asyncio

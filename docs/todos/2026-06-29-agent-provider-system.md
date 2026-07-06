@@ -4,6 +4,10 @@
 日期：2026-06-29
 目标：把当前只面向 DeepSeek 的实现升级为可配置、可探测、可诊断的 Agent Provider 系统。
 
+职责边界：本文只负责 Provider registry、模型发现、连通性/tool/stream probe、
+Console provider/model 选择和 provider 错误显式展示。不负责 capability registry、
+YCR projection/Result RAG、Node transfer 逻辑或 meta tool 默认输出治理。
+
 ## 1. 当前确切实现
 
 当前 Center 并不是架构上只能支持 DeepSeek，但实现上存在 DeepSeek 绑定：

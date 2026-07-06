@@ -19,6 +19,7 @@ from yequ.application.transfer_helpers import (
     NormalizedTransferTarget,
     _classify_transfer_error,
     _first_int,
+    _first_sha256,
     _generate_croc_code,
     _job_dict,
     _job_has_sender_ready,
@@ -300,6 +301,19 @@ class TransferApplicationService:
         route_policy = _normalize_route_policy(command.route_policy)
         _validate_route_policy_fields(route_policy, direct_ip=command.direct_ip)
         preflight = await self._verify_preflight(command, resume_mode=resume_mode)
+        expected_size_bytes = (
+            _first_int(preflight.source_fact.get("size_bytes"))
+            if preflight and isinstance(preflight.source_fact, dict)
+            else None
+        )
+        expected_sha256 = (
+            command.expected_sha256
+            or (
+                _first_sha256(preflight.source_fact.get("sha256"))
+                if preflight and isinstance(preflight.source_fact, dict)
+                else None
+            )
+        )
 
         session = TransferSession(
             transfer_id=f"trf_{secrets.token_hex(8)}",
@@ -311,6 +325,8 @@ class TransferApplicationService:
             source_path=command.source_path,
             target_path=target_intent.target_path,
             target_output_dir=target_intent.output_dir,
+            size_bytes=expected_size_bytes,
+            sha256=expected_sha256,
             relay_url=command.relay_url,
             route_policy=route_policy,
             direct_ip=command.direct_ip,
@@ -349,12 +365,6 @@ class TransferApplicationService:
         )
         self.db.add(attempt)
         await self.db.commit()
-
-        expected_size_bytes = (
-            _first_int(preflight.source_fact.get("size_bytes"))
-            if preflight and isinstance(preflight.source_fact, dict)
-            else None
-        )
 
         send_result = await self._invoke_capability(
             command,
@@ -477,7 +487,7 @@ class TransferApplicationService:
             "multicast_address": command.multicast_address,
             "timeout_sec": command.timeout_sec,
             "resume_mode": resume_mode,
-            "expected_sha256": command.expected_sha256,
+            "expected_sha256": expected_sha256,
         }
         if expected_size_bytes is not None:
             receive_input["expected_size_bytes"] = expected_size_bytes

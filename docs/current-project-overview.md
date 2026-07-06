@@ -1,8 +1,8 @@
 # 当前项目全貌
 
 状态：当前概览  
-更新时间：2026-07-03
-当前阶段：`docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`
+更新时间：2026-07-06
+当前阶段：YCR/Agent 行为修正、transfer 状态修正、统一 capability registry 收敛
 
 ## 1. 一句话结论
 
@@ -18,7 +18,9 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 - Console Activity / OperationCard
 - Node capability 精细合同
 
-下一阶段不是立刻扩展 SubAgent 或继续堆业务能力，而是先完成文档系统收口、代码质量审查、架构边界复核，以及 Node/capability 插拔性确认。
+下一阶段不是立刻扩展 SubAgent 或继续堆业务能力，而是在质量门禁约束下，先完成
+YCR/Agent 行为修正、transfer 状态修正和统一 capability registry 收敛，确保
+Node/capability 插拔性、错误传播和上下文治理不继续积累临时逻辑。
 
 ## 2. 当前已具备的能力
 
@@ -67,7 +69,7 @@ Capability Registry
   -> BGE-M3 dense/sparse retrieval
   -> reranker
   -> structured validation / projection
-  -> capability.invoke
+  -> capability.invoke / Center workflow / job dispatch / artifact-transfer path
 ```
 
 无 query 时，`capability.search` 只做 registry-backed structured filter，并且必须带至少一个过滤条件。带 query 时，YCR 只读取 ready capability index，不在用户请求路径临时构建索引；embedding 或 reranker 不可用时返回明确错误，不做字符串 fallback。
@@ -84,6 +86,11 @@ Tool RAG 只负责候选召回增强：
 
 Tool RAG 不能取代 registry、schema、preflight、Guard、Policy 或 Operation Runtime，也不能把语义相似度
 当成执行授权或事实满足证明。
+
+`capability.invoke` 当前已经是执行具体 Node capability 的入口。尚未完成的是
+`docs/todos/2026-07-06-unified-capability-registry-plan.md` 中的最终工具面收敛：
+把 Center meta tools 也统一注册为 capability，并让 provider 默认只暴露
+`capability.search` / `capability.describe` / `capability.invoke`。
 
 ### 3.4 Node 与 capability 插拔边界
 
@@ -118,18 +125,16 @@ tool call
 
 ## 4. 当前主要待办
 
-当前进入下一轮功能扩展前，必须先完成质量门禁：
+当前执行顺序以 `docs/todos/README.md` 为准。质量门禁继续作为全局约束存在，但不替代
+专题待办的实现顺序。
 
-1. 文档系统收口：active 文档职责清晰，旧计划、旧提案、复盘和展示材料全部归档。
-2. Node 接入插拔性：新增任意平台 Node 后，只要完成 provisioning、YQP hello、runtime 上报和 capability 注册，Center 不应新增平台分支。
-3. Capability 插拔性：新增 capability 按 manifest 注册后，应自动进入 Center registry、structured discovery 和 Agent meta tool 调用路径。
-4. 错误传播：Provider、Runtime、Tool、YQP、Operation 统一稳定错误码和 problem projection，前端不得收到伪成功或空失败。
-5. 无静默 fallback：生产路径不得保留旧 croc CLI、rclone、直连传输、未注册 capability 执行或 provider 自动切换。
-6. 模块职责拆分：继续拆小 `CenterExecutionRuntime`、`TransferApplicationService` 和 Agent route，避免形成新的大总管。
-7. Agent 上下文预算：工具 schema、tool result、history、context_refs、resume prompt 都必须有预算、投影和摘要策略。
-8. 边界测试扩展：import boundary、fallback residue、meta tool output size、Node onboarding 和 capability onboarding 都应进入测试。
+1. 先完成剩余行为验收：Windows 截图和 Windows -> Linux 传输端到端验收。
+2. 再推进 unified capability registry 非 cache 主线：Center capabilities 注册、
+   bootstrap tools 收窄、统一 describe/invoke、前端 registry 命中展示。
+3. 再回到 YCR core data path 文档，清理已被前两份文档吸收或取代的描述。
+4. RAG cache / retrieval candidate cache 暂时只登记为设计约束，不作为最近执行项。
 
-SubAgent 和更多 Node 能力应在质量门禁通过后再进入主线。
+SubAgent 和更多 Node 能力应在上述收敛完成后再进入主线。
 
 ## 5. 当前权威文档
 
@@ -141,7 +146,10 @@ SubAgent 和更多 Node 能力应在质量门禁通过后再进入主线。
 | `docs/linux-node-development-contract.md` | 当前 Linux Node 实现合同。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 当前质量门禁。 |
-| `docs/todos/2026-06-29-agent-provider-system.md` | 仍未完成的 Provider 系统路线图。 |
+| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径待办。 |
+| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | YCR/Agent 行为缺陷和 transfer 状态修正待办。 |
+| `docs/todos/2026-07-06-unified-capability-registry-plan.md` | 统一 capability registry 与 Agent 工具面待办。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统待办。 |
 | `docs/documentation-index.md` | 当前文档入口和归档说明。 |
 | `docs/documentation-policy.md` | 文档维护规则。 |
 

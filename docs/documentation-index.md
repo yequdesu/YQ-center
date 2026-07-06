@@ -24,10 +24,11 @@
 | 文档 | 范围 |
 |---|---|
 | `docs/todos/README.md` | 当前待办目录说明。 |
-| `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性和错误传播门禁。 |
-| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 三阶段重构实施计划：清理旧实现、按新决策重建、文档一致性收口。 |
-| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | YCR/Agent 行为修正：通用 Tool RAG 排序、递归 projection 粒度、Linux yq-croc receive 误报失败、meta tool 职责边界收敛和空错误传播。 |
-| `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、连通性探测、Console 动态 provider/model 选择和显式 provider 错误报告。 |
+| `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 全局质量门禁：文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性、错误传播和无静默 fallback。 |
+| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径：raw ContextRef、provider-visible projection、Result RAG、YCR API、启动/部署脚本和 YCR 文档一致性。 |
+| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正：Tool RAG 排序质量、递归 projection 粒度、Linux yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出和空错误传播。 |
+| `docs/todos/2026-07-06-unified-capability-registry-plan.md` | 能力目录与 Agent 工具面：Center meta tools 与 Node capabilities 统一注册、分层可见性、固定 bootstrap tools 和统一 `capability.invoke`。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统：Provider registry、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
 ## 3. 设计提案
 
@@ -72,7 +73,8 @@
 2. Node capability 开发以 `docs/node-capability-contract.md` 和具体平台合同为准。
 3. Agent 前端事件以 `docs/agent-sse-contract.md` 为准。
 4. 当前架构状态以 `docs/current-project-overview.md` 为准。
-5. 下一阶段工作以 `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` 为入口。
+5. 当前待办执行顺序以 `docs/todos/README.md` 为入口；质量门禁是全局约束，不替代专题待办。
 6. 新增 Node capability 前，必须明确 capability name、risk、effect、runtime requirements、preflight、progress、cancel/resume、output schema 和错误码。
 7. 所有文档必须使用 UTF-8 编码；详见 `docs/documentation-policy.md`。
 8. 发现当前文档与代码冲突时，优先修正文档或归档旧文档，不让实现迁就过期计划。
+9. 活跃待办如果同时包含已完成项和未完成项，必须在文档顶部维护“当前实现核对”或等价状态表。

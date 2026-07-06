@@ -4,7 +4,22 @@
 日期：2026-07-06
 适用范围：YeQu Center / Agent / YCR / Console
 
-本文是当前 YCR 下一轮工作的实施入口。它不再把现有 YCR 实现视为可渐进修补的 MVP，而是按“先清理、再重构、最后文档收口”的三阶段推进。旧实现、临时代码、错误设计和不符合本轮决策的路径可以直接删除，不保留 fallback、compatibility 或 shim。
+本文只负责 YCR 核心数据路径：raw ContextRef、provider-visible projection、
+Result RAG、YCR API、启动/部署脚本和 YCR 相关文档一致性。它不再把现有 YCR
+实现视为可渐进修补的 MVP；旧实现、临时代码、错误设计和不符合本轮决策的路径
+可以直接删除，不保留 fallback、compatibility 或 shim。
+
+职责边界：
+
+- 统一 Center meta tools 与 Node capabilities 的目录模型、Agent bootstrap tools 和
+  `capability.invoke` 归属 `2026-07-06-unified-capability-registry-plan.md`。
+- Linux yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出
+  收敛和空错误传播归属
+  `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。
+- Provider registry、模型发现、probe 和 provider 错误展示归属
+  `2026-06-29-agent-provider-system.md`。
+- 全局文档归档和架构质量门禁归属
+  `2026-07-03-documentation-and-architecture-quality-gate.md`。
 
 关联文档：
 
@@ -13,9 +28,28 @@
 - `docs/proposals/2026-07-04-yequ-context-router-ycr.md`：早期目标态设计，完成本计划后需要复核并吸收或归档。
 - `docs/agent-sse-contract.md`：Agent SSE 前端合同，第三阶段必须更新。
 
+## 0. 当前实现核对
+
+本计划早于本轮多次实现和修正。执行本文任何条目前，必须先核对
+`docs/ycr-current-state.md` 和下表；已完成项不再重复执行，剩余缺口按对应 owner
+文档推进。
+
+| 项 | 当前状态 | 代码/文档事实 | 剩余动作 |
+|---|---|---|---|
+| YCR HTTP 独立服务 | 已完成 | `scripts/start-ycr.sh` 启动 9810；Center 通过 `YEQU_YCR_BACKEND=http` 和 `YEQU_YCR_BASE_URL` 调用。 | 无。 |
+| 本地 embedder 服务 | 已完成 | `scripts/start-ycr-embedder.sh` 启动 9820，启动即加载 BGE-M3 embedding/reranker。 | 继续按部署文档确保模型路径和环境变量一致。 |
+| raw ContextRef / tool observation shell | 已完成 | 工具结果经 `/v1/tool-observations` 写 raw ref，Agent history 保存 shell，build-turn 再生成 provider projection。 | 无。 |
+| provider-visible projection | 已完成 | `src/yequ/ycr/projection.py` 已按 size-based 递归 ref，并带 bounded prefix preview。 | 细节缺陷转入 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。 |
+| 删除旧 public projection/rehydrate API | 已完成 | `docs/ycr-current-state.md` 已列出删除的 `/v1/project/*` 和 `/v1/context/rehydrate` public 入口。 | 无。 |
+| Tool RAG ready index + reranker | 已完成主链路 | `capability.search(query)` 使用 ready index + reranker；embedding/reranker 不可用时 fail-closed。 | 质量、排序、统一 registry 工具面转入 `2026-07-06-unified-capability-registry-plan.md`。 |
+| Result RAG | 已完成主链路 | `context.search` 支持 `ref_id + query` 和 `session_id + query`。 | 性能/cache/资源调度暂登记，不作为最近执行项。 |
+| 前端 YCR 可观测性 | 已完成主链路 | Console 展示 YCR 侧栏、projection、refs 和 token estimate。 | 继续按实际交互修 UI 细节。 |
+| meta tool 默认输出边界 | 部分完成 | 多数 meta tools 已有 summary 默认值，但 catalog description、detail/diagnostics shape 仍需逐个核对。 | 转入 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。 |
+| Provider bootstrap tools 收窄 | 未完成 | 当前 provider 仍直接看到多种 Center meta tools。 | 转入 `2026-07-06-unified-capability-registry-plan.md`。 |
+
 ## 1. 总目标
 
-本轮目标是把 YCR 从当前“混合了 MVP 投影、字段白名单、懒索引、TTL/ref rehydrate、局部补丁”的状态，重建为一条清晰链路：
+本文原始目标是把 YCR 从当时“混合了 MVP 投影、字段白名单、懒索引、TTL/ref rehydrate、局部补丁”的状态，重建为一条清晰链路：
 
 ```text
 tool raw result
@@ -536,7 +570,8 @@ rg "context_budget_exceeded|rehydrate|ttl_sec|expires_at|SUMMARY_FIELDS|LARGE_FI
 1. YCR projection unit tests。
 2. raw_ref shell happy path。
 3. Agent stream 一次工具调用 happy path。
-4. `capability.search -> capability.invoke` happy path。
+4. `capability.search` happy path；统一 `capability.invoke` happy path 归属
+   `2026-07-06-unified-capability-registry-plan.md`。
 5. `context.search -> context.expand` happy path。
 6. YCR embedder health/rerank smoke test。
 7. Console 前端 build。
@@ -545,7 +580,9 @@ rg "context_budget_exceeded|rehydrate|ttl_sec|expires_at|SUMMARY_FIELDS|LARGE_FI
 
 ## 8. 工程实现任务书
 
-本节把前三章的阶段计划落到具体文件、接口、迁移和测试边界。实现时按本节逐项执行；如果代码现状与本节冲突，以本节为准，删除旧路径后再实现新路径。
+本节把原始阶段计划落到具体文件、接口、迁移和测试边界。当前执行时必须先核对
+第 0 节和 `docs/ycr-current-state.md`；已完成项不重复执行，已转交给其他 owner
+文档的项目不再由本文推进。
 
 ### 8.1 代码入口清单
 
@@ -555,7 +592,7 @@ YCR 后端入口：
 |---|---|---|
 | `src/yequ/ycr_app.py` | YCR HTTP API。 | 删除 rehydrate/project-tool-observation 旧语义；新增 raw observation store、projection endpoints/status。 |
 | `src/yequ/ycr/client.py` | Center 调 YCR 的 HTTP client。 | 删除 `rehydrate()`；新增 raw observation store、session search、rerank/status 所需 client 方法。 |
-| `src/yequ/ycr/projection.py` | 当前 generic projection。 | 重写为 size-based `$ycr_ref` projection，不保留字段白名单/depth/sample/truncate。 |
+| `src/yequ/ycr/projection.py` | 已是 size-based recursive `$ycr_ref` projection。 | 只修 `context.expand` 等剩余细节；不得恢复字段白名单/depth/sample/truncate。 |
 | `src/yequ/ycr/budget.py` | 当前 BudgetProfile。 | 改为 `ProjectionProfile` / `ContextEstimate`，删除 hard budget。 |
 | `src/yequ/ycr/ref_store.py` | ContextRef store/search。 | 删除 TTL/rehydrate/source_adapter 依赖；拆分 raw ref 写入和 embedding chunk 构建；支持 session search。 |
 | `src/yequ/ycr/capability_gateway.py` | capability registry + Tool RAG。 | 删除 search 内建索引；改为 ready index + rerank；无 query/filter 校验。 |

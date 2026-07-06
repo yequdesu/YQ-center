@@ -146,13 +146,24 @@ async def expand_ref(
     limit: int = 20,
 ) -> dict[str, object]:
     record = await _require_record(db, ref_id)
-    value = _select_path(record.value_json, path or "$")
+    selected_path = path or "$"
+    value = _select_path(record.value_json, selected_path)
+    if selected_path == "$" and json_size_bytes(value) > get_settings().ycr_projection_inline_bytes:
+        return {
+            "ref_id": ref_id,
+            "path": selected_path,
+            "status": "path_required",
+            "message": "Root value is too large to expand inline; request a specific path, tail, schema, or search.",
+            "schema": _schema_summary(value),
+            "preview": _preview_shape(value, limit=limit),
+            "available_paths": _available_child_paths(value, limit=limit),
+        }
     if isinstance(value, list):
         value = value[: max(1, min(limit, 100))]
     if isinstance(value, dict):
         keys = list(value.keys())[: max(1, min(limit, 100))]
         value = {str(key): value[key] for key in keys}
-    return {"ref_id": ref_id, "path": path or "$", "value": value}
+    return {"ref_id": ref_id, "path": selected_path, "value": value}
 
 
 async def tail_ref(
@@ -488,6 +499,29 @@ def _preview_value(value: object) -> object:
         keys = list(value.keys())[:32]
         return {str(key): value[key] for key in keys}
     return value
+
+
+def _preview_shape(value: object, *, limit: int) -> object:
+    bounded = max(1, min(limit, 32))
+    if isinstance(value, dict):
+        return {
+            str(key): _schema_summary(item)
+            for key, item in list(value.items())[:bounded]
+        }
+    if isinstance(value, list):
+        return [_schema_summary(item) for item in value[:bounded]]
+    if isinstance(value, str):
+        return value[:1200]
+    return value
+
+
+def _available_child_paths(value: object, *, limit: int) -> list[str]:
+    bounded = max(1, min(limit, 100))
+    if isinstance(value, dict):
+        return [f"$.{key}" for key in list(value.keys())[:bounded]]
+    if isinstance(value, list):
+        return [f"$[{index}]" for index in range(min(len(value), bounded))]
+    return []
 
 
 def _schema_summary(value: object) -> dict[str, object]:

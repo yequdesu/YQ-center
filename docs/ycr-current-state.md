@@ -98,10 +98,28 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 投影实现位于 `src/yequ/ycr/projection.py`。当前规则是确定性的 size-based projection：
 
 1. 值序列化后不超过对应 inline bytes 时原样内联。
-2. 超过 inline bytes 时替换为 `$ycr_ref` 对象。
-3. `$ycr_ref` 包含 `ref_id`、`path`、`summary`、`preview`、`raw_size_bytes`、`projected_size_bytes` 等元信息。
+2. dict/list 会先递归处理子值；只有具体子值超限时才替换为 `$ycr_ref` 对象。
+3. `$ycr_ref` 当前包含 `kind`、`ref_type`、`source_anchor`、`value_type`、`path`、`stats`、`preview`、`preview_kind`、`preview_complete` 和 `available_ops` 等元信息。
 4. preview 使用 bounded prefix，不能接近完整 raw 大小。
 5. 不使用字段名白名单、敏感字段黑名单、业务字段硬编码、depth-based sample 或字符串 `[...truncated by YCR...]`。
+
+当前 `$ycr_ref` provider-visible shape：
+
+```json
+{
+  "$ycr_ref": "ctxref_xxx",
+  "kind": "context_ref",
+  "ref_type": "tool_observation",
+  "source_anchor": {"type": "tool_observation", "id": "job_or_call_id"},
+  "value_type": "string|array|object|number|boolean|null",
+  "path": "$.stdout",
+  "stats": {"bytes": 123456, "chars": 50000, "items": 1000, "keys": 80},
+  "preview": "...",
+  "preview_kind": "prefix",
+  "preview_complete": false,
+  "available_ops": ["inspect", "expand", "tail", "search", "schema"]
+}
+```
 
 YCR 不再设置 provider 总 token hard limit；它只输出 `context_estimate`，由前端和日志用于观测。
 
@@ -118,7 +136,15 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 5. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
 6. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
 
-Provider 只直接看到固定 Center meta tools。具体 Node capability 通过 `capability.search`、`capability.describe`、`capability.invoke` 发现和调用。
+当前 provider 直接看到的是 `src/yequ/api/agent_tool_catalog.py` 中的稳定 Center
+工具面：`node.*`、`capability.search/describe/invoke`、`context.*`、`artifact.*`、
+`operation.*` 和 `transfer.*`。Node runtime capability 不作为 provider 直接工具注入，
+而是通过 `capability.search` / `capability.describe` 发现，并由
+`capability.invoke` 经 Center runtime、policy、job dispatch 路径执行。
+
+目标态的“所有 Center meta tools 也统一注册为 capability，并让 provider 默认只暴露
+`capability.search` / `capability.describe` / `capability.invoke`”属于
+`docs/todos/2026-07-06-unified-capability-registry-plan.md`，不是当前已完成事实。
 
 ## 7. Result RAG
 

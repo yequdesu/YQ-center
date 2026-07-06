@@ -24,12 +24,14 @@
 | `README.md` | 项目入口、快速启动、API 概览和开发命令。 |
 | `YQP-Node-Protocol.md` | Node 接入 Center 的协议合同。 |
 | `docs/current-project-overview.md` | 当前架构全貌、能力边界和下一阶段主线。 |
+| `docs/ycr-current-state.md` | YCR 当前实现现状和运行边界。 |
 | `docs/node-capability-contract.md` | 面向多平台 Node 接入的 capability manifest、preflight、progress、error、artifact/transfer 合同。 |
 | `docs/linux-node-development-contract.md` | Linux Node 当前实现合同。 |
 | `docs/agent-sse-contract.md` | Agent SSE 事件和 Console 流式交互合同。 |
 | `docs/documentation-index.md` | 文档入口、归档说明和一致性规则。 |
 | `docs/documentation-policy.md` | 文档编码、状态、归档和事实来源规则。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 本阶段质量门禁。 |
+| `docs/todos/README.md` | 当前活跃待办职责边界。 |
 
 其他历史计划、提案、复盘和展示材料只作为背景材料阅读，不能覆盖当前合同。
 
@@ -40,7 +42,7 @@
 1. `docs/` 根目录只保留当前权威文档，不放临时展示页、事故复盘、过期计划或已完成提案。
 2. `docs/todos/` 只保留当前阶段仍需执行的待办；已完成或被吸收的路线图移入 `docs/archive/todos/`。
 3. `docs/archive/` 下按来源分目录：`todos/`、`proposals/`、`overview/`、`postmortems/`、`visuals/`、`refactor/`、`superpowers/`。
-4. 主索引明确每份 active 文档的职责，不让多个文档同时作为同一主题的权威来源。
+4. 主索引明确每份 active 文档的职责，不让多个文档同时作为同一职责边界的权威来源。
 5. 新增或迁移文档后，必须检查 active 文档中的旧路径引用。
 6. 归档是移动，不是删除；历史信息必须保留。
 

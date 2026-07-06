@@ -132,6 +132,7 @@ impl Capability for LinuxTransferCrocReceive {
             .unwrap_or(false);
 
         validate_target(&output_dir, target_path.as_deref(), &resume_mode)?;
+        prepare_target_for_receive(target_path.as_deref(), &resume_mode)?;
 
         let ledger_path = config
             .db_path
@@ -181,7 +182,6 @@ impl Capability for LinuxTransferCrocReceive {
             )
             .map_err(|e| CapabilityError::Internal(format!("ledger update failed: {}", e)))?;
 
-        let receive_started_at = std::time::SystemTime::now();
         let run_result = run_yq_croc(
             yq_croc_config,
             YqCrocRun {
@@ -214,7 +214,6 @@ impl Capability for LinuxTransferCrocReceive {
                     &resume_mode,
                     expected_size_bytes,
                     expected_sha256.as_deref(),
-                    None,
                 )?;
                 ledger
                     .update_status(
@@ -253,7 +252,6 @@ impl Capability for LinuxTransferCrocReceive {
                         &resume_mode,
                         expected_size_bytes,
                         expected_sha256.as_deref(),
-                        Some(receive_started_at),
                     ) {
                         ledger
                             .update_status(
@@ -340,23 +338,8 @@ fn finalize_and_verify_received(
     resume_mode: &str,
     expected_size_bytes: Option<u64>,
     expected_sha256: Option<&str>,
-    min_modified_at: Option<std::time::SystemTime>,
 ) -> Result<(String, ReceivedMetadata), CapabilityError> {
     let received_path = finalize_received_path(output_dir, target_path, resume_mode)?;
-    if let Some(min_modified_at) = min_modified_at {
-        let modified = std::fs::metadata(&received_path)
-            .and_then(|meta| meta.modified())
-            .map_err(|e| {
-                CapabilityError::Internal(format!("failed to read received mtime: {}", e))
-            })?;
-        if modified < min_modified_at {
-            return Err(CapabilityError::FunctionExecutionFailed {
-                message: "received path was not modified by this receive attempt".into(),
-                exit_code: None,
-                stderr: None,
-            });
-        }
-    }
     let received_meta = compute_received_metadata(Path::new(&received_path))?;
     if let (Some(expected), Some(actual)) = (expected_size_bytes, received_meta.size_bytes) {
         if actual != expected {
@@ -422,6 +405,23 @@ fn finalize_received_path(
             exit_code: None,
             stderr: None,
         })
+}
+
+fn prepare_target_for_receive(
+    target_path: Option<&str>,
+    resume_mode: &str,
+) -> Result<(), CapabilityError> {
+    if resume_mode != "overwrite" {
+        return Ok(());
+    }
+    let Some(target_path) = target_path else {
+        return Ok(());
+    };
+    let target = Path::new(target_path);
+    if target.exists() {
+        remove_existing(target)?;
+    }
+    Ok(())
 }
 
 fn prepare_ledger_entry(

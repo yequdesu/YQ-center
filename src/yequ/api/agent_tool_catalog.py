@@ -669,9 +669,11 @@ async def _available_functions(
 ) -> list[AgentFunction]:
     """Build the Agent tool list.
 
-    Production exposes only stable Center meta tools. Raw Node capabilities
-    remain in Center's registry and are reached through capability.search,
-    capability.describe, and capability.invoke.
+    Production exposes stable Center meta tools. Raw Node capabilities remain
+    in Center's registry and are reached through capability.search,
+    capability.describe, and capability.invoke. The later registry milestone is
+    to register Center meta tools in the same catalog and shrink the provider
+    tool surface to the three bootstrap protocol tools.
 
     Tests that need static tools must register a fake provider explicitly.
     """
