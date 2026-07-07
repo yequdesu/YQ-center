@@ -286,6 +286,14 @@ async def _upsert_artifact_fact(
     artifact_id = _string(artifact.get("artifact_id") or artifact.get("id"))
     if not artifact_id:
         return
+    artifact_data = {
+        "artifact_id": artifact_id,
+        "artifact_type": artifact.get("artifact_type"),
+        "title": artifact.get("title"),
+        "content_type": artifact.get("content_type"),
+        "size_bytes": artifact.get("size_bytes"),
+        "node_id": artifact.get("node_id"),
+    }
     await upsert_session_entity(
         db,
         session_id=session_id,
@@ -297,16 +305,65 @@ async def _upsert_artifact_fact(
         ref_id=ref_id,
         source_type="tool_result",
         source_id=source_name,
-        data={
-            "artifact_id": artifact_id,
-            "artifact_type": artifact.get("artifact_type"),
-            "title": artifact.get("title"),
-            "content_type": artifact.get("content_type"),
-            "size_bytes": artifact.get("size_bytes"),
-            "node_id": artifact.get("node_id"),
-        },
+        data=artifact_data,
         weight=80,
     )
+    await _upsert_artifact_focus(
+        db,
+        session_id=session_id,
+        artifact_id=artifact_id,
+        artifact_data=artifact_data,
+        ref_id=ref_id,
+        source_name=source_name,
+    )
+
+
+async def _upsert_artifact_focus(
+    db: AsyncSession,
+    *,
+    session_id: str,
+    artifact_id: str,
+    artifact_data: JsonDict,
+    ref_id: str | None,
+    source_name: str,
+) -> None:
+    focus_data = {
+        "focus_kind": "artifact",
+        "artifact_id": artifact_id,
+        "reason": "last_presented_to_user"
+        if source_name == "artifact.present"
+        else "last_artifact_result",
+        **artifact_data,
+    }
+    await upsert_session_entity(
+        db,
+        session_id=session_id,
+        entity_type="focus",
+        entity_key="last_artifact",
+        status="active",
+        title=_string(artifact_data.get("title")) or artifact_id,
+        summary=_string(artifact_data.get("content_type")),
+        ref_id=ref_id,
+        source_type="tool_result",
+        source_id=source_name,
+        data=focus_data,
+        weight=100,
+    )
+    if source_name == "artifact.present":
+        await upsert_session_entity(
+            db,
+            session_id=session_id,
+            entity_type="focus",
+            entity_key="current_artifact",
+            status="active",
+            title=_string(artifact_data.get("title")) or artifact_id,
+            summary=_string(artifact_data.get("content_type")),
+            ref_id=ref_id,
+            source_type="tool_result",
+            source_id=source_name,
+            data=focus_data,
+            weight=110,
+        )
 
 
 async def _upsert_operation_fact(

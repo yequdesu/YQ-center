@@ -120,11 +120,11 @@ tool call
   -> AgentRun waiting_operation
   -> Console Activity 面板展示状态/进度
   -> Operation terminal event 进入 Agent Runtime event queue
-  -> Agent 空闲时自动汇报终态
+  -> Center/Agent Runtime 服务端消费者自动汇报终态
   -> 用户仍可 Append operation context chip 手动引用结果
 ```
 
-旧的直接 Continue 已退出 Console 主交互。Append operation context 保留为用户手动引用结果的交互；自动汇报由后端 `agent_operation_notifications` 队列驱动，按 operation_id 幂等、session 内单消费者，并有 reported/failed 终态。前端只负责在 Agent 空闲时 claim notification 并发起一次自动汇报，不再由 OperationCard 本地推断自动唤醒。
+旧的直接 Continue 已退出 Console 主交互。Append operation context 保留为用户手动引用结果的交互；自动汇报由后端 `AgentOperationReporter` 消费 `agent_operation_notifications` 队列，按 operation_id 幂等、session 内单消费者，并有 reported/failed 终态。前端不 claim notification、不自行唤醒 Agent，只展示 Operation、Plan、YCR 和最终消息。
 
 ### 3.6 Agent Plan 与 YCR Session State
 
@@ -143,6 +143,7 @@ YCR 也不再只做 provider 前置投影器。当前已经新增基础 `YcrSess
 
 - capability working set；
 - artifact working set；
+- artifact focus（`last_artifact` / `current_artifact`，用于解析“这张图片/上一张截图”）；
 - operation working set；
 - node facts；
 
@@ -154,7 +155,7 @@ YCR 也不再只做 provider 前置投影器。当前已经新增基础 `YcrSess
 专题待办的实现顺序。
 
 1. 按 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 收敛 Agent Runtime 主线：Run/Turn 生命周期、Plan、Operation Event Queue、YCR Session State、Snapshot Cache、Candidate Loader、前端状态绑定和审计 span。
-2. 按 `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 做行为验收和剩余缺陷：Windows 截图、Windows -> Linux 传输端到端复验、meta tool 默认输出边界、复杂任务过度探索和错误展示。
+2. 按 `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 做行为验收和剩余缺陷：Windows 截图和 Windows -> Linux 传输端到端复验已通过；后续继续处理 meta tool 默认输出边界、复杂任务过度探索和错误展示。
 3. Runtime/YCR 状态主线稳定后，再继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
 4. YCR core data path 与 unified capability registry 已进入维护核对状态；后续只在行为验收暴露回归时更新对应事实文档或行为待办。
 

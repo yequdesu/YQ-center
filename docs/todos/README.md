@@ -10,7 +10,7 @@
 | 文档 | 职责边界 | 不负责 |
 |---|---|---|
 | `2026-07-03-documentation-and-architecture-quality-gate.md` | 全局质量门禁：文档系统收口、架构边界审查、Node/capability 插拔性、错误传播、无静默 fallback。 | 不承载具体 YCR、transfer、provider 的实现步骤。 |
-| `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正和验收：Tool RAG / projection 已完成项的验收、Linux yq-croc receive 状态复验、Center transfer fact 继承复验、meta tool 默认输出和空错误传播。 | 不设计统一 capability registry 数据模型；不做 YCR core storage 重建；不做 provider 系统。 |
+| `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正和验收：Tool RAG / projection 已完成项的验收、Linux yq-croc receive 状态复验和 Center transfer fact 继承复验已通过；继续追踪 meta tool 默认输出和空错误传播。 | 不设计统一 capability registry 数据模型；不做 YCR core storage 重建；不做 provider 系统。 |
 | `2026-07-07-agent-runtime-plan-operation-ycr-state.md` | Agent Runtime 架构收敛：Run/Turn 状态机、通用 Plan、Operation Event Queue、YCR Session State、Snapshot Cache、Tool RAG Candidate Loader、前端状态绑定和审计 span 化。 | 不处理具体 Linux receive bug；不处理 Provider registry；不引入 Workflow Capability；不改变 ApprovalRequest/task-level approval。 |
 | `2026-06-29-agent-provider-system.md` | Provider 系统：provider registry、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 | 不定义 capability registry；不处理 YCR projection；不处理 Node transfer 逻辑。 |
 
@@ -19,7 +19,7 @@
 1. 当前最高优先级是 `2026-07-07-agent-runtime-plan-operation-ycr-state.md`：
    收敛 Agent Runtime 主状态机、Plan、Operation Event Queue、YCR Session State、Snapshot Cache 和 Tool RAG Candidate Loader，解决重复自动汇报、internal turn 无终态、首包 context load 慢和复杂任务过度探索。
 2. `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 保留为行为修正和端到端验收入口：
-   Windows 截图、Windows -> Linux yq-croc 传输复验、meta tool 默认输出边界和错误展示继续在这里追踪。
+   Windows 截图和 Windows -> Linux yq-croc 传输复验已通过；meta tool 默认输出边界和错误展示继续在这里追踪。
 3. `2026-06-29-agent-provider-system.md` 在 Runtime/YCR 状态主线稳定后继续推进：
    Provider registry、模型发现、probe 和前端 provider/model 选择不抢占当前 P0。
 4. `2026-07-03-documentation-and-architecture-quality-gate.md` 继续作为全局约束：

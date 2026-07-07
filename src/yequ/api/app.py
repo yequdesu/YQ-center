@@ -139,6 +139,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             log.exception("center capability definition sync failed")
 
+    from yequ.services.agent_operation_reporter import get_agent_operation_reporter
     from yequ.services.approval_service import _scan_expired_approvals
     from yequ.services.message_dedup import get_yqp_message_cleanup_scanner
     from yequ.services.node_liveness_scanner import get_liveness_scanner
@@ -153,6 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     signal_state_scanner = get_signal_state_scanner()
     yqp_message_cleanup_scanner = get_yqp_message_cleanup_scanner()
     operation_consistency_scanner = get_operation_consistency_scanner()
+    agent_operation_reporter = get_agent_operation_reporter()
 
     if not settings.test_mode:
         await scanner.start()
@@ -161,6 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await signal_state_scanner.start()
         await yqp_message_cleanup_scanner.start()
         await operation_consistency_scanner.start()
+        await agent_operation_reporter.start()
         approval_scanner_task = asyncio.create_task(
             _scan_expired_approvals(), name="approval-expiry-scanner"
         )
@@ -171,6 +174,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         approval_scanner_task.cancel()
         with suppress(asyncio.CancelledError):
             await approval_scanner_task
+        await agent_operation_reporter.stop()
         await yqp_message_cleanup_scanner.stop()
         await operation_consistency_scanner.stop()
         await signal_state_scanner.stop()

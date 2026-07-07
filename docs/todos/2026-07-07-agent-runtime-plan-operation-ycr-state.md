@@ -35,10 +35,10 @@
 | 项 | 当前状态 | 代码/文档事实 | 剩余动作 |
 |---|---|---|---|
 | AgentRun / AgentRunStep | 已完成基础实现 | `src/yequ/models/agent_run.py` 已有持久 run/step；`agent_stream.py` 已写入 `building_context`、`model_running`、`validating_tools` 中间状态；provider 成功/失败、tool observation、final 都会写入 AgentRunStep；AgentRun 终态已禁止回退。 | 后续只做更细 first-token/DB span 归因，不再阻塞主链路。 |
-| AgentTurn / AgentTurnEvent | 已完成基础实现 | `src/yequ/models/agent_turn.py` 和事件记录已存在；`stream.close` 已把未终止半状态落为失败；internal turn 创建前会关闭同 session 旧 internal 半状态。 | 后续只做观测字段补强。 |
-| Plan | 已完成基础实现 | 新增通用 `AgentPlan` / `AgentPlanStep`，与 MaintenancePlan 分离；`/agent/invoke/stream` 每次 run 创建 Plan 并同步成功、失败、等待 operation/approval 状态。 | 后续把更细的 tool step 映射到 PlanStep。 |
+| AgentTurn / AgentTurnEvent | 已完成基础实现 | `src/yequ/models/agent_turn.py` 和事件记录已存在；`stream.close` 已把未终止半状态落为失败；internal turn 创建前会关闭同 session 旧 internal 半状态；等待态不会被后续 observing/open 事件覆盖。 | 后续只做观测字段补强。 |
+| Plan | 已完成基础实现 | 新增通用 `AgentPlan` / `AgentPlanStep`，与 MaintenancePlan 分离；`/agent/invoke/stream` 每次 run 创建 Plan 并同步成功、失败、等待 operation/approval 状态；主 Plan 查询会过滤 internal operation report plan。 | 后续把更细的 tool step 映射到 PlanStep。 |
 | Operation Event | 已完成基础实现 | `OperationEvent.dispatch_status` 只负责 outbox/MQ 派发；Agent 自动汇报已新增独立 `agent_operation_notifications` 队列，避免混用 outbox 状态。 | 继续把自动 report 的 UI 展示完全绑定到后端队列状态。 |
-| YCR Session State | 已完成基础实现 | 新增 `YcrSessionState`，由 tool observation 和 Operation event 写入 capability/artifact/operation/node working set；build-turn 注入 provider context。 | 后续补 task working set 和更完整的前端状态展示。 |
+| YCR Session State | 已完成基础实现 | 新增 `YcrSessionState`，由 tool observation 和 Operation event 写入 capability/artifact/operation/node working set；artifact 输出会维护 `focus.last_artifact`，`artifact.present` 会维护 `focus.current_artifact`；build-turn 注入 provider context。 | 后续补 task working set 和更完整的前端状态展示。 |
 | Tool RAG | 主链路具备但定位需调整 | Tool RAG 已有 ready index、BGE-M3、reranker、多层 cache。 | 从“智能工具选择”降级为 candidate loader；候选不足时仍允许 `capability.search` 扩检索。 |
 | Snapshot Cache | 已完成基础实现 | RAG cache 已有；`build_capability_context()` 已新增版本化 `YcrCapabilityContextSnapshot`，普通对话命中快照时不再 joinedload 全量节点关系。 | 后续继续把 registry snapshot 统计暴露到前端状态。 |
 | 前端状态绑定 | 已完成基础实现 | OperationCard、YCR panel、tool card 均存在；YCR panel 已显示 snapshot/candidate/session-state 状态；Operation 自动汇报已接后端 queue；右侧 Plan 面板读取后端通用 AgentPlan。 | 后续只做交互细节和视觉密度优化。 |
@@ -61,19 +61,19 @@
 | T02 | 已完成基础实现 | AgentRun 主状态机接管 `/agent/invoke/stream` | `/agent/invoke/stream` 创建并推进 AgentRun；provider loop、tool call、waiting approval/operation、final 都写 AgentRunStep。 | Run/Turn 关联、Run 中间状态、Plan 关联、waiting checkpoint、provider 成功/失败、tool observation、final step 均已落库。 |
 | T03 | 已完成基础实现 | 通用 Agent Plan 数据模型 | 新增通用 Plan/PlanStep 或等价模型；与 MaintenancePlan 明确分离。 | 已新增 `AgentPlan` / `AgentPlanStep` 表和服务；普通 `/agent/invoke/stream` 会创建通用 Plan。 |
 | T04 | 已完成基础实现 | Plan 进入 provider context | YCR build-turn 接收当前 Plan 摘要，provider 看到当前目标、已完成步骤、等待项和禁止重复动作。 | build-turn 已接收 `agent_plan`，并以 `YCR Agent Plan` system message 注入 provider messages；测试覆盖。 |
-| T05 | 已完成基础实现 | Operation Event Queue | Operation 终态进入 session-level notification queue；按 operation_id 幂等。 | 新增 `agent_operation_notifications` 表；`OperationService.append_event()` 在终态且有 session 时入队；`(session_id, operation_id)` 唯一；claim/reported API 已覆盖测试。 |
-| T06 | 已完成基础实现 | Agent Runtime 单消费者 | session 内自动 operation report 使用单消费者；用户 turn 活跃时自动报告等待。 | 前端空闲时通过后端 claim API 获取一个 notification 并触发一次自动 report；stream settle 后标记 reported；旧 OperationCard 本地推断不再负责触发自动 report。 |
-| T07 | 已完成基础实现 | Operation report observation | 自动汇报使用结构化 Operation output/PlanStep，不重新 search/describe 无关工具。 | 当前自动 report 通过 operation context ref 注入最新 observation，并由后端 notification queue 幂等触发；后续进一步收窄自动 report 的 provider 工具面。 |
+| T05 | 已完成基础实现 | Operation Event Queue | Operation 终态进入 session-level notification queue；按 operation_id 幂等。 | 新增 `agent_operation_notifications` 表；`OperationService.append_event()` 在终态且有 session 时入队；`(session_id, operation_id)` 唯一；approval_wait 这类内部等待壳不进入用户自动汇报队列。 |
+| T06 | 已完成基础实现 | Agent Runtime 单消费者 | session 内自动 operation report 使用服务端单消费者；前端不负责 claim 或触发 Agent。 | 新增 `AgentOperationReporter` 后台 worker，由 Center claim notification、拉起 internal AgentRun、完成后 mark reported；前端只展示会话和 Operation 状态。 |
+| T07 | 已完成基础实现 | Operation report observation | 自动汇报使用结构化 Operation output，不重新 search/describe 无关工具。 | 自动 report 使用服务端构造的 operation observation prompt，工具面为空，`max_steps=1`；internal run/plan 带 `run_kind=operation_report`，不污染主 Plan。 |
 | T08 | 已完成基础实现 | YCR Session State 模型 | 建立 capability/artifact/operation/node/task working set 的持久存储或明确复用表结构。 | 已新增 `YcrSessionState`；`context.status` 可显示 session state 统计；build-turn 能读取 session state。 |
-| T09 | 已完成基础实现 | Tool observation 更新 YCR state | capability.search/describe/invoke、artifact.present、operation.status 等结果按 typed metadata 更新 YCR state。 | tool observation 已按 `ycr_entities`、`artifacts`、`operation`、`nodes` 等 typed shape 写入 session state；测试覆盖 artifact/capability/operation。 |
+| T09 | 已完成基础实现 | Tool observation 更新 YCR state | capability.search/describe/invoke、artifact.present、operation.status 等结果按 typed metadata 更新 YCR state。 | tool observation 已按 `ycr_entities`、`artifacts`、`operation`、`nodes` 等 typed shape 写入 session state；artifact 输出额外写入 focus，`artifact.present` 写入 current focus；测试覆盖 artifact/capability/operation/focus。 |
 | T10 | 已完成基础实现 | Operation event 更新 YCR state | Operation created/running/terminal 事件更新 operation working set。 | `OperationService.append_event()` 已把 operation state 写入 YCR session state；Operation 完成后可通过 build-turn 注入当前任务上下文。 |
 | T11 | 已完成基础实现 | Registry Snapshot | 定义 registry snapshot version，包括 capability definition/source、node/runtime readiness 和 provider bootstrap tool schema。 | `build_capability_context()` 已使用 Node/Capability/CapabilityDefinition/CapabilitySource/RuntimeInstance count/max timestamp 与 bootstrap tool fingerprint 生成 registry fingerprint；能力或节点变化会失效 snapshot。 |
 | T12 | 已完成基础实现 | Capability Context Snapshot | `build_capability_context()` 结果缓存为版本化 snapshot。 | 新增 `YcrCapabilityContextSnapshot`；首轮 miss 构建，后续 hit 直接读 JSON；`agent.invoke.context_loaded` 审计事件包含 snapshot 状态。 |
 | T13 | 已完成基础实现 | Tool RAG Candidate Loader | 每轮从 session working set、snapshot、query cache 读取候选；不在热路径强制 embedding/rerank。 | `build-turn` 已从 session state 和本轮 working set 生成 `provider_context.capability_candidates`；候选不足时模型仍能调用 `capability.search`。 |
 | T14 | 已完成基础实现 | Index Not Ready 前端状态 | 候选加载或 search 遇到 index not ready 时，前端明确显示等待/重试状态。 | registry search trace 已显示 `retrieval.index.status=not_ready`、retry 秒数和等待提示；YCR panel 也显示 snapshot/candidate/session-state 状态。 |
-| T15 | 已完成基础实现 | 前端 Plan/Operation 状态绑定 | Console 中 operation waiting card、tool card、Plan 面板统一读取 Plan/Turn/Operation 状态。 | Operation 终态后 waiting 卡自动更新、artifact.present 独立展示已具备；右侧 Plan 面板读取 `/agent/sessions/{session_id}/plan` 的通用 AgentPlan。 |
+| T15 | 已完成基础实现 | 前端 Plan/Operation 状态绑定 | Console 中 operation waiting card、tool card、Plan 面板统一读取 Plan/Turn/Operation 状态。 | Operation 终态后 waiting 卡自动更新、artifact.present 独立展示已具备；右侧 Plan 面板读取 `/agent/sessions/{session_id}/plan` 的非 internal 通用 AgentPlan。 |
 | T16 | 已完成基础实现 | Audit span 化 | 记录 context refs load、available functions、capability context、YCR build-turn、Tool RAG、provider first token、tool execution、operation wait。 | session audit 已记录 context refs / available functions / capability context / YCR build-turn / provider / tool execution elapsed_ms；operation event 已有 session audit。 |
-| T17 | 已完成基础实现 | 清理旧自动汇报路径 | 删除或替换临时 internal invoke 自动唤醒逻辑，不保留兼容分支。 | Operation auto-report 只走后端 `agent_operation_notifications` claim/reported/failed 路径；前端旧 `autoOperationQueue` 本地队列状态已删除。 |
+| T17 | 已完成基础实现 | 清理旧自动汇报路径 | 删除或替换临时 internal invoke 自动唤醒逻辑，不保留兼容分支。 | Operation auto-report 只走后端 `AgentOperationReporter` + `agent_operation_notifications` claim/reported/failed 路径；前端不再轮询 notification、不再自行 sendInvoke 自动汇报。 |
 | T18 | 已完成基础实现 | 文档一致性更新 | 更新 `docs/current-project-overview.md`、`docs/ycr-current-state.md`、`docs/agent-sse-contract.md` 和 `docs/todos/README.md`。 | active 文档已同步 Operation notification、YCR Session State、Snapshot Cache、candidate loader、SSE `state` 字段和当前剩余缺口。 |
 
 ## 0.4 验收场景
@@ -85,7 +85,7 @@
 3. `把 Win 上一个大文件传到 linux-node-01 /home/yequdesu/，overwrite。`
 4. `查询 winClient 的 C 盘容量。`
 5. 在 operation 运行中刷新前端，OperationCard 状态仍正确。
-6. Operation 终态后自动汇报一次；用户手动 Append 同一 operation 不会重复执行。
+6. Operation 终态后由 Center/Agent Runtime 服务端自动汇报一次；用户手动 Append 同一 operation 不会重复执行。
 7. YCR index 未就绪时前端显示等待/重试，而不是让 Agent 胡乱搜索。
 8. YCR 服务停止时，Agent fail-closed，错误清晰。
 
@@ -193,8 +193,8 @@ Session
 - 新增 `agent_operation_notifications`；
 - Operation 终态且有 session 时入队；
 - `(session_id, operation_id)` 幂等；
-- 前端空闲时 claim 单条 notification 并触发自动汇报；
-- 汇报完成后标记 reported，失败后标记 failed；
+- `AgentOperationReporter` 服务端后台 worker claim 单条 notification 并触发 internal AgentRun 自动汇报；
+- 汇报完成后服务端标记 reported，失败后标记 failed；
 - Append Operation Context 保留为手动引用入口。
 
 后续观察：真实刷新恢复和多 operation 连续完成场景仍需继续验收。
@@ -285,8 +285,8 @@ JSONL 审计已能快速定位真实会话问题。下一步是 span 化和把 e
 |---|---|---|
 | 已完成基础实现 | Agent Run/Turn 生命周期不变量 | 每个 turn/run 有终态收敛规则；session 内 internal 半状态会被关闭；AgentRun 终态不可回退。 |
 | 已完成基础实现 | 通用 Agent Plan 中间层 | 每个 AgentRun 有 Plan/PlanStep；Plan 记录任务状态，不写死业务 workflow。 |
-| 已完成基础实现 | Operation Event Queue | Operation 终态入队，session 单消费者，operation_id 幂等汇报。 |
-| 已完成基础实现 | YCR Session State | 持久维护 capability/artifact/operation/node working set；task facts 后续增强。 |
+| 已完成基础实现 | Operation Event Queue | Operation 终态入队，服务端单消费者，operation_id 幂等汇报。 |
+| 已完成基础实现 | YCR Session State | 持久维护 capability/artifact/focus/operation/node working set；task facts 后续增强。 |
 | 已完成基础实现 | Registry/YCR Snapshot Cache | 普通对话可读版本化 capability context snapshot。 |
 | 已完成基础实现 | Tool RAG Candidate Loader | RAG 负责候选加载；候选不足时仍允许 `capability.search` 扩检索。 |
 | 已完成基础实现 | 前端状态绑定重构 | UI 已绑定 Operation、YCR state、通用 AgentPlan；后续优化视觉细节。 |
@@ -351,7 +351,7 @@ docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md
 3. Win -> Linux 大文件传输，Operation、TransferSession、Agent 结论一致。
 4. Linux -> Win 文件传输，失败时错误明确传播。
 5. 查 Win 文件/磁盘，meta tool 输出不膨胀。
-6. Operation 终态后自动汇报一次，Append 仍可手动引用。
+6. Operation 终态后由服务端自动汇报一次，Append 仍可手动引用。
 7. YCR/registry index 未就绪时前端显示等待状态。
 8. YCR 不可用或 ref 丢失时 fail-closed，且错误可读。
 9. 首包延迟可由 audit span 精确归因。

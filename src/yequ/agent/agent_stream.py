@@ -476,8 +476,8 @@ async def agent_invoke_stream(
 
     # -- Block 1: session validation + timeline (short-lived session) --
     async with async_session_factory() as db:
-        from yequ.runtime.agent_run_service import create_agent_run
         from yequ.runtime.agent_plan_service import create_agent_plan
+        from yequ.runtime.agent_run_service import create_agent_run
 
         result = await db.execute(select(Session).where(Session.session_id == session_id))
         session = result.scalar_one_or_none()
@@ -531,7 +531,11 @@ async def agent_invoke_stream(
             execution_mode=execution_mode,
             target_node_id=target_node_id,
             objective=visible_prompt,
-            metadata={"source": "agent.invoke.stream"},
+            metadata={
+                "source": "agent.invoke.stream",
+                "internal": suppress_user_message,
+                "run_kind": (run_metadata or {}).get("run_kind"),
+            },
         )
         agent_plan_id = agent_plan.plan_id
         metadata = dict(agent_run.metadata_json or {})

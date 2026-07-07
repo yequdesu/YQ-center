@@ -1,6 +1,6 @@
 # YCR / Agent 工具路由与传输状态修正待办
 
-状态：活跃待办（剩余项以行为验收和 meta tool 边界审计为主）
+状态：活跃待办（传输链路已复验通过；剩余项以 meta tool 边界审计和复杂任务行为验收为主）
 日期：2026-07-06
 适用阶段：YCR 清理重建后的行为质量修正
 
@@ -34,7 +34,7 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 | YCR/meta tool 错误传播 | 已完成当前审计 | `YcrClient` 已把 HTTP/网络/JSON 异常转成 `YcrError(code, message)`；runtime meta tools 和 Agent stream 会向前端传播 code/message；已补测试覆盖 YCR error code/message 不为空。 | 端到端交互继续观察前端展示。 |
 | Tool RAG 通用排序质量 | 已完成主链路，待持续验收 | 当前索引文档由 capability 合同字段生成，没有截图类同义词特判；统一 capability registry、provider 三件套工具面、BGE-M3 dense/sparse retrieval、reranker、query/rerank cache、registry-version-aware retrieval candidate cache 均已落地。 | 用截图、文件搜索、transfer 等真实任务持续验收排序质量和过度探索；不得新增具体 query/capability 特判。 |
 | Center transfer fact 继承 | 已完成 | `transfer.create` 会从 preflight source fact 继承 size/hash，写入 `TransferSession.size_bytes/sha256`，并向 receive input 下发 `expected_size_bytes` / `expected_sha256`。 | 无。 |
-| Linux receive 成功误判失败 | 已完成代码修正，待端到端复验 | Linux receive wrapper 不再使用 `target_mtime >= receive_started_at`；overwrite 指定目标会在启动 yq-croc 前清理旧目标，runtime 非零退出后只用 size/hash 校验判定是否可恢复为 succeeded。 | 用 Windows -> Linux yq-croc 真实传输复验 Operation、TransferSession、目标文件 size/hash 和 Agent 结论一致。 |
+| Linux receive 成功误判失败 | 已验证通过 | Linux receive wrapper 不再使用 `target_mtime >= receive_started_at`；overwrite 指定目标会在启动 yq-croc 前清理旧目标，runtime 非零退出后只用 size/hash 校验判定是否可恢复为 succeeded。真实 Windows -> Linux yq-croc 传输已复验：Operation、TransferSession、目标文件 size/hash 和 Agent 结论一致。 | 无。 |
 | `context.expand` 默认全量展开风险 | 已完成 | `context.expand` 对过大的根路径 `$` 返回 `path_required`、schema、preview shape 和 available paths；指定子路径仍可展开。 | 无。 |
 
 ## 1. 已确认问题
@@ -313,7 +313,7 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 ## 4. 推荐实施顺序
 
 1. 用一次 Windows 截图任务验收 Tool RAG 排序、`artifact.present` 展示、YCR projection 和前端 token/YCR 侧栏。
-2. 用一次 Windows -> Linux yq-croc 文件传输复验 Linux receive 判定、TransferSession size/hash 继承、Operation 状态和 Agent 最终结论一致。
+2. Windows -> Linux yq-croc 文件传输复验已通过：Linux receive 判定、TransferSession size/hash 继承、Operation 状态和 Agent 最终结论一致。
 3. 审计 meta tool 默认输出边界，重点检查真实对话中仍可能导致高 token 的 `node.status`、`capability.describe`、`context.*`、`artifact.*`、`operation.status` 和 `transfer.status`。
 4. 复杂任务仍出现过度 search/describe 时，优先修 capability 合同、索引文档、working set 或 Agent prompt policy，不新增 query/capability 特判。
 
@@ -323,11 +323,11 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 
 - Agent 截图任务不再绕到无关 workflow capability。
 - transfer.preflight 关键决策事实无需 `context.expand` 即可被 Agent 使用。
-- Windows -> Linux yq-croc 传输成功时 Center Operation 显示 succeeded。
-- yq-croc 保留源文件 mtime 时，Linux receive 不再误报 failed。
-- TransferSession 能展示从 preflight 继承的 expected size/hash。
-- receive job input 包含 expected size/hash。
-- Agent 聊天结论与 Operation/TransferSession 状态一致。
+- Windows -> Linux yq-croc 传输成功时 Center Operation 显示 succeeded。（已验证通过）
+- yq-croc 保留源文件 mtime 时，Linux receive 不再误报 failed。（已验证通过）
+- TransferSession 能展示从 preflight 继承的 expected size/hash。（已验证通过）
+- receive job input 包含 expected size/hash。（已验证通过）
+- Agent 聊天结论与 Operation/TransferSession 状态一致。（已验证通过）
 - `node.status` 默认输出稳定小，不随 capability source 详情膨胀。
 - `operation.status`、`transfer.status`、`artifact.*`、`context.*`、
   `capability.describe` 的默认输出均符合各自职责边界。

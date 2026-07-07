@@ -21,6 +21,7 @@ from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.runtime.agent_status import (
     TERMINAL_AGENT_RUN_STATUSES,
     is_open_agent_status,
+    is_paused_agent_status,
     status_for_stream_event,
 )
 from yequ.services.session_audit import record_session_audit_event
@@ -116,7 +117,7 @@ async def record_agent_turn_event(turn_id: str, event: dict[str, Any]) -> None:
         if turn is not None:
             status = _status_for_event(event_type, data)
             if status:
-                turn.status = status
+                turn.status = _next_turn_status(turn.status, status)
             if event_type == "stream.close":
                 _finalize_unclosed_turn(turn, now)
             turn.updated_at = now
@@ -163,6 +164,12 @@ async def list_agent_turn_events(turn_id: str) -> list[AgentTurnEvent]:
 
 def _status_for_event(event_type: str, data: dict[str, Any]) -> str | None:
     return status_for_stream_event(event_type, str(data.get("error_code") or "") or None)
+
+
+def _next_turn_status(current: str | None, incoming: str) -> str:
+    if is_paused_agent_status(current) and is_open_agent_status(incoming):
+        return str(current)
+    return incoming
 
 
 async def _fail_stale_internal_turns(

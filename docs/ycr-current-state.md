@@ -22,7 +22,7 @@ Agent Runtime
 
 1. Tool raw result 只进入 YCR raw ContextRef，不直接进入 provider history。
 2. Agent history 中只保存 `tool_observation_shell`，provider 调用前由 `build-turn` 统一展开成 projected observation。
-3. YCR 从 typed metadata 和 typed result shape 维护 session working set，build-turn 会把当前 capability/artifact/operation/node facts 注入 provider context。
+3. YCR 从 typed metadata 和 typed result shape 维护 session working set，build-turn 会把当前 capability/artifact/focus/operation/node facts 注入 provider context。
 4. YCR 不再按字段名、业务语义或 depth 做投影；只按 size-based `$ycr_ref` 规则保留 bounded preview。
 
 ## 2. 运行构件
@@ -100,7 +100,7 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 
 - `messages`：provider 实际接收的 messages；
 - `provider_context.capability_context`：provider 可见的上下文；
-- `provider_context.session_state`：当前 session 的 capability/artifact/operation/node working set；
+- `provider_context.session_state`：当前 session 的 capability/artifact/focus/operation/node working set；
 - `provider_context.capability_candidates`：从 session state 与本轮 working set 生成的轻量候选能力，不触发 embedding/rerank；
 - `provider_context.agent_plan`：当前 AgentPlan 摘要；
 - `context_estimate`：输入 token、tool schema、message、capability context 和 refs 的估算；
@@ -114,13 +114,13 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 1. YCR 写入 raw ContextRef；
 2. YCR 返回 `tool_observation_shell`；
 3. Agent history 只保存 shell；
-4. YCR 从 `ycr_entities`、`artifacts`、`operation`、`nodes` 等 typed shape 更新 `YcrSessionState`；
+4. YCR 从 `ycr_entities`、`artifacts`、`operation`、`nodes` 等 typed shape 更新 `YcrSessionState`；artifact 输出会维护 `focus.last_artifact`，`artifact.present` 会维护 `focus.current_artifact`；
 5. YCR 异步索引 raw ref chunks；
 6. 下一轮 `build-turn` 根据 shell 读取 raw ref 并生成 projected observation，同时注入 session state。
 
 Operation 事件也会更新 `YcrSessionState`。`OperationService.append_event()` 在写入
 `OperationEvent` 时同步维护 operation working set；终态 operation 还会进入
-`agent_operation_notifications` 队列，供 Agent 空闲时自动汇报。
+`agent_operation_notifications` 队列，由 Center/Agent Runtime 的服务端 reporter 消费并自动汇报。
 
 ## 5. 投影规则
 
@@ -227,7 +227,7 @@ Tool RAG 的职责是 candidate loader，不是流程规划器。当前实现分
 `ycr_entities`。build-turn 当前只基于 ref metadata 构造 capability working set，不再解析
 `matches`、`capability`、`sources` 等 result shape。
 
-YCR Session State 当前已持久维护 capability、artifact、operation 和 node working set。
+YCR Session State 当前已持久维护 capability、artifact、artifact focus、operation 和 node working set。
 它仍不是业务 workflow：它只保存当前 session 的 typed facts，帮助 provider 避免从长历史里恢复状态。
 剩余缺口是 task working set、Plan 面板与通用 AgentPlan 的绑定，以及更完整的前端 runtime state 聚合展示，
 归属 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md`。

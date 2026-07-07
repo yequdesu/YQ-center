@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -30,6 +31,8 @@ class AgentOperationNotificationService:
         if not operation.session_id:
             return None
         if operation.status not in TERMINAL_OPERATION_STATUSES:
+            return None
+        if operation.kind == "approval_wait":
             return None
 
         existing = await self._find(operation.session_id, operation.operation_id)
@@ -62,12 +65,29 @@ class AgentOperationNotificationService:
         *,
         session_id: str,
     ) -> dict[str, object] | None:
+        return await self._claim_next(session_id=session_id)
+
+    async def claim_next_any(self) -> dict[str, object] | None:
+        return await self._claim_next(session_id=None)
+
+    async def claim_next_idle(
+        self,
+        *,
+        is_session_active: Callable[[str], bool],
+    ) -> dict[str, object] | None:
+        return await self._claim_next(session_id=None, is_session_active=is_session_active)
+
+    async def _claim_next(
+        self,
+        *,
+        session_id: str | None,
+        is_session_active: Callable[[str], bool] | None = None,
+    ) -> dict[str, object] | None:
         now = datetime.now(UTC)
         stale_cutoff = now - timedelta(seconds=STALE_PROCESSING_AFTER_SEC)
-        result = await self.db.execute(
+        stmt = (
             select(AgentOperationNotification, Operation)
             .join(Operation, Operation.operation_id == AgentOperationNotification.operation_id)
-            .where(AgentOperationNotification.session_id == session_id)
             .where(
                 (
                     AgentOperationNotification.status == "pending"
@@ -78,9 +98,18 @@ class AgentOperationNotificationService:
                 )
             )
             .order_by(AgentOperationNotification.created_at.asc())
-            .limit(1)
+            .limit(20 if is_session_active is not None else 1)
         )
-        row = result.first()
+        if session_id is not None:
+            stmt = stmt.where(AgentOperationNotification.session_id == session_id)
+        result = await self.db.execute(stmt)
+        row = None
+        for candidate in result.all():
+            notification, _operation = candidate
+            if is_session_active is not None and is_session_active(notification.session_id):
+                continue
+            row = candidate
+            break
         if row is None:
             return None
         notification, operation = row
@@ -160,7 +189,9 @@ class AgentOperationNotificationService:
         return notification
 
     async def _get_operation(self, operation_id: str) -> Operation:
-        result = await self.db.execute(select(Operation).where(Operation.operation_id == operation_id))
+        result = await self.db.execute(
+            select(Operation).where(Operation.operation_id == operation_id)
+        )
         operation = result.scalar_one_or_none()
         if operation is None:
             raise ValueError(f"Operation {operation_id!r} not found")

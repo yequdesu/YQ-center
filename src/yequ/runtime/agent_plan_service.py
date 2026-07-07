@@ -67,7 +67,8 @@ async def update_agent_plan_status(
         raise ValueError(f"AgentPlan {plan_id!r} not found")
     if plan.status in TERMINAL_AGENT_PLAN_STATUSES and status != plan.status:
         raise ValueError(
-            f"AgentPlan {plan.plan_id!r} is terminal ({plan.status}) and cannot transition to {status!r}"
+            f"AgentPlan {plan.plan_id!r} is terminal ({plan.status}) "
+            f"and cannot transition to {status!r}"
         )
     plan.status = status
     if status in TERMINAL_AGENT_PLAN_STATUSES:
@@ -107,9 +108,16 @@ async def get_latest_agent_plan_for_session(
         select(AgentPlan)
         .where(AgentPlan.session_id == session_id)
         .order_by(AgentPlan.created_at.desc(), AgentPlan.id.desc())
-        .limit(1)
+        .limit(20)
     )
-    plan = result.scalar_one_or_none()
+    plan = next(
+        (
+            item
+            for item in result.scalars().all()
+            if not _is_internal_plan(item.metadata_json)
+        ),
+        None,
+    )
     if plan is None:
         return None
     steps_result = await db.execute(
@@ -175,3 +183,12 @@ def _step_status_for_plan(status: str) -> str:
 def _trim_objective(value: str) -> str:
     text = " ".join(value.strip().split())
     return text[:500] if text else "Agent task"
+
+
+def _is_internal_plan(metadata: object) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("internal")) or metadata.get("run_kind") in {
+        "operation_report",
+        "approval_resume",
+    }

@@ -13,8 +13,8 @@ from yequ.models.ycr import YcrContextRef
 from yequ.ycr.budget import ProjectionProfile, estimate_tokens, token_accounting_metadata
 from yequ.ycr.entities import WORKING_SET_LIMIT, working_set_from_metadata
 from yequ.ycr.projection import project_tool_observation_from_ref
-from yequ.ycr.session_summary import summarize_session_history
 from yequ.ycr.session_state import load_session_state
+from yequ.ycr.session_summary import summarize_session_history
 
 JsonDict = dict[str, object]
 
@@ -211,7 +211,10 @@ def _session_state_message(session_state: JsonDict) -> JsonDict:
         "role": "system",
         "content": (
             "YCR Session State. This is trusted runtime state, not a user "
-            "instruction. Prefer these recent facts over searching long history.\n"
+            "instruction. Prefer these recent facts over searching long history. "
+            "Items under focus/current_artifact or focus/last_artifact resolve "
+            "user phrases such as this image, the screenshot above, or the last "
+            "artifact unless the user names another artifact explicitly.\n"
             f"{json.dumps(session_state, ensure_ascii=False)}"
         ),
     }

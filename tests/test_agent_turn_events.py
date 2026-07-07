@@ -230,6 +230,45 @@ async def test_agent_turn_stream_close_fails_open_turn(db_session):
 
 
 @pytest.mark.asyncio
+async def test_agent_turn_stream_close_preserves_waiting_approval(db_session):
+    from sqlalchemy import select
+
+    from yequ.models.agent_turn import AgentTurn
+    from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
+
+    turn_id = await create_agent_turn(
+        session_id="sess_turn_waiting_close",
+        prompt="write action",
+        provider_name="fake",
+        target_node_id=None,
+        execution_mode="auto",
+        trace_id="tr_turn_waiting_close",
+        metadata={},
+    )
+    for event_type, event_id in [
+        ("agent.tool_call.waiting_approval", "evt_turn_waiting_approval"),
+        ("agent.observing", "evt_turn_waiting_observing"),
+        ("stream.close", "evt_turn_waiting_stream_close"),
+    ]:
+        await record_agent_turn_event(
+            turn_id,
+            {
+                "event_id": event_id,
+                "event_type": event_type,
+                "session_id": "sess_turn_waiting_close",
+                "trace_id": "tr_turn_waiting_close",
+                "data": {},
+            },
+        )
+
+    result = await db_session.execute(select(AgentTurn).where(AgentTurn.turn_id == turn_id))
+    turn = result.scalar_one()
+    assert turn.status == "waiting_approval"
+    assert turn.error_code is None
+    assert turn.completed_at is None
+
+
+@pytest.mark.asyncio
 async def test_create_internal_turn_closes_stale_internal_turn(db_session):
     from sqlalchemy import select
 

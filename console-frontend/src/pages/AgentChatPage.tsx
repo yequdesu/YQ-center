@@ -3,11 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  claimOperationNotification,
   createSession,
   getSessionAgentPlan,
-  markOperationNotificationFailed,
-  markOperationNotificationReported,
   type AgentRuntimePlan,
 } from "@/api/agent";
 import {
@@ -119,7 +116,6 @@ export function AgentChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
-  const [autoOperationResumeId, setAutoOperationResumeId] = useState<string | null>(null);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
   const [operationContext, setOperationContext] = useState<OperationContextChip | null>(() =>
@@ -127,26 +123,12 @@ export function AgentChatPage() {
   );
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
-  const autoOperationInFlightRef = useRef(false);
-  const autoOperationNotificationIdRef = useRef<string | null>(null);
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["agent-runtime-plan", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
   }, [queryClient, sessionId]);
-  const handleConversationSettled = useCallback(() => {
-    const notificationId = autoOperationNotificationIdRef.current;
-    autoOperationNotificationIdRef.current = null;
-    if (notificationId) {
-      void markOperationNotificationReported(notificationId).catch((error) => {
-        console.warn("failed to mark operation notification reported", error);
-      });
-    }
-    autoOperationInFlightRef.current = false;
-    setAutoOperationResumeId(null);
-    refreshSessionHistory();
-  }, [refreshSessionHistory]);
 
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
@@ -181,7 +163,7 @@ export function AgentChatPage() {
     loadPersistedSession,
     patchToolCall,
     patchOperation,
-  } = useAgentChat({ sessionId, onConversationSettled: handleConversationSettled });
+  } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
   const agentPlanQuery = useQuery({
     queryKey: ["agent-runtime-plan", sessionId],
@@ -231,9 +213,6 @@ export function AgentChatPage() {
       reconciledApprovalIdsRef.current.clear();
       setDismissedApprovalIds(new Set());
       setContinuedOperationIds(new Set());
-      setAutoOperationResumeId(null);
-      autoOperationInFlightRef.current = false;
-      autoOperationNotificationIdRef.current = null;
       loadPersistedSession(sessionQuery.data);
     }
   }, [loadPersistedSession, sessionId, sessionQuery.data]);
@@ -246,9 +225,6 @@ export function AgentChatPage() {
   const switchSession = (newId: string) => {
     detach();
     clearBlocks();
-    setAutoOperationResumeId(null);
-    autoOperationInFlightRef.current = false;
-    autoOperationNotificationIdRef.current = null;
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
   };
@@ -259,9 +235,6 @@ export function AgentChatPage() {
     setIsCreatingSession(true);
     detach();
     clearBlocks();
-    setAutoOperationResumeId(null);
-    autoOperationInFlightRef.current = false;
-    autoOperationNotificationIdRef.current = null;
     try {
       const s = await createSession({});
       const now = new Date().toISOString();
@@ -705,65 +678,6 @@ export function AgentChatPage() {
     resumeLastRun(providerName, executionMode, maxSteps);
   }, [executionMode, maxSteps, providerName, resumeLastRun]);
 
-  useEffect(() => {
-    if (!sessionId || isStreaming || autoOperationInFlightRef.current) return;
-    let cancelled = false;
-
-    const claimAndReport = async () => {
-      if (autoOperationInFlightRef.current || isStreaming) return;
-      try {
-        const result = await claimOperationNotification(sessionId);
-        const notification = result.notification;
-        if (!notification || cancelled) return;
-        const operationId = notification.operation_id;
-        if (!operationId) return;
-        autoOperationInFlightRef.current = true;
-        autoOperationNotificationIdRef.current = notification.notification_id;
-        setAutoOperationResumeId(operationId);
-        setContinuedOperationIds((prev) => {
-          const next = new Set(prev);
-          next.add(operationId);
-          return next;
-        });
-        sendInvoke(
-          "请根据刚完成的 operation 最新状态自动汇报结果。只总结该 operation 的最终状态、关键结果和必要的下一步；不要重复调用无关工具。",
-          "",
-          providerName,
-          executionMode,
-          {
-            visible: false,
-            suppressUserMessage: true,
-            maxSteps,
-            contextRefs: [
-              {
-                type: "operation",
-                operation_id: operationId,
-                mode: "observation",
-              },
-            ],
-          },
-        );
-      } catch (error) {
-        const notificationId = autoOperationNotificationIdRef.current;
-        if (notificationId) {
-          void markOperationNotificationFailed(
-            notificationId,
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-      }
-    };
-
-    void claimAndReport();
-    const timer = window.setInterval(() => {
-      void claimAndReport();
-    }, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [executionMode, isStreaming, maxSteps, providerName, sendInvoke, sessionId]);
-
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
   const filteredSessions = sessionSearch
@@ -1005,14 +919,6 @@ export function AgentChatPage() {
               <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
                 <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
                 Waiting for approved jobs to finish, then continuing automatically...
-              </div>
-            )}
-            {autoOperationResumeId && (
-              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
-                <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
-                <span className="min-w-0 flex-1 truncate">
-                  Reporting completed operation {autoOperationResumeId}...
-                </span>
               </div>
             )}
             <div className="flex items-center gap-2">

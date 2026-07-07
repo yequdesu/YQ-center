@@ -398,7 +398,7 @@ async def test_ycr_tool_observation_updates_session_state_for_next_turn(
     await ingest_tool_observation_state(
         db_session,
         session_id="sess_state",
-        name="capability.invoke",
+        name="artifact.present",
         status="succeeded",
         result=result,
         raw_ref=raw_ref,
@@ -423,7 +423,14 @@ async def test_ycr_tool_observation_updates_session_state_for_next_turn(
     candidates = packet["provider_context"]["capability_candidates"]
     assert session_state["counts"]["capability"] == 1
     assert session_state["counts"]["artifact"] == 1
+    assert session_state["counts"]["focus"] == 2
     assert session_state["counts"]["operation"] == 1
+    focus_items = session_state["items"]["focus"]
+    current_artifact = next(
+        item for item in focus_items if item["entity_key"] == "current_artifact"
+    )
+    assert current_artifact["data"]["artifact_id"] == "id_screenshot"
+    assert current_artifact["data"]["reason"] == "last_presented_to_user"
     assert candidates[0]["capability_ref"] == "screen.capture"
     assert candidates[0]["source"] == "session_state"
     assert packet["context_estimate"]["session_state_tokens"] > 0
