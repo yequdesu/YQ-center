@@ -113,6 +113,7 @@ export function AgentChatPage() {
   const creatingSessionRef = useRef(false);
   const reconciledApprovalIdsRef = useRef(new Set<string>());
   const terminalOperationRefreshRef = useRef(new Set<string>());
+  const terminalPlanRefreshRef = useRef(new Set<string>());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
@@ -176,6 +177,19 @@ export function AgentChatPage() {
     retry: false,
     refetchInterval: isStreaming ? 2_000 : 15_000,
   });
+
+  useEffect(() => {
+    const plan = agentPlanQuery.data?.plan;
+    if (!plan || !isAgentPlanTerminal(plan.status)) return;
+    const refreshKey = `${plan.plan_id}:${plan.status}`;
+    if (terminalPlanRefreshRef.current.has(refreshKey)) return;
+    terminalPlanRefreshRef.current.add(refreshKey);
+    refreshSessionHistory();
+  }, [
+    agentPlanQuery.data?.plan?.plan_id,
+    agentPlanQuery.data?.plan?.status,
+    refreshSessionHistory,
+  ]);
 
   // Session selection is idempotent: never create sessions implicitly.
   // If a stored/active session disappears, select an existing session if one
@@ -672,8 +686,9 @@ export function AgentChatPage() {
       if (wasAlreadyTerminal) return;
       if (!terminalOperationRefreshRef.current.has(update.operationId)) {
         terminalOperationRefreshRef.current.add(update.operationId);
-        window.setTimeout(refreshSessionHistory, 500);
-        window.setTimeout(refreshSessionHistory, 3500);
+        for (const delayMs of [500, 3500, 12_000, 30_000]) {
+          window.setTimeout(refreshSessionHistory, delayMs);
+        }
       }
       if (continuedOperationIds.has(update.operationId)) return;
       if (operationContext?.operationId === update.operationId) return;
@@ -2223,6 +2238,10 @@ function writeStoredOperationContext(
 
 function isOperationTerminal(status: string) {
   return ["succeeded", "failed", "cancelled", "timeout"].includes(status);
+}
+
+function isAgentPlanTerminal(status: string) {
+  return ["succeeded", "failed", "cancelled"].includes(status);
 }
 
 function operationStatusToToolStatus(status: string): ToolCallState["status"] {
