@@ -16,28 +16,28 @@ def test_tool_rag_golden_rankings_meet_quality_bar() -> None:
             ],
             "sparse": [("disk.detail", 8.0), ("metrics.snapshot", 2.0)],
             "expected": {"disk.detail"},
-            "bad": {"directory.archive_artifact", "eventlog.export_artifact"},
+            "bad_top1": {"directory.archive_artifact", "eventlog.export_artifact"},
         },
         {
             "query": "screen capture",
             "dense": [("screen.capture", 0.61), ("metrics.snapshot", 0.50)],
             "sparse": [("screen.capture", 9.0)],
             "expected": {"screen.capture"},
-            "bad": {"metrics.snapshot"},
+            "bad_top1": {"metrics.snapshot"},
         },
         {
             "query": "transfer receive",
             "dense": [("transfer.croc.receive", 0.63), ("metrics.snapshot", 0.42)],
             "sparse": [("transfer.croc.receive", 7.5)],
             "expected": {"transfer.croc.receive"},
-            "bad": {"metrics.snapshot"},
+            "bad_top1": {"metrics.snapshot"},
         },
         {
             "query": "command",
             "dense": [("transfer.croc.receive", 0.43), ("file.stat", 0.42)],
             "sparse": [],
-            "expected": set(),
-            "bad": {"transfer.croc.receive", "file.stat"},
+            "expected": {"transfer.croc.receive"},
+            "bad_top1": set(),
         },
     ]
 
@@ -45,7 +45,7 @@ def test_tool_rag_golden_rankings_meet_quality_bar() -> None:
 
     assert metrics["top1_accuracy"] == 1.0
     assert metrics["recall_at_5"] == 1.0
-    assert metrics["bad_hit_rate"] == 0.0
+    assert metrics["bad_top1_rate"] == 0.0
 
 
 def test_rrf_fusion_prefers_sparse_exact_tool_over_dense_noise() -> None:
@@ -63,7 +63,7 @@ def test_rrf_fusion_prefers_sparse_exact_tool_over_dense_noise() -> None:
 
     assert ranked[0][0] == "disk.detail"
     assert ranked[0][2] == {"dense_rank": 2, "sparse_rank": 1}
-    assert "directory.archive_artifact" not in [item[0] for item in ranked]
+    assert "directory.archive_artifact" in [item[0] for item in ranked]
 
 
 def test_rrf_fusion_keeps_semantic_result_when_sparse_is_empty() -> None:
@@ -73,17 +73,17 @@ def test_rrf_fusion_keeps_semantic_result_when_sparse_is_empty() -> None:
         top_k=10,
     )
 
-    assert [item[0] for item in ranked] == ["screen.capture"]
+    assert ranked[0][0] == "screen.capture"
 
 
-def test_rrf_fusion_rejects_low_confidence_dense_only_results() -> None:
+def test_rrf_fusion_keeps_low_confidence_dense_only_candidates_for_rerank() -> None:
     ranked = _rrf_fusion(
         [("transfer.croc.receive", 0.43), ("file.stat", 0.42)],
         [],
         top_k=10,
     )
 
-    assert ranked == []
+    assert [item[0] for item in ranked] == ["transfer.croc.receive", "file.stat"]
 
 
 def _evaluate_cases(cases: list[dict[str, object]]) -> dict[str, float]:
@@ -101,16 +101,16 @@ def _evaluate_cases(cases: list[dict[str, object]]) -> dict[str, float]:
         )
         returned = [item[0] for item in ranked[:5]]
         expected = case["expected"]  # type: ignore[assignment]
-        bad = case["bad"]  # type: ignore[assignment]
+        bad_top1 = case["bad_top1"]  # type: ignore[assignment]
         if expected:
             non_empty_cases += 1
             top1_hits += int(bool(returned) and returned[0] in expected)
             recall_hits += len(set(returned) & expected)
             expected_count += len(expected)
-        bad_hits += len(set(returned) & bad)
+        bad_hits += int(bool(returned) and returned[0] in bad_top1)
         returned_count += len(returned)
     return {
         "top1_accuracy": top1_hits / max(1, non_empty_cases),
         "recall_at_5": recall_hits / max(1, expected_count),
-        "bad_hit_rate": bad_hits / max(1, returned_count),
+        "bad_top1_rate": bad_hits / max(1, len(cases)),
     }

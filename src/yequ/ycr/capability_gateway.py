@@ -41,7 +41,6 @@ TOOL_RAG_CANDIDATE_LIMIT = 500
 CAPABILITY_INDEX_VERSION = 3
 RETRIEVAL_TOP_K = 50
 RRF_K = 60
-DENSE_ONLY_MIN_SCORE = 0.55
 
 
 async def search_capability_registry(
@@ -446,9 +445,7 @@ def _rrf_fusion(
 ) -> list[tuple[str, float, dict[str, int]]]:
     if not sparse_rows:
         dense_ranked = [
-            item
-            for item in sorted(dense_rows, key=lambda item: item[1], reverse=True)
-            if item[1] >= DENSE_ONLY_MIN_SCORE
+            item for item in sorted(dense_rows, key=lambda item: item[1], reverse=True)
         ][:top_k]
         return [
             (name, score, {"dense_rank": rank})
@@ -457,14 +454,12 @@ def _rrf_fusion(
 
     scores: dict[str, float] = {}
     ranks: dict[str, dict[str, int]] = {}
-    sparse_names = {name for name, _score in sparse_rows}
     dense_ranked = [
         (name, rank)
         for rank, (name, score) in enumerate(
             sorted(dense_rows, key=lambda item: item[1], reverse=True),
             start=1,
         )
-        if name in sparse_names or score >= DENSE_ONLY_MIN_SCORE
     ][:top_k]
     sparse_ranked = [
         (name, rank)
