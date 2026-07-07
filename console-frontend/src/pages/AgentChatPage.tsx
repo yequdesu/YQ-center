@@ -77,6 +77,21 @@ interface OperationContextChip {
   title?: string;
 }
 
+interface OperationStatusUpdate {
+  operationId: string;
+  status: string;
+  previousStatus?: string;
+  title?: string;
+  kind?: string;
+  refType?: string;
+  refId?: string;
+  message?: string;
+  progressPct?: number | null;
+  progressMessage?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}
+
 export function AgentChatPage() {
   const [sessionId, setSessionId] = useState<string>(() => {
     return sessionStorage.getItem(SESSION_STORAGE_KEY) ?? "";
@@ -97,6 +112,8 @@ export function AgentChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
+  const [autoOperationQueue, setAutoOperationQueue] = useState<string[]>([]);
+  const [autoOperationResumeId, setAutoOperationResumeId] = useState<string | null>(null);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
   const [operationContext, setOperationContext] = useState<OperationContextChip | null>(() =>
@@ -104,11 +121,18 @@ export function AgentChatPage() {
   );
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
+  const queuedOperationIdsRef = useRef(new Set<string>());
+  const autoOperationInFlightRef = useRef(false);
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
   }, [queryClient, sessionId]);
+  const handleConversationSettled = useCallback(() => {
+    autoOperationInFlightRef.current = false;
+    setAutoOperationResumeId(null);
+    refreshSessionHistory();
+  }, [refreshSessionHistory]);
 
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
@@ -142,7 +166,8 @@ export function AgentChatPage() {
     clearBlocks,
     loadPersistedSession,
     patchToolCall,
-  } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
+    patchOperation,
+  } = useAgentChat({ sessionId, onConversationSettled: handleConversationSettled });
 
   // Session selection is idempotent: never create sessions implicitly.
   // If a stored/active session disappears, select an existing session if one
@@ -181,6 +206,10 @@ export function AgentChatPage() {
       reconciledApprovalIdsRef.current.clear();
       setDismissedApprovalIds(new Set());
       setContinuedOperationIds(new Set());
+      setAutoOperationQueue([]);
+      setAutoOperationResumeId(null);
+      queuedOperationIdsRef.current.clear();
+      autoOperationInFlightRef.current = false;
       loadPersistedSession(sessionQuery.data);
     }
   }, [loadPersistedSession, sessionId, sessionQuery.data]);
@@ -193,6 +222,10 @@ export function AgentChatPage() {
   const switchSession = (newId: string) => {
     detach();
     clearBlocks();
+    setAutoOperationQueue([]);
+    setAutoOperationResumeId(null);
+    queuedOperationIdsRef.current.clear();
+    autoOperationInFlightRef.current = false;
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
   };
@@ -203,6 +236,10 @@ export function AgentChatPage() {
     setIsCreatingSession(true);
     detach();
     clearBlocks();
+    setAutoOperationQueue([]);
+    setAutoOperationResumeId(null);
+    queuedOperationIdsRef.current.clear();
+    autoOperationInFlightRef.current = false;
     try {
       const s = await createSession({});
       const now = new Date().toISOString();
@@ -622,9 +659,67 @@ export function AgentChatPage() {
     },
     [sessionId],
   );
+  const handleOperationStatusChange = useCallback(
+    (update: OperationStatusUpdate) => {
+      patchOperation(update);
+      const terminal = isOperationTerminal(update.status);
+      const wasAlreadyTerminal = update.previousStatus
+        ? isOperationTerminal(update.previousStatus)
+        : false;
+      patchToolCall({
+        operationId: update.operationId,
+        status: terminal ? operationStatusToToolStatus(update.status) : "waiting_operation",
+        errorCode: update.errorCode,
+        errorMessage: update.errorMessage,
+      });
+      if (!terminal) return;
+      if (wasAlreadyTerminal) return;
+      if (continuedOperationIds.has(update.operationId)) return;
+      if (operationContext?.operationId === update.operationId) return;
+      if (queuedOperationIdsRef.current.has(update.operationId)) return;
+      queuedOperationIdsRef.current.add(update.operationId);
+      setAutoOperationQueue((prev) =>
+        prev.includes(update.operationId) ? prev : [...prev, update.operationId],
+      );
+    },
+    [continuedOperationIds, operationContext?.operationId, patchOperation, patchToolCall],
+  );
   const handleResumeLastRun = useCallback(() => {
     resumeLastRun(providerName, executionMode, maxSteps);
   }, [executionMode, maxSteps, providerName, resumeLastRun]);
+
+  useEffect(() => {
+    if (!sessionId || isStreaming || autoOperationInFlightRef.current) return;
+    const operationId = autoOperationQueue[0];
+    if (!operationId) return;
+    autoOperationInFlightRef.current = true;
+    queuedOperationIdsRef.current.delete(operationId);
+    setAutoOperationResumeId(operationId);
+    setAutoOperationQueue((prev) => prev.filter((id) => id !== operationId));
+    setContinuedOperationIds((prev) => {
+      const next = new Set(prev);
+      next.add(operationId);
+      return next;
+    });
+    sendInvoke(
+      "请根据刚完成的 operation 最新状态自动汇报结果。只总结该 operation 的最终状态、关键结果和必要的下一步；不要重复调用无关工具。",
+      "",
+      providerName,
+      executionMode,
+      {
+        visible: false,
+        suppressUserMessage: true,
+        maxSteps,
+        contextRefs: [
+          {
+            type: "operation",
+            operation_id: operationId,
+            mode: "observation",
+          },
+        ],
+      },
+    );
+  }, [autoOperationQueue, executionMode, isStreaming, maxSteps, providerName, sendInvoke, sessionId]);
 
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
@@ -808,6 +903,7 @@ export function AgentChatPage() {
                     ycrTrace={ycrTrace}
                     onApproveAndRun={handleApproveAndRun}
                     onResumeOperation={handleResumeOperation}
+                    onOperationStatusChange={handleOperationStatusChange}
                   />
                 ))}
                 {activeRunId && (
@@ -826,6 +922,7 @@ export function AgentChatPage() {
             ycrTrace={ycrTrace}
             ycrTokenSummary={ycrTokenSummary}
             onResumeOperation={handleResumeOperation}
+            onOperationStatusChange={handleOperationStatusChange}
           />
         </div>
 
@@ -864,6 +961,16 @@ export function AgentChatPage() {
               <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
                 <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
                 Waiting for approved jobs to finish, then continuing automatically...
+              </div>
+            )}
+            {(autoOperationResumeId || autoOperationQueue.length > 0) && (
+              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
+                <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
+                <span className="min-w-0 flex-1 truncate">
+                  {autoOperationResumeId
+                    ? `Reporting completed operation ${autoOperationResumeId}...`
+                    : `${autoOperationQueue.length} completed operation(s) queued for automatic report.`}
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -1057,11 +1164,13 @@ function ChatTimelineBlock({
   ycrTrace,
   onApproveAndRun,
   onResumeOperation,
+  onOperationStatusChange,
 }: {
   block: ChatBlock;
   ycrTrace?: YcrTraceItem[];
   onApproveAndRun?: (planId: string, onRunStarted: (runId: string) => void) => void;
   onResumeOperation?: (operationId: string) => void;
+  onOperationStatusChange?: (update: OperationStatusUpdate) => void;
 }) {
   const inlineYcr = ycrTrace ? ycrTraceForBlock(block, ycrTrace) : [];
   switch (block.type) {
@@ -1082,7 +1191,13 @@ function ChatTimelineBlock({
     case "artifact_presentation":
       return <ArtifactPresentationBubble block={block} />;
     case "operation_card":
-      return <OperationCard block={block} onResume={onResumeOperation} />;
+      return (
+        <OperationCard
+          block={block}
+          onResume={onResumeOperation}
+          onStatusChange={onOperationStatusChange}
+        />
+      );
     case "system_event":
       return <SystemEventBubble block={block} />;
     case "run_status":
@@ -1266,12 +1381,14 @@ function ActivityPanel({
   ycrTrace,
   ycrTokenSummary,
   onResumeOperation,
+  onOperationStatusChange,
 }: {
   operations: OperationCardBlock[];
   promptContext: PromptContextData | null;
   ycrTrace: YcrTraceItem[];
   ycrTokenSummary: YcrTokenSummary;
   onResumeOperation: (operationId: string) => void;
+  onOperationStatusChange?: (update: OperationStatusUpdate) => void;
 }) {
   const latestOperations = [...operations].sort((a, b) =>
     (b.created_at ?? "").localeCompare(a.created_at ?? ""),
@@ -1300,6 +1417,7 @@ function ActivityPanel({
                   key={operation.id}
                   block={operation}
                   onResume={onResumeOperation}
+                  onStatusChange={onOperationStatusChange}
                   surface="panel"
                 />
               ))}
@@ -1574,14 +1692,17 @@ function PromptContextPanel({ promptContext }: { promptContext: PromptContextDat
 function OperationCard({
   block,
   onResume,
+  onStatusChange,
   surface = "timeline",
 }: {
   block: OperationCardBlock;
   onResume?: (operationId: string) => void;
+  onStatusChange?: (update: OperationStatusUpdate) => void;
   surface?: "timeline" | "panel";
 }) {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const lastStatusNotificationRef = useRef("");
   const queryClient = useQueryClient();
   const operationQuery = useQuery({
     queryKey: ["operation", block.operationId],
@@ -1606,6 +1727,67 @@ function OperationCard({
   const message = progressMessage ?? operationStatusMessage(status, block.message);
   const transferSummary = getTransferSummary(operationQuery.data?.transfer);
   const compact = surface === "panel";
+
+  useEffect(() => {
+    if (!operation || !onStatusChange) return;
+    const nextStatus = operation.status ?? block.status;
+    const nextTitle = operation.title ?? block.title;
+    const nextRefType = operation.ref_type ?? block.refType;
+    const nextRefId = operation.ref_id ?? block.refId;
+    const nextProgressPct = operation.progress_pct ?? block.progressPct ?? null;
+    const nextProgressMessage = operation.progress_message ?? block.progressMessage ?? null;
+    const nextErrorCode = operation.error_code ?? block.errorCode ?? null;
+    const nextErrorMessage = operation.error_message ?? block.errorMessage ?? null;
+    const hasChange =
+      nextStatus !== block.status ||
+      nextTitle !== block.title ||
+      nextRefType !== block.refType ||
+      nextRefId !== block.refId ||
+      nextProgressPct !== (block.progressPct ?? null) ||
+      nextProgressMessage !== (block.progressMessage ?? null) ||
+      nextErrorCode !== (block.errorCode ?? null) ||
+      nextErrorMessage !== (block.errorMessage ?? null);
+    if (!hasChange) return;
+    const notifyKey = JSON.stringify([
+      block.operationId,
+      nextStatus,
+      nextTitle,
+      nextRefType,
+      nextRefId,
+      nextProgressPct,
+      nextProgressMessage,
+      nextErrorCode,
+      nextErrorMessage,
+    ]);
+    if (lastStatusNotificationRef.current === notifyKey) return;
+    lastStatusNotificationRef.current = notifyKey;
+    onStatusChange({
+      operationId: block.operationId,
+      status: nextStatus,
+      previousStatus: block.status,
+      title: nextTitle,
+      kind: operation.kind ?? block.kind,
+      refType: nextRefType,
+      refId: nextRefId,
+      progressPct: nextProgressPct,
+      progressMessage: nextProgressMessage,
+      errorCode: nextErrorCode,
+      errorMessage: nextErrorMessage,
+    });
+  }, [
+    block.errorCode,
+    block.errorMessage,
+    block.kind,
+    block.operationId,
+    block.progressMessage,
+    block.progressPct,
+    block.refId,
+    block.refType,
+    block.status,
+    block.title,
+    onStatusChange,
+    operation,
+  ]);
 
   const handleCancel = async () => {
     setCancelBusy(true);
@@ -1996,6 +2178,10 @@ function writeStoredOperationContext(
 
 function isOperationTerminal(status: string) {
   return ["succeeded", "failed", "cancelled", "timeout"].includes(status);
+}
+
+function operationStatusToToolStatus(status: string): ToolCallState["status"] {
+  return status === "succeeded" ? "succeeded" : "failed";
 }
 
 function operationStatusMessage(status: string, fallback?: string) {

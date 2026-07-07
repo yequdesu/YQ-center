@@ -253,11 +253,11 @@ export function transcriptFromPersisted(input: PersistedTranscriptInput): Transc
 export function applyToolPatch(state: TranscriptState, patch: {
   callId?: string;
   approvalId?: string;
+  operationId?: string;
   status?: ToolCallState["status"];
   targetNodeId?: string;
   invocationId?: string;
   jobId?: string;
-  operationId?: string;
   waitHandle?: Record<string, unknown>;
   result?: Record<string, unknown>;
   errorCode?: string | null;
@@ -271,7 +271,8 @@ export function applyToolPatch(state: TranscriptState, patch: {
       const toolCalls = block.tool_calls.map((tool) => {
         const matchesCallId = patch.callId && tool.callId === patch.callId;
         const matchesApprovalId = patch.approvalId && tool.approvalId === patch.approvalId;
-        if (!matchesCallId && !matchesApprovalId) return tool;
+        const matchesOperationId = patch.operationId && tool.operationId === patch.operationId;
+        if (!matchesCallId && !matchesApprovalId && !matchesOperationId) return tool;
         changed = true;
         return {
           ...tool,
@@ -289,6 +290,45 @@ export function applyToolPatch(state: TranscriptState, patch: {
         };
       });
       return changed ? { ...block, tool_calls: toolCalls } : block;
+    }),
+  };
+}
+
+export function applyOperationPatch(
+  state: TranscriptState,
+  patch: {
+    operationId: string;
+    status?: string;
+    title?: string;
+    kind?: string;
+    refType?: string;
+    refId?: string;
+    message?: string;
+    progressPct?: number | null;
+    progressMessage?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  },
+): TranscriptState {
+  return {
+    ...state,
+    blocks: state.blocks.map((block) => {
+      if (block.type !== "operation_card" || block.operationId !== patch.operationId) {
+        return block;
+      }
+      return {
+        ...block,
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
+        ...(patch.refType !== undefined ? { refType: patch.refType } : {}),
+        ...(patch.refId !== undefined ? { refId: patch.refId } : {}),
+        ...(patch.message !== undefined ? { message: patch.message } : {}),
+        ...(patch.progressPct !== undefined ? { progressPct: patch.progressPct } : {}),
+        ...(patch.progressMessage !== undefined ? { progressMessage: patch.progressMessage } : {}),
+        ...(patch.errorCode !== undefined ? { errorCode: patch.errorCode ?? undefined } : {}),
+        ...(patch.errorMessage !== undefined ? { errorMessage: patch.errorMessage ?? undefined } : {}),
+      };
     }),
   };
 }
