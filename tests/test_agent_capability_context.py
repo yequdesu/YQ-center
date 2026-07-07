@@ -264,7 +264,7 @@ async def _add_node_capability(
             plugin_version="1.0",
             registered_name=capability_name,
             platform_os=platform_os,
-            status="active",
+            status="loaded",
             is_active=True,
             execution_requirements={"runtime_kind": "privileged"},
         )

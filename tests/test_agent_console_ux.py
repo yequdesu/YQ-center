@@ -632,7 +632,7 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
                     plugin_id="test.source",
                     plugin_version="1.0",
                     registered_name="test.duplicate.capability",
-                    status="active",
+                    status="loaded",
                     is_active=True,
                     execution_requirements={"runtime_kind": "privileged"},
                 )
@@ -728,7 +728,7 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
                     plugin_id="test.pinned",
                     plugin_version="1.0",
                     registered_name=function_name,
-                    status="active",
+                    status="loaded",
                     is_active=True,
                     execution_requirements={"runtime_kind": "privileged"},
                 )

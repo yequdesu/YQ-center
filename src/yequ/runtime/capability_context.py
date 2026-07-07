@@ -137,7 +137,6 @@ async def _active_function_counts_by_node(db: AsyncSession) -> dict[str, int]:
         .join(CapabilityDefinition, CapabilityDefinition.id == CapabilitySource.definition_id)
         .where(
             CapabilitySource.is_active.is_(True),
-            CapabilitySource.status == "active",
             CapabilityDefinition.capability_type == "function",
             CapabilityDefinition.status == "active",
         )
