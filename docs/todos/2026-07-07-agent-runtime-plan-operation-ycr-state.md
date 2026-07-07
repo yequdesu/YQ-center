@@ -293,7 +293,7 @@ JSONL 审计已能快速定位真实会话问题。下一步是 span 化和把 e
 | 已完成基础实现 | 审计 span 化 | 已记录 context refs、available functions、capability context、YCR build-turn、provider、tool execution 耗时。 |
 | 正交待办 | meta tool 合同继续审计 | 默认输出必须是 decision view，detail/diagnostics 显式请求。 |
 | 正交待办 | Provider Registry | provider/model/probe/能力发现系统化，但不抢在 Runtime 状态机之前。 |
-| 正交待办 | transfer 真实复验 | Linux receive 和 Center transfer fact 继承继续端到端复验。 |
+| 正交待办 | transfer 真实复验 | Linux receive 和 Center transfer fact 继承已在 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 中复验通过；本文件不再追踪。 |
 
 ## 6. 明确暂缓或不做
 

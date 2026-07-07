@@ -112,6 +112,7 @@ export function AgentChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const creatingSessionRef = useRef(false);
   const reconciledApprovalIdsRef = useRef(new Set<string>());
+  const terminalOperationRefreshRef = useRef(new Set<string>());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
@@ -669,10 +670,21 @@ export function AgentChatPage() {
       });
       if (!terminal) return;
       if (wasAlreadyTerminal) return;
+      if (!terminalOperationRefreshRef.current.has(update.operationId)) {
+        terminalOperationRefreshRef.current.add(update.operationId);
+        window.setTimeout(refreshSessionHistory, 500);
+        window.setTimeout(refreshSessionHistory, 3500);
+      }
       if (continuedOperationIds.has(update.operationId)) return;
       if (operationContext?.operationId === update.operationId) return;
     },
-    [continuedOperationIds, operationContext?.operationId, patchOperation, patchToolCall],
+    [
+      continuedOperationIds,
+      operationContext?.operationId,
+      patchOperation,
+      patchToolCall,
+      refreshSessionHistory,
+    ],
   );
   const handleResumeLastRun = useCallback(() => {
     resumeLastRun(providerName, executionMode, maxSteps);

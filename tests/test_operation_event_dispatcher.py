@@ -7,9 +7,13 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yequ.models.agent_turn import AgentTurn
 from yequ.models.operation import Operation, OperationEvent
 from yequ.models.ycr import YcrSessionState
+from yequ.runtime.agent_plan_service import create_agent_plan, update_agent_plan_status
+from yequ.runtime.agent_run_service import create_agent_run, update_agent_run_status
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
+from yequ.services.agent_operation_reporter import reconcile_waiting_operation_agent_state
 from yequ.services.operation_event_dispatcher import OperationEventDispatcher
 from yequ.services.operation_scanner import OperationConsistencyScanner
 from yequ.services.operation_service import OperationService
@@ -182,7 +186,10 @@ async def test_terminal_operation_event_enqueues_agent_notification_once(
 
 
 @pytest.mark.asyncio
-async def test_agent_operation_notification_claim_api(client: AsyncClient, db_session: AsyncSession) -> None:
+async def test_agent_operation_notification_claim_api(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
     now = datetime.now(UTC)
     operation = Operation(
         operation_id="op_agent_notify_api",
@@ -225,3 +232,109 @@ async def test_agent_operation_notification_claim_api(client: AsyncClient, db_se
     )
     assert empty.status_code == 200
     assert empty.json()["notification"] is None
+
+
+@pytest.mark.asyncio
+async def test_operation_report_reconciles_waiting_agent_state(
+    db_session: AsyncSession,
+) -> None:
+    now = datetime.now(UTC)
+    waiting_run = await create_agent_run(
+        db_session,
+        session_id="sess_operation_reconcile",
+        provider_name="fake",
+        execution_mode="auto",
+        target_node_id=None,
+        user_message="start operation",
+        trace_id="tr_waiting",
+        metadata={"source": "test"},
+    )
+    waiting_plan = await create_agent_plan(
+        db_session,
+        session_id="sess_operation_reconcile",
+        run_id=waiting_run.run_id,
+        provider_name="fake",
+        execution_mode="auto",
+        target_node_id=None,
+        objective="start operation",
+    )
+    waiting_run.turn_id = "turn_waiting"
+    waiting_plan.turn_id = "turn_waiting"
+    db_session.add(
+        AgentTurn(
+            turn_id="turn_waiting",
+            session_id="sess_operation_reconcile",
+            trace_id="tr_waiting",
+            provider_name="fake",
+            target_node_id=None,
+            execution_mode="auto",
+            status="waiting_operation",
+            prompt="start operation",
+            started_at=now,
+            updated_at=now,
+            metadata_={},
+        )
+    )
+    await update_agent_run_status(
+        db_session,
+        waiting_run,
+        status="waiting_operation",
+        metadata={
+            "plan_id": waiting_plan.plan_id,
+            "waiting": {
+                "status": "waiting_operation",
+                "operation_id": "op_reconcile",
+            },
+        },
+    )
+    await update_agent_plan_status(
+        db_session,
+        waiting_plan.plan_id,
+        status="waiting_operation",
+        operation_id="op_reconcile",
+    )
+    report_run = await create_agent_run(
+        db_session,
+        session_id="sess_operation_reconcile",
+        provider_name="fake",
+        execution_mode="auto",
+        target_node_id=None,
+        user_message=None,
+        trace_id="tr_report",
+        metadata={"source": "agent.operation_reporter", "internal": True},
+    )
+    report_run.turn_id = "turn_report"
+    await update_agent_run_status(
+        db_session,
+        report_run,
+        status="succeeded",
+        final_message="operation completed",
+    )
+    await db_session.flush()
+
+    await reconcile_waiting_operation_agent_state(
+        db_session,
+        session_id="sess_operation_reconcile",
+        operation_id="op_reconcile",
+        report_turn_id="turn_report",
+        operation_observation={
+            "operation": {
+                "operation_id": "op_reconcile",
+                "status": "succeeded",
+            }
+        },
+    )
+    await db_session.flush()
+
+    assert waiting_run.status == "succeeded"
+    assert waiting_run.final_message == "operation completed"
+    assert waiting_run.completed_at is not None
+    assert waiting_plan.status == "succeeded"
+    assert waiting_plan.completed_at is not None
+    turn = (
+        await db_session.execute(
+            select(AgentTurn).where(AgentTurn.turn_id == "turn_waiting")
+        )
+    ).scalar_one()
+    assert turn.status == "succeeded"
+    assert turn.completed_at is not None

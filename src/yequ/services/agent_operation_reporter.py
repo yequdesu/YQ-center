@@ -16,8 +16,11 @@ from yequ.api.agent_providers import resolve_provider
 from yequ.api.agent_tool_catalog import _agent_debug_metadata
 from yequ.logconfig import get_logger
 from yequ.models.agent_message import AgentMessage
+from yequ.models.agent_run import AgentRun
 from yequ.models.agent_turn import AgentTurn
 from yequ.models.session import Session
+from yequ.runtime.agent_plan_service import update_agent_plan_status
+from yequ.runtime.agent_run_service import update_agent_run_status
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
 from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
 from yequ.services.operation_service import OperationService
@@ -108,6 +111,13 @@ async def report_operation_notification(notification: dict[str, object]) -> None
             operation_observation=operation_observation,
         )
         async with yequ_db.async_session_factory() as db:
+            await reconcile_waiting_operation_agent_state(
+                db,
+                session_id=session_id,
+                operation_id=operation_id,
+                report_turn_id=turn_id,
+                operation_observation=operation_observation,
+            )
             await AgentOperationNotificationService(db).mark_reported(
                 notification_id=notification_id,
                 turn_id=turn_id,
@@ -219,6 +229,95 @@ async def _run_internal_report_turn(
     return turn_id
 
 
+async def reconcile_waiting_operation_agent_state(
+    db,
+    *,
+    session_id: str,
+    operation_id: str,
+    report_turn_id: str,
+    operation_observation: dict[str, object],
+) -> None:
+    """Close the user-facing Agent state that originally waited on an Operation."""
+
+    operation = _operation_dict_from_observation(operation_observation)
+    operation_status = str(operation.get("status") or "")
+    agent_status = _agent_status_for_operation(operation_status)
+    if agent_status is None:
+        return
+
+    final_message = await _load_report_final_message(db, report_turn_id)
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(AgentRun)
+        .where(AgentRun.session_id == session_id)
+        .where(AgentRun.status == "waiting_operation")
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(50)
+    )
+    updated_run_ids: list[str] = []
+    updated_turn_ids: set[str] = set()
+    updated_plan_ids: set[str] = set()
+    for run in result.scalars().all():
+        if not _run_waits_for_operation(run, operation_id):
+            continue
+        await update_agent_run_status(
+            db,
+            run,
+            status=agent_status,
+            final_message=final_message,
+            error_code=_operation_error_code(operation),
+            error_message=_operation_error_message(operation),
+            metadata={
+                "completed_operation": {
+                    "operation_id": operation_id,
+                    "status": operation_status,
+                    "report_turn_id": report_turn_id,
+                }
+            },
+        )
+        updated_run_ids.append(run.run_id)
+        if run.turn_id:
+            updated_turn_ids.add(run.turn_id)
+        plan_id = _run_plan_id(run)
+        if plan_id:
+            updated_plan_ids.add(plan_id)
+
+    if not updated_run_ids:
+        return
+
+    for turn_id in updated_turn_ids:
+        await _reconcile_waiting_turn(
+            db,
+            turn_id=turn_id,
+            status=agent_status,
+            operation=operation,
+            now=now,
+        )
+    for plan_id in updated_plan_ids:
+        await update_agent_plan_status(
+            db,
+            plan_id,
+            status=agent_status,
+            operation_id=operation_id,
+        )
+
+    record_session_audit_event(
+        session_id,
+        "agent.operation_wait.reconciled",
+        {
+            "operation_id": operation_id,
+            "operation_status": operation_status,
+            "agent_status": agent_status,
+            "report_turn_id": report_turn_id,
+            "run_ids": updated_run_ids,
+            "turn_ids": sorted(updated_turn_ids),
+            "plan_ids": sorted(updated_plan_ids),
+        },
+        source="agent.operation_reporter",
+        event_time=now,
+    )
+
+
 async def _resolve_report_provider(session_id: str) -> str:
     async with yequ_db.async_session_factory() as db:
         result = await db.execute(
@@ -234,6 +333,92 @@ async def _resolve_report_provider(session_id: str) -> str:
             if turn.provider_name:
                 return turn.provider_name
     return "deepseek"
+
+
+async def _load_report_final_message(db, report_turn_id: str) -> str | None:
+    result = await db.execute(select(AgentRun).where(AgentRun.turn_id == report_turn_id))
+    run = result.scalar_one_or_none()
+    if run is not None and run.final_message:
+        return run.final_message
+    return None
+
+
+async def _reconcile_waiting_turn(
+    db,
+    *,
+    turn_id: str,
+    status: str,
+    operation: dict[str, object],
+    now: datetime,
+) -> None:
+    result = await db.execute(select(AgentTurn).where(AgentTurn.turn_id == turn_id))
+    turn = result.scalar_one_or_none()
+    if turn is None or turn.status != "waiting_operation":
+        return
+    turn.status = status
+    turn.completed_at = turn.completed_at or now
+    turn.updated_at = now
+    turn.error_code = _operation_error_code(operation)
+    turn.error_message = _operation_error_message(operation)
+    metadata = dict(turn.metadata_ or {})
+    metadata["completed_operation"] = {
+        "operation_id": operation.get("operation_id"),
+        "status": operation.get("status"),
+    }
+    turn.metadata_ = metadata
+
+
+def _run_waits_for_operation(run: AgentRun, operation_id: str) -> bool:
+    metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
+    waiting = metadata.get("waiting")
+    return isinstance(waiting, dict) and waiting.get("operation_id") == operation_id
+
+
+def _run_plan_id(run: AgentRun) -> str | None:
+    metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
+    value = metadata.get("plan_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _operation_dict_from_observation(value: dict[str, object]) -> dict[str, object]:
+    operation = value.get("operation")
+    return dict(operation) if isinstance(operation, dict) else {}
+
+
+def _agent_status_for_operation(operation_status: str) -> str | None:
+    if operation_status == "succeeded":
+        return "succeeded"
+    if operation_status == "cancelled":
+        return "cancelled"
+    if operation_status in {"failed", "timeout"}:
+        return "failed"
+    return None
+
+
+def _operation_error_code(operation: dict[str, object]) -> str | None:
+    status = str(operation.get("status") or "")
+    if status == "succeeded":
+        return None
+    value = operation.get("error_code")
+    if isinstance(value, str) and value:
+        return value
+    if status == "timeout":
+        return "operation_timeout"
+    if status == "cancelled":
+        return "operation_cancelled"
+    if status == "failed":
+        return "operation_failed"
+    return None
+
+
+def _operation_error_message(operation: dict[str, object]) -> str | None:
+    status = str(operation.get("status") or "")
+    if status == "succeeded":
+        return None
+    value = operation.get("error_message")
+    if isinstance(value, str) and value:
+        return value
+    return f"Operation finished with status {status}." if status else None
 
 
 async def _preferred_language(session_id: str) -> str:
