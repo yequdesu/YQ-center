@@ -598,13 +598,23 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
     from yequ.agent.provider import ProviderInvokeResult
     from yequ.api.deps import get_db
     from yequ.api.routes.agent import register_provider
-    from yequ.models.capability import Capability
+    from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
     from yequ.models.node import Node
     from yequ.services.node_auth import hash_token
 
     db_gen = get_db()
     db = await db_gen.__anext__()
     try:
+        definition = CapabilityDefinition(
+            canonical_name="test.duplicate.capability",
+            display_name="test.duplicate.capability",
+            capability_type="function",
+            risk="safe",
+            effect="read",
+            status="active",
+        )
+        db.add(definition)
+        await db.flush()
         for node_id in ("source-node-a", "source-node-b"):
             node = Node(
                 node_id=node_id,
@@ -616,16 +626,15 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
             db.add(node)
             await db.flush()
             db.add(
-                Capability(
+                CapabilitySource(
+                    definition_id=definition.id,
                     node_record_id=node.id,
                     plugin_id="test.source",
                     plugin_version="1.0",
-                    capability_type="function",
-                    name="test.duplicate.capability",
-                    status="loaded",
-                    risk="safe",
-                    effect="read",
+                    registered_name="test.duplicate.capability",
+                    status="active",
                     is_active=True,
+                    execution_requirements={"runtime_kind": "privileged"},
                 )
             )
         await db.commit()
@@ -682,7 +691,7 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
     from yequ.api.deps import get_db
     from yequ.api.routes.agent import _available_functions
     from yequ.config import get_settings
-    from yequ.models.capability import Capability
+    from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
     from yequ.models.node import Node
     from yequ.services.node_auth import hash_token
 
@@ -702,17 +711,26 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
             )
             db.add(node)
             await db.flush()
+            definition = CapabilityDefinition(
+                canonical_name=function_name,
+                display_name=function_name,
+                capability_type="function",
+                risk="safe",
+                effect="read",
+                status="active",
+            )
+            db.add(definition)
+            await db.flush()
             db.add(
-                Capability(
+                CapabilitySource(
+                    definition_id=definition.id,
                     node_record_id=node.id,
                     plugin_id="test.pinned",
                     plugin_version="1.0",
-                    capability_type="function",
-                    name=function_name,
-                    status="loaded",
-                    risk="safe",
-                    effect="read",
+                    registered_name=function_name,
+                    status="active",
                     is_active=True,
+                    execution_requirements={"runtime_kind": "privileged"},
                 )
             )
         await db.commit()

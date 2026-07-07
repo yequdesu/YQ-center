@@ -5,8 +5,9 @@ from datetime import UTC, datetime
 import pytest
 
 from yequ.api.routes.agent import _available_functions
-from yequ.models.capability import Capability
+from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 from yequ.models.node import Node
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.ycr import YcrCapabilityContextSnapshot
 from yequ.runtime.capability_context import (
     build_capability_context,
@@ -168,6 +169,51 @@ async def test_capability_context_snapshot_invalidates_when_registry_changes(db_
     assert set(nodes) == {"winClient", "linux-node-01"}
 
 
+@pytest.mark.asyncio
+async def test_capability_context_snapshot_survives_liveness_heartbeat(db_session):
+    from sqlalchemy import select
+
+    await _add_node_capability(
+        db_session,
+        node_id="winClient",
+        platform_os="windows",
+        capability_name="system.info",
+        description="Read Windows system information.",
+    )
+    await db_session.commit()
+
+    functions = await _available_functions(db_session)
+    first = await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+    await db_session.commit()
+
+    node = (
+        await db_session.execute(select(Node).where(Node.node_id == "winClient"))
+    ).scalar_one()
+    runtime = (
+        await db_session.execute(
+            select(RuntimeInstance).where(RuntimeInstance.node_record_id == node.id)
+        )
+    ).scalar_one()
+    now = datetime.now(UTC)
+    node.last_heartbeat_at = now
+    node.last_seen_at = now
+    runtime.last_seen_at = now
+    await db_session.commit()
+
+    second = await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+
+    assert first["snapshot"]["status"] == "miss"
+    assert second["snapshot"]["status"] == "hit"
+
+
 async def _add_node_capability(
     db_session,
     *,
@@ -187,19 +233,40 @@ async def _add_node_capability(
     db_session.add(node)
     await db_session.flush()
     db_session.add(
-        Capability(
+        RuntimeInstance(
+            node_record_id=node.id,
+            runtime_id=f"{node_id}/runtime/main",
+            kind="privileged",
+            status="online",
+            labels=[platform_os],
+            last_seen_at=node.last_heartbeat_at,
+        )
+    )
+    definition = CapabilityDefinition(
+        canonical_name=capability_name,
+        display_name=capability_name,
+        capability_type="function",
+        description=description,
+        agent_description=description,
+        input_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object"},
+        risk="safe",
+        effect="read",
+        status="active",
+    )
+    db_session.add(definition)
+    await db_session.flush()
+    db_session.add(
+        CapabilitySource(
+            definition_id=definition.id,
             node_record_id=node.id,
             plugin_id=f"{platform_os}.system",
             plugin_version="1.0",
-            capability_type="function",
-            name=capability_name,
-            status="loaded",
-            description=description,
-            input_schema={"type": "object", "properties": {}},
-            output_schema={"type": "object"},
-            risk="safe",
-            effect="read",
+            registered_name=capability_name,
+            platform_os=platform_os,
+            status="active",
             is_active=True,
+            execution_requirements={"runtime_kind": "privileged"},
         )
     )
 

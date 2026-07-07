@@ -10,15 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from yequ.config import get_settings
-from yequ.models.capability import Capability
 from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 from yequ.models.node import Node
 from yequ.models.runtime_instance import RuntimeInstance
@@ -26,6 +24,7 @@ from yequ.models.ycr import YcrCapabilityContextSnapshot
 from yequ.services.node_liveness_service import is_node_schedulable
 
 JsonDict = dict[str, Any]
+SNAPSHOT_TTL = timedelta(seconds=15)
 
 
 class ContextFunction(Protocol):
@@ -79,27 +78,23 @@ async def _build_capability_context_uncached(
 ) -> JsonDict:
     routing_mode = "pinned" if target_node_id else "auto"
     source_nodes_by_name: dict[str, set[str]] = defaultdict(set)
-    for func in available_functions:
-        for node_id in func.source_nodes:
-            source_nodes_by_name[func.name].add(node_id)
+    for available_function in available_functions:
+        for node_id in available_function.source_nodes:
+            source_nodes_by_name[available_function.name].add(node_id)
 
-    result = await db.execute(
-        select(Node).options(joinedload(Node.capabilities), joinedload(Node.runtime_instances))
-    )
+    result = await db.execute(select(Node).order_by(Node.node_id.asc()))
     nodes = []
+    active_function_counts = await _active_function_counts_by_node(db)
     tool_count_by_node: dict[str, int] = {}
+    runtime_ids_by_node = await _runtime_ids_by_node(db)
     settings = get_settings()
 
-    for node in result.unique().scalars().all():
+    for node in result.scalars().all():
         schedulable, unavailable_reason = is_node_schedulable(node, settings)
         if target_node_id and node.node_id != target_node_id:
             continue
 
-        active_function_count = sum(
-            1
-            for cap in node.capabilities
-            if cap.capability_type == "function" and cap.is_active
-        )
+        active_function_count = active_function_counts.get(node.node_id, 0)
         if not target_node_id and not schedulable:
             continue
 
@@ -113,12 +108,7 @@ async def _build_capability_context_uncached(
                 "status": node.status,
                 "schedulable": schedulable,
                 "unavailable_reason": unavailable_reason,
-                "runtime_ids": [
-                    runtime.runtime_id
-                    for runtime in sorted(
-                        node.runtime_instances, key=lambda item: item.runtime_id
-                    )
-                ],
+                "runtime_ids": runtime_ids_by_node.get(node.node_id, []),
                 "registered_capability_count": active_function_count,
                 "capabilities": [],
             }
@@ -140,6 +130,34 @@ async def _build_capability_context_uncached(
     }
 
 
+async def _active_function_counts_by_node(db: AsyncSession) -> dict[str, int]:
+    result = await db.execute(
+        select(Node.node_id, func.count(CapabilitySource.id))
+        .join(CapabilitySource, CapabilitySource.node_record_id == Node.id)
+        .join(CapabilityDefinition, CapabilityDefinition.id == CapabilitySource.definition_id)
+        .where(
+            CapabilitySource.is_active.is_(True),
+            CapabilitySource.status == "active",
+            CapabilityDefinition.capability_type == "function",
+            CapabilityDefinition.status == "active",
+        )
+        .group_by(Node.node_id)
+    )
+    return {node_id: int(count or 0) for node_id, count in result.all()}
+
+
+async def _runtime_ids_by_node(db: AsyncSession) -> dict[str, list[str]]:
+    result = await db.execute(
+        select(Node.node_id, RuntimeInstance.runtime_id)
+        .join(RuntimeInstance, RuntimeInstance.node_record_id == Node.id)
+        .order_by(Node.node_id.asc(), RuntimeInstance.runtime_id.asc())
+    )
+    runtime_ids_by_node: dict[str, list[str]] = defaultdict(list)
+    for node_id, runtime_id in result.all():
+        runtime_ids_by_node[node_id].append(runtime_id)
+    return dict(runtime_ids_by_node)
+
+
 async def _load_snapshot(
     db: AsyncSession,
     *,
@@ -153,6 +171,9 @@ async def _load_snapshot(
     )
     record = result.scalar_one_or_none()
     if record is None or record.registry_fingerprint != registry_fingerprint:
+        return None
+    last_used_at = _aware_utc(record.last_used_at)
+    if last_used_at and datetime.now(UTC) - last_used_at > SNAPSHOT_TTL:
         return None
     record.hit_count += 1
     record.last_used_at = datetime.now(UTC)
@@ -201,24 +222,43 @@ async def _store_snapshot(
 
 
 async def _registry_fingerprint(db: AsyncSession) -> str:
-    rows: list[tuple[str, object, object]] = []
-    for label, model in [
-        ("nodes", Node),
-        ("capabilities", Capability),
+    rows: list[object] = []
+    node_result = await db.execute(
+        select(
+            Node.node_id,
+            Node.node_name,
+            Node.role,
+            Node.locality,
+            Node.status,
+            Node.platform_os,
+            Node.platform_arch,
+            Node.heartbeat_interval_sec,
+            Node.job_delivery_mode,
+        ).order_by(Node.node_id.asc())
+    )
+    rows.append(("nodes", [_jsonable_row(row) for row in node_result.all()]))
+
+    for label, model in (
         ("capability_definitions", CapabilityDefinition),
         ("capability_sources", CapabilitySource),
-        ("runtime_instances", RuntimeInstance),
-    ]:
-        result = await db.execute(
-            select(
-                func.count(),
-                func.max(model.updated_at),
-                func.max(getattr(model, "last_heartbeat_at", model.updated_at)),
-            )
-        )
+    ):
+        result = await db.execute(select(func.count(), func.max(model.updated_at)))
         row = result.one()
         rows.append((label, row[0], _fingerprint_value(row[1])))
-        rows.append((f"{label}:liveness", "", _fingerprint_value(row[2])))
+    runtime_result = await db.execute(
+        select(
+            RuntimeInstance.node_record_id,
+            RuntimeInstance.runtime_id,
+            RuntimeInstance.kind,
+            RuntimeInstance.status,
+            RuntimeInstance.labels,
+            RuntimeInstance.owner,
+            RuntimeInstance.privilege,
+            RuntimeInstance.interactive,
+            RuntimeInstance.metadata_json,
+        ).order_by(RuntimeInstance.node_record_id.asc(), RuntimeInstance.runtime_id.asc())
+    )
+    rows.append(("runtime_instances", [_jsonable_row(row) for row in runtime_result.all()]))
     return _hash_object(rows)
 
 
@@ -255,6 +295,19 @@ def _fingerprint_value(value: object) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _jsonable_row(row: object) -> list[object]:
+    values = list(row) if not isinstance(row, dict) else list(row.values())
+    return json.loads(json.dumps(values, ensure_ascii=False, default=str))
 
 
 def _jsonable_dict(value: JsonDict) -> JsonDict:
