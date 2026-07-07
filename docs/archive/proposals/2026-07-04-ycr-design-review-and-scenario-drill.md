@@ -2,7 +2,7 @@
 
 状态：proposal review  
 日期：2026-07-04  
-关联设计：`docs/proposals/2026-07-04-yequ-context-router-ycr.md`
+关联设计：`docs/archive/proposals/2026-07-04-yequ-context-router-ycr.md`
 
 本文复核 YeQu Context Router（YCR）设计是否匹配当前 Center-Nodes 架构，并用未来可能出现的场景、故障、规模增长和演进方向做预演。结论是：YCR 方向正确，能解决当前 Agent token 激增的主因；但实现前必须补强若干硬约束，否则会把“大上下文问题”转移成“信任、入库、ref 生命周期和预算一致性问题”。
 

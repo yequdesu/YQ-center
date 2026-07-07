@@ -1,7 +1,7 @@
 # Agent SSE 事件合同
 
 状态：当前前后端流式事件合同
-更新时间：2026-07-06
+更新时间：2026-07-07
 
 Agent 流式事件通过 `POST /agent/invoke/stream` 和
 `POST /agent/plan/stream` 返回，响应类型为 `text/event-stream`。
@@ -32,7 +32,7 @@ Agent 流式事件通过 `POST /agent/invoke/stream` 和
 | `agent.loop.started` | `prompt.received` 后 | `max_steps`, `max_duration_sec` | ReAct loop 开始。 |
 | `agent.loop.iteration` | 每轮循环 | `iteration`, `max_steps` | 新一轮迭代开始。 |
 | `agent.provider.started` | 每次 provider 调用 | `provider_name` | LLM 调用开始。 |
-| `agent.ycr.context` | 每次 provider 调用前后 | `phase`, `step`, `packet_id`, `context_estimate`, `tokens`, `projections`, `refs` | YCR 对 provider 输入/输出的估算和上下文包信息。前端用于 token 观测和侧边栏 trace。 |
+| `agent.ycr.context` | 每次 provider 调用前后 | `phase`, `step`, `packet_id`, `context_estimate`, `tokens`, `state`, `projections`, `refs` | YCR 对 provider 输入/输出的估算和上下文包信息。`state` 包含 session state counts、capability candidate count、capability context snapshot 和 history compaction 状态；前端用于 token 观测和侧边栏 trace。 |
 | `agent.ycr.projection` | provider 调用前，每个 projected tool observation | `call_id`, `name`, `projection_policy`, `raw_estimated_tokens`, `projected_estimated_tokens`, `raw_size_bytes`, `projected_size_bytes`, `refs` | YCR 已把历史 tool shell 转换为 provider-visible observation。 |
 | `agent.ycr.error` | YCR 调用或投影失败 | `phase`, `error_code`, `message`, `step` | YCR fail-closed 错误。不能静默降级为 raw tool result。 |
 | `agent.output.delta` | 每轮 0 次或多次 | `content` | LLM 文本流片段。同一轮里，如果有工具调用，文本片段应先于工具调用事件出现。 |
@@ -93,6 +93,11 @@ stream.close
 
 ## 4. Plan Stream 事件类型
 
+当前 `POST /agent/plan/stream` 是维护计划路径的流式事件合同，不等同于
+`docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 中规划的通用
+Agent Runtime Plan。下一阶段若引入通用 Plan/PlanStep，必须扩展本文或新增对应章节，
+并避免与 MaintenancePlan 语义混用。
+
 | 事件类型 | `data.*` |
 |---|---|
 | `stream.open` | 无 |
@@ -134,7 +139,7 @@ stream.close
 | `agent.tool_call.completed` | 更新 `tool_group` | 将工具状态更新为 succeeded。 |
 | `agent.tool_observation.stored` | 更新 `tool_group` + YCR trace | 在对应 ToolCallCard 上显示 raw ref、raw bytes、shell bytes。 |
 | `agent.ycr.projection` | 更新 `tool_group` + YCR trace | 在对应 ToolCallCard 上显示 provider projection、投影 token/bytes 和 refs。 |
-| `agent.ycr.context` | YCR side panel + bubble token estimate | 更新 upload/download token estimate、provider call count、context estimate。 |
+| `agent.ycr.context` | YCR side panel + bubble token estimate | 更新 upload/download token estimate、provider call count、context estimate、snapshot 状态、candidate count 和 session state counts。 |
 | `agent.ycr.error` | YCR side panel + `system_event` | 显示 YCR fail-closed 错误。 |
 | `agent.tool_call.completed` 且 `name == "artifact.present"` | `artifact_presentation` + 更新 `tool_group` | 更新工具状态，并把返回的 artifacts 渲染为独立媒体块，不能只放在 tool-call 卡片里。 |
 | `agent.tool_call.failed` | 更新 `tool_group` | 将工具状态更新为 failed。 |

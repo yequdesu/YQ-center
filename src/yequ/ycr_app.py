@@ -7,7 +7,7 @@ import contextlib
 import logging
 from typing import NoReturn
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from yequ.config import get_settings
@@ -81,6 +81,7 @@ class BuildTurnRequest(BaseModel):
     messages: list[dict[str, object]] = Field(default_factory=list)
     available_functions: list[dict[str, object]] = Field(default_factory=list)
     capability_context: dict[str, object] = Field(default_factory=dict)
+    agent_plan: dict[str, object] = Field(default_factory=dict)
     step: int | None = None
 
 
@@ -263,8 +264,9 @@ async def healthz() -> dict[str, object]:
 
 
 @app.get("/v1/context/status", dependencies=[Depends(_require_ycr_auth)])
-async def context_status() -> dict[str, object]:
+async def context_status(session_id: str | None = Query(default=None)) -> dict[str, object]:
     from yequ.ycr.capability_index_jobs import capability_index_status
+    from yequ.ycr.session_state import session_state_stats
 
     settings = get_settings()
     database_url = settings.database_url.lower()
@@ -273,6 +275,7 @@ async def context_status() -> dict[str, object]:
     )
     async with async_session_factory() as db:
         index_status = await capability_index_status(db)
+        state_stats = await session_state_stats(db, session_id=session_id)
     return {
         "status": "ready",
         "mode": "standalone",
@@ -292,6 +295,7 @@ async def context_status() -> dict[str, object]:
             "scheduler": scheduler_status(),
             "index": index_status,
         },
+        "session_state": state_stats,
         "projection": {
             "provider": _profile().provider,
             "model": _profile().model,
@@ -349,6 +353,8 @@ async def upsert_context_ref(body: RefUpsertRequest) -> dict[str, object]:
 
 @app.post("/v1/tool-observations", dependencies=[Depends(_require_ycr_auth)])
 async def store_tool_observation(body: ToolObservationRequest) -> dict[str, object]:
+    from yequ.ycr.session_state import ingest_tool_observation_state
+
     async with async_session_factory() as db:
         try:
             raw_ref = await upsert_ref(
@@ -374,6 +380,15 @@ async def store_tool_observation(body: ToolObservationRequest) -> dict[str, obje
                 error=body.error,
                 error_code=body.error_code,
                 error_details=body.error_details,
+            )
+            await ingest_tool_observation_state(
+                db,
+                session_id=body.session_id,
+                name=body.name,
+                status=body.status,
+                result=body.result,
+                raw_ref=raw_ref,
+                target_node_id=body.target_node_id,
             )
             await db.commit()
             asyncio.create_task(_index_ref_background(str(raw_ref["ref_id"])))
@@ -405,6 +420,7 @@ async def build_turn(body: BuildTurnRequest) -> dict[str, object]:
                 messages=body.messages,
                 available_functions=body.available_functions,
                 capability_context=body.capability_context,
+                agent_plan=body.agent_plan,
                 profile=_profile(),
                 step=body.step,
             )

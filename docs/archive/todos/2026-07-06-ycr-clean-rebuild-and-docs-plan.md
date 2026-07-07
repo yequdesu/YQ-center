@@ -12,7 +12,7 @@ Result RAG、YCR API、启动/部署脚本和 YCR 相关文档一致性。它不
 职责边界：
 
 - 统一 Center meta tools 与 Node capabilities 的目录模型、Agent bootstrap tools 和
-  `capability.invoke` 归属 `2026-07-06-unified-capability-registry-plan.md`。
+  `capability.invoke` 归属 `docs/archive/todos/2026-07-06-unified-capability-registry-plan.md`。
 - Linux yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出
   收敛和空错误传播归属
   `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。
@@ -24,8 +24,8 @@ Result RAG、YCR API、启动/部署脚本和 YCR 相关文档一致性。它不
 关联文档：
 
 - `docs/ycr-current-state.md`：当前代码已经实现了什么，以及和目标态的差距。
-- `docs/discussions/2026-07-05-ycr-capability-search-design.md`：本轮 YCR 行为决策记录。
-- `docs/proposals/2026-07-04-yequ-context-router-ycr.md`：早期目标态设计，完成本计划后需要复核并吸收或归档。
+- `docs/archive/discussions/2026-07-05-ycr-capability-search-design.md`：本轮 YCR 行为决策记录。
+- `docs/archive/proposals/2026-07-04-yequ-context-router-ycr.md`：早期目标态设计，完成本计划后需要复核并吸收或归档。
 - `docs/agent-sse-contract.md`：Agent SSE 前端合同，第三阶段必须更新。
 
 ## 0. 当前实现核对
@@ -41,7 +41,7 @@ Result RAG、YCR API、启动/部署脚本和 YCR 相关文档一致性。它不
 | raw ContextRef / tool observation shell | 已完成 | 工具结果经 `/v1/tool-observations` 写 raw ref，Agent history 保存 shell，build-turn 再生成 provider projection。 | 无。 |
 | provider-visible projection | 已完成 | `src/yequ/ycr/projection.py` 已按 size-based 递归 ref，并带 bounded prefix preview。 | 细节缺陷转入 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。 |
 | 删除旧 public projection/rehydrate API | 已完成 | `docs/ycr-current-state.md` 已列出删除的 `/v1/project/*` 和 `/v1/context/rehydrate` public 入口。 | 无。 |
-| Tool RAG ready index + reranker | 已完成主链路 | `capability.search(query)` 使用 ready index + reranker；embedding/reranker 不可用时 fail-closed。统一 registry 工具面、retrieval candidate cache、precompute 和前后台资源调度已由 `2026-07-06-unified-capability-registry-plan.md` 完成。 | 后续质量细节转入行为修正文档。 |
+| Tool RAG ready index + reranker | 已完成主链路 | `capability.search(query)` 使用 ready index + reranker；embedding/reranker 不可用时 fail-closed。统一 registry 工具面、retrieval candidate cache、precompute 和前后台资源调度已由 `docs/archive/todos/2026-07-06-unified-capability-registry-plan.md` 完成。 | 后续质量细节转入行为修正文档。 |
 | Result RAG | 已完成主链路 | `context.search` 支持 `ref_id + query` 和 `session_id + query`。 | 后续只在真实任务暴露召回或性能问题时新增专项待办。 |
 | 前端 YCR 可观测性 | 已完成主链路 | Console 展示 YCR 侧栏、projection、refs、整数 token accounting、registry 命中和 index-not-ready。 | 继续按实际交互修 UI 细节。 |
 | meta tool 默认输出边界 | 部分完成 | 多数 meta tools 已有 summary 默认值，但真实交互中仍需审计 `node.status`、`capability.describe`、`context.*`、`artifact.*`、`operation.status` 和 `transfer.status` 是否存在过宽默认输出。 | 转入 `2026-07-06-ycr-agent-routing-and-transfer-corrections.md`。 |
@@ -497,9 +497,9 @@ Provider Projection
 
 处理：
 
-- `docs/discussions/2026-07-05-ycr-capability-search-design.md`
-- `docs/proposals/2026-07-04-yequ-context-router-ycr.md`
-- `docs/proposals/2026-07-04-ycr-design-review-and-scenario-drill.md`
+- `docs/archive/discussions/2026-07-05-ycr-capability-search-design.md`
+- `docs/archive/proposals/2026-07-04-yequ-context-router-ycr.md`
+- `docs/archive/proposals/2026-07-04-ycr-design-review-and-scenario-drill.md`
 
 规则：
 
@@ -571,7 +571,7 @@ rg "context_budget_exceeded|rehydrate|ttl_sec|expires_at|SUMMARY_FIELDS|LARGE_FI
 2. raw_ref shell happy path。
 3. Agent stream 一次工具调用 happy path。
 4. `capability.search` happy path；统一 `capability.invoke` happy path 归属
-   `2026-07-06-unified-capability-registry-plan.md`。
+   `docs/archive/todos/2026-07-06-unified-capability-registry-plan.md`。
 5. `context.search -> context.expand` happy path。
 6. YCR embedder health/rerank smoke test。
 7. Console 前端 build。

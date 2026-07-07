@@ -67,3 +67,35 @@ class OperationEvent(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_dispatch_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AgentOperationNotification(Base):
+    """Agent Runtime queue item for reporting terminal Operation results.
+
+    This is deliberately separate from OperationEvent.dispatch_status: OperationEvent
+    dispatch tracks outbox/MQ delivery, while this table tracks whether an Agent
+    session has reported the completed operation to the user.
+    """
+
+    __tablename__ = "agent_operation_notifications"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    notification_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, default=generate_uuid, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    operation_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("operations.operation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    operation_status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    report_turn_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

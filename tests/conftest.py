@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 import yequ.models.agent_message  # noqa: F401
+import yequ.models.agent_plan  # noqa: F401
 import yequ.models.agent_run  # noqa: F401
 import yequ.models.agent_turn  # noqa: F401
 import yequ.models.api_token  # noqa: F401
@@ -135,6 +136,7 @@ def override_settings(monkeypatch, db_engine):
                     available_functions=list(payload.get("available_functions") or []),
                     capability_context=dict(payload.get("capability_context") or {}),
                     profile=projection_profile_from_settings(test_settings),
+                    agent_plan=dict(payload.get("agent_plan") or {}),
                     step=int(payload.get("step") or 1),
                 )
 
@@ -142,6 +144,7 @@ def override_settings(monkeypatch, db_engine):
             from yequ.ycr.entities import metadata_from_result, strip_ycr_entities
             from yequ.ycr.projection import tool_observation_shell
             from yequ.ycr.ref_store import upsert_ref
+            from yequ.ycr.session_state import ingest_tool_observation_state
 
             async with yequ.db.async_session_factory() as session:
                 raw_ref = await upsert_ref(
@@ -167,6 +170,15 @@ def override_settings(monkeypatch, db_engine):
                     error=payload.get("error"),
                     error_code=payload.get("error_code"),
                     error_details=payload.get("error_details"),
+                )
+                await ingest_tool_observation_state(
+                    session,
+                    session_id=str(payload.get("session_id") or "") or None,
+                    name=str(payload.get("name") or ""),
+                    status=str(payload.get("status") or "succeeded"),
+                    result=payload.get("result"),
+                    raw_ref=raw_ref,
+                    target_node_id=payload.get("target_node_id"),
                 )
                 await session.commit()
                 return {"raw_ref": raw_ref, "shell": shell}

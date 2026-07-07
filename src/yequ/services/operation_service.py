@@ -290,17 +290,33 @@ class OperationService:
             )
         )
         seq = int(seq_result.scalar() or 0) + 1
-        self.db.add(
-            OperationEvent(
-                event_id=f"opevt_{secrets.token_hex(8)}",
-                operation_id=operation.operation_id,
-                seq=seq,
-                event_type=event_type,
-                status=operation.status,
-                data=data or {},
-                created_at=now,
-            )
+        event = OperationEvent(
+            event_id=f"opevt_{secrets.token_hex(8)}",
+            operation_id=operation.operation_id,
+            seq=seq,
+            event_type=event_type,
+            status=operation.status,
+            data=data or {},
+            created_at=now,
         )
+        self.db.add(event)
+        if operation.session_id:
+            from yequ.ycr.session_state import ingest_operation_event_state
+
+            await ingest_operation_event_state(
+                self.db,
+                operation=operation,
+                event_id=event.event_id,
+            )
+        if operation.status in TERMINAL_OPERATION_STATUSES and operation.session_id:
+            from yequ.services.agent_operation_notifications import (
+                AgentOperationNotificationService,
+            )
+
+            await AgentOperationNotificationService(self.db).enqueue_terminal_event(
+                operation=operation,
+                event=event,
+            )
         record_session_audit_event(
             operation.session_id,
             event_type,

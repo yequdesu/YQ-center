@@ -9,6 +9,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from time import perf_counter
 
 from sqlalchemy import select
 
@@ -31,6 +32,7 @@ from yequ.application.maintenance_plan import MaintenancePlanApplicationService
 from yequ.config import get_settings
 from yequ.logconfig import get_logger
 from yequ.runtime.capability_context import JsonDict
+from yequ.services.session_audit import record_session_audit_event
 from yequ.ycr.budget import (
     estimate_tokens,
     projection_profile_from_settings,
@@ -238,6 +240,10 @@ def _ycr_context_event_data(
     token_accounting = token_accounting_metadata(model=model_name)
     if context_packet is not None:
         context_estimate = _as_object_dict(context_packet.get("context_estimate", {}))
+        provider_context = _as_object_dict(context_packet.get("provider_context", {}))
+        session_state = _as_object_dict(provider_context.get("session_state"))
+        capability_context_payload = _as_object_dict(provider_context.get("capability_context"))
+        capability_candidates = provider_context.get("capability_candidates")
         usage = usage or {}
         completion_payload: dict[str, object] = {
             "assistant_text": assistant_text,
@@ -272,6 +278,15 @@ def _ycr_context_event_data(
                 ),
                 "token_accounting": context_estimate.get("token_accounting")
                 or token_accounting,
+            },
+            "state": {
+                "session_state_counts": _as_object_dict(session_state.get("counts")),
+                "capability_candidate_count": (
+                    len(capability_candidates) if isinstance(capability_candidates, list) else 0
+                ),
+                "capability_context_snapshot": capability_context_payload.get("snapshot") or {},
+                "history_compaction": context_estimate.get("history_compaction") or {},
+                "working_set_count": _optional_int(context_estimate.get("working_set_count")),
             },
             "projections": context_packet.get("projections") or [],
             "ycr": context_packet.get("ycr")
@@ -429,6 +444,7 @@ async def agent_invoke_stream(
     run_graph = AgentRunGraph(runtime)
     trace_id = _make_trace_id()
     agent_run_id: str | None = None
+    agent_plan_id: str | None = None
     visible_prompt = prompt if user_visible_prompt is None else user_visible_prompt
 
     yield _event("stream.open", session_id, trace_id)
@@ -461,6 +477,7 @@ async def agent_invoke_stream(
     # -- Block 1: session validation + timeline (short-lived session) --
     async with async_session_factory() as db:
         from yequ.runtime.agent_run_service import create_agent_run
+        from yequ.runtime.agent_plan_service import create_agent_plan
 
         result = await db.execute(select(Session).where(Session.session_id == session_id))
         session = result.scalar_one_or_none()
@@ -506,6 +523,20 @@ async def agent_invoke_stream(
             },
         )
         agent_run_id = agent_run.run_id
+        agent_plan = await create_agent_plan(
+            db,
+            session_id=session_id,
+            run_id=agent_run.run_id,
+            provider_name=provider.provider_name(),
+            execution_mode=execution_mode,
+            target_node_id=target_node_id,
+            objective=visible_prompt,
+            metadata={"source": "agent.invoke.stream"},
+        )
+        agent_plan_id = agent_plan.plan_id
+        metadata = dict(agent_run.metadata_json or {})
+        metadata["plan_id"] = agent_plan.plan_id
+        agent_run.metadata_json = metadata
         await db.commit()
 
     yield _event(
@@ -528,7 +559,7 @@ async def agent_invoke_stream(
         "agent.run.created",
         session_id,
         trace_id,
-        {"run_id": agent_run_id},
+        {"run_id": agent_run_id, "plan_id": agent_plan_id},
     )
 
     known_functions = {f.name for f in available_functions}
@@ -578,6 +609,13 @@ async def agent_invoke_stream(
                 trace_id,
                 iteration.as_event_data(),
             )
+            await _update_agent_run_checkpoint(
+                agent_run_id,
+                status="building_context",
+                metadata={"current_step": current_step},
+            )
+            agent_plan_projection = await _load_agent_plan_projection(agent_plan_id)
+            ycr_build_started = perf_counter()
             try:
                 context_packet = await get_ycr_client().build_turn(
                     session_id=session_id,
@@ -589,11 +627,47 @@ async def agent_invoke_stream(
                         _function_debug_summary(function) for function in available_functions
                     ],
                     capability_context=capability_context or {},
+                    agent_plan=agent_plan_projection or {},
                     step=current_step,
                 )
+                ycr_build_elapsed_ms = round((perf_counter() - ycr_build_started) * 1000, 3)
                 provider_messages = _agent_messages_from_ycr_packet(context_packet)
                 provider_context = _as_object_dict(context_packet.get("provider_context", {}))
+                record_session_audit_event(
+                    session_id,
+                    "agent.ycr.build_turn.completed",
+                    {
+                        "step": current_step,
+                        "elapsed_ms": ycr_build_elapsed_ms,
+                        "packet_id": context_packet.get("packet_id"),
+                        "context_estimate": context_packet.get("context_estimate", {}),
+                        "projection_count": len(context_packet.get("projections") or []),
+                        "ref_count": len(context_packet.get("refs") or []),
+                        "session_state_counts": _as_object_dict(
+                            _as_object_dict(provider_context.get("session_state")).get("counts")
+                        ),
+                        "capability_candidate_count": len(
+                            provider_context.get("capability_candidates")
+                            if isinstance(provider_context.get("capability_candidates"), list)
+                            else []
+                        ),
+                    },
+                    trace_id=trace_id,
+                    source="agent.ycr",
+                )
             except YcrError as exc:
+                record_session_audit_event(
+                    session_id,
+                    "agent.ycr.build_turn.failed",
+                    {
+                        "step": current_step,
+                        "elapsed_ms": round((perf_counter() - ycr_build_started) * 1000, 3),
+                        "error_code": exc.code,
+                        "message": exc.message,
+                    },
+                    trace_id=trace_id,
+                    source="agent.ycr",
+                )
                 failure = run_graph.provider_failed(exc.message)
                 loop_state = run_graph.loop_state
                 await _update_agent_run_checkpoint(
@@ -602,6 +676,7 @@ async def agent_invoke_stream(
                     error_code=exc.code,
                     error_message=exc.message,
                 )
+                await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
                 yield _event(
                     "agent.failed",
                     session_id,
@@ -622,6 +697,11 @@ async def agent_invoke_stream(
                     "provider_name": provider.provider_name(),
                     "ycr_packet_id": context_packet.get("packet_id"),
                 },
+            )
+            await _update_agent_run_checkpoint(
+                agent_run_id,
+                status="model_running",
+                metadata={"current_step": current_step},
             )
             yield _event(
                 "agent.ycr.context",
@@ -657,6 +737,7 @@ async def agent_invoke_stream(
             provider_tool_calls: list[dict[str, object]] = []
             provider_usage: dict[str, object] = {}
             provider_error: str | None = None
+            provider_started = perf_counter()
             try:
                 async for chunk in provider.invoke_stream(
                     "",
@@ -691,8 +772,23 @@ async def agent_invoke_stream(
             except Exception as e:
                 log.exception("provider stream error: session_id=%s", session_id)
                 provider_error = str(e)[:500]
+            provider_elapsed_ms = round((perf_counter() - provider_started) * 1000, 3)
 
             if provider_error:
+                record_session_audit_event(
+                    session_id,
+                    "agent.provider.failed",
+                    {
+                        "step": current_step,
+                        "elapsed_ms": provider_elapsed_ms,
+                        "provider_name": provider.provider_name(),
+                        "error_message": provider_error,
+                        "tool_call_count": len(provider_tool_calls),
+                        "output_chars": len(assistant_text),
+                    },
+                    trace_id=trace_id,
+                    source="agent.provider",
+                )
                 await _record_agent_run_provider_step(
                     agent_run_id,
                     step_index=current_step * 100,
@@ -709,6 +805,7 @@ async def agent_invoke_stream(
                     error_code="llm_error",
                     error_message=provider_error,
                 )
+                await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
                 failure = run_graph.provider_failed(provider_error)
                 loop_state = run_graph.loop_state
                 yield _event(
@@ -718,6 +815,21 @@ async def agent_invoke_stream(
                     failure.as_event_data(),
                 )
                 break
+
+            record_session_audit_event(
+                session_id,
+                "agent.provider.completed",
+                {
+                    "step": current_step,
+                    "elapsed_ms": provider_elapsed_ms,
+                    "provider_name": provider.provider_name(),
+                    "tool_call_count": len(provider_tool_calls),
+                    "output_chars": len(assistant_text),
+                    "usage": provider_usage,
+                },
+                trace_id=trace_id,
+                source="agent.provider",
+            )
 
             yield _event(
                 "agent.ycr.context",
@@ -752,6 +864,12 @@ async def agent_invoke_stream(
                 tool_calls=executable_calls,
             )
             loop_state = run_graph.loop_state
+            if provider_decision.kind == "continue":
+                await _update_agent_run_checkpoint(
+                    agent_run_id,
+                    status="validating_tools",
+                    metadata={"current_step": current_step},
+                )
 
             if provider_decision.kind == "failure":
                 await _update_agent_run_checkpoint(
@@ -768,6 +886,7 @@ async def agent_invoke_stream(
                         else "Provider output is not executable."
                     ),
                 )
+                await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
                 if provider_decision.failure:
                     yield _event(
                         "agent.failed",
@@ -789,6 +908,7 @@ async def agent_invoke_stream(
                     status="succeeded",
                     final_message=final_message,
                 )
+                await _update_agent_plan_checkpoint(agent_plan_id, status="succeeded")
                 yield _event("agent.synthesizing", session_id, trace_id, {"source": "llm"})
                 break
 
@@ -816,6 +936,7 @@ async def agent_invoke_stream(
             )
             # Use a short-lived session for the preflight + execution block so
             # the DB connection is released before the next LLM round-trip.
+            tool_block_started = perf_counter()
             async with async_session_factory() as exec_block_db:
                 async for ev in execute_tool_calls_scheduled(
                     exec_block_db,
@@ -890,6 +1011,31 @@ async def agent_invoke_stream(
                         ).status
 
             ordered_tool_results = observation_collector.ordered_results()
+            record_session_audit_event(
+                session_id,
+                "agent.tools.completed",
+                {
+                    "step": current_step,
+                    "elapsed_ms": round((perf_counter() - tool_block_started) * 1000, 3),
+                    "requested_tool_count": len(executable_calls),
+                    "observed_tool_count": len(ordered_tool_results),
+                    "waiting_approval": observation_collector.has_waiting_approval,
+                    "waiting_operation": observation_collector.has_waiting_operation,
+                    "statuses": [
+                        {
+                            "call_id": result.get("call_id"),
+                            "name": result.get("name"),
+                            "status": result.get("status"),
+                            "target_node_id": result.get("target_node_id"),
+                            "operation_id": result.get("operation_id"),
+                            "approval_id": result.get("approval_id"),
+                        }
+                        for result in ordered_tool_results
+                    ],
+                },
+                trace_id=trace_id,
+                source="agent.tools",
+            )
             for result_index, tc_result in enumerate(ordered_tool_results, 1):
                 all_tool_results.append(tc_result)
                 history.append(
@@ -914,12 +1060,23 @@ async def agent_invoke_stream(
                         status="waiting_approval",
                         metadata={"waiting": tc_result},
                     )
+                    await _update_agent_plan_checkpoint(
+                        agent_plan_id,
+                        status="waiting_approval",
+                        tool_call_id=str(tc_result.get("call_id") or "") or None,
+                    )
                 if tc_result.get("status") == "waiting_operation":
                     loop_state = run_graph.observe_tool_results([tc_result]).status
                     await _update_agent_run_checkpoint(
                         agent_run_id,
                         status="waiting_operation",
                         metadata={"waiting": tc_result},
+                    )
+                    await _update_agent_plan_checkpoint(
+                        agent_plan_id,
+                        status="waiting_operation",
+                        operation_id=str(tc_result.get("operation_id") or "") or None,
+                        tool_call_id=str(tc_result.get("call_id") or "") or None,
                     )
 
             yield _event(
@@ -952,6 +1109,7 @@ async def agent_invoke_stream(
                 error_code=failure.error_code,
                 error_message=failure.message,
             )
+            await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
             data = failure.as_event_data()
             data["loop_state"] = loop_state
             yield _event(
@@ -993,6 +1151,7 @@ async def agent_invoke_stream(
             error_code="provider_timeout",
             error_message="Provider timed out",
         )
+        await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
         yield _event(
             "agent.failed",
             session_id,
@@ -1007,6 +1166,7 @@ async def agent_invoke_stream(
             error_code="internal_error",
             error_message=str(e)[:500],
         )
+        await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
         yield _event(
             "agent.failed",
             session_id,
@@ -1188,6 +1348,39 @@ async def _update_agent_run_checkpoint(
             error_code=error_code,
             error_message=error_message,
             metadata=metadata,
+        )
+        await db.commit()
+
+
+async def _load_agent_plan_projection(plan_id: str | None) -> dict[str, object] | None:
+    if not plan_id:
+        return None
+    from yequ.db import async_session_factory
+    from yequ.runtime.agent_plan_service import get_agent_plan_projection
+
+    async with async_session_factory() as db:
+        return await get_agent_plan_projection(db, plan_id)
+
+
+async def _update_agent_plan_checkpoint(
+    plan_id: str | None,
+    *,
+    status: str,
+    operation_id: str | None = None,
+    tool_call_id: str | None = None,
+) -> None:
+    if not plan_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.runtime.agent_plan_service import update_agent_plan_status
+
+    async with async_session_factory() as db:
+        await update_agent_plan_status(
+            db,
+            plan_id,
+            status=status,
+            operation_id=operation_id,
+            tool_call_id=tool_call_id,
         )
         await db.commit()
 

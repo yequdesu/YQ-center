@@ -2,7 +2,7 @@
 
 状态：讨论中
 日期：2026-07-05
-关联设计：`docs/proposals/2026-07-04-yequ-context-router-ycr.md`
+关联设计：`docs/archive/proposals/2026-07-04-yequ-context-router-ycr.md`
 
 ## 背景
 

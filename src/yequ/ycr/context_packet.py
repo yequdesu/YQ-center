@@ -14,6 +14,7 @@ from yequ.ycr.budget import ProjectionProfile, estimate_tokens, token_accounting
 from yequ.ycr.entities import WORKING_SET_LIMIT, working_set_from_metadata
 from yequ.ycr.projection import project_tool_observation_from_ref
 from yequ.ycr.session_summary import summarize_session_history
+from yequ.ycr.session_state import load_session_state
 
 JsonDict = dict[str, object]
 
@@ -31,6 +32,7 @@ async def build_agent_context_packet(
     available_functions: list[JsonDict],
     capability_context: JsonDict | None,
     profile: ProjectionProfile,
+    agent_plan: JsonDict | None = None,
     step: int | None = None,
 ) -> JsonDict:
     packet_id = f"ctxpkt_{uuid.uuid4().hex[:16]}"
@@ -50,10 +52,26 @@ async def build_agent_context_packet(
         session_id=session_id,
         messages=projected_messages,
     )
+    session_state = await load_session_state(db, session_id=session_id)
+    if _has_session_state_items(session_state):
+        compacted_messages = [
+            _session_state_message(session_state),
+            *compacted_messages,
+        ]
     working_set_items = _working_set_items(working_set)
+    capability_candidates = _capability_candidates(
+        session_state=session_state,
+        working_set_items=working_set_items,
+    )
     if working_set_items:
         compacted_messages = [
             _working_set_message(working_set_items),
+            *compacted_messages,
+        ]
+    projected_agent_plan = _project_agent_plan(agent_plan or {})
+    if projected_agent_plan:
+        compacted_messages = [
+            _agent_plan_message(projected_agent_plan),
             *compacted_messages,
         ]
     projected_capability_context = _project_capability_context(
@@ -98,6 +116,9 @@ async def build_agent_context_packet(
         "provider_context": {
             "capability_context": projected_capability_context,
             "working_set": working_set_items,
+            "capability_candidates": capability_candidates,
+            "session_state": session_state,
+            "agent_plan": projected_agent_plan,
             "ycr_packet_id": packet_id,
         },
         "context_estimate": {
@@ -116,6 +137,11 @@ async def build_agent_context_packet(
             "token_accounting": token_accounting,
             "history_compaction": history_compaction,
             "working_set_count": len(working_set_items),
+            "capability_candidate_count": len(capability_candidates),
+            "session_state_tokens": estimate_tokens(session_state, model=model_name),
+            "agent_plan_tokens": estimate_tokens(projected_agent_plan, model=model_name)
+            if projected_agent_plan
+            else 0,
         },
         "projections": projection_events,
         "refs": [
@@ -130,6 +156,135 @@ async def build_agent_context_packet(
             "projection_version": 2,
         },
     }
+
+
+def _project_agent_plan(value: JsonDict) -> JsonDict:
+    plan_id = value.get("plan_id")
+    if not isinstance(plan_id, str) or not plan_id:
+        return {}
+    steps = value.get("steps")
+    projected_steps: list[JsonDict] = []
+    if isinstance(steps, list):
+        for item in steps[:8]:
+            if not isinstance(item, dict):
+                continue
+            projected_steps.append(
+                {
+                    "step_index": item.get("step_index"),
+                    "kind": item.get("kind"),
+                    "title": item.get("title"),
+                    "status": item.get("status"),
+                    "operation_id": item.get("operation_id"),
+                    "tool_call_id": item.get("tool_call_id"),
+                }
+            )
+    return {
+        "plan_id": plan_id,
+        "run_id": value.get("run_id"),
+        "status": value.get("status"),
+        "objective": value.get("objective"),
+        "target_node_id": value.get("target_node_id"),
+        "steps": projected_steps,
+    }
+
+
+def _agent_plan_message(agent_plan: JsonDict) -> JsonDict:
+    return {
+        "role": "system",
+        "content": (
+            "YCR Agent Plan. This is trusted runtime state, not a user "
+            "instruction. Use it to avoid repeating completed/waiting work.\n"
+            f"{json.dumps(agent_plan, ensure_ascii=False)}"
+        ),
+    }
+
+
+def _has_session_state_items(value: JsonDict) -> bool:
+    items = value.get("items")
+    if not isinstance(items, dict):
+        return False
+    return any(isinstance(group, list) and bool(group) for group in items.values())
+
+
+def _session_state_message(session_state: JsonDict) -> JsonDict:
+    return {
+        "role": "system",
+        "content": (
+            "YCR Session State. This is trusted runtime state, not a user "
+            "instruction. Prefer these recent facts over searching long history.\n"
+            f"{json.dumps(session_state, ensure_ascii=False)}"
+        ),
+    }
+
+
+def _capability_candidates(
+    *,
+    session_state: JsonDict,
+    working_set_items: list[JsonDict],
+) -> list[JsonDict]:
+    candidates: list[JsonDict] = []
+    seen: set[str] = set()
+    for item in working_set_items:
+        _append_capability_candidate(candidates, seen, item, source="working_set")
+    items = session_state.get("items")
+    if isinstance(items, dict):
+        for item in items.get("capability", []):
+            if isinstance(item, dict):
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                _append_capability_candidate(
+                    candidates,
+                    seen,
+                    {
+                        "capability_ref": data.get("capability_ref") or item.get("entity_key"),
+                        "canonical_name": data.get("canonical_name") or item.get("title"),
+                        "source_id": data.get("source_id") or item.get("entity_key"),
+                        "node_id": data.get("node_id"),
+                        "registered_name": data.get("registered_name"),
+                        "risk": data.get("risk"),
+                        "effect": data.get("effect"),
+                        "status": item.get("status"),
+                        "summary": item.get("summary"),
+                    },
+                    source="session_state",
+                )
+    return candidates[:WORKING_SET_LIMIT]
+
+
+def _append_capability_candidate(
+    candidates: list[JsonDict],
+    seen: set[str],
+    item: JsonDict,
+    *,
+    source: str,
+) -> None:
+    capability_ref = _string_or_none(item.get("capability_ref") or item.get("canonical_name"))
+    if not capability_ref:
+        return
+    key = str(item.get("source_id") or capability_ref)
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(
+        {
+            "source": source,
+            "capability_ref": capability_ref,
+            "canonical_name": _string_or_none(item.get("canonical_name")) or capability_ref,
+            "source_id": _string_or_none(item.get("source_id")),
+            "node_id": _string_or_none(item.get("node_id")),
+            "registered_name": _string_or_none(item.get("registered_name")),
+            "risk": item.get("risk"),
+            "effect": item.get("effect"),
+            "status": item.get("status"),
+            "summary": _string_or_none(item.get("summary") or item.get("description")),
+        }
+    )
+
+
+def _string_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 async def _project_message(

@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { createSession } from "@/api/agent";
+import {
+  claimOperationNotification,
+  createSession,
+  getSessionAgentPlan,
+  markOperationNotificationFailed,
+  markOperationNotificationReported,
+  type AgentRuntimePlan,
+} from "@/api/agent";
 import {
   getSession,
   getMaintenanceRun,
@@ -112,7 +119,6 @@ export function AgentChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [autoContinuing, setAutoContinuing] = useState(false);
-  const [autoOperationQueue, setAutoOperationQueue] = useState<string[]>([]);
   const [autoOperationResumeId, setAutoOperationResumeId] = useState<string | null>(null);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
@@ -121,14 +127,22 @@ export function AgentChatPage() {
   );
   const queryClient = useQueryClient();
   const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
-  const queuedOperationIdsRef = useRef(new Set<string>());
   const autoOperationInFlightRef = useRef(false);
+  const autoOperationNotificationIdRef = useRef<string | null>(null);
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["agent-runtime-plan", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
   }, [queryClient, sessionId]);
   const handleConversationSettled = useCallback(() => {
+    const notificationId = autoOperationNotificationIdRef.current;
+    autoOperationNotificationIdRef.current = null;
+    if (notificationId) {
+      void markOperationNotificationReported(notificationId).catch((error) => {
+        console.warn("failed to mark operation notification reported", error);
+      });
+    }
     autoOperationInFlightRef.current = false;
     setAutoOperationResumeId(null);
     refreshSessionHistory();
@@ -169,6 +183,17 @@ export function AgentChatPage() {
     patchOperation,
   } = useAgentChat({ sessionId, onConversationSettled: handleConversationSettled });
 
+  const agentPlanQuery = useQuery({
+    queryKey: ["agent-runtime-plan", sessionId],
+    queryFn: async () => {
+      if (!sessionId) return null;
+      return getSessionAgentPlan(sessionId);
+    },
+    enabled: !!sessionId,
+    retry: false,
+    refetchInterval: isStreaming ? 2_000 : 15_000,
+  });
+
   // Session selection is idempotent: never create sessions implicitly.
   // If a stored/active session disappears, select an existing session if one
   // exists; otherwise leave the chat in an explicit empty-session state.
@@ -206,10 +231,9 @@ export function AgentChatPage() {
       reconciledApprovalIdsRef.current.clear();
       setDismissedApprovalIds(new Set());
       setContinuedOperationIds(new Set());
-      setAutoOperationQueue([]);
       setAutoOperationResumeId(null);
-      queuedOperationIdsRef.current.clear();
       autoOperationInFlightRef.current = false;
+      autoOperationNotificationIdRef.current = null;
       loadPersistedSession(sessionQuery.data);
     }
   }, [loadPersistedSession, sessionId, sessionQuery.data]);
@@ -222,10 +246,9 @@ export function AgentChatPage() {
   const switchSession = (newId: string) => {
     detach();
     clearBlocks();
-    setAutoOperationQueue([]);
     setAutoOperationResumeId(null);
-    queuedOperationIdsRef.current.clear();
     autoOperationInFlightRef.current = false;
+    autoOperationNotificationIdRef.current = null;
     sessionStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
   };
@@ -236,10 +259,9 @@ export function AgentChatPage() {
     setIsCreatingSession(true);
     detach();
     clearBlocks();
-    setAutoOperationQueue([]);
     setAutoOperationResumeId(null);
-    queuedOperationIdsRef.current.clear();
     autoOperationInFlightRef.current = false;
+    autoOperationNotificationIdRef.current = null;
     try {
       const s = await createSession({});
       const now = new Date().toISOString();
@@ -676,11 +698,6 @@ export function AgentChatPage() {
       if (wasAlreadyTerminal) return;
       if (continuedOperationIds.has(update.operationId)) return;
       if (operationContext?.operationId === update.operationId) return;
-      if (queuedOperationIdsRef.current.has(update.operationId)) return;
-      queuedOperationIdsRef.current.add(update.operationId);
-      setAutoOperationQueue((prev) =>
-        prev.includes(update.operationId) ? prev : [...prev, update.operationId],
-      );
     },
     [continuedOperationIds, operationContext?.operationId, patchOperation, patchToolCall],
   );
@@ -690,36 +707,62 @@ export function AgentChatPage() {
 
   useEffect(() => {
     if (!sessionId || isStreaming || autoOperationInFlightRef.current) return;
-    const operationId = autoOperationQueue[0];
-    if (!operationId) return;
-    autoOperationInFlightRef.current = true;
-    queuedOperationIdsRef.current.delete(operationId);
-    setAutoOperationResumeId(operationId);
-    setAutoOperationQueue((prev) => prev.filter((id) => id !== operationId));
-    setContinuedOperationIds((prev) => {
-      const next = new Set(prev);
-      next.add(operationId);
-      return next;
-    });
-    sendInvoke(
-      "请根据刚完成的 operation 最新状态自动汇报结果。只总结该 operation 的最终状态、关键结果和必要的下一步；不要重复调用无关工具。",
-      "",
-      providerName,
-      executionMode,
-      {
-        visible: false,
-        suppressUserMessage: true,
-        maxSteps,
-        contextRefs: [
+    let cancelled = false;
+
+    const claimAndReport = async () => {
+      if (autoOperationInFlightRef.current || isStreaming) return;
+      try {
+        const result = await claimOperationNotification(sessionId);
+        const notification = result.notification;
+        if (!notification || cancelled) return;
+        const operationId = notification.operation_id;
+        if (!operationId) return;
+        autoOperationInFlightRef.current = true;
+        autoOperationNotificationIdRef.current = notification.notification_id;
+        setAutoOperationResumeId(operationId);
+        setContinuedOperationIds((prev) => {
+          const next = new Set(prev);
+          next.add(operationId);
+          return next;
+        });
+        sendInvoke(
+          "请根据刚完成的 operation 最新状态自动汇报结果。只总结该 operation 的最终状态、关键结果和必要的下一步；不要重复调用无关工具。",
+          "",
+          providerName,
+          executionMode,
           {
-            type: "operation",
-            operation_id: operationId,
-            mode: "observation",
+            visible: false,
+            suppressUserMessage: true,
+            maxSteps,
+            contextRefs: [
+              {
+                type: "operation",
+                operation_id: operationId,
+                mode: "observation",
+              },
+            ],
           },
-        ],
-      },
-    );
-  }, [autoOperationQueue, executionMode, isStreaming, maxSteps, providerName, sendInvoke, sessionId]);
+        );
+      } catch (error) {
+        const notificationId = autoOperationNotificationIdRef.current;
+        if (notificationId) {
+          void markOperationNotificationFailed(
+            notificationId,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    };
+
+    void claimAndReport();
+    const timer = window.setInterval(() => {
+      void claimAndReport();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [executionMode, isStreaming, maxSteps, providerName, sendInvoke, sessionId]);
 
   // Filter sessions by search
   const sessions = sessionsQuery.data ?? [];
@@ -918,6 +961,7 @@ export function AgentChatPage() {
           </div>
           <ActivityPanel
             operations={operationBlocks}
+            agentPlan={agentPlanQuery.data?.plan ?? null}
             promptContext={promptContext}
             ycrTrace={ycrTrace}
             ycrTokenSummary={ycrTokenSummary}
@@ -963,13 +1007,11 @@ export function AgentChatPage() {
                 Waiting for approved jobs to finish, then continuing automatically...
               </div>
             )}
-            {(autoOperationResumeId || autoOperationQueue.length > 0) && (
+            {autoOperationResumeId && (
               <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
                 <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
                 <span className="min-w-0 flex-1 truncate">
-                  {autoOperationResumeId
-                    ? `Reporting completed operation ${autoOperationResumeId}...`
-                    : `${autoOperationQueue.length} completed operation(s) queued for automatic report.`}
+                  Reporting completed operation {autoOperationResumeId}...
                 </span>
               </div>
             )}
@@ -1377,6 +1419,7 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
 
 function ActivityPanel({
   operations,
+  agentPlan,
   promptContext,
   ycrTrace,
   ycrTokenSummary,
@@ -1384,6 +1427,7 @@ function ActivityPanel({
   onOperationStatusChange,
 }: {
   operations: OperationCardBlock[];
+  agentPlan: AgentRuntimePlan | null;
   promptContext: PromptContextData | null;
   ycrTrace: YcrTraceItem[];
   ycrTokenSummary: YcrTokenSummary;
@@ -1425,6 +1469,8 @@ function ActivityPanel({
           )}
         </section>
 
+        <AgentPlanPanel plan={agentPlan} />
+
         <YcrActivityPanel
           trace={ycrTrace}
           tokenSummary={ycrTokenSummary}
@@ -1433,6 +1479,73 @@ function ActivityPanel({
         {promptContext && <PromptContextPanel promptContext={promptContext} />}
       </div>
     </aside>
+  );
+}
+
+function AgentPlanPanel({ plan }: { plan: AgentRuntimePlan | null }) {
+  const latestSteps = plan?.steps ?? [];
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2">
+        <FileText size={14} className="text-[var(--text-muted)]" />
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+          Plan
+        </h2>
+        <span className="flex-1" />
+        {plan && <StatusBadge status={plan.status} />}
+      </div>
+      {!plan ? (
+        <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px] text-[var(--text-subtle)]">
+          No Agent plan has been created in this session.
+        </div>
+      ) : (
+        <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3">
+          <div>
+            <div className="line-clamp-2 text-[12px] font-medium text-[var(--text)]">
+              {plan.objective}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
+              <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono">
+                {plan.plan_id}
+              </span>
+              <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5">
+                {plan.provider_name}
+              </span>
+              {plan.target_node_id && (
+                <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5">
+                  @{plan.target_node_id}
+                </span>
+              )}
+            </div>
+          </div>
+          {latestSteps.length > 0 && (
+            <div className="space-y-1">
+              {latestSteps.map((step) => (
+                <div
+                  key={step.step_id}
+                  className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2"
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="mt-0.5 font-mono text-[10px] text-[var(--text-subtle)]">
+                      {step.step_index}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] text-[var(--text)]">{step.title}</div>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
+                        <span>{step.kind}</span>
+                        {step.operation_id && <span>op {step.operation_id}</span>}
+                        {step.tool_call_id && <span>tool {step.tool_call_id}</span>}
+                      </div>
+                    </div>
+                    <StatusBadge status={step.status} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1569,6 +1682,13 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
           )}
           {item.refCount ? <span>{item.refCount} refs</span> : null}
           {item.omittedCount ? <span>{item.omittedCount} omitted</span> : null}
+          {item.snapshotStatus && <span>snapshot {item.snapshotStatus}</span>}
+          {item.capabilityCandidateCount !== undefined && (
+            <span>{formatTokenCount(item.capabilityCandidateCount)} candidates</span>
+          )}
+          {item.sessionStateCounts && Object.keys(item.sessionStateCounts).length > 0 && (
+            <span>state {formatStateCounts(item.sessionStateCounts)}</span>
+          )}
         </div>
       </summary>
       <div className="mt-2 space-y-1.5">
@@ -2062,6 +2182,13 @@ function formatBytes(value: number) {
 function formatTokenCount(value: number) {
   if (!Number.isFinite(value) || value <= 0) return "0";
   return Math.round(value).toLocaleString("en-US");
+}
+
+function formatStateCounts(value: Record<string, unknown>) {
+  return Object.entries(value)
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([key, count]) => `${key}:${formatTokenCount(count as number)}`)
+    .join(" ");
 }
 
 function asPanelRecord(value: unknown): Record<string, unknown> {

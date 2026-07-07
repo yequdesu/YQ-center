@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.agent_run import AgentRun, AgentRunStep
+from yequ.runtime.agent_status import TERMINAL_AGENT_RUN_STATUSES
 
 RESUMABLE_AGENT_RUN_STATUSES = {"waiting_operation", "waiting_approval", "failed"}
 
@@ -86,6 +87,10 @@ async def update_agent_run_status(
     error_message: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AgentRun:
+    if run.status in TERMINAL_AGENT_RUN_STATUSES and status != run.status:
+        raise ValueError(
+            f"AgentRun {run.run_id!r} is terminal ({run.status}) and cannot transition to {status!r}"
+        )
     run.status = status
     if final_message is not None:
         run.final_message = final_message
@@ -97,7 +102,7 @@ async def update_agent_run_status(
         merged = dict(run.metadata_json or {})
         merged.update(metadata)
         run.metadata_json = merged
-    if status in {"succeeded", "failed", "cancelled"}:
+    if status in TERMINAL_AGENT_RUN_STATUSES:
         run.completed_at = run.completed_at or datetime.now(UTC)
     await db.flush()
     return run

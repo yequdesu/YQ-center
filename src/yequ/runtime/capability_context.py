@@ -7,15 +7,22 @@ generation, SSE diagnostics, and future transcript/run projection.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from yequ.config import get_settings
+from yequ.models.capability import Capability
+from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 from yequ.models.node import Node
+from yequ.models.runtime_instance import RuntimeInstance
+from yequ.models.ycr import YcrCapabilityContextSnapshot
 from yequ.services.node_liveness_service import is_node_schedulable
 
 JsonDict = dict[str, Any]
@@ -34,6 +41,42 @@ async def build_capability_context(
 ) -> JsonDict:
     """Build the structured node/capability context for one Agent turn."""
 
+    function_fingerprint = _function_fingerprint(available_functions)
+    registry_fingerprint = await _registry_fingerprint(db)
+    snapshot_key = _snapshot_key(
+        target_node_id=target_node_id,
+        function_fingerprint=function_fingerprint,
+    )
+    cached = await _load_snapshot(
+        db,
+        snapshot_key=snapshot_key,
+        registry_fingerprint=registry_fingerprint,
+    )
+    if cached is not None:
+        return cached
+
+    context = await _build_capability_context_uncached(
+        db,
+        available_functions=available_functions,
+        target_node_id=target_node_id,
+    )
+    await _store_snapshot(
+        db,
+        snapshot_key=snapshot_key,
+        target_node_id=target_node_id,
+        function_fingerprint=function_fingerprint,
+        registry_fingerprint=registry_fingerprint,
+        context=context,
+    )
+    return context
+
+
+async def _build_capability_context_uncached(
+    db: AsyncSession,
+    *,
+    available_functions: list[ContextFunction],
+    target_node_id: str | None,
+) -> JsonDict:
     routing_mode = "pinned" if target_node_id else "auto"
     source_nodes_by_name: dict[str, set[str]] = defaultdict(set)
     for func in available_functions:
@@ -93,7 +136,131 @@ async def build_capability_context(
         "nodes": nodes,
         "tool_count_by_node": tool_count_by_node,
         "same_name_capabilities": same_name_sources,
+        "snapshot": {"status": "miss"},
     }
+
+
+async def _load_snapshot(
+    db: AsyncSession,
+    *,
+    snapshot_key: str,
+    registry_fingerprint: str,
+) -> JsonDict | None:
+    result = await db.execute(
+        select(YcrCapabilityContextSnapshot).where(
+            YcrCapabilityContextSnapshot.snapshot_key == snapshot_key
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None or record.registry_fingerprint != registry_fingerprint:
+        return None
+    record.hit_count += 1
+    record.last_used_at = datetime.now(UTC)
+    context = _jsonable_dict(record.context_json)
+    context["snapshot"] = {
+        "status": "hit",
+        "snapshot_key": record.snapshot_key,
+        "registry_fingerprint": record.registry_fingerprint,
+        "hit_count": record.hit_count,
+    }
+    await db.flush()
+    return context
+
+
+async def _store_snapshot(
+    db: AsyncSession,
+    *,
+    snapshot_key: str,
+    target_node_id: str | None,
+    function_fingerprint: str,
+    registry_fingerprint: str,
+    context: JsonDict,
+) -> None:
+    result = await db.execute(
+        select(YcrCapabilityContextSnapshot).where(
+            YcrCapabilityContextSnapshot.snapshot_key == snapshot_key
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        record = YcrCapabilityContextSnapshot(snapshot_key=snapshot_key)
+        db.add(record)
+    clean_context = _jsonable_dict({k: v for k, v in context.items() if k != "snapshot"})
+    record.target_node_id = target_node_id
+    record.function_fingerprint = function_fingerprint
+    record.registry_fingerprint = registry_fingerprint
+    record.context_json = clean_context
+    record.hit_count = 0
+    record.last_used_at = datetime.now(UTC)
+    context["snapshot"] = {
+        "status": "miss",
+        "snapshot_key": snapshot_key,
+        "registry_fingerprint": registry_fingerprint,
+    }
+    await db.flush()
+
+
+async def _registry_fingerprint(db: AsyncSession) -> str:
+    rows: list[tuple[str, object, object]] = []
+    for label, model in [
+        ("nodes", Node),
+        ("capabilities", Capability),
+        ("capability_definitions", CapabilityDefinition),
+        ("capability_sources", CapabilitySource),
+        ("runtime_instances", RuntimeInstance),
+    ]:
+        result = await db.execute(
+            select(
+                func.count(),
+                func.max(model.updated_at),
+                func.max(getattr(model, "last_heartbeat_at", model.updated_at)),
+            )
+        )
+        row = result.one()
+        rows.append((label, row[0], _fingerprint_value(row[1])))
+        rows.append((f"{label}:liveness", "", _fingerprint_value(row[2])))
+    return _hash_object(rows)
+
+
+def _function_fingerprint(available_functions: list[ContextFunction]) -> str:
+    return _hash_object(
+        [
+            {
+                "name": function.name,
+                "source_nodes": sorted(str(node_id) for node_id in function.source_nodes),
+            }
+            for function in sorted(available_functions, key=lambda item: item.name)
+        ]
+    )
+
+
+def _snapshot_key(*, target_node_id: str | None, function_fingerprint: str) -> str:
+    return _hash_object(
+        {
+            "kind": "capability_context_snapshot",
+            "target_node_id": target_node_id,
+            "function_fingerprint": function_fingerprint,
+        }
+    )
+
+
+def _hash_object(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _jsonable_dict(value: JsonDict) -> JsonDict:
+    encoded = json.dumps(value, ensure_ascii=False, default=str)
+    decoded = json.loads(encoded)
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def render_capability_context_prompt(

@@ -9,10 +9,14 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
+async def test_agent_stream_persists_turn_and_events(client: AsyncClient, db_session):
+    from sqlalchemy import select
+
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult
     from yequ.api.routes.agent import register_provider
+    from yequ.models.agent_plan import AgentPlan
+    from yequ.models.agent_run import AgentRun
 
     provider = FakeAgentProvider("turn-events-test")
     provider.set_sequence(
@@ -75,6 +79,29 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
     assert persisted_types[-1] == "stream.close"
     assert [event["seq"] for event in persisted] == list(range(1, len(persisted) + 1))
 
+    run_result = await db_session.execute(select(AgentRun).where(AgentRun.session_id == session_id))
+    run = run_result.scalar_one()
+    assert run.turn_id == turn_id
+    assert run.status == "succeeded"
+    plan_result = await db_session.execute(select(AgentPlan).where(AgentPlan.run_id == run.run_id))
+    plan = plan_result.scalar_one()
+    assert plan.turn_id == turn_id
+    assert plan.status == "succeeded"
+    assert plan.objective == "check the machine"
+    plan_resp = await client.get(f"/agent/sessions/{session_id}/plan")
+    assert plan_resp.status_code == 200
+    plan_projection = plan_resp.json()["plan"]
+    assert plan_projection["plan_id"] == plan.plan_id
+    assert plan_projection["status"] == "succeeded"
+    assert plan_projection["steps"][0]["status"] == "succeeded"
+    assert provider.last_messages is not None
+    assert any(
+        message.role == "system"
+        and message.content
+        and "YCR Agent Plan" in message.content
+        for message in provider.last_messages
+    )
+
 
 @pytest.mark.asyncio
 async def test_agent_session_audit_log_persists_lifecycle_events(
@@ -130,6 +157,8 @@ async def test_agent_session_audit_log_persists_lifecycle_events(
     assert event_types[0] == "session.created"
     assert "agent.invoke.request_received" in event_types
     assert "agent.invoke.context_loaded" in event_types
+    assert "agent.ycr.build_turn.completed" in event_types
+    assert "agent.provider.completed" in event_types
     assert "agent.turn.created" in event_types
     assert "stream.open" in event_types
     assert "agent.prompt.received" in event_types
@@ -140,6 +169,111 @@ async def test_agent_session_audit_log_persists_lifecycle_events(
     assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
     assert all(event.get("recorded_at") for event in events)
     assert all(event.get("event_time") for event in events)
+    context_loaded = next(
+        event for event in events if event["event_type"] == "agent.invoke.context_loaded"
+    )
+    assert context_loaded["payload"]["elapsed_ms"] >= 0
+    assert context_loaded["payload"]["spans"]["capability_context_ms"] >= 0
+    ycr_span = next(
+        event for event in events if event["event_type"] == "agent.ycr.build_turn.completed"
+    )
+    assert ycr_span["payload"]["elapsed_ms"] >= 0
+    assert "context_estimate" in ycr_span["payload"]
+    provider_span = next(
+        event for event in events if event["event_type"] == "agent.provider.completed"
+    )
+    assert provider_span["payload"]["elapsed_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_stream_close_fails_open_turn(db_session):
+    from sqlalchemy import select
+
+    from yequ.models.agent_turn import AgentTurn
+    from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
+
+    turn_id = await create_agent_turn(
+        session_id="sess_turn_close",
+        prompt="internal report",
+        provider_name="fake",
+        target_node_id=None,
+        execution_mode="auto",
+        trace_id="tr_turn_close",
+        metadata={"suppress_user_message": True},
+    )
+    await record_agent_turn_event(
+        turn_id,
+        {
+            "event_id": "evt_turn_close_prompt_context",
+            "event_type": "agent.prompt_context",
+            "session_id": "sess_turn_close",
+            "trace_id": "tr_turn_close",
+            "data": {},
+        },
+    )
+    await record_agent_turn_event(
+        turn_id,
+        {
+            "event_id": "evt_turn_close_stream_close",
+            "event_type": "stream.close",
+            "session_id": "sess_turn_close",
+            "trace_id": "tr_turn_close",
+            "data": {},
+        },
+    )
+
+    result = await db_session.execute(select(AgentTurn).where(AgentTurn.turn_id == turn_id))
+    turn = result.scalar_one()
+    assert turn.status == "failed"
+    assert turn.error_code == "stream_closed_before_terminal"
+    assert turn.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_create_internal_turn_closes_stale_internal_turn(db_session):
+    from sqlalchemy import select
+
+    from yequ.models.agent_turn import AgentTurn
+    from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
+
+    first_turn_id = await create_agent_turn(
+        session_id="sess_internal_replace",
+        prompt="first internal report",
+        provider_name="fake",
+        target_node_id=None,
+        execution_mode="auto",
+        trace_id="tr_internal_first",
+        metadata={"suppress_user_message": True},
+    )
+    await record_agent_turn_event(
+        first_turn_id,
+        {
+            "event_id": "evt_internal_first_context",
+            "event_type": "agent.prompt_context",
+            "session_id": "sess_internal_replace",
+            "trace_id": "tr_internal_first",
+            "data": {},
+        },
+    )
+
+    second_turn_id = await create_agent_turn(
+        session_id="sess_internal_replace",
+        prompt="second internal report",
+        provider_name="fake",
+        target_node_id=None,
+        execution_mode="auto",
+        trace_id="tr_internal_second",
+        metadata={"suppress_user_message": True},
+    )
+
+    result = await db_session.execute(
+        select(AgentTurn).where(AgentTurn.turn_id.in_([first_turn_id, second_turn_id]))
+    )
+    turns = {turn.turn_id: turn for turn in result.scalars().all()}
+    assert turns[first_turn_id].status == "failed"
+    assert turns[first_turn_id].error_code == "internal_turn_replaced"
+    assert turns[first_turn_id].metadata_["replaced_by_turn_id"] == second_turn_id
+    assert turns[second_turn_id].status == "created"
 
 
 @pytest.mark.asyncio
@@ -186,6 +320,7 @@ async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient,
                     available_functions=list(payload.get("available_functions") or []),
                     capability_context=dict(payload.get("capability_context") or {}),
                     profile=projection_profile_from_settings(get_settings()),
+                    agent_plan=dict(payload.get("agent_plan") or {}),
                     step=int(payload.get("step") or 1),
                 )
 

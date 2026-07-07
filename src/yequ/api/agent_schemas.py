@@ -119,3 +119,11 @@ class ResumeLastAgentRunRequest(BaseModel):
         ge=1,
         le=3600,
     )
+
+
+class MarkOperationNotificationReportedRequest(BaseModel):
+    turn_id: str | None = Field(default=None)
+
+
+class MarkOperationNotificationFailedRequest(BaseModel):
+    error: str = Field(..., min_length=1, max_length=1000)

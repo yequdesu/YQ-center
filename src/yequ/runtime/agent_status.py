@@ -3,6 +3,29 @@
 from __future__ import annotations
 
 TERMINAL_AGENT_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
+PAUSED_AGENT_RUN_STATUSES = {"waiting_approval", "waiting_operation"}
+OPEN_AGENT_RUN_STATUSES = {
+    "created",
+    "building_context",
+    "model_running",
+    "validating_tools",
+    "preflighting",
+    "executing_tools",
+    "observing",
+    "synthesizing",
+}
+
+
+def is_terminal_agent_status(status: str | None) -> bool:
+    return bool(status) and status in TERMINAL_AGENT_RUN_STATUSES
+
+
+def is_paused_agent_status(status: str | None) -> bool:
+    return bool(status) and status in PAUSED_AGENT_RUN_STATUSES
+
+
+def is_open_agent_status(status: str | None) -> bool:
+    return bool(status) and status in OPEN_AGENT_RUN_STATUSES
 
 
 def status_for_stream_event(event_type: str, error_code: str | None = None) -> str | None:

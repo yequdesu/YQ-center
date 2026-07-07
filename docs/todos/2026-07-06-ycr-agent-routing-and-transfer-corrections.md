@@ -13,9 +13,10 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 职责边界：
 
 - YCR raw ContextRef、provider-visible projection、Result RAG、YCR API 和启动/部署
-  归属 `2026-07-06-ycr-clean-rebuild-and-docs-plan.md`。
+  的当前事实归属 `../ycr-current-state.md`；原清理重建计划已归档。
 - Center meta tools 与 Node capabilities 统一入 registry、Agent bootstrap tools
-  收窄和 `capability.invoke` 归属 `2026-07-06-unified-capability-registry-plan.md`。
+  收窄和 `capability.invoke` 已完成，当前事实归属 `../ycr-current-state.md` 和
+  `../current-project-overview.md`；原 unified registry 计划已归档。
 - Provider registry、模型发现和 provider 错误展示归属
   `2026-06-29-agent-provider-system.md`。
 

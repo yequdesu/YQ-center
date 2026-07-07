@@ -7,6 +7,7 @@ import pytest
 from yequ.api.routes.agent import _available_functions
 from yequ.models.capability import Capability
 from yequ.models.node import Node
+from yequ.models.ycr import YcrCapabilityContextSnapshot
 from yequ.runtime.capability_context import (
     build_capability_context,
     render_capability_context_prompt,
@@ -92,6 +93,79 @@ async def test_pinned_capability_context_excludes_other_nodes(db_session):
     assert "Current pinned node: linux-node-01" in prompt
     assert "Node: winClient" not in prompt
     assert "Registered capability count: 1" in prompt
+
+
+@pytest.mark.asyncio
+async def test_capability_context_uses_versioned_snapshot(db_session):
+    from sqlalchemy import select
+
+    await _add_node_capability(
+        db_session,
+        node_id="winClient",
+        platform_os="windows",
+        capability_name="system.info",
+        description="Read Windows system information.",
+    )
+    await db_session.commit()
+
+    functions = await _available_functions(db_session)
+    first = await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+    await db_session.commit()
+    second = await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+    await db_session.commit()
+
+    assert first["snapshot"]["status"] == "miss"
+    assert second["snapshot"]["status"] == "hit"
+    snapshot = (
+        await db_session.execute(select(YcrCapabilityContextSnapshot))
+    ).scalar_one()
+    assert snapshot.hit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_capability_context_snapshot_invalidates_when_registry_changes(db_session):
+    await _add_node_capability(
+        db_session,
+        node_id="winClient",
+        platform_os="windows",
+        capability_name="system.info",
+        description="Read Windows system information.",
+    )
+    await db_session.commit()
+
+    functions = await _available_functions(db_session)
+    await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+    await db_session.commit()
+    await _add_node_capability(
+        db_session,
+        node_id="linux-node-01",
+        platform_os="linux",
+        capability_name="linux.system.info",
+        description="Read Linux system information.",
+    )
+    await db_session.commit()
+
+    updated = await build_capability_context(
+        db_session,
+        available_functions=functions,
+        target_node_id=None,
+    )
+
+    assert updated["snapshot"]["status"] == "miss"
+    nodes = {node["node_id"]: node for node in updated["nodes"]}
+    assert set(nodes) == {"winClient", "linux-node-01"}
 
 
 async def _add_node_capability(

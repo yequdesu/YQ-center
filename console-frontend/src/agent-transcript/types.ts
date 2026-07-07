@@ -179,6 +179,10 @@ export interface YcrTraceItem {
   omittedCount?: number;
   registryMatches?: Array<Record<string, unknown>>;
   retrieval?: Record<string, unknown>;
+  ycrState?: Record<string, unknown>;
+  snapshotStatus?: string;
+  capabilityCandidateCount?: number;
+  sessionStateCounts?: Record<string, unknown>;
   data?: Record<string, unknown>;
 }
 

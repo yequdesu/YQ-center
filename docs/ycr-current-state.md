@@ -7,13 +7,13 @@
 
 ## 1. 当前结论
 
-YCR 已经进入 Agent 主链路，定位是 **provider 前置上下文边界**，不是 Center 调度器，也不是 Node 运行时。当前链路为：
+YCR 已经进入 Agent 主链路，定位是 **provider 前置上下文边界 + session context state**，不是 Center 调度器，也不是 Node 运行时。当前链路为：
 
 ```text
 Agent Runtime
   -> YcrClient HTTP
   -> YCR service
-  -> raw ContextRef / build-turn / Tool RAG / Result RAG
+  -> raw ContextRef / Session State / build-turn / Tool RAG / Result RAG
   -> provider-visible projected messages
   -> LLM Provider
 ```
@@ -22,7 +22,8 @@ Agent Runtime
 
 1. Tool raw result 只进入 YCR raw ContextRef，不直接进入 provider history。
 2. Agent history 中只保存 `tool_observation_shell`，provider 调用前由 `build-turn` 统一展开成 projected observation。
-3. YCR 不再按字段名、业务语义或 depth 做投影；只按 size-based `$ycr_ref` 规则保留 bounded preview。
+3. YCR 从 typed metadata 和 typed result shape 维护 session working set，build-turn 会把当前 capability/artifact/operation/node facts 注入 provider context。
+4. YCR 不再按字段名、业务语义或 depth 做投影；只按 size-based `$ycr_ref` 规则保留 bounded preview。
 
 ## 2. 运行构件
 
@@ -60,12 +61,22 @@ Agent Runtime
 | `YEQU_YCR_PROJECTION_PREVIEW_CHARS` | `$ycr_ref` preview 字符数。 |
 | `YEQU_YCR_MAX_RAW_REF_BYTES` | 单个 raw ref 最大写入大小。 |
 
+## 2.1 Snapshot 与热路径
+
+Agent invoke 热路径中的 capability context 已接入版本化 snapshot：
+
+1. `build_capability_context()` 先计算 registry fingerprint，来源包括 Node、legacy Capability 和 RuntimeInstance 的 count/max timestamp/liveness 摘要，以及 provider bootstrap tool schema fingerprint。
+2. registry fingerprint 与 target node、bootstrap tool fingerprint 共同决定 `YcrCapabilityContextSnapshot`。
+3. 首次 miss 时构建完整 capability context；后续 hit 时直接读取 snapshot JSON，不再 joinedload 全量 Node 关系。
+4. 节点注册、能力变化、runtime/liveness 更新时间变化都会使 fingerprint 改变，从而自动失效旧 snapshot。
+5. `agent.invoke.context_loaded` 审计事件会记录 `capability_context_snapshot.status`，用于定位首包慢是否来自 context 构建。
+
 ## 3. YCR HTTP API
 
 | 接口 | 行为 |
 |---|---|
 | `GET /healthz` | 无鉴权健康检查。 |
-| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、RAG cache、scheduler 状态、capability index 队列统计、投影配置和能力列表。 |
+| `GET /v1/context/status` | 返回 YCR 模式、向量后端、embedding/rerank 模型、RAG cache、scheduler 状态、capability index 队列统计、session state 统计、投影配置和能力列表；可带 `session_id` 查看指定 session。 |
 | `POST /v1/context/refs` | 写入 raw ContextRef，提交后异步索引 ref chunks。 |
 | `POST /v1/tool-observations` | 保存 tool raw result，返回 `raw_ref` 和 provider history 可保存的 shell。 |
 | `POST /v1/context/build-turn` | 将 Agent history 中的 shell 统一转换为 provider-visible projected messages。 |
@@ -87,8 +98,11 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 
 每轮 provider 调用前，Agent 调用 YCR `build-turn`。YCR 返回：
 
-- `provider_context.messages`：provider 实际接收的 messages；
+- `messages`：provider 实际接收的 messages；
 - `provider_context.capability_context`：provider 可见的上下文；
+- `provider_context.session_state`：当前 session 的 capability/artifact/operation/node working set；
+- `provider_context.capability_candidates`：从 session state 与本轮 working set 生成的轻量候选能力，不触发 embedding/rerank；
+- `provider_context.agent_plan`：当前 AgentPlan 摘要；
 - `context_estimate`：输入 token、tool schema、message、capability context 和 refs 的估算；
 - `projections`：每个 shell 转成 provider observation 的投影记录；
 - `refs`：本轮引用到的 ContextRef。
@@ -100,8 +114,13 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 1. YCR 写入 raw ContextRef；
 2. YCR 返回 `tool_observation_shell`；
 3. Agent history 只保存 shell；
-4. YCR 异步索引 raw ref chunks；
-5. 下一轮 `build-turn` 根据 shell 读取 raw ref 并生成 projected observation。
+4. YCR 从 `ycr_entities`、`artifacts`、`operation`、`nodes` 等 typed shape 更新 `YcrSessionState`；
+5. YCR 异步索引 raw ref chunks；
+6. 下一轮 `build-turn` 根据 shell 读取 raw ref 并生成 projected observation，同时注入 session state。
+
+Operation 事件也会更新 `YcrSessionState`。`OperationService.append_event()` 在写入
+`OperationEvent` 时同步维护 operation working set；终态 operation 还会进入
+`agent_operation_notifications` 队列，供 Agent 空闲时自动汇报。
 
 ## 5. 投影规则
 
@@ -197,11 +216,21 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 9. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
 10. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
 
+Tool RAG 的职责是 candidate loader，不是流程规划器。当前实现分两层：
+
+1. 每轮 build-turn 从 `YcrSessionState` 和本轮 projected working set 注入 `provider_context.capability_candidates`，该路径不调用 embedding/rerank。
+2. 当候选不足或用户任务超出当前 working set 时，Agent 仍可调用 `capability.search` 进入语义检索路径。
+
 `capability.search` / `capability.describe` 的结果会由 capability gateway 直接附带
 `ycr_entities.capabilities` typed metadata。`/v1/tool-observations` 存 raw ContextRef
 时把该 metadata 移入 `YcrContextRef.metadata_json`，并从 raw result 中移除
-`ycr_entities`。build-turn 的 session working set 只读取 ref metadata，不再解析
+`ycr_entities`。build-turn 当前只基于 ref metadata 构造 capability working set，不再解析
 `matches`、`capability`、`sources` 等 result shape。
+
+YCR Session State 当前已持久维护 capability、artifact、operation 和 node working set。
+它仍不是业务 workflow：它只保存当前 session 的 typed facts，帮助 provider 避免从长历史里恢复状态。
+剩余缺口是 task working set、Plan 面板与通用 AgentPlan 的绑定，以及更完整的前端 runtime state 聚合展示，
+归属 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md`。
 
 当前 provider 默认只直接看到 `capability.search`、`capability.describe`、
 `capability.invoke` 三个 bootstrap protocol tools。Center meta tools 与 Node runtime
@@ -210,8 +239,8 @@ capability 都统一注册到 capability registry：`node.*`、`context.*`、`ar
 `scope=node` capability。Agent 通过 search/describe/invoke 发现并调用能力，调用仍经
 Center runtime、policy、operation/job dispatch 路径执行。
 
-Unified registry 的完整收敛已由
-`docs/todos/2026-07-06-unified-capability-registry-plan.md` 完成；后续只在行为修正文档中
+Unified registry 的完整收敛已经完成；历史实施计划已归档到
+`docs/archive/todos/2026-07-06-unified-capability-registry-plan.md`。后续只在行为修正文档中
 继续跟踪具体质量问题。
 
 ## 6.1 YCR Model Scheduler

@@ -1,6 +1,7 @@
 """YeQu Center database models."""
 
 from yequ.models.agent_message import AgentMessage
+from yequ.models.agent_plan import AgentPlan, AgentPlanStep
 from yequ.models.agent_run import AgentRun, AgentRunStep
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.models.api_token import ApiToken
@@ -19,7 +20,7 @@ from yequ.models.maintenance_plan import (
     RollbackHint,
 )
 from yequ.models.node import Node
-from yequ.models.operation import Operation, OperationEvent
+from yequ.models.operation import AgentOperationNotification, Operation, OperationEvent
 from yequ.models.resource_lock import ResourceLock
 from yequ.models.runtime_instance import RuntimeInstance
 from yequ.models.session import Session
@@ -28,15 +29,19 @@ from yequ.models.transfer import TransferAttempt, TransferPreflight, TransferSes
 from yequ.models.ycr import (
     YcrCapabilityIndex,
     YcrCapabilityIndexJob,
+    YcrCapabilityContextSnapshot,
     YcrContextChunk,
     YcrContextLedger,
     YcrContextRef,
     YcrRetrievalCandidateCache,
+    YcrSessionState,
 )
 from yequ.models.yqp_message import YqpMessage
 
 __all__ = [
     "AgentMessage",
+    "AgentPlan",
+    "AgentPlanStep",
     "AgentRun",
     "AgentRunStep",
     "AgentTurn",
@@ -59,6 +64,7 @@ __all__ = [
     "Node",
     "Operation",
     "OperationEvent",
+    "AgentOperationNotification",
     "ResourceLock",
     "RollbackHint",
     "RuntimeInstance",
@@ -74,6 +80,8 @@ __all__ = [
     "YcrContextRef",
     "YcrCapabilityIndex",
     "YcrCapabilityIndexJob",
+    "YcrCapabilityContextSnapshot",
     "YcrRetrievalCandidateCache",
+    "YcrSessionState",
     "generate_uuid",
 ]

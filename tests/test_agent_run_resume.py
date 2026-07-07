@@ -91,3 +91,34 @@ async def test_resume_last_run_stream_injects_agent_run_checkpoint(
     assert "AgentRun checkpoint" in user_messages[-1]
     assert "Request timed out." in user_messages[-1]
 
+
+@pytest.mark.asyncio
+async def test_agent_run_terminal_status_is_immutable(db_session: AsyncSession) -> None:
+    run = await create_agent_run(
+        db_session,
+        session_id="sess_terminal_immutable",
+        provider_name="fake-terminal",
+        execution_mode="auto",
+        target_node_id=None,
+        user_message="finish",
+        trace_id="tr_terminal",
+        metadata={"source": "test"},
+    )
+    await update_agent_run_status(
+        db_session,
+        run,
+        status="succeeded",
+        final_message="done",
+    )
+
+    with pytest.raises(ValueError, match="is terminal"):
+        await update_agent_run_status(
+            db_session,
+            run,
+            status="waiting_operation",
+            metadata={"waiting": {"operation_id": "op_late"}},
+        )
+
+    assert run.status == "succeeded"
+    assert run.final_message == "done"
+

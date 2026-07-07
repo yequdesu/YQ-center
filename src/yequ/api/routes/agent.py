@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, status
@@ -34,6 +35,8 @@ from yequ.api.agent_schemas import (
     AgentPlanRequest,
     CreateSessionRequest,
     InvokeAgentRequest,
+    MarkOperationNotificationFailedRequest,
+    MarkOperationNotificationReportedRequest,
     ResumeAgentRunRequest,
     ResumeLastAgentRunRequest,
     ResumeOperationRequest,
@@ -133,6 +136,19 @@ async def create_session_endpoint(
     )
 
 
+@router.get("/sessions/{session_id}/plan")
+async def get_session_agent_plan_endpoint(
+    session_id: str,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    """Return the latest generic Agent Runtime plan for a session."""
+    from yequ.runtime.agent_plan_service import get_latest_agent_plan_for_session
+
+    async with yequ_db.async_session_factory() as db:
+        plan = await get_latest_agent_plan_for_session(db, session_id=session_id)
+    return {"plan": plan}
+
+
 @router.post("/invoke/stream")
 async def invoke_agent_stream_endpoint(
     body: InvokeAgentRequest,
@@ -163,7 +179,9 @@ async def invoke_agent_stream_endpoint(
         {"provider_name": provider.provider_name()},
         source="api.agent",
     )
+    context_load_started = perf_counter()
     async with yequ_db.async_session_factory() as db:
+        refs_started = perf_counter()
         context_blocks = await _load_agent_context_refs(
             db,
             session_id=body.session_id,
@@ -172,21 +190,39 @@ async def invoke_agent_stream_endpoint(
             execution_mode=body.execution_mode,
             context_refs=body.context_refs,
         )
+        refs_elapsed_ms = round((perf_counter() - refs_started) * 1000, 3)
+        functions_started = perf_counter()
         available = await _available_functions(db, target_node_id=body.target_node_id)
+        functions_elapsed_ms = round((perf_counter() - functions_started) * 1000, 3)
+        capability_context_started = perf_counter()
         capability_context = await build_capability_context(
             db,
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+        capability_context_elapsed_ms = round(
+            (perf_counter() - capability_context_started) * 1000,
+            3,
+        )
+    context_load_elapsed_ms = round((perf_counter() - context_load_started) * 1000, 3)
     record_session_audit_event(
         body.session_id,
         "agent.invoke.context_loaded",
         {
             "context_block_count": len(context_blocks),
             "available_function_count": len(available),
+            "elapsed_ms": context_load_elapsed_ms,
+            "spans": {
+                "context_refs_load_ms": refs_elapsed_ms,
+                "available_functions_ms": functions_elapsed_ms,
+                "capability_context_ms": capability_context_elapsed_ms,
+            },
             "capability_context_nodes": capability_context.get("nodes", [])
             if isinstance(capability_context, dict)
             else [],
+            "capability_context_snapshot": capability_context.get("snapshot", {})
+            if isinstance(capability_context, dict)
+            else {},
         },
         source="api.agent",
     )
@@ -247,6 +283,77 @@ async def invoke_agent_stream_endpoint(
             },
         },
     )
+
+
+@router.get("/sessions/{session_id}/operation-notifications")
+async def list_operation_notifications_endpoint(
+    session_id: str,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    from yequ.services.agent_operation_notifications import (
+        AgentOperationNotificationService,
+    )
+
+    async with yequ_db.async_session_factory() as db:
+        notifications = await AgentOperationNotificationService(db).list_pending(
+            session_id=session_id
+        )
+    return {"notifications": notifications}
+
+
+@router.post("/sessions/{session_id}/operation-notifications/claim")
+async def claim_operation_notification_endpoint(
+    session_id: str,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    from yequ.services.agent_operation_notifications import (
+        AgentOperationNotificationService,
+    )
+
+    async with yequ_db.async_session_factory() as db:
+        notification = await AgentOperationNotificationService(db).claim_next(
+            session_id=session_id
+        )
+        await db.commit()
+    return {"notification": notification}
+
+
+@router.post("/operation-notifications/{notification_id}/reported")
+async def mark_operation_notification_reported_endpoint(
+    notification_id: str,
+    body: MarkOperationNotificationReportedRequest,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    from yequ.services.agent_operation_notifications import (
+        AgentOperationNotificationService,
+    )
+
+    async with yequ_db.async_session_factory() as db:
+        notification = await AgentOperationNotificationService(db).mark_reported(
+            notification_id=notification_id,
+            turn_id=body.turn_id,
+        )
+        await db.commit()
+    return {"notification": notification}
+
+
+@router.post("/operation-notifications/{notification_id}/failed")
+async def mark_operation_notification_failed_endpoint(
+    notification_id: str,
+    body: MarkOperationNotificationFailedRequest,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    from yequ.services.agent_operation_notifications import (
+        AgentOperationNotificationService,
+    )
+
+    async with yequ_db.async_session_factory() as db:
+        notification = await AgentOperationNotificationService(db).mark_failed(
+            notification_id=notification_id,
+            error=body.error,
+        )
+        await db.commit()
+    return {"notification": notification}
 
 
 @router.post("/resume-operation/stream")

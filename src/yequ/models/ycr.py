@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -177,3 +177,51 @@ class YcrRetrievalCandidateCache(Base, TimestampMixin):
     result_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class YcrSessionState(Base, TimestampMixin):
+    """Typed session-local working set item maintained by YCR."""
+
+    __tablename__ = "ycr_session_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "entity_type",
+            "entity_key",
+            name="uq_ycr_session_state_session_entity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    session_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    entity_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    status: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    trust_level: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="node_reported_fact",
+    )
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    data_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class YcrCapabilityContextSnapshot(Base, TimestampMixin):
+    """Versioned Agent capability context snapshot for hot-path context loading."""
+
+    __tablename__ = "ycr_capability_context_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    snapshot_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    target_node_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    function_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    registry_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

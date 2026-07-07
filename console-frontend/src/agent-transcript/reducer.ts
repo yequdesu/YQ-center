@@ -585,6 +585,9 @@ function appendYcrContextTrace(
 ): TranscriptState {
   const phase = String(data.phase ?? "");
   const tokens = asRecord(data.tokens);
+  const ycrState = asRecord(data.state);
+  const snapshot = asRecord(ycrState.capability_context_snapshot);
+  const sessionStateCounts = asRecord(ycrState.session_state_counts);
   const item: YcrTraceItem = {
     id: `ycr:${event.event_id}`,
     kind: phase === "provider_output" ? "provider_output" : "provider_input",
@@ -598,6 +601,10 @@ function appendYcrContextTrace(
     uploadActualTokens: optionalNumber(tokens.upload_actual),
     downloadActualTokens: optionalNumber(tokens.download_actual),
     totalActualTokens: optionalNumber(tokens.total_actual),
+    ycrState,
+    snapshotStatus: optionalString(snapshot.status),
+    capabilityCandidateCount: optionalNumber(ycrState.capability_candidate_count),
+    sessionStateCounts,
     data,
   };
   const summary = {

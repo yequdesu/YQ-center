@@ -344,6 +344,93 @@ async def test_ycr_build_turn_compacts_old_history_and_injects_working_set(
     assert "YCR conversation summary" in packet["messages"][1]["content"]
 
 
+async def test_ycr_tool_observation_updates_session_state_for_next_turn(
+    db_session,
+    override_settings,
+) -> None:
+    from yequ.ycr.session_state import ingest_tool_observation_state
+
+    result = {
+        "artifacts": [
+            {
+                "artifact_id": "id_screenshot",
+                "artifact_type": "screenshot",
+                "title": "windows-screen.png",
+                "content_type": "image/png",
+                "size_bytes": 2048,
+                "node_id": "winClient",
+            }
+        ],
+        "operation": {
+            "operation_id": "op_screenshot",
+            "kind": "job",
+            "status": "succeeded",
+            "title": "Capture screen",
+        },
+        "ycr_entities": capability_entities(
+            [
+                {
+                    "canonical_name": "screen.capture",
+                    "description": "Capture the current desktop.",
+                    "risk": "safe",
+                    "effect": "read",
+                    "invoke": {
+                        "capability_ref": "screen.capture",
+                        "source_id": "src_screen",
+                        "node_id": "winClient",
+                        "registered_name": "windows.screen.capture",
+                        "dispatchable_source_count": 1,
+                    },
+                }
+            ]
+        ),
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_capture",
+        path="$",
+        value=strip_ycr_entities(result),
+        summary="capability.invoke succeeded",
+        session_id="sess_state",
+    )
+    await ingest_tool_observation_state(
+        db_session,
+        session_id="sess_state",
+        name="capability.invoke",
+        status="succeeded",
+        result=result,
+        raw_ref=raw_ref,
+        target_node_id="winClient",
+    )
+    await db_session.commit()
+
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_state",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "use the previous screenshot"}],
+        available_functions=[{"name": "capability.search", "input_schema": {}}],
+        capability_context={"nodes": []},
+        profile=projection_profile_from_settings(override_settings),
+        step=2,
+    )
+
+    session_state = packet["provider_context"]["session_state"]
+    candidates = packet["provider_context"]["capability_candidates"]
+    assert session_state["counts"]["capability"] == 1
+    assert session_state["counts"]["artifact"] == 1
+    assert session_state["counts"]["operation"] == 1
+    assert candidates[0]["capability_ref"] == "screen.capture"
+    assert candidates[0]["source"] == "session_state"
+    assert packet["context_estimate"]["session_state_tokens"] > 0
+    assert packet["context_estimate"]["capability_candidate_count"] == 1
+    assert "YCR Session State" in packet["messages"][0]["content"]
+
+
 def test_result_ingestion_preserves_small_output() -> None:
     output = {"status": "ok", "value": 1}
 

@@ -2,7 +2,7 @@
 
 状态：当前概览  
 更新时间：2026-07-07
-当前阶段：YCR/Agent 行为验收、transfer 状态复验、Provider 系统整理
+当前阶段：Agent Runtime / Plan / Operation / YCR State 架构收敛
 
 ## 1. 一句话结论
 
@@ -18,9 +18,10 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 - Console Activity / OperationCard
 - Node capability 精细合同
 
-下一阶段不是立刻扩展 SubAgent 或继续堆业务能力，而是在质量门禁约束下，先完成
-YCR/Agent 行为验收、transfer 状态复验、meta tool 默认输出边界审计和 Provider 系统整理，确保
-Node/capability 插拔性、错误传播和上下文治理不继续积累临时逻辑。
+下一阶段不是立刻扩展 SubAgent、Provider 系统或继续堆业务能力，而是在质量门禁约束下，
+先完成 Agent Runtime 主状态机、通用 Plan、Operation Event Queue、YCR Session State、
+Registry/YCR Snapshot Cache 和 Tool RAG Candidate Loader 的架构收敛，确保复杂任务不再依赖
+临时 prompt、前端推断、重复 internal turn 或每轮重建上下文。
 
 ## 2. 当前已具备的能力
 
@@ -31,7 +32,7 @@ Node/capability 插拔性、错误传播和上下文治理不继续积累临时�
 | Capability Registry | Center 维护 capability definition/source；Center meta tools 与 Node capabilities 已统一进入 registry，Provider 默认只通过 `capability.search` / `capability.describe` / `capability.invoke` 搜索、描述和调用。 |
 | Agent Runtime | 生产主路径为 `/agent/invoke/stream`；非流式旧 ReAct 路径已退出主线。 |
 | Operation Runtime | transfer、job、approval_wait、maintenance 已接入 Operation 投影；transfer Operation 已能从 source/target job 和 Node job.event read model 聚合基础进度并投影到 Console。 |
-| AgentRun checkpoint | provider 输出、tool observation、waiting_operation、waiting_approval、final/failure 均有结构化记录。 |
+| AgentRun checkpoint | provider 输出、tool observation、waiting_operation、waiting_approval、final/failure 均有结构化记录；下一阶段要把它提升为所有 Agent 执行的主状态机。 |
 | Artifact | Node 可上传 artifact 到 Center；Console 可浏览、下载、预览；Agent 可用 `artifact.present` 展示；Center 已提供 `artifact.deploy.preflight` / `artifact.deploy`，通过目标 Node 的 `<platform>.artifact.download_file` 下发 artifact。 |
 | yq-croc 传输 | Node -> Node 大文件/跨 Node 传输已跑通；Center 通过 `transfer.preflight/create/resume/status/cancel` 做控制面，数据面不占 Center 主带宽。 |
 | Linux Node | 源码位于 `nodes/linux/yequnode`，后续直接在本仓库推进。 |
@@ -74,18 +75,18 @@ Capability Registry
 
 无 query 时，`capability.search` 只做 registry-backed structured filter，并且必须带至少一个过滤条件。带 query 时，YCR 只读取 ready capability index，不在用户请求路径临时构建索引；embedding 或 reranker 不可用时返回明确错误，不做字符串 fallback。
 
-Tool RAG 只负责候选召回增强：
+Tool RAG 只负责候选加载和候选召回增强：
 
 ```text
 自然语言任务
-  -> semantic retrieval + rerank 得到候选 capability
+  -> session working set / snapshot cache / semantic retrieval + rerank 得到候选 capability
   -> registry/source/runtime 事实二次校验
   -> ExecutionGuard / PolicyEngine / Admission
   -> Runtime execution
 ```
 
 Tool RAG 不能取代 registry、schema、preflight、Guard、Policy 或 Operation Runtime，也不能把语义相似度
-当成执行授权或事实满足证明。
+当成执行授权或事实满足证明。候选不足时，Agent 仍可显式调用 `capability.search` 扩大检索。
 
 `capability.invoke` 是执行具体 capability 的入口。Center meta tools 与 Node
 capability 已统一进入 capability registry；provider 默认工具面收敛为
@@ -118,21 +119,44 @@ tool call
   -> Operation
   -> AgentRun waiting_operation
   -> Console Activity 面板展示状态/进度
-  -> 用户 Append operation context chip 到输入框
-  -> 新一轮 Agent 携带 operation observation 和用户补充文本
+  -> Operation terminal event 进入 Agent Runtime event queue
+  -> Agent 空闲时自动汇报终态
+  -> 用户仍可 Append operation context chip 手动引用结果
 ```
 
-旧的直接 Continue 已退出 Console 主交互。当前主路径是 Append operation context 到输入区后通过 `/agent/invoke/stream` 的 `context_refs` 提交；请求中的 `prompt` 是 LLM 看到的用户补充指令，`user_visible_prompt` 是带 operation chip 摘要的聊天记录展示文本。Console composer 已使用内联 operation chip，已提交 context 可通过 AgentTurnEvent 恢复为调试事件，未提交 chip 按 session 本地恢复。
+旧的直接 Continue 已退出 Console 主交互。Append operation context 保留为用户手动引用结果的交互；自动汇报由后端 `agent_operation_notifications` 队列驱动，按 operation_id 幂等、session 内单消费者，并有 reported/failed 终态。前端只负责在 Agent 空闲时 claim notification 并发起一次自动汇报，不再由 OperationCard 本地推断自动唤醒。
+
+### 3.6 Agent Plan 与 YCR Session State
+
+当前已有维护计划路径，但它不是通用 Agent Runtime Plan。下一阶段的 Plan 是每个 AgentRun 的任务状态骨架：
+
+```text
+AgentRun
+  -> Plan
+  -> PlanStep
+  -> ToolCall / Approval / Operation / Artifact
+```
+
+Plan 不等于 Workflow Capability。Center 不新增 `artifact.place_on_node`、`screen.capture_and_present` 这类高阶业务能力；Plan 只记录目标、步骤、等待项、已完成事实和禁止重复动作。
+
+YCR 也不再只做 provider 前置投影器。当前已经新增基础 `YcrSessionState`，由 tool observation 和 Operation event 维护当前 session 的 typed working set：
+
+- capability working set；
+- artifact working set；
+- operation working set；
+- node facts；
+
+剩余待补的是 recent task facts、Plan 面板与通用 AgentPlan 的绑定，以及前端对 runtime state 的更完整聚合展示。
 
 ## 4. 当前主要待办
 
 当前执行顺序以 `docs/todos/README.md` 为准。质量门禁继续作为全局约束存在，但不替代
 专题待办的实现顺序。
 
-1. 先完成剩余行为验收：Windows 截图、Windows -> Linux 传输端到端复验、复杂任务过度探索观察。
-2. 收口 meta tool 默认输出边界：确认 `node.status`、`operation.status`、`transfer.status`、`artifact.*`、`context.*`、`capability.describe` 默认返回均符合职责边界。
-3. 继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
-4. YCR core data path 与 unified capability registry 进入维护核对状态；后续只在行为验收暴露回归时更新对应待办。
+1. 按 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 收敛 Agent Runtime 主线：Run/Turn 生命周期、Plan、Operation Event Queue、YCR Session State、Snapshot Cache、Candidate Loader、前端状态绑定和审计 span。
+2. 按 `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 做行为验收和剩余缺陷：Windows 截图、Windows -> Linux 传输端到端复验、meta tool 默认输出边界、复杂任务过度探索和错误展示。
+3. Runtime/YCR 状态主线稳定后，再继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
+4. YCR core data path 与 unified capability registry 已进入维护核对状态；后续只在行为验收暴露回归时更新对应事实文档或行为待办。
 
 SubAgent 和更多 Node 能力应在上述收敛完成后再进入主线。
 
@@ -146,9 +170,8 @@ SubAgent 和更多 Node 能力应在上述收敛完成后再进入主线。
 | `docs/linux-node-development-contract.md` | 当前 Linux Node 实现合同。 |
 | `docs/agent-sse-contract.md` | Agent SSE 前后端事件合同。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 当前质量门禁。 |
-| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径待办。 |
 | `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | YCR/Agent 行为缺陷和 transfer 状态修正待办。 |
-| `docs/todos/2026-07-06-unified-capability-registry-plan.md` | 统一 capability registry 与 Agent 工具面待办。 |
+| `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` | Agent Runtime / Plan / Operation / YCR State 架构收敛待办。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统待办。 |
 | `docs/documentation-index.md` | 当前文档入口和归档说明。 |
 | `docs/documentation-policy.md` | 文档维护规则。 |
