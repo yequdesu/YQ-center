@@ -60,6 +60,7 @@ def override_settings(monkeypatch, db_engine):
         test_mode=True,
         log_level="WARNING",
         require_admin_auth=False,
+        session_audit_enabled=False,
         artifact_storage_dir="test_artifacts",
         ycr_embedding_provider="openai_compatible",
         ycr_embedding_model="test-embedding",

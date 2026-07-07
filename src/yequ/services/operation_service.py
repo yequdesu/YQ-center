@@ -18,6 +18,7 @@ from yequ.runtime.operations.approval import approval_title, operation_status_fr
 from yequ.runtime.operations.job import job_title, operation_status_from_job
 from yequ.runtime.operations.maintenance import maintenance_title, operation_status_from_maintenance
 from yequ.runtime.operations.transfer import operation_status_from_transfer, transfer_title
+from yequ.services.session_audit import record_session_audit_event
 
 TERMINAL_OPERATION_STATUSES = {"succeeded", "failed", "cancelled", "timeout"}
 
@@ -282,6 +283,7 @@ class OperationService:
         event_type: str,
         data: dict[str, object] | None = None,
     ) -> None:
+        now = datetime.now(UTC)
         seq_result = await self.db.execute(
             select(func.max(OperationEvent.seq)).where(
                 OperationEvent.operation_id == operation.operation_id
@@ -296,8 +298,28 @@ class OperationService:
                 event_type=event_type,
                 status=operation.status,
                 data=data or {},
-                created_at=datetime.now(UTC),
+                created_at=now,
             )
+        )
+        record_session_audit_event(
+            operation.session_id,
+            event_type,
+            {
+                "operation_id": operation.operation_id,
+                "operation_kind": operation.kind,
+                "operation_status": operation.status,
+                "ref_type": operation.ref_type,
+                "ref_id": operation.ref_id,
+                "seq": seq,
+                "data": data or {},
+                "title": operation.title,
+                "progress_pct": operation.progress_pct,
+                "progress_message": operation.progress_message,
+                "error_code": operation.error_code,
+                "error_message": operation.error_message,
+            },
+            source="operation",
+            event_time=now,
         )
 
     @staticmethod
@@ -309,9 +331,7 @@ class OperationService:
         updated_at = values.get("updated_at")
         output_data = values.get("output_data")
         progress_detail = (
-            output_data.get("progress_detail")
-            if isinstance(output_data, dict)
-            else None
+            output_data.get("progress_detail") if isinstance(output_data, dict) else None
         )
         return {
             "operation_id": values.get("operation_id"),

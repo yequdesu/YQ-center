@@ -58,6 +58,8 @@ class Settings(BaseSettings):
 
     # Timeline
     debug_timeline: bool = False  # Set YEQU_DEBUG_TIMELINE=true to write diagnostic events
+    session_audit_enabled: bool = True
+    session_audit_log_dir: str = "var/session-audit"
 
     # Artifact storage
     artifact_storage_dir: str = "var/artifacts"

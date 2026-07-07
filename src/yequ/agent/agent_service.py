@@ -26,6 +26,7 @@ from yequ.agent.provider import (
     AgentProvider,
 )
 from yequ.application.maintenance_plan import MaintenancePlanApplicationService
+from yequ.services.session_audit import record_session_audit_event
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,21 @@ async def create_agent_session(
         )
         db.add(sess)
         await db.commit()
+
+    record_session_audit_event(
+        session_id,
+        "session.created",
+        {
+            "actor_type": "agent",
+            "actor_id": actor_id,
+            "execution_mode": execution_mode,
+            "max_depth": max_depth,
+            "max_steps": max_steps,
+            "max_total_duration_sec": max_total_duration_sec,
+        },
+        source="agent.session",
+        event_time=now,
+    )
 
     return {
         "session_id": session_id,
@@ -249,23 +265,23 @@ async def agent_plan(
     # -- Step 5: Create plan --
     async with yequ_db.async_session_factory() as plan_db:
         plan = await MaintenancePlanApplicationService(plan_db).create(
-        goal=prompt,
-        actor_id=provider.provider_name(),
-        target_node_id=target_node_id,
-        steps=[
-            {
-                "function_name": str(s.get("function_name", "")),
-                "input": _as_object_dict(s.get("input", {})),
-                "kind": str(s.get("kind", "")),
-                "condition": str(s.get("condition", "")),
-                "depends_on": [str(d) for d in _as_list(s.get("depends_on", []))],
-                "requires_approval": bool(s.get("requires_approval")),
-                "risk": str(s.get("risk", "safe")),
-                "continue_on_failure": False,
-                "rollback_hint": s.get("rollback_hint"),
-            }
-            for s in steps_ir
-        ],
+            goal=prompt,
+            actor_id=provider.provider_name(),
+            target_node_id=target_node_id,
+            steps=[
+                {
+                    "function_name": str(s.get("function_name", "")),
+                    "input": _as_object_dict(s.get("input", {})),
+                    "kind": str(s.get("kind", "")),
+                    "condition": str(s.get("condition", "")),
+                    "depends_on": [str(d) for d in _as_list(s.get("depends_on", []))],
+                    "requires_approval": bool(s.get("requires_approval")),
+                    "risk": str(s.get("risk", "safe")),
+                    "continue_on_failure": False,
+                    "rollback_hint": s.get("rollback_hint"),
+                }
+                for s in steps_ir
+            ],
             session_id=session_id,
             risk="maintenance" if has_write else "safe",
             max_total_duration_sec=max_total_duration_sec,
@@ -526,6 +542,7 @@ async def _save_session_history(
 
     now = datetime.now(UTC)
     new_count = 0
+    persisted_messages: list[dict[str, object]] = []
     for m in messages:
         if m.role == "system":
             continue  # never persist system prompt
@@ -544,6 +561,16 @@ async def _save_session_history(
                 created_at=now,
             )
         )
+        persisted_messages.append(
+            {
+                "message_id": mid,
+                "role": m.role,
+                "content": m.content,
+                "tool_call_id": m.tool_call_id,
+                "tool_calls": m.tool_calls,
+                "created_at": now,
+            }
+        )
         new_count += 1
         now = datetime.now(UTC)  # slight offset per message for ordering
 
@@ -561,6 +588,16 @@ async def _save_session_history(
 
     # Trim old messages to keep history bounded
     await _trim_history(db, session_id)
+    for message in persisted_messages:
+        record_session_audit_event(
+            session_id,
+            "agent.message.persisted",
+            message,
+            source="agent.history",
+            event_time=message.get("created_at")
+            if isinstance(message.get("created_at"), datetime)
+            else None,
+        )
 
 
 async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) -> None:
@@ -600,17 +637,14 @@ async def _trim_history(db: AsyncSession, session_id: str, keep_last: int = 40) 
 
     # Also delete tool messages in the kept set whose parent was deleted
     for msg in to_keep:
-        if (
-            msg.role == "tool"
-            and msg.tool_call_id
-            and msg.tool_call_id in orphaned_call_ids
-        ):
+        if msg.role == "tool" and msg.tool_call_id and msg.tool_call_id in orphaned_call_ids:
             to_delete.append(msg)
 
     for old in to_delete:
         await db.delete(old)
     if to_delete:
         await db.flush()
+
 
 async def _write_timeline(
     db: AsyncSession | None,
@@ -700,4 +734,3 @@ async def _write_timeline(
         async with yequ_db.async_session_factory() as _db:
             await _add_event(_db)
             await _db.commit()
-

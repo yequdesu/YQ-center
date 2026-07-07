@@ -77,6 +77,72 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_agent_session_audit_log_persists_lifecycle_events(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+):
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
+    from yequ.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "session_audit_enabled", True)
+    monkeypatch.setattr(settings, "session_audit_log_dir", str(tmp_path / "session-audit"))
+
+    provider = FakeAgentProvider("session-audit-test")
+    provider.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="Audit trace visible.",
+                tool_calls=[],
+                success=True,
+            ),
+        ]
+    )
+    register_provider(provider)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "session-audit-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/invoke/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "session-audit-test",
+            "prompt": "write a full audit trail",
+            "execution_mode": "auto",
+        },
+    )
+    assert stream_resp.status_code == 200
+
+    audit_resp = await client.get(f"/admin/sessions/{session_id}/audit-log?tail=200")
+    assert audit_resp.status_code == 200
+    audit = audit_resp.json()
+    assert audit["exists"] is True
+    events = audit["events"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types[0] == "session.created"
+    assert "agent.invoke.request_received" in event_types
+    assert "agent.invoke.context_loaded" in event_types
+    assert "agent.turn.created" in event_types
+    assert "stream.open" in event_types
+    assert "agent.prompt.received" in event_types
+    assert "agent.completed" in event_types
+    assert "stream.close" in event_types
+    assert "agent.message.persisted" in event_types
+    assert all(event["session_id"] == session_id for event in events)
+    assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
+    assert all(event.get("recorded_at") for event in events)
+    assert all(event.get("event_time") for event in events)
+
+
+@pytest.mark.asyncio
 async def test_agent_stream_emits_ycr_context_budget_events(client: AsyncClient, monkeypatch):
     from yequ.agent.agent_stream import agent_invoke_stream
     from yequ.agent.fake_provider import FakeAgentProvider

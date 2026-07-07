@@ -1,6 +1,6 @@
 """Admin endpoints for Agent sessions and durable turn history."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -10,6 +10,11 @@ from yequ.api.deps import get_admin_token, get_db
 from yequ.models.agent_message import AgentMessage as AgentMessageModel
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.models.session import Session
+from yequ.services.session_audit import (
+    read_session_audit_events,
+    record_session_audit_event,
+    session_audit_path,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -201,6 +206,27 @@ async def list_agent_turn_events(
     return [_agent_turn_event_dict(e) for e in event_result.scalars().all()]
 
 
+@router.get("/sessions/{session_id}/audit-log")
+async def get_session_audit_log(
+    session_id: str,
+    tail: int = Query(default=500, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
+    _token: dict[str, str] = Depends(get_admin_token),
+) -> dict[str, object]:
+    """Return the persisted JSONL audit log records for one Agent session."""
+    result = await db.execute(select(Session).where(Session.session_id == session_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    path = session_audit_path(session_id)
+    return {
+        "session_id": session_id,
+        "path": str(path),
+        "exists": path.exists(),
+        "tail": tail,
+        "events": read_session_audit_events(session_id, tail=tail),
+    }
+
+
 @router.patch("/sessions/{session_id}")
 async def rename_session(
     session_id: str,
@@ -213,8 +239,15 @@ async def rename_session(
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    previous_label = sess.label
     sess.label = body.label
     await db.commit()
+    record_session_audit_event(
+        session_id,
+        "session.renamed",
+        {"previous_label": previous_label, "label": body.label},
+        source="admin.sessions",
+    )
     return {"session_id": session_id, "label": body.label}
 
 
@@ -237,6 +270,12 @@ async def delete_session(
     await db.execute(sql_delete(AgentTurn).where(AgentTurn.session_id == session_id))
     await db.delete(sess)
     await db.commit()
+    record_session_audit_event(
+        session_id,
+        "session.deleted",
+        {"label": sess.label, "actor_id": sess.actor_id},
+        source="admin.sessions",
+    )
 
 
 def _agent_message_dict(message: AgentMessageModel) -> dict[str, object]:

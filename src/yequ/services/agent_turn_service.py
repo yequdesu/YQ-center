@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from yequ import db as yequ_db
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.runtime.agent_status import TERMINAL_AGENT_RUN_STATUSES, status_for_stream_event
+from yequ.services.session_audit import record_session_audit_event
 
 
 def make_turn_id() -> str:
@@ -52,6 +53,22 @@ async def create_agent_turn(
             )
         )
         await session.commit()
+    record_session_audit_event(
+        session_id,
+        "agent.turn.created",
+        {
+            "turn_id": turn_id,
+            "prompt": prompt,
+            "provider_name": provider_name,
+            "target_node_id": target_node_id,
+            "execution_mode": execution_mode,
+            "metadata": metadata or {},
+        },
+        turn_id=turn_id,
+        trace_id=trace_id,
+        source="agent.turn",
+        event_time=now,
+    )
     return turn_id
 
 
@@ -93,6 +110,18 @@ async def record_agent_turn_event(turn_id: str, event: dict[str, Any]) -> None:
                 turn.error_code = str(data.get("error_code") or "") or None
                 turn.error_message = str(data.get("message") or "") or None
         await session.commit()
+    record_session_audit_event(
+        session_id,
+        event_type,
+        {
+            "event": event,
+            "data": data,
+        },
+        turn_id=turn_id,
+        trace_id=trace_id,
+        source="agent.turn_event",
+        event_time=now,
+    )
 
 
 async def list_agent_turns(session_id: str) -> list[AgentTurn]:

@@ -51,6 +51,7 @@ from yequ.api.agent_tool_catalog import (
 )
 from yequ.api.deps import get_agent_token
 from yequ.runtime.capability_context import build_capability_context
+from yequ.services.session_audit import record_session_audit_event
 from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -58,9 +59,17 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 # -- Endpoints --
 
 
+def _as_nested_str(value: object, *path: str) -> str | None:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, str) else None
+
+
 async def _resolve_provider(provider_name: str) -> AgentProvider:
     return await resolve_provider(provider_name)
-
 
 
 def _sse_response(
@@ -105,8 +114,6 @@ def _sse_response(
     )
 
 
-
-
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session_endpoint(
     body: CreateSessionRequest,
@@ -131,7 +138,31 @@ async def invoke_agent_stream_endpoint(
     body: InvokeAgentRequest,
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
+    record_session_audit_event(
+        body.session_id,
+        "agent.invoke.request_received",
+        {
+            "provider_name": body.provider_name,
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "prompt": body.prompt,
+            "user_visible_prompt": body.user_visible_prompt,
+            "suppress_user_message": body.suppress_user_message,
+            "context_refs": [ref.model_dump() for ref in body.context_refs],
+            "max_depth": body.max_depth,
+            "max_steps": body.max_steps,
+            "max_total_duration_sec": body.max_total_duration_sec,
+            "step_count": body.step_count,
+        },
+        source="api.agent",
+    )
     provider = await _resolve_provider(body.provider_name)
+    record_session_audit_event(
+        body.session_id,
+        "agent.invoke.provider_resolved",
+        {"provider_name": provider.provider_name()},
+        source="api.agent",
+    )
     async with yequ_db.async_session_factory() as db:
         context_blocks = await _load_agent_context_refs(
             db,
@@ -147,7 +178,29 @@ async def invoke_agent_stream_endpoint(
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+    record_session_audit_event(
+        body.session_id,
+        "agent.invoke.context_loaded",
+        {
+            "context_block_count": len(context_blocks),
+            "available_function_count": len(available),
+            "capability_context_nodes": capability_context.get("nodes", [])
+            if isinstance(capability_context, dict)
+            else [],
+        },
+        source="api.agent",
+    )
     agent_prompt = await _prompt_with_context_refs(body.prompt, context_blocks)
+    record_session_audit_event(
+        body.session_id,
+        "agent.invoke.prompt_ready",
+        {
+            "prompt_chars": len(body.prompt),
+            "agent_prompt_chars": len(agent_prompt),
+            "context_block_count": len(context_blocks),
+        },
+        source="api.agent",
+    )
     return _sse_response(
         _with_context_block_events(
             agent_invoke_stream(
@@ -201,6 +254,19 @@ async def resume_operation_stream_endpoint(
     body: ResumeOperationRequest,
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_operation.request_received",
+        {
+            "operation_id": body.operation_id,
+            "provider_name": body.provider_name,
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+            "max_steps": body.max_steps,
+            "max_total_duration_sec": body.max_total_duration_sec,
+        },
+        source="api.agent",
+    )
     provider = await _resolve_provider(body.provider_name)
     async with yequ_db.async_session_factory() as db:
         from yequ.services.operation_service import OperationService
@@ -221,12 +287,28 @@ async def resume_operation_stream_endpoint(
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_operation.context_loaded",
+        {
+            "operation_id": body.operation_id,
+            "operation_status": _as_nested_str(operation_observation, "operation", "status"),
+            "available_function_count": len(available),
+        },
+        source="api.agent",
+    )
 
     user_message = body.user_message.strip() if body.user_message else ""
     prompt = await _operation_resume_prompt(
         db,
         operation_observation,
         user_message=user_message,
+    )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_operation.prompt_ready",
+        {"operation_id": body.operation_id, "prompt_chars": len(prompt)},
+        source="api.agent",
     )
     return _sse_response(
         agent_invoke_stream(
@@ -272,6 +354,17 @@ async def resume_agent_run_stream_endpoint(
     body: ResumeAgentRunRequest,
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_run.request_received",
+        {
+            "run_id": body.run_id,
+            "provider_name": body.provider_name,
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+        },
+        source="api.agent",
+    )
     provider = await _resolve_provider(body.provider_name)
     async with yequ_db.async_session_factory() as db:
         from yequ.runtime.agent_run_service import get_agent_run_projection
@@ -284,11 +377,26 @@ async def resume_agent_run_stream_endpoint(
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_run.context_loaded",
+        {
+            "run_id": body.run_id,
+            "available_function_count": len(available),
+        },
+        source="api.agent",
+    )
 
     prompt = await _agent_run_resume_prompt(
         db,
         run_projection,
         operation_observation=operation_observation,
+    )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_run.prompt_ready",
+        {"run_id": body.run_id, "prompt_chars": len(prompt)},
+        source="api.agent",
     )
     return _sse_response(
         agent_invoke_stream(
@@ -334,6 +442,16 @@ async def resume_last_agent_run_stream_endpoint(
     body: ResumeLastAgentRunRequest,
     _token: dict[str, str] = Depends(get_agent_token),
 ) -> StreamingResponse:
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_last_run.request_received",
+        {
+            "provider_name": body.provider_name,
+            "target_node_id": body.target_node_id,
+            "execution_mode": body.execution_mode,
+        },
+        source="api.agent",
+    )
     provider = await _resolve_provider(body.provider_name)
     async with yequ_db.async_session_factory() as db:
         from yequ.runtime.agent_run_service import get_last_resumable_agent_run
@@ -346,11 +464,26 @@ async def resume_last_agent_run_stream_endpoint(
             available_functions=available,
             target_node_id=body.target_node_id,
         )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_last_run.context_loaded",
+        {
+            "run_id": run_projection.get("run_id"),
+            "available_function_count": len(available),
+        },
+        source="api.agent",
+    )
 
     prompt = await _agent_run_resume_prompt(
         db,
         run_projection,
         operation_observation=operation_observation,
+    )
+    record_session_audit_event(
+        body.session_id,
+        "agent.resume_last_run.prompt_ready",
+        {"run_id": run_projection.get("run_id"), "prompt_chars": len(prompt)},
+        source="api.agent",
     )
     return _sse_response(
         agent_invoke_stream(
@@ -389,8 +522,6 @@ async def resume_last_agent_run_stream_endpoint(
             },
         },
     )
-
-
 
 
 @router.post("/plan")
