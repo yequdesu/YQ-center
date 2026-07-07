@@ -6,6 +6,7 @@ from yequ.api.agent_tool_catalog import _center_meta_functions
 from yequ.services.result_ingestion import guard_job_output
 from yequ.ycr.budget import projection_profile_from_settings
 from yequ.ycr.context_packet import build_agent_context_packet
+from yequ.ycr.entities import capability_entities, strip_ycr_entities
 from yequ.ycr.projection import project_tool_observation_from_ref, tool_observation_shell
 from yequ.ycr.ref_store import (
     expand_ref,
@@ -42,6 +43,10 @@ async def test_ycr_tool_projection_refs_large_stdout(db_session) -> None:
     assert result["facts"]["status"] == "ok"
     assert result["facts"]["stdout"]["$ycr_ref"] == raw_ref["ref_id"]
     assert result["facts"]["stdout"]["path"] == "$.stdout"
+    assert result["projection_policy"] == "tool_observation_structured_ref_projection_v2"
+    assert result["structured_refs"]["by_path"]["$.stdout"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["expand_hints"][0]["path"] == "$.stdout"
+    assert result["expand_hints"][0]["preferred_ops"] == ["tail", "search", "expand"]
 
 
 async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> None:
@@ -76,6 +81,8 @@ async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> N
     assert result["refs"]
     assert result["facts"]["capabilities"]["$ycr_ref"] == raw_ref["ref_id"]
     assert result["facts"]["capabilities"]["path"] == "$.capabilities"
+    assert result["structured_refs"]["by_path"]["$.capabilities"]["value_type"] == "array"
+    assert result["expand_hints"][0]["preferred_ops"] == ["schema", "search", "expand"]
     assert result["context_estimate"]["saved_estimated_tokens"] > 0
 
 
@@ -247,6 +254,94 @@ async def test_ycr_build_turn_returns_provider_packet(db_session, override_setti
     assert packet["packet_id"].startswith("ctxpkt_")
     assert packet["ycr"]["projection_policy"] == "agent_context_packet_v2"
     assert packet["context_estimate"]["estimated_input_tokens"] > 0
+
+
+async def test_ycr_build_turn_compacts_old_history_and_injects_working_set(
+    db_session,
+    override_settings,
+) -> None:
+    search_result = {
+        "capabilities": [
+            {
+                "canonical_name": "screen.capture",
+                "description": "Capture the current interactive Windows desktop.",
+                "risk": "safe",
+                "effect": "read",
+                "sources": [
+                    {
+                        "source_id": "src_screen",
+                        "node_id": "winClient",
+                        "registered_name": "windows.screen.capture",
+                        "dispatchable": True,
+                    }
+                ],
+                "invoke": {
+                    "capability_ref": "screen.capture",
+                    "source_id": "src_screen",
+                    "node_id": "winClient",
+                    "registered_name": "windows.screen.capture",
+                    "dispatchable_source_count": 1,
+                },
+            }
+        ]
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_search",
+        path="$",
+        value=strip_ycr_entities(search_result),
+        summary="capability.search succeeded",
+        session_id="sess_compact",
+        metadata={"ycr_entities": capability_entities(search_result["capabilities"])},
+    )
+    await db_session.commit()
+    shell = tool_observation_shell(
+        name="capability.search",
+        call_id="call_search",
+        status="succeeded",
+        raw_ref=raw_ref,
+    )
+    messages: list[dict[str, object]] = [
+        {
+            "role": "user",
+            "content": (
+                f"old user message {index}: "
+                "please inspect the windows desktop and file system " * 20
+            ),
+        }
+        for index in range(12)
+    ]
+    messages.insert(
+        2,
+        {
+            "role": "tool",
+            "tool_call_id": "call_search",
+            "content": json.dumps(shell),
+        },
+    )
+    messages.append({"role": "user", "content": "capture the win screen"})
+
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_compact",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=messages,
+        available_functions=[{"name": "capability.search", "input_schema": {}}],
+        capability_context={"nodes": []},
+        profile=projection_profile_from_settings(override_settings),
+        step=4,
+    )
+
+    assert packet["context_estimate"]["history_compaction"]["compacted_message_count"] > 0
+    assert packet["context_estimate"]["history_compaction_saved_tokens"] > 0
+    assert packet["context_estimate"]["working_set_count"] == 1
+    assert packet["provider_context"]["working_set"][0]["canonical_name"] == "screen.capture"
+    assert "YCR capability working set" in packet["messages"][0]["content"]
+    assert "YCR conversation summary" in packet["messages"][1]["content"]
 
 
 def test_result_ingestion_preserves_small_output() -> None:

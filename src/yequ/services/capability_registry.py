@@ -230,6 +230,8 @@ async def sync_center_capability_definitions(db: AsyncSession) -> None:
 
     from yequ.api.agent_tool_catalog import _center_meta_functions
 
+    await _lock_registry_key(db, "center-capability-definitions")
+
     touched_definition_ids: set[str] = set()
     for function in _center_meta_functions():
         definition = await _get_or_create_definition(

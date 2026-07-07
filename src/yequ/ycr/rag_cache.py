@@ -58,7 +58,7 @@ class CachedRetrievalCandidates:
     rows: list[dict[str, object]]
     cache_key: str
     cache_status: str
-    corpus_fingerprint: str
+    registry_version: str
     filters_hash: str
     query_embedding_hash: str
 
@@ -197,7 +197,7 @@ async def cached_retrieval_candidates(
     *,
     normalized_query_hash: str,
     query_embedding_hash: str,
-    corpus_fingerprint: str,
+    registry_version: str,
     filters_hash: str,
     top_k: int,
     compute: Callable[[], Awaitable[list[dict[str, object]]]],
@@ -207,7 +207,7 @@ async def cached_retrieval_candidates(
             "kind": "retrieval_candidates",
             "normalized_query_hash": normalized_query_hash,
             "query_embedding_hash": query_embedding_hash,
-            "corpus_fingerprint": corpus_fingerprint,
+            "registry_version": registry_version,
             "filters_hash": filters_hash,
             "retrieval_version": RETRIEVAL_CACHE_VERSION,
             "top_k": top_k,
@@ -224,7 +224,7 @@ async def cached_retrieval_candidates(
                 rows=[dict(item) for item in record.result_json],
                 cache_key=cache_key,
                 cache_status="hit",
-                corpus_fingerprint=corpus_fingerprint,
+                registry_version=registry_version,
                 filters_hash=filters_hash,
                 query_embedding_hash=query_embedding_hash,
             )
@@ -235,7 +235,7 @@ async def cached_retrieval_candidates(
                 cache_key=cache_key,
                 normalized_query_hash=normalized_query_hash,
                 query_embedding_hash=query_embedding_hash,
-                corpus_fingerprint=corpus_fingerprint,
+                corpus_fingerprint=registry_version,
                 filters_hash=filters_hash,
                 retrieval_version=RETRIEVAL_CACHE_VERSION,
                 top_k=top_k,
@@ -249,7 +249,7 @@ async def cached_retrieval_candidates(
             rows=rows,
             cache_key=cache_key,
             cache_status="miss",
-            corpus_fingerprint=corpus_fingerprint,
+            registry_version=registry_version,
             filters_hash=filters_hash,
             query_embedding_hash=query_embedding_hash,
         )

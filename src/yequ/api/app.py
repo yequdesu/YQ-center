@@ -128,6 +128,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             log.exception("token bootstrap failed")
 
+        try:
+            from yequ.db import async_session_factory
+            from yequ.services.capability_registry import sync_center_capability_definitions
+
+            async with async_session_factory() as db:
+                await sync_center_capability_definitions(db)
+                await db.commit()
+                log.info("center capability definitions synced")
+        except Exception:
+            log.exception("center capability definition sync failed")
+
     from yequ.services.approval_service import _scan_expired_approvals
     from yequ.services.message_dedup import get_yqp_message_cleanup_scanner
     from yequ.services.node_liveness_scanner import get_liveness_scanner

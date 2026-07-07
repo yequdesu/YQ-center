@@ -1,7 +1,7 @@
 # 文档索引
 
 状态：当前文档入口
-更新时间：2026-07-06
+更新时间：2026-07-07
 
 本文是 YeQu Center 文档系统的唯一入口。当前开发只应引用“当前权威文档”和“活跃待办”；`docs/archive/` 下内容只解释历史演进，不能覆盖当前代码、协议和合同。
 
@@ -25,9 +25,9 @@
 |---|---|
 | `docs/todos/README.md` | 当前待办目录说明。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 全局质量门禁：文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性、错误传播和无静默 fallback。 |
-| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径：raw ContextRef、provider-visible projection、Result RAG、YCR API、启动/部署脚本和 YCR 文档一致性。 |
-| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正：Tool RAG 排序质量、递归 projection 粒度、Linux yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出和空错误传播。 |
-| `docs/todos/2026-07-06-unified-capability-registry-plan.md` | 能力目录与 Agent 工具面：Center meta tools 与 Node capabilities 统一注册、分层可见性、固定 bootstrap tools 和统一 `capability.invoke`。 |
+| `docs/todos/2026-07-06-ycr-clean-rebuild-and-docs-plan.md` | YCR 核心数据路径核对：raw ContextRef、provider-visible projection、Result RAG、YCR API、启动/部署脚本和 YCR 文档一致性。 |
+| `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正和验收：Tool RAG / projection 已完成项的真实任务验收、Linux yq-croc receive 状态复验、Center transfer fact 继承复验、meta tool 默认输出和空错误传播。 |
+| `docs/todos/2026-07-06-unified-capability-registry-plan.md` | 已完成的能力目录与 Agent 工具面主线：Center meta tools 与 Node capabilities 统一注册、分层可见性、固定 bootstrap tools、统一 `capability.invoke`、Tool RAG cache/precompute/前后台调度。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统：Provider registry、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
 ## 3. 设计提案

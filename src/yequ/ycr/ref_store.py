@@ -46,6 +46,7 @@ async def upsert_ref(
     projection_version: int = 1,
     embedding_provider: str | None = None,
     embedding_model: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     size = json_size_bytes(value)
     max_size = get_settings().ycr_max_raw_ref_bytes
@@ -74,6 +75,7 @@ async def upsert_ref(
         "source_hash": record.source_version,
         "embedding_provider": embedding_provider,
         "embedding_model": embedding_model,
+        **(metadata or {}),
     }
     await db.flush()
 

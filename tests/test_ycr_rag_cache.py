@@ -86,7 +86,7 @@ async def test_retrieval_candidate_cache_reuses_persistent_record(db_session) ->
         db_session,
         normalized_query_hash="query_hash",
         query_embedding_hash="embedding_hash",
-        corpus_fingerprint="corpus_hash",
+        registry_version="registry_v1",
         filters_hash="filters_hash",
         top_k=50,
         compute=compute,
@@ -95,7 +95,7 @@ async def test_retrieval_candidate_cache_reuses_persistent_record(db_session) ->
         db_session,
         normalized_query_hash="query_hash",
         query_embedding_hash="embedding_hash",
-        corpus_fingerprint="corpus_hash",
+        registry_version="registry_v1",
         filters_hash="filters_hash",
         top_k=50,
         compute=compute,
@@ -104,6 +104,7 @@ async def test_retrieval_candidate_cache_reuses_persistent_record(db_session) ->
     assert calls == 1
     assert first.cache_status == "miss"
     assert second.cache_status == "hit"
+    assert second.registry_version == "registry_v1"
     assert second.rows[0]["canonical_name"] == "screen.capture"
 
 

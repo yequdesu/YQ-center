@@ -2,7 +2,7 @@
 
 个人基础设施控制中心 — 连接设备、收集状态、调度能力、记录审计时间线，为 LLM Agent、Web 控制台、CLI 提供统一入口。
 
-当前架构主线：Center Execution Runtime v2 已基本落地。下一阶段先完成文档系统收口、代码质量审查、架构边界复核，以及 Node/capability 插拔性确认。详见 `docs/current-project-overview.md` 和 `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md`。
+当前架构主线：Center Execution Runtime v2、YCR 主链路和 unified capability registry 已基本落地。当前阶段先做 YCR/Agent 行为验收、transfer 状态复验、meta tool 默认输出边界审计和 Provider 系统整理。详见 `docs/current-project-overview.md` 和 `docs/todos/README.md`。
 
 ## 架构
 
@@ -120,6 +120,17 @@ mypy src/                # 类型检查
 | `YEQU_YCR_EMBEDDING_TIMEOUT_SEC` | `60` | YCR 调用 embedding endpoint 的超时 |
 | `YEQU_YCR_RERANK_MODEL` | `BAAI/bge-reranker-base` | Rerank 模型名 |
 | `YEQU_YCR_RERANK_TIMEOUT_SEC` | `90` | YCR 调用 rerank endpoint 的超时 |
+| `YEQU_YCR_SCHEDULER_EMBEDDING_CONCURRENCY` | `1` | YCR scheduler 同时提交的 embedding 请求数 |
+| `YEQU_YCR_SCHEDULER_RERANK_CONCURRENCY` | `1` | YCR scheduler 同时提交的 rerank 请求数 |
+| `YEQU_YCR_SCHEDULER_BACKGROUND_BATCH_SIZE` | `5` | capability index 后台 worker 单轮处理数量 |
+| `YEQU_YCR_SUMMARY_BASE_URL` | 复用 DeepSeek base URL | YCR session history 摘要模型地址 |
+| `YEQU_YCR_SUMMARY_API_KEY` | 复用 DeepSeek API Key | YCR session history 摘要模型 API Key |
+| `YEQU_YCR_SUMMARY_MODEL` | 复用 DeepSeek model | YCR session history 摘要模型名 |
+| `YEQU_YCR_SUMMARY_TIMEOUT_SEC` | `20` | YCR 摘要模型调用超时 |
+| `YEQU_YCR_SUMMARY_INPUT_CHARS` | `16000` | 单次摘要输入字符上限 |
+| `YEQU_EMBEDDER_MODEL` | `BAAI/bge-m3` | 本地 embedder 加载的模型路径或名称 |
+| `YEQU_EMBEDDER_DEVICE` | `cpu` | 本地 embedder 运行设备 |
+| `YEQU_EMBEDDER_USE_FP16` | `false` | 本地 embedder 是否使用 FP16 |
 
 ## 本地启动
 

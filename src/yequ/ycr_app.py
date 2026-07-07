@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from yequ.config import get_settings
 from yequ.db import async_session_factory
 from yequ.ycr.budget import projection_profile_from_settings
+from yequ.ycr.entities import metadata_from_result, strip_ycr_entities
 from yequ.ycr.projection import tool_observation_shell
 from yequ.ycr.rag_cache import rag_cache_stats
 from yequ.ycr.ref_store import (
@@ -115,9 +116,20 @@ class ToolDescribeRequest(BaseModel):
 @contextlib.asynccontextmanager
 async def _lifespan(_: FastAPI):
     global _capability_index_worker_task
-    if (
-        not get_settings().test_mode
-        and (_capability_index_worker_task is None or _capability_index_worker_task.done())
+    settings = get_settings()
+    if not settings.test_mode:
+        try:
+            from yequ.services.capability_registry import sync_center_capability_definitions
+
+            async with async_session_factory() as db:
+                await sync_center_capability_definitions(db)
+                await db.commit()
+                log.info("YCR center capability definitions synced")
+        except Exception:
+            log.exception("YCR center capability definition sync failed")
+
+    if not settings.test_mode and (
+        _capability_index_worker_task is None or _capability_index_worker_task.done()
     ):
         _capability_index_worker_task = asyncio.create_task(_capability_index_worker())
     try:
@@ -285,6 +297,15 @@ async def context_status() -> dict[str, object]:
             "model": _profile().model,
             "default_inline_bytes": _profile().default.inline_bytes,
             "default_preview_chars": _profile().default.preview_chars,
+            "history_summary": {
+                "provider": settings.ycr_summary_provider,
+                "model": settings.ycr_summary_model or settings.deepseek_model,
+                "configured": bool(
+                    (settings.ycr_summary_api_key or settings.deepseek_api_key)
+                    and (settings.ycr_summary_base_url or settings.deepseek_base_url)
+                    and (settings.ycr_summary_model or settings.deepseek_model)
+                ),
+            },
         },
         "capabilities": [
             "build_turn",
@@ -336,12 +357,13 @@ async def store_tool_observation(body: ToolObservationRequest) -> dict[str, obje
                 source_type="tool_call",
                 source_id=body.call_id,
                 path="$",
-                value=body.result,
+                value=strip_ycr_entities(body.result),
                 summary=f"{body.name} {body.status}",
                 actor_id=body.actor_id,
                 session_id=body.session_id,
                 trust_level="node_reported_fact",
                 projection_policy="tool_observation_raw_ref_v1",
+                metadata=metadata_from_result(body.result),
             )
             shell = tool_observation_shell(
                 name=body.name,

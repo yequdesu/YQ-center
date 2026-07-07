@@ -1,13 +1,14 @@
 # YCR / Agent 工具路由与传输状态修正待办
 
-状态：活跃待办
+状态：活跃待办（剩余项以行为验收和 meta tool 边界审计为主）
 日期：2026-07-06
 适用阶段：YCR 清理重建后的行为质量修正
 
 本文记录 2026-07-06 复盘复杂 Agent 交互后确认的问题和修复路线。本文只负责
-已暴露的行为缺陷修正：Tool RAG 通用排序质量、递归 projection 粒度、Linux
+已暴露的行为缺陷修正和验收：Tool RAG 通用排序质量、递归 projection 粒度、Linux
 yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输出和空错误
-传播。
+传播。Tool RAG、projection、transfer fact 继承和 Linux receive 判定的代码主线已经完成；
+后续执行以本文状态表中的剩余动作和端到端验收为准。
 
 职责边界：
 
@@ -28,11 +29,11 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 | 递归 projection 粒度 | 已完成 | `src/yequ/ycr/projection.py` 已递归处理 dict/list，只把超限子值替换为 `$ycr_ref`；`tests/test_ycr_context_router.py` 已覆盖大 stdout、medium meta tool output、多小字段对象不 root-ref。 | 无。 |
 | `transfer.preflight` 关键事实 inline | 已完成 | 测试已覆盖 `allowed`、`preflight_id`、`source.path` 等关键字段直接可见，根对象不会因多个小字段累计到 5KB 而整体 ref。 | 无。 |
 | `node.status` 默认 summary | 已完成 | `src/yequ/runtime/meta_tools.py` 默认 projection 为 `summary`；registry summary 返回 node facts、capability 数量和名称预览，不返回完整 `capability_sources`。 | 只需继续审计描述与前端展示是否一致。 |
-| `artifact.*` / `operation.status` / `transfer.status` 默认 summary | 已完成当前审计 | runtime meta tools 已为 artifact、operation、transfer 状态类工具设置 summary 默认值；artifact summary 不返回完整 metadata/blob 细节；`capability.invoke` 当前已实现且必须保留，用于执行具体 Node capability。 | 后续 unified registry 只负责把 Center meta tools 也注册为 capability，并收窄 provider 默认工具面。 |
+| `artifact.*` / `operation.status` / `transfer.status` 默认 summary | 已完成当前审计 | runtime meta tools 已为 artifact、operation、transfer 状态类工具设置 summary 默认值；artifact summary 不返回完整 metadata/blob 细节；`capability.invoke` 当前已实现且必须保留，用于执行具体 Node capability。Center meta tools 已统一注册为 capability，provider 默认工具面已收窄。 | 继续用真实交互审计默认 summary 是否仍有过宽输出。 |
 | YCR/meta tool 错误传播 | 已完成当前审计 | `YcrClient` 已把 HTTP/网络/JSON 异常转成 `YcrError(code, message)`；runtime meta tools 和 Agent stream 会向前端传播 code/message；已补测试覆盖 YCR error code/message 不为空。 | 端到端交互继续观察前端展示。 |
-| Tool RAG 通用排序质量 | 部分完成 | 当前索引文档由 capability 合同字段生成，没有截图类同义词特判；但统一 capability registry 和最终工具面尚未完成，复杂任务仍可能过度探索。 | 按 `2026-07-06-unified-capability-registry-plan.md` 继续收敛工具面，并用截图/传输任务验收排序质量。 |
+| Tool RAG 通用排序质量 | 已完成主链路，待持续验收 | 当前索引文档由 capability 合同字段生成，没有截图类同义词特判；统一 capability registry、provider 三件套工具面、BGE-M3 dense/sparse retrieval、reranker、query/rerank cache、registry-version-aware retrieval candidate cache 均已落地。 | 用截图、文件搜索、transfer 等真实任务持续验收排序质量和过度探索；不得新增具体 query/capability 特判。 |
 | Center transfer fact 继承 | 已完成 | `transfer.create` 会从 preflight source fact 继承 size/hash，写入 `TransferSession.size_bytes/sha256`，并向 receive input 下发 `expected_size_bytes` / `expected_sha256`。 | 无。 |
-| Linux receive 成功误判失败 | 已完成 | Linux receive wrapper 不再使用 `target_mtime >= receive_started_at`；overwrite 指定目标会在启动 yq-croc 前清理旧目标，runtime 非零退出后只用 size/hash 校验判定是否可恢复为 succeeded。 | 无。 |
+| Linux receive 成功误判失败 | 已完成代码修正，待端到端复验 | Linux receive wrapper 不再使用 `target_mtime >= receive_started_at`；overwrite 指定目标会在启动 yq-croc 前清理旧目标，runtime 非零退出后只用 size/hash 校验判定是否可恢复为 succeeded。 | 用 Windows -> Linux yq-croc 真实传输复验 Operation、TransferSession、目标文件 size/hash 和 Agent 结论一致。 |
 | `context.expand` 默认全量展开风险 | 已完成 | `context.expand` 对过大的根路径 `$` 返回 `path_required`、schema、preview shape 和 available paths；指定子路径仍可展开。 | 无。 |
 
 ## 1. 已确认问题
@@ -310,8 +311,10 @@ yq-croc receive 误报失败、Center transfer fact 继承、meta tool 默认输
 
 ## 4. 推荐实施顺序
 
-1. 用一次 Windows -> Linux 文件传输和一次 Windows 截图任务做端到端验收。
-2. 按 unified capability registry 计划继续收敛 Tool RAG 工具面，并验证截图类查询只是通用案例之一。
+1. 用一次 Windows 截图任务验收 Tool RAG 排序、`artifact.present` 展示、YCR projection 和前端 token/YCR 侧栏。
+2. 用一次 Windows -> Linux yq-croc 文件传输复验 Linux receive 判定、TransferSession size/hash 继承、Operation 状态和 Agent 最终结论一致。
+3. 审计 meta tool 默认输出边界，重点检查真实对话中仍可能导致高 token 的 `node.status`、`capability.describe`、`context.*`、`artifact.*`、`operation.status` 和 `transfer.status`。
+4. 复杂任务仍出现过度 search/describe 时，优先修 capability 合同、索引文档、working set 或 Agent prompt policy，不新增 query/capability 特判。
 
 ## 5. 完成判定
 

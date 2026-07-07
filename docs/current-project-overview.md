@@ -1,8 +1,8 @@
 # 当前项目全貌
 
 状态：当前概览  
-更新时间：2026-07-06
-当前阶段：YCR/Agent 行为修正、transfer 状态修正、统一 capability registry 收敛
+更新时间：2026-07-07
+当前阶段：YCR/Agent 行为验收、transfer 状态复验、Provider 系统整理
 
 ## 1. 一句话结论
 
@@ -19,7 +19,7 @@ YeQu Center 是个人基础设施控制中心。Center 负责认证、策略、�
 - Node capability 精细合同
 
 下一阶段不是立刻扩展 SubAgent 或继续堆业务能力，而是在质量门禁约束下，先完成
-YCR/Agent 行为修正、transfer 状态修正和统一 capability registry 收敛，确保
+YCR/Agent 行为验收、transfer 状态复验、meta tool 默认输出边界审计和 Provider 系统整理，确保
 Node/capability 插拔性、错误传播和上下文治理不继续积累临时逻辑。
 
 ## 2. 当前已具备的能力
@@ -28,7 +28,7 @@ Node/capability 插拔性、错误传播和上下文治理不继续积累临时�
 |---|---|
 | WinNode + LinuxNode 接入 | 已跑通，两个 Node 可同时在线。 |
 | YQP 协议 | hello、heartbeat、capability 注册、job poll/accept/running/finish、lease renew、cancel/reconcile、artifact.upload、Node-auth artifact download 已具备。 |
-| Capability Registry | Center 维护 capability definition/source，Agent 默认通过 meta tools 搜索、描述和调用。 |
+| Capability Registry | Center 维护 capability definition/source；Center meta tools 与 Node capabilities 已统一进入 registry，Provider 默认只通过 `capability.search` / `capability.describe` / `capability.invoke` 搜索、描述和调用。 |
 | Agent Runtime | 生产主路径为 `/agent/invoke/stream`；非流式旧 ReAct 路径已退出主线。 |
 | Operation Runtime | transfer、job、approval_wait、maintenance 已接入 Operation 投影；transfer Operation 已能从 source/target job 和 Node job.event read model 聚合基础进度并投影到 Console。 |
 | AgentRun checkpoint | provider 输出、tool observation、waiting_operation、waiting_approval、final/failure 均有结构化记录。 |
@@ -87,10 +87,11 @@ Tool RAG 只负责候选召回增强：
 Tool RAG 不能取代 registry、schema、preflight、Guard、Policy 或 Operation Runtime，也不能把语义相似度
 当成执行授权或事实满足证明。
 
-`capability.invoke` 当前已经是执行具体 Node capability 的入口。尚未完成的是
-`docs/todos/2026-07-06-unified-capability-registry-plan.md` 中的最终工具面收敛：
-把 Center meta tools 也统一注册为 capability，并让 provider 默认只暴露
-`capability.search` / `capability.describe` / `capability.invoke`。
+`capability.invoke` 是执行具体 capability 的入口。Center meta tools 与 Node
+capability 已统一进入 capability registry；provider 默认工具面收敛为
+`capability.search` / `capability.describe` / `capability.invoke`。YCR 通过
+capability gateway 产出的 typed entities 维护 session working set，避免 build-turn
+解析具体 tool result shape。
 
 ### 3.4 Node 与 capability 插拔边界
 
@@ -128,11 +129,10 @@ tool call
 当前执行顺序以 `docs/todos/README.md` 为准。质量门禁继续作为全局约束存在，但不替代
 专题待办的实现顺序。
 
-1. 先完成剩余行为验收：Windows 截图和 Windows -> Linux 传输端到端验收。
-2. 再推进 unified capability registry 非 cache 主线：Center capabilities 注册、
-   bootstrap tools 收窄、统一 describe/invoke、前端 registry 命中展示。
-3. 再回到 YCR core data path 文档，清理已被前两份文档吸收或取代的描述。
-4. RAG cache / retrieval candidate cache 暂时只登记为设计约束，不作为最近执行项。
+1. 先完成剩余行为验收：Windows 截图、Windows -> Linux 传输端到端复验、复杂任务过度探索观察。
+2. 收口 meta tool 默认输出边界：确认 `node.status`、`operation.status`、`transfer.status`、`artifact.*`、`context.*`、`capability.describe` 默认返回均符合职责边界。
+3. 继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
+4. YCR core data path 与 unified capability registry 进入维护核对状态；后续只在行为验收暴露回归时更新对应待办。
 
 SubAgent 和更多 Node 能力应在上述收敛完成后再进入主线。
 

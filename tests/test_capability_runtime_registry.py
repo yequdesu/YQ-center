@@ -17,6 +17,13 @@ async def _run_ycr_capability_index_worker() -> None:
         await db.commit()
 
 
+async def _sync_center_capabilities(db_session) -> None:
+    from yequ.services.capability_registry import sync_center_capability_definitions
+
+    await sync_center_capability_definitions(db_session)
+    await db_session.commit()
+
+
 async def _provision_node(db_session, *, node_id: str, token: str) -> None:
     from yequ.models.node import Node
     from yequ.services.node_auth import hash_token
@@ -770,6 +777,8 @@ async def test_center_capabilities_are_registered_and_describable(
     from yequ.application.schemas import ExecuteToolCommand
     from yequ.runtime import CenterExecutionRuntime
 
+    await _sync_center_capabilities(db_session)
+
     result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
             function_name="capability.describe",
@@ -798,6 +807,8 @@ async def test_center_capability_search_discovers_workflow_without_node_source(
 ) -> None:
     from yequ.application.schemas import ExecuteToolCommand
     from yequ.runtime import CenterExecutionRuntime
+
+    await _sync_center_capabilities(db_session)
 
     result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -830,6 +841,7 @@ async def test_capability_invoke_dispatches_center_inline_capability(
 
     node, token = provisioned_node
     await _hello_linux_node(client, node.node_id, token)
+    await _sync_center_capabilities(db_session)
 
     result = await CenterExecutionRuntime(db_session).execute(
         ExecuteToolCommand(
@@ -949,6 +961,8 @@ async def test_ycr_tool_search_reports_index_not_ready_without_frontend_rebuild(
     assert data["retrieval"]["candidate_count"] == 1
     assert data["retrieval"]["indexed_count"] == 0
     assert data["retrieval"]["unindexed_count"] == 1
+    assert data["retrieval"]["foreground"]["computed_missing_indexes"] is False
+    assert data["retrieval"]["foreground"]["enqueued_missing_indexes"] >= 0
     assert data["retrieval"]["semantic"]["status"] == "not_ready"
     assert data["retrieval"]["index"] == {
         "status": "not_ready",

@@ -10,17 +10,19 @@ from sqlalchemy import bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import get_settings
+from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
+from yequ.models.node import Node
 from yequ.models.ycr import YcrCapabilityIndex
 from yequ.services.capability_registry import (
     capability_describe,
     capability_search,
-    sync_center_capability_definitions,
 )
 from yequ.ycr.embedding import (
     EmbeddingError,
     RerankItem,
     YcrEmbedding,
 )
+from yequ.ycr.entities import attach_ycr_entities
 from yequ.ycr.rag_cache import (
     cached_query_embedding,
     cached_rerank,
@@ -39,6 +41,7 @@ TOOL_RAG_CANDIDATE_LIMIT = 500
 CAPABILITY_INDEX_VERSION = 3
 RETRIEVAL_TOP_K = 50
 RRF_K = 60
+DENSE_ONLY_MIN_SCORE = 0.55
 
 
 async def search_capability_registry(
@@ -51,7 +54,6 @@ async def search_capability_registry(
     limit: int = 10,
 ) -> dict[str, object]:
     filters = filters or {}
-    await sync_center_capability_definitions(db)
     common_filters = {
         "node_id": node_id,
         "platform_os": platform_os,
@@ -88,16 +90,19 @@ async def search_capability_registry(
         **common_filters,
         limit=limit,
     )
-    return {
-        "kind": "capability_registry_search_result",
-        "query": "",
-        "matches": capabilities,
-        "match_count": len(capabilities),
-        "retrieval": {
-            "strategy": "registry_filter_v1",
-            "semantic": {"enabled": False, "reason": "query_not_provided"},
+    return attach_ycr_entities(
+        {
+            "kind": "capability_registry_search_result",
+            "query": "",
+            "matches": capabilities,
+            "match_count": len(capabilities),
+            "retrieval": {
+                "strategy": "registry_filter_v1",
+                "semantic": {"enabled": False, "reason": "query_not_provided"},
+            },
         },
-    }
+        capabilities=capabilities,
+    )
 
 
 async def describe_capability_registry(
@@ -108,18 +113,21 @@ async def describe_capability_registry(
     sections: list[str] | None = None,
     projection: str = "invoke_ready",
 ) -> dict[str, object]:
-    await sync_center_capability_definitions(db)
-    return {
-        "kind": "capability_registry_description",
-        "capability": await capability_describe(
-            db,
-            capability_ref,
-            node_id=node_id,
-            sections=sections or [],
-            projection=projection,
-            include_inactive=False,
-        ),
-    }
+    capability = await capability_describe(
+        db,
+        capability_ref,
+        node_id=node_id,
+        sections=sections or [],
+        projection=projection,
+        include_inactive=False,
+    )
+    return attach_ycr_entities(
+        {
+            "kind": "capability_registry_description",
+            "capability": capability,
+        },
+        capabilities=[capability],
+    )
 
 
 def _str_or_none(value: object) -> str | None:
@@ -153,46 +161,32 @@ async def _search_capability_rag(
         max_limit=TOOL_RAG_CANDIDATE_LIMIT,
     )
     if not return_candidates:
-        return {
-            "kind": "capability_tool_rag_result",
-            "query": query,
-            "matches": [],
-            "match_count": 0,
-            "retrieval": {
-                "strategy": "tool_rag_bge_m3_rrf_v1",
-                "candidate_count": 0,
-                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
-                "semantic": {"enabled": True, "match_count": 0},
+        return attach_ycr_entities(
+            {
+                "kind": "capability_tool_rag_result",
+                "query": query,
+                "matches": [],
+                "match_count": 0,
+                "retrieval": {
+                    "strategy": "tool_rag_bge_m3_rrf_v1",
+                    "candidate_count": 0,
+                    "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
+                    "semantic": {"enabled": True, "match_count": 0},
+                },
             },
-        }
+            capabilities=[],
+        )
 
     indexed = await _load_ready_capability_indexes(db, return_candidates)
-    if not indexed:
-        return {
-            "kind": "capability_tool_rag_result",
-            "query": query,
-            "matches": [],
-            "match_count": 0,
-            "retrieval": {
-                "strategy": "tool_rag_bge_m3_rrf_v1",
-                "candidate_count": len(return_candidates),
-                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
-                "requested_projection": requested_projection,
-                "indexed_count": 0,
-                "unindexed_count": len(return_candidates),
-                "semantic": {
-                    "enabled": True,
-                    "status": "not_ready",
-                    "match_count": 0,
-                },
-                "index": {
-                    "status": "not_ready",
-                    "reason": "matching capability indexes are not ready",
-                    "retryable": True,
-                    "retry_after_seconds": 5,
-                },
-            },
-        }
+    if len(indexed) < len(return_candidates):
+        enqueued = await _enqueue_missing_capability_indexes(db, return_candidates, indexed)
+        return _index_not_ready_response(
+            query=query,
+            requested_projection=requested_projection,
+            candidate_count=len(return_candidates),
+            indexed_count=len(indexed),
+            enqueued_count=enqueued,
+        )
     try:
         cached_embedding = await cached_query_embedding(
             db,
@@ -205,7 +199,7 @@ async def _search_capability_rag(
 
     return_by_name = {str(item.get("canonical_name") or ""): item for item in return_candidates}
     index_by_name = {index.canonical_name: index for index in indexed}
-    corpus_fingerprint = _corpus_fingerprint(return_candidates, indexed)
+    registry_version = await _capability_registry_version(db)
     filters_hash = _retrieval_filters_hash(filters)
     query_embedding_hash = hash_rag_object(
         {"dense": query_embedding.dense, "sparse": query_embedding.sparse}
@@ -214,7 +208,7 @@ async def _search_capability_rag(
         db,
         normalized_query_hash=cached_embedding.normalized_query_hash,
         query_embedding_hash=query_embedding_hash,
-        corpus_fingerprint=corpus_fingerprint,
+        registry_version=registry_version,
         filters_hash=filters_hash,
         top_k=RETRIEVAL_TOP_K,
         compute=lambda: _compute_retrieval_candidate_rows(query_embedding, indexed),
@@ -278,46 +272,49 @@ async def _search_capability_rag(
         }
         matches.append(output)
 
-    return {
-        "kind": "capability_tool_rag_result",
-        "query": query,
-        "matches": matches,
-        "match_count": len(matches),
-        "retrieval": {
-            "strategy": "tool_rag_bge_m3_rrf_v1",
-            "candidate_count": len(return_candidates),
-            "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
-            "requested_projection": requested_projection,
-            "indexed_count": len(indexed),
-            "unindexed_count": len(return_candidates) - len(indexed),
-            "reranked_count": len(reranked),
-            "semantic": {
-                "enabled": True,
-                "provider": query_embedding.provider,
-                "model": query_embedding.model,
-                "coarse_result_count": len(cached_retrieval.rows),
-                "match_count": len(matches),
-            },
-            "cache": {
-                "query_embedding": {
-                    "status": cached_embedding.cache_status,
-                    "cache_key": cached_embedding.cache_key,
+    return attach_ycr_entities(
+        {
+            "kind": "capability_tool_rag_result",
+            "query": query,
+            "matches": matches,
+            "match_count": len(matches),
+            "retrieval": {
+                "strategy": "tool_rag_bge_m3_rrf_v1",
+                "candidate_count": len(return_candidates),
+                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
+                "requested_projection": requested_projection,
+                "indexed_count": len(indexed),
+                "unindexed_count": len(return_candidates) - len(indexed),
+                "reranked_count": len(reranked),
+                "semantic": {
+                    "enabled": True,
+                    "provider": query_embedding.provider,
+                    "model": query_embedding.model,
+                    "coarse_result_count": len(cached_retrieval.rows),
+                    "match_count": len(matches),
                 },
-                "retrieval": {
+                "cache": {
+                    "query_embedding": {
+                        "status": cached_embedding.cache_status,
+                        "cache_key": cached_embedding.cache_key,
+                    },
+                    "retrieval": {
                     "status": cached_retrieval.cache_status,
                     "cache_key": cached_retrieval.cache_key,
                     "query_embedding_hash": cached_retrieval.query_embedding_hash,
-                    "corpus_fingerprint": cached_retrieval.corpus_fingerprint,
+                    "registry_version": cached_retrieval.registry_version,
                     "filters_hash": cached_retrieval.filters_hash,
                 },
-                "rerank": {
-                    "status": cached_reranked.cache_status,
-                    "cache_key": cached_reranked.cache_key,
-                    "document_hashes_hash": cached_reranked.document_hashes_hash,
+                    "rerank": {
+                        "status": cached_reranked.cache_status,
+                        "cache_key": cached_reranked.cache_key,
+                        "document_hashes_hash": cached_reranked.document_hashes_hash,
+                    },
                 },
             },
         },
-    }
+        capabilities=matches,
+    )
 
 
 async def _compute_retrieval_candidate_rows(
@@ -359,6 +356,69 @@ async def _compute_retrieval_candidate_rows(
     ]
 
 
+async def _enqueue_missing_capability_indexes(
+    db: AsyncSession,
+    candidates: list[dict[str, object]],
+    indexed: list[YcrCapabilityIndex],
+) -> int:
+    indexed_capability_ids = {index.capability_id for index in indexed}
+    missing_ids = {
+        str(candidate.get("capability_id") or "")
+        for candidate in candidates
+        if str(candidate.get("capability_id") or "")
+        and str(candidate.get("capability_id") or "") not in indexed_capability_ids
+    }
+    if not missing_ids:
+        return 0
+    from yequ.ycr.capability_index_jobs import enqueue_capability_index_jobs
+
+    return await enqueue_capability_index_jobs(db, capability_ids=missing_ids)
+
+
+def _index_not_ready_response(
+    *,
+    query: str,
+    requested_projection: str,
+    candidate_count: int,
+    indexed_count: int,
+    enqueued_count: int,
+) -> dict[str, object]:
+    unindexed_count = max(0, candidate_count - indexed_count)
+    return attach_ycr_entities(
+        {
+            "kind": "capability_tool_rag_result",
+            "query": query,
+            "matches": [],
+            "match_count": 0,
+            "retrieval": {
+                "strategy": "tool_rag_bge_m3_rrf_v1",
+                "candidate_count": candidate_count,
+                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
+                "requested_projection": requested_projection,
+                "indexed_count": indexed_count,
+                "unindexed_count": unindexed_count,
+                "foreground": {
+                    "policy": "read_ready_indexes_only_v1",
+                    "computed_missing_indexes": False,
+                    "enqueued_missing_indexes": enqueued_count,
+                },
+                "semantic": {
+                    "enabled": True,
+                    "status": "not_ready",
+                    "match_count": 0,
+                },
+                "index": {
+                    "status": "not_ready",
+                    "reason": "matching capability indexes are not ready",
+                    "retryable": True,
+                    "retry_after_seconds": 5,
+                },
+            },
+        },
+        capabilities=[],
+    )
+
+
 async def _compute_query_embedding(query: str) -> YcrEmbedding:
     return await scheduled_embed_text_full(
         query,
@@ -385,7 +445,11 @@ def _rrf_fusion(
     top_k: int,
 ) -> list[tuple[str, float, dict[str, int]]]:
     if not sparse_rows:
-        dense_ranked = sorted(dense_rows, key=lambda item: item[1], reverse=True)[:top_k]
+        dense_ranked = [
+            item
+            for item in sorted(dense_rows, key=lambda item: item[1], reverse=True)
+            if item[1] >= DENSE_ONLY_MIN_SCORE
+        ][:top_k]
         return [
             (name, score, {"dense_rank": rank})
             for rank, (name, score) in enumerate(dense_ranked, start=1)
@@ -393,11 +457,27 @@ def _rrf_fusion(
 
     scores: dict[str, float] = {}
     ranks: dict[str, dict[str, int]] = {}
+    sparse_names = {name for name, _score in sparse_rows}
+    dense_ranked = [
+        (name, rank)
+        for rank, (name, score) in enumerate(
+            sorted(dense_rows, key=lambda item: item[1], reverse=True),
+            start=1,
+        )
+        if name in sparse_names or score >= DENSE_ONLY_MIN_SCORE
+    ][:top_k]
+    sparse_ranked = [
+        (name, rank)
+        for rank, (name, _score) in enumerate(
+            sorted(sparse_rows, key=lambda item: item[1], reverse=True),
+            start=1,
+        )
+    ][:top_k]
     for channel, rows in (
-        ("dense", sorted(dense_rows, key=lambda item: item[1], reverse=True)[:top_k]),
-        ("sparse", sorted(sparse_rows, key=lambda item: item[1], reverse=True)[:top_k]),
+        ("dense", dense_ranked),
+        ("sparse", sparse_ranked),
     ):
-        for rank, (name, _score) in enumerate(rows, start=1):
+        for name, rank in rows:
             scores[name] = scores.get(name, 0.0) + 1.0 / (RRF_K + rank)
             ranks.setdefault(name, {})[f"{channel}_rank"] = rank
     return [
@@ -424,43 +504,58 @@ def _rank_dict(value: object) -> dict[str, int]:
     return output
 
 
-def _corpus_fingerprint(
-    candidates: list[dict[str, object]],
-    indexed: list[YcrCapabilityIndex],
-) -> str:
-    document_hash_by_name = {index.canonical_name: index.document_hash for index in indexed}
-    rows: list[dict[str, object]] = []
-    for candidate in candidates:
-        name = str(candidate.get("canonical_name") or "")
-        rows.append(
-            {
-                "capability_id": candidate.get("capability_id"),
-                "canonical_name": name,
-                "document_hash": document_hash_by_name.get(name),
-                "sources": _source_fingerprint_rows(candidate.get("sources")),
-            }
+async def _capability_registry_version(db: AsyncSession) -> str:
+    definition_result = await db.execute(
+        select(CapabilityDefinition).order_by(
+            CapabilityDefinition.capability_type,
+            CapabilityDefinition.canonical_name,
+            CapabilityDefinition.capability_id,
         )
-    return hash_rag_object({"version": CAPABILITY_INDEX_VERSION, "candidates": rows})
-
-
-def _source_fingerprint_rows(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        return []
-    rows: list[dict[str, object]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "source_id": item.get("source_id"),
-                "node_id": item.get("node_id"),
-                "registered_name": item.get("registered_name"),
-                "status": item.get("status"),
-                "dispatchable": item.get("dispatchable"),
-                "unavailable_reasons": item.get("unavailable_reasons"),
-            }
-        )
-    return rows
+    )
+    source_result = await db.execute(
+        select(CapabilitySource, Node)
+        .join(Node, CapabilitySource.node_record_id == Node.id, isouter=True)
+        .order_by(CapabilitySource.source_id)
+    )
+    definitions = [
+        {
+            "capability_id": item.capability_id,
+            "canonical_name": item.canonical_name,
+            "capability_type": item.capability_type,
+            "scope": item.scope,
+            "plane": item.plane,
+            "dispatch_kind": item.dispatch_kind,
+            "agent_visible": item.agent_visible,
+            "invocation_surface": item.invocation_surface,
+            "status": item.status,
+            "updated_at": item.updated_at,
+        }
+        for item in definition_result.scalars().all()
+    ]
+    sources = [
+        {
+            "source_id": source.source_id,
+            "definition_id": source.definition_id,
+            "node_id": node.node_id if node else None,
+            "node_status": node.status if node else None,
+            "registered_name": source.registered_name,
+            "runtime_id": source.runtime_id,
+            "platform_os": source.platform_os,
+            "status": source.status,
+            "is_active": source.is_active,
+            "unavailable_reason": source.unavailable_reason,
+            "updated_at": source.updated_at,
+        }
+        for source, node in source_result.all()
+    ]
+    return hash_rag_object(
+        {
+            "kind": "capability_registry_version",
+            "capability_index_version": CAPABILITY_INDEX_VERSION,
+            "definitions": definitions,
+            "sources": sources,
+        }
+    )
 
 
 def _retrieval_filters_hash(filters: dict[str, object]) -> str:

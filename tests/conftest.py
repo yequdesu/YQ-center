@@ -138,6 +138,7 @@ def override_settings(monkeypatch, db_engine):
                 )
 
         async def store_tool_observation(self, **payload):
+            from yequ.ycr.entities import metadata_from_result, strip_ycr_entities
             from yequ.ycr.projection import tool_observation_shell
             from yequ.ycr.ref_store import upsert_ref
 
@@ -148,12 +149,13 @@ def override_settings(monkeypatch, db_engine):
                     source_type="tool_call",
                     source_id=str(payload.get("call_id") or ""),
                     path="$",
-                    value=payload.get("result"),
+                    value=strip_ycr_entities(payload.get("result")),
                     summary=f"{payload.get('name')} {payload.get('status')}",
                     actor_id=str(payload.get("actor_id") or "") or None,
                     session_id=str(payload.get("session_id") or "") or None,
                     trust_level="node_reported_fact",
                     projection_policy="tool_observation_raw_ref_v1",
+                    metadata=metadata_from_result(payload.get("result")),
                 )
                 shell = tool_observation_shell(
                     name=str(payload.get("name") or ""),

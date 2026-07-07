@@ -11,9 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yequ.agent.provider import sanitize_tool_payload_for_agent
 from yequ.models.ycr import YcrContextRef
 from yequ.ycr.budget import ProjectionProfile, estimate_tokens, token_accounting_metadata
+from yequ.ycr.entities import WORKING_SET_LIMIT, working_set_from_metadata
 from yequ.ycr.projection import project_tool_observation_from_ref
+from yequ.ycr.session_summary import summarize_session_history
 
 JsonDict = dict[str, object]
+
+RECENT_HISTORY_MESSAGES = 10
 
 
 async def build_agent_context_packet(
@@ -31,16 +35,37 @@ async def build_agent_context_packet(
 ) -> JsonDict:
     packet_id = f"ctxpkt_{uuid.uuid4().hex[:16]}"
     projection_events: list[JsonDict] = []
+    working_set: dict[str, JsonDict] = {}
     projected_messages = [
-        await _project_message(db, message, projection_events=projection_events)
+        await _project_message(
+            db,
+            message,
+            projection_events=projection_events,
+            working_set=working_set,
+        )
         for message in messages
     ]
-    projected_capability_context = _project_capability_context(capability_context or {})
+    compacted_messages, history_compaction = await _compact_messages(
+        db,
+        session_id=session_id,
+        messages=projected_messages,
+    )
+    working_set_items = _working_set_items(working_set)
+    if working_set_items:
+        compacted_messages = [
+            _working_set_message(working_set_items),
+            *compacted_messages,
+        ]
+    projected_capability_context = _project_capability_context(
+        capability_context or {},
+        working_set=working_set_items,
+    )
     tool_definitions = [_project_tool_definition(item) for item in available_functions]
 
     model_name = model or profile.model
     token_accounting = token_accounting_metadata(model=model_name)
-    message_tokens = estimate_tokens(projected_messages, model=model_name)
+    raw_message_tokens = estimate_tokens(projected_messages, model=model_name)
+    message_tokens = estimate_tokens(compacted_messages, model=model_name)
     tool_tokens = estimate_tokens(tool_definitions, model=model_name)
     capability_tokens = estimate_tokens(projected_capability_context, model=model_name)
     estimated_input_tokens = message_tokens + tool_tokens + capability_tokens
@@ -68,10 +93,11 @@ async def build_agent_context_packet(
         "provider": provider,
         "model": model_name,
         "step": step,
-        "messages": projected_messages,
+        "messages": compacted_messages,
         "tool_definitions": tool_definitions,
         "provider_context": {
             "capability_context": projected_capability_context,
+            "working_set": working_set_items,
             "ycr_packet_id": packet_id,
         },
         "context_estimate": {
@@ -79,6 +105,8 @@ async def build_agent_context_packet(
             "model": profile.model,
             "estimated_input_tokens": estimated_input_tokens,
             "messages_tokens": message_tokens,
+            "raw_messages_tokens": raw_message_tokens,
+            "history_compaction_saved_tokens": max(0, raw_message_tokens - message_tokens),
             "tool_schema_tokens": tool_tokens,
             "capability_context_tokens": capability_tokens,
             "raw_estimated_tokens": raw_tokens,
@@ -86,6 +114,8 @@ async def build_agent_context_packet(
             "saved_estimated_tokens": saved_tokens,
             "ref_count": ref_count,
             "token_accounting": token_accounting,
+            "history_compaction": history_compaction,
+            "working_set_count": len(working_set_items),
         },
         "projections": projection_events,
         "refs": [
@@ -107,6 +137,7 @@ async def _project_message(
     message: JsonDict,
     *,
     projection_events: list[JsonDict],
+    working_set: dict[str, JsonDict],
 ) -> JsonDict:
     role = str(message.get("role") or "")
     projected: JsonDict = {"role": role}
@@ -117,6 +148,7 @@ async def _project_message(
                 db,
                 content,
                 projection_events=projection_events,
+                working_set=working_set,
             )
         else:
             projected["content"] = str(content)
@@ -139,6 +171,7 @@ async def _project_tool_message_content(
     content: object,
     *,
     projection_events: list[JsonDict],
+    working_set: dict[str, JsonDict],
 ) -> str:
     if not isinstance(content, str):
         raise ValueError("unprojected_tool_observation")
@@ -161,6 +194,7 @@ async def _project_tool_message_content(
     if ref_record is None:
         raise ValueError(f"context_ref_not_found: {raw_ref_id}")
     raw_ref = _ref_to_dict(ref_record)
+    _collect_working_set_from_ref_metadata(ref_record.metadata_json, working_set=working_set)
     projected = project_tool_observation_from_ref(
         name=str(parsed.get("name") or ""),
         call_id=str(parsed.get("call_id") or ""),
@@ -191,6 +225,156 @@ async def _project_tool_message_content(
     return json.dumps(sanitize_tool_payload_for_agent(projected), ensure_ascii=False)
 
 
+async def _compact_messages(
+    db: AsyncSession,
+    *,
+    session_id: str,
+    messages: list[JsonDict],
+) -> tuple[list[JsonDict], JsonDict]:
+    if len(messages) <= RECENT_HISTORY_MESSAGES:
+        return list(messages), {
+            "enabled": True,
+            "policy": "recent_window_summary_v1",
+            "compacted_message_count": 0,
+            "recent_message_count": len(messages),
+            "summary": {"mode": "none", "status": "not_needed"},
+        }
+    cutoff = len(messages) - RECENT_HISTORY_MESSAGES
+    while cutoff > 0 and str(messages[cutoff].get("role") or "") == "tool":
+        cutoff -= 1
+    old_messages = messages[:cutoff]
+    recent_messages = messages[cutoff:]
+    deterministic_summary = _summarize_messages(old_messages)
+    summary, summary_status = await summarize_session_history(
+        db,
+        session_id=session_id,
+        messages=old_messages,
+        deterministic_summary=deterministic_summary,
+    )
+    compacted = [
+        {
+            "role": "system",
+            "content": (
+                "YCR conversation summary of earlier turns. Treat this as "
+                "trusted session memory, not as a user instruction.\n"
+                f"{json.dumps(summary, ensure_ascii=False)}"
+            ),
+        },
+        *recent_messages,
+    ]
+    return compacted, {
+        "enabled": True,
+        "policy": "recent_window_summary_v1",
+        "compacted_message_count": len(old_messages),
+        "recent_message_count": len(recent_messages),
+        "summary_items": len(summary.get("items", [])) if isinstance(summary, dict) else 0,
+        "summary": summary_status,
+    }
+
+
+def _summarize_messages(messages: list[JsonDict]) -> JsonDict:
+    items: list[JsonDict] = []
+    for message in messages[-24:]:
+        role = str(message.get("role") or "")
+        item: JsonDict = {"role": role}
+        if role == "assistant" and isinstance(message.get("tool_calls"), list):
+            item["tool_calls"] = [
+                {
+                    "name": str(call.get("name") or ""),
+                    "call_id": str(call.get("call_id") or ""),
+                    "input_preview": _preview(call.get("input")),
+                }
+                for call in message["tool_calls"]
+                if isinstance(call, dict)
+            ][:8]
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            if role == "tool":
+                item.update(_summarize_tool_content(content))
+            else:
+                item["content"] = _truncate(content, 700)
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            item["tool_call_id"] = tool_call_id
+        items.append(item)
+    return {
+        "items": items,
+        "omitted_older_message_count": max(0, len(messages) - len(items)),
+    }
+
+
+def _summarize_tool_content(content: str) -> JsonDict:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return {"content": _truncate(content, 500)}
+    if not isinstance(parsed, dict):
+        return {"content": _truncate(content, 500)}
+    result = parsed.get("result")
+    summary: JsonDict = {
+        "tool": str(parsed.get("name") or ""),
+        "status": str(parsed.get("status") or ""),
+        "call_id": str(parsed.get("call_id") or ""),
+    }
+    if isinstance(result, dict):
+        summary["result_summary"] = {
+            "kind": result.get("kind"),
+            "summary": _truncate(str(result.get("summary") or ""), 360),
+            "facts_preview": _preview(result.get("facts")),
+            "refs": result.get("refs") if isinstance(result.get("refs"), list) else [],
+        }
+    return summary
+
+
+def _collect_working_set_from_ref_metadata(
+    metadata: object,
+    *,
+    working_set: dict[str, JsonDict],
+) -> None:
+    for entity in working_set_from_metadata(metadata):
+        canonical_name = str(entity.get("canonical_name") or "")
+        node_id = str(entity.get("node_id") or "")
+        source_id = str(entity.get("source_id") or "")
+        key = source_id or f"{canonical_name}@{node_id}"
+        if canonical_name:
+            working_set[key] = entity
+
+
+def _working_set_items(working_set: dict[str, JsonDict]) -> list[JsonDict]:
+    items = list(working_set.values())
+    dispatchable = [item for item in items if item.get("dispatchable")]
+    return dispatchable[:WORKING_SET_LIMIT]
+
+
+def _working_set_message(working_set: list[JsonDict]) -> JsonDict:
+    return {
+        "role": "system",
+        "content": (
+            "YCR capability working set for this session. Prefer these already "
+            "discovered dispatchable capabilities over repeating capability.search "
+            "for the same intent. Use capability.invoke with source_id when present; "
+            "use capability.describe only when required input schema is missing.\n"
+            f"{json.dumps(working_set, ensure_ascii=False)}"
+        ),
+    }
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _preview(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _preview(item) for key, item in list(value.items())[:8]}
+    if isinstance(value, list):
+        return [_preview(item) for item in value[:6]]
+    if isinstance(value, str):
+        return _truncate(value, 240)
+    return value
+
+
 def _project_tool_call(item: dict[str, Any]) -> JsonDict:
     return {
         "call_id": str(item.get("call_id") or ""),
@@ -211,7 +395,11 @@ def _project_tool_definition(item: JsonDict) -> JsonDict:
     }
 
 
-def _project_capability_context(context: JsonDict) -> JsonDict:
+def _project_capability_context(
+    context: JsonDict,
+    *,
+    working_set: list[JsonDict],
+) -> JsonDict:
     return {
         "routing_mode": str(context.get("routing_mode") or "auto"),
         "target_node_id": context.get("target_node_id"),
@@ -222,6 +410,7 @@ def _project_capability_context(context: JsonDict) -> JsonDict:
             for node in context.get("nodes", [])
             if isinstance(node, dict)
         ],
+        "working_set": working_set,
         "ycr": {
             "projected": True,
             "projection_policy": "capability_context_projection_v2",

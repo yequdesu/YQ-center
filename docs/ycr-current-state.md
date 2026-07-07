@@ -1,7 +1,7 @@
 # YCR 当前实现现状
 
 状态：当前权威实现说明
-更新时间：2026-07-06
+更新时间：2026-07-07
 
 本文只描述当前代码已经落地的 YeQu Context Router（YCR）行为。早期设计提案和历史计划只能作为背景；当它们与本文冲突时，以本文和代码为准。
 
@@ -49,6 +49,11 @@ Agent Runtime
 | `YEQU_YCR_SCHEDULER_EMBEDDING_CONCURRENCY` | YCR scheduler 允许同时提交的 embedding 请求数，默认 1。 |
 | `YEQU_YCR_SCHEDULER_RERANK_CONCURRENCY` | YCR scheduler 允许同时提交的 rerank 请求数，默认 1。 |
 | `YEQU_YCR_SCHEDULER_BACKGROUND_BATCH_SIZE` | capability index 后台 worker 单轮处理数量，默认 5。 |
+| `YEQU_YCR_SUMMARY_BASE_URL` | YCR session history 摘要模型地址；未设置时复用 DeepSeek base URL。 |
+| `YEQU_YCR_SUMMARY_API_KEY` | YCR session history 摘要模型 API Key；未设置时复用 DeepSeek API Key。 |
+| `YEQU_YCR_SUMMARY_MODEL` | YCR session history 摘要模型名；未设置时复用 DeepSeek model。 |
+| `YEQU_YCR_SUMMARY_TIMEOUT_SEC` | YCR 摘要模型调用超时，默认 20 秒。 |
+| `YEQU_YCR_SUMMARY_INPUT_CHARS` | 单次摘要输入字符上限，默认 16000。 |
 | `YEQU_EMBEDDER_EMBEDDING_CONCURRENCY` | embedder 服务内 embedding 模型推理并发，默认 1。 |
 | `YEQU_EMBEDDER_RERANK_CONCURRENCY` | embedder 服务内 reranker 模型推理并发，默认 1。 |
 | `YEQU_YCR_PROJECTION_INLINE_BYTES` | 默认投影 inline 上限。 |
@@ -108,6 +113,36 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 4. preview 使用 bounded prefix，不能接近完整 raw 大小。
 5. 不使用字段名白名单、敏感字段黑名单、业务字段硬编码、depth-based sample 或字符串 `[...truncated by YCR...]`。
 
+tool observation projection 保留 `facts` 原结构，同时新增 path-indexed ref 元数据：
+
+```json
+{
+  "kind": "tool_observation",
+  "summary": "capability.search succeeded",
+  "facts": {"stdout": {"$ycr_ref": "ctxref_xxx", "path": "$.stdout"}},
+  "refs": [{"$ycr_ref": "ctxref_xxx", "path": "$.stdout"}],
+  "structured_refs": {
+    "count": 1,
+    "by_path": {
+      "$.stdout": {
+        "$ycr_ref": "ctxref_xxx",
+        "value_type": "string",
+        "preview": "...",
+        "available_ops": ["inspect", "expand", "tail", "search", "schema"]
+      }
+    }
+  },
+  "expand_hints": [
+    {
+      "path": "$.stdout",
+      "ref_id": "ctxref_xxx",
+      "value_type": "string",
+      "preferred_ops": ["tail", "search", "expand"]
+    }
+  ]
+}
+```
+
 当前 `$ycr_ref` provider-visible shape：
 
 ```json
@@ -128,6 +163,17 @@ Operation resume、AgentRun resume 和 prompt/context 投影仍由 `src/yequ/ycr
 
 YCR 不再设置 provider 总 token hard limit；它只输出 `context_estimate`，由前端和日志用于观测。
 
+build-turn 会对较早的 session history 做 turn-level compaction：
+
+1. 最近消息窗口原样保留，较早消息压缩为 provider-visible session memory。
+2. YCR 优先使用 openai-compatible LLM summary provider 生成摘要，并按 session/input hash 持久缓存为 `agent_session_summary` ContextRef。
+3. `YEQU_YCR_SUMMARY_*` 未配置或摘要模型失败时，YCR 使用确定性结构化摘要，并在 `history_compaction.summary.status` 中标明原因；不会回退到 raw 大历史。
+4. `test_mode` 下不调用外部摘要模型。
+
+默认 summary provider 配置会复用 DeepSeek 配置；也可以通过
+`YEQU_YCR_SUMMARY_BASE_URL`、`YEQU_YCR_SUMMARY_API_KEY` 和
+`YEQU_YCR_SUMMARY_MODEL` 单独指定。
+
 ## 6. Tool RAG
 
 Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capability_index_jobs.py`。
@@ -143,12 +189,19 @@ Tool RAG 位于 `src/yequ/ycr/capability_gateway.py` 与 `src/yequ/ycr/capabilit
 6. reranker 通过 `ycr_rerank_cache` 持久缓存，cache key 包含 query hash、
    ordered document hashes、rerank model/version 和 top_n。
 7. 粗召回候选通过 `ycr_retrieval_candidate_cache` 持久缓存，cache key 包含
-   query embedding hash、corpus fingerprint、filters hash、retrieval algorithm version 和 top_k。
+   query embedding hash、capability registry version、filters hash、retrieval algorithm version 和 top_k。
+   registry version 由 capability definition、source 和 node 在线/调度事实共同计算，Node 上下线或能力重新注册会使全局 Tool RAG retrieval cache 自动失效。
 8. 匹配候选存在但 index 尚未 ready 时，`capability.search` 返回
    `retrieval.index.status=not_ready`、`retryable=true` 和 `retry_after_seconds`，
    不在前台同步建索引，也不把该状态伪装成无匹配。
 9. embedding 或 reranker 不可用时返回明确错误，不 fallback 到字符串相似度或 registry 伪结果。
 10. 无 query 时只能做 registry list/filter，且必须有结构化过滤条件；它不是语义检索。
+
+`capability.search` / `capability.describe` 的结果会由 capability gateway 直接附带
+`ycr_entities.capabilities` typed metadata。`/v1/tool-observations` 存 raw ContextRef
+时把该 metadata 移入 `YcrContextRef.metadata_json`，并从 raw result 中移除
+`ycr_entities`。build-turn 的 session working set 只读取 ref metadata，不再解析
+`matches`、`capability`、`sources` 等 result shape。
 
 当前 provider 默认只直接看到 `capability.search`、`capability.describe`、
 `capability.invoke` 三个 bootstrap protocol tools。Center meta tools 与 Node runtime

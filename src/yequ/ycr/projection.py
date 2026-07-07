@@ -101,15 +101,17 @@ def project_tool_observation_from_ref(
             "summary": _summary_text(name=name, status=status, value=result),
             "facts": projected,
             "refs": stats.refs,
+            "structured_refs": _structured_refs(stats.refs),
+            "expand_hints": _expand_hints(stats.refs),
             "trust_level": str(raw_ref.get("trust_level") or "node_reported_fact"),
-            "projection_policy": "tool_observation_ref_projection_v1",
+            "projection_policy": "tool_observation_structured_ref_projection_v2",
             "context_estimate": _stats_dict(stats),
         },
         "target_node_id": target_node_id,
         "ycr": {
             "projected": True,
-            "projection_policy": "tool_observation_ref_projection_v1",
-            "projection_version": 2,
+            "projection_policy": "tool_observation_structured_ref_projection_v2",
+            "projection_version": 3,
             "raw_ref": ref_id,
         },
     }
@@ -446,6 +448,54 @@ def _stats_dict(stats: ProjectionStats) -> JsonDict:
         "ref_count": stats.ref_count,
         "preview_estimated_tokens": stats.preview_estimated_tokens,
     }
+
+
+def _structured_refs(refs: list[JsonDict]) -> JsonDict:
+    by_path: JsonDict = {}
+    for ref in refs:
+        path = ref.get("path")
+        if isinstance(path, str) and path:
+            by_path[path] = {
+                "$ycr_ref": ref.get("$ycr_ref"),
+                "ref_type": ref.get("ref_type"),
+                "value_type": ref.get("value_type"),
+                "stats": ref.get("stats"),
+                "preview": ref.get("preview"),
+                "preview_kind": ref.get("preview_kind"),
+                "preview_complete": ref.get("preview_complete"),
+                "available_ops": ref.get("available_ops"),
+            }
+    return {
+        "count": len(by_path),
+        "by_path": by_path,
+    }
+
+
+def _expand_hints(refs: list[JsonDict]) -> list[JsonDict]:
+    hints: list[JsonDict] = []
+    for ref in refs[:12]:
+        path = ref.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        hints.append(
+            {
+                "path": path,
+                "ref_id": ref.get("$ycr_ref"),
+                "value_type": ref.get("value_type"),
+                "preferred_ops": _preferred_ops_for_ref(ref),
+                "preview_complete": ref.get("preview_complete"),
+            }
+        )
+    return hints
+
+
+def _preferred_ops_for_ref(ref: JsonDict) -> list[str]:
+    value_type = str(ref.get("value_type") or "")
+    if value_type == "string":
+        return ["tail", "search", "expand"]
+    if value_type in {"array", "object"}:
+        return ["schema", "search", "expand"]
+    return ["expand"]
 
 
 def _summary_text(*, name: str, status: str, value: object) -> str:

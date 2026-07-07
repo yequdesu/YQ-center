@@ -96,7 +96,6 @@ class CenterExecutionRuntime:
         from yequ.services.capability_registry import (
             resolve_capability_invoke_target,
             resolve_center_capability_name,
-            sync_center_capability_definitions,
         )
 
         input_data = dict(command.input_data)
@@ -117,7 +116,6 @@ class CenterExecutionRuntime:
                 "capability.invoke input must be an object",
             )
 
-        await sync_center_capability_definitions(self.db)
         center_function = await resolve_center_capability_name(
             self.db,
             capability_ref=capability_ref,

@@ -273,13 +273,16 @@ ycr_rerank_cache
 
 ```text
 query_embedding_hash
-+ corpus_fingerprint
++ capability_registry_version
 + filters_hash
 + retrieval_algorithm_version
 -> candidate index_ids + dense/sparse/RRF scores
 ```
 
-这层收益低于 query embedding cache 和 rerank cache，但 unified registry 能力数量上升后会变得有价值。
+`capability_registry_version` 由 capability definition、source 和 node 在线/调度事实共同计算。
+Node 上下线、能力重新注册或 source dispatchable 变化会导致 retrieval candidate cache
+换 key。当前数据库列名仍为 `corpus_fingerprint`，但语义已经收敛为 registry-version
+aware cache key。
 
 ### 6.4 不缓存最终业务结论
 
@@ -353,7 +356,7 @@ ycr_capability_search_index
 - sparse_json
 - embedding_vector
 - registry_fingerprint
-- corpus_fingerprint
+- capability_registry_version
 - index_version
 - status
 - indexed_at
