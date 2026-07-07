@@ -91,22 +91,23 @@ async def execute_inline_meta_tool(
                 "match_count": search_result.get("match_count", 0),
                 "retrieval": search_result.get("retrieval", {}),
             }
+            if isinstance(search_result.get("ycr_entities"), dict):
+                output["ycr_entities"] = search_result["ycr_entities"]
         elif command.function_name == "capability.describe":
             capability_ref = string_or_none(input_data.get("capability_ref")) or string_or_none(
                 input_data.get("capability_id"),
             )
             if not capability_ref:
                 return runtime_error(command, "invalid_input", "capability_ref is required")
-            output = {
-                "capability": (
-                    await ycr_client.tool_describe(
-                        capability_ref=capability_ref,
-                        node_id=string_or_none(input_data.get("node_id")),
-                        sections=string_list(input_data.get("sections")),
-                        projection=string_or_none(input_data.get("projection")) or "invoke_ready",
-                    )
-                ).get("capability", {})
-            }
+            describe_result = await ycr_client.tool_describe(
+                capability_ref=capability_ref,
+                node_id=string_or_none(input_data.get("node_id")),
+                sections=string_list(input_data.get("sections")),
+                projection=string_or_none(input_data.get("projection")) or "invoke_ready",
+            )
+            output = {"capability": describe_result.get("capability", {})}
+            if isinstance(describe_result.get("ycr_entities"), dict):
+                output["ycr_entities"] = describe_result["ycr_entities"]
         elif command.function_name == "context.status":
             output = {"ycr": await ycr_client.status()}
         elif command.function_name == "context.inspect":
