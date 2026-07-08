@@ -1298,6 +1298,7 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
     typeof taskState?.completion === "object" && taskState.completion !== null
       ? String((taskState.completion as Record<string, unknown>).status ?? "")
       : "";
+  const latestDecision = latestDecisionSummary(run);
 
   return (
     <section>
@@ -1348,6 +1349,14 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
               completion: {completionStatus}
             </div>
           )}
+          {latestDecision && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
+              <div className="font-medium text-[var(--text)]">
+                decision: {latestDecision.action}
+              </div>
+              {latestDecision.reason && <div>{latestDecision.reason}</div>}
+            </div>
+          )}
           {run.error_message && (
             <div className="rounded-[var(--radius-sm)] border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-700">
               {run.error_code ? `${run.error_code}: ` : ""}
@@ -1358,6 +1367,25 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
       )}
     </section>
   );
+}
+
+function latestDecisionSummary(run: AgentRunProjection | null): { action: string; reason: string } | null {
+  if (!run) return null;
+  const event = [...run.events].reverse().find((item) => item.event_type === "decision.summary");
+  if (event) {
+    const action = String(event.payload.chosen_action ?? event.payload.next_state ?? "");
+    const reason = String(event.payload.why ?? "");
+    if (action || reason) return { action: action || "unknown", reason };
+  }
+  const taskState = run.task_state ?? {};
+  const lastDecision = taskState.last_decision;
+  if (lastDecision && typeof lastDecision === "object" && !Array.isArray(lastDecision)) {
+    const data = lastDecision as Record<string, unknown>;
+    const action = String(data.action ?? "");
+    const reason = String(data.reason_code ?? "");
+    if (action || reason) return { action: action || "unknown", reason };
+  }
+  return null;
 }
 
 function RuntimeMetric({ label, value }: { label: string; value: number }) {

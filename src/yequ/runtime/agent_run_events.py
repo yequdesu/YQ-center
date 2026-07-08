@@ -62,6 +62,7 @@ async def list_agent_run_events(
 
 
 def agent_run_event_dict(event: AgentRunEvent) -> dict[str, object]:
+    payload = event.payload_json if isinstance(event.payload_json, dict) else {}
     return {
         "event_id": event.event_id,
         "run_id": event.run_id,
@@ -70,13 +71,25 @@ def agent_run_event_dict(event: AgentRunEvent) -> dict[str, object]:
         "step_id": event.step_id,
         "plan_id": event.plan_id,
         "plan_step_id": event.plan_step_id,
+        "tool_call_id": _payload_string(payload, "tool_call_id", "call_id"),
+        "operation_id": _payload_string(payload, "operation_id"),
+        "approval_id": _payload_string(payload, "approval_id"),
+        "artifact_id": _payload_string(payload, "artifact_id"),
         "event_type": event.event_type,
         "source": event.source,
-        "payload": event.payload_json or {},
+        "payload": payload,
         "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
         "seq": event.seq,
         "created_at": event.created_at.isoformat() if event.created_at else None,
     }
+
+
+def _payload_string(payload: JsonDict, *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 async def _next_run_seq(db: AsyncSession, run_record_id: str) -> int:

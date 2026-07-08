@@ -40,6 +40,8 @@ class CapabilityInvocationTarget:
     risk: str
     effect: str
     timeout_sec: int | None
+    input_schema: JsonObject
+    available_execution_profiles: list[str]
 
 
 async def sync_capability_runtime_snapshot(
@@ -346,6 +348,9 @@ async def capability_search(
             continue
         if terms and not _definition_matches(definition, sources, terms):
             continue
+        runtime_profiles: dict[str, list[str]] | None = None
+        if projection in {"invoke_ready", "schema", "diagnostics"} and sources:
+            runtime_profiles = await _runtime_profiles_for_sources(db, sources)
         matches.append(
             _definition_search_summary(
                 definition,
@@ -368,6 +373,7 @@ async def capability_search(
                     "agent_visible": agent_visible,
                     "invocation_surface": invocation_surface,
                 },
+                runtime_profiles_by_source=runtime_profiles,
             )
         )
         if len(matches) >= _bounded_limit(limit, max_limit=max_limit):
@@ -488,6 +494,7 @@ async def resolve_capability_invoke_target(
         )
 
     source, definition, node = rows[0]
+    runtime_profiles = await _runtime_profiles_for_sources(db, [source])
     return CapabilityInvocationTarget(
         capability_id=definition.capability_id,
         canonical_name=definition.canonical_name,
@@ -497,6 +504,8 @@ async def resolve_capability_invoke_target(
         risk=definition.risk or "safe",
         effect=definition.effect or "read",
         timeout_sec=source.timeout_sec,
+        input_schema=definition.input_schema or {},
+        available_execution_profiles=runtime_profiles.get(source.source_id, []),
     )
 
 
@@ -899,6 +908,7 @@ def _definition_search_summary(
     projection: str = "summary",
     terms: list[str] | None = None,
     filters: dict[str, object] | None = None,
+    runtime_profiles_by_source: dict[str, list[str]] | None = None,
 ) -> JsonObject:
     projection = _normalize_projection(projection, default="summary")
     data: JsonObject = {
@@ -922,7 +932,14 @@ def _definition_search_summary(
             filters or {},
         ),
         "sources": [
-            _source_projection(source, definition, projection=projection)
+            _source_projection(
+                source,
+                definition,
+                projection=projection,
+                available_execution_profiles=(runtime_profiles_by_source or {}).get(
+                    source.source_id, []
+                ),
+            )
             for source in sources
         ],
     }
@@ -968,6 +985,9 @@ def _definition_search_summary(
         )
     if projection in {"invoke_ready", "schema", "diagnostics"}:
         data["aliases"] = list(definition.aliases or [])
+        contract = _execution_profile_contract(definition, sources, runtime_profiles_by_source)
+        if contract:
+            data["execution_profile_contract"] = contract
     if projection == "schema":
         data.update(
             {
@@ -1008,6 +1028,7 @@ def _definition_detail(
         definition,
         sources,
         projection="schema" if base_projection in {"detail", "schema"} else base_projection,
+        runtime_profiles_by_source=runtime_profiles_by_source,
     )
     data["status"] = definition.status
     if include_all or "schema" in requested:
@@ -1121,6 +1142,7 @@ def _source_projection(
     definition: CapabilityDefinition,
     *,
     projection: str,
+    available_execution_profiles: list[str] | None = None,
 ) -> JsonObject:
     data: JsonObject = {
         "source_id": source.source_id,
@@ -1137,6 +1159,7 @@ def _source_projection(
                 "canonical_name": definition.canonical_name,
                 "runtime_id": source.runtime_id,
                 "execution_requirements": source.execution_requirements,
+                "available_execution_profiles": list(available_execution_profiles or []),
                 "timeout_sec": source.timeout_sec,
                 "resource_keys": list(source.resource_keys or []),
                 "conflict_policy": source.conflict_policy,
@@ -1164,6 +1187,42 @@ def _source_projection(
     elif projection in {"invoke_ready", "schema"}:
         data["unavailable_reasons"] = _source_unavailable_reasons(source)
     return data
+
+
+def _execution_profile_contract(
+    definition: CapabilityDefinition,
+    sources: list[CapabilitySource],
+    runtime_profiles_by_source: dict[str, list[str]] | None,
+) -> JsonObject | None:
+    if definition.canonical_name != "exec.run":
+        return None
+    profiles_by_node: dict[str, list[str]] = {}
+    for source in sources:
+        node_id = source.node.node_id if source.node else ""
+        if not node_id:
+            continue
+        profiles = list((runtime_profiles_by_source or {}).get(source.source_id, []))
+        profiles_by_node[node_id] = profiles
+    return {
+        "field": "profile",
+        "valid_values_source": "target_node_runtime.available_execution_profiles",
+        "profiles_by_node": profiles_by_node,
+        "forbidden_values": ["admin", "sudo", "root", "user", "default", "privileged"],
+        "readonly_rule": (
+            "Diagnostics, logs, listing, reading, and hashing use a *.readonly profile. "
+            "If user.readonly fails due to permissions and admin.readonly is available, "
+            "retry with admin.readonly."
+        ),
+        "write_rule": (
+            "Use *.write only for explicit file writes, service changes, mutation, "
+            "deletion, or transfer placement."
+        ),
+        "example_input": {
+            "profile": "admin.readonly",
+            "command": "journalctl -u ssh --no-pager -n 100",
+            "reason": "read SSH service logs for diagnostics",
+        },
+    }
 
 
 async def _runtime_profiles_for_sources(

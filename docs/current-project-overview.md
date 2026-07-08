@@ -166,10 +166,11 @@ AgentRunEvent 统一事实源、run-level TaskState、Observation Reducer、Repl
 当前执行顺序以 `docs/todos/README.md` 为准。质量门禁继续作为全局约束存在，但不替代
 专题待办的实现顺序。
 
-1. 按 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 继续收敛 Agent Runtime 主线：削减旧 ChatTimeline 局部状态 patch，并做真实会话验收。
-2. 按 `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 做行为验收和剩余缺陷：Windows 截图和 Windows -> Linux 传输端到端复验已通过；后续继续处理 meta tool 默认输出边界、复杂任务过度探索和错误展示。
-3. Runtime/YCR 状态主线稳定后，再继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
-4. YCR core data path 与 unified capability registry 已进入维护核对状态；后续只在行为验收暴露回归时更新对应事实文档或行为待办。
+1. 按 `docs/todos/2026-07-08-post-basic-runtime-closure.md` 做基础实现后的收口：系统提示词与当前实现一致性、`exec.run` profile contract、Replanner 完成边界、TaskState/Reducer 事实抽取、PlanStep 归属、Console 业务状态残留、YCR/RAG 收益与边界验收、真实任务验收、耗时归因、meta tool 输出审计和代码清理门禁。
+2. `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 继续作为 Agent Runtime / Plan / Operation / YCR State 的架构来源，不再作为“从零实现”清单。
+3. 按 `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` 做行为验收和剩余缺陷：Windows 截图和 Windows -> Linux 传输端到端复验已通过；后续继续处理 meta tool 默认输出边界、复杂任务过度探索和错误展示。
+4. Runtime/YCR 状态主线稳定后，再继续推进 Provider 系统：provider registry、模型发现、probe、前端 provider/model 选择和显式 provider 错误展示。
+5. YCR core data path 与 unified capability registry 已进入维护核对状态；后续只在行为验收暴露回归时更新对应事实文档或行为待办。
 
 SubAgent 和更多 Node 能力应在上述收敛完成后再进入主线。
 

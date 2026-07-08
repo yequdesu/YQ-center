@@ -155,6 +155,8 @@ def _record_tool_completion(state: JsonDict, payload: JsonDict) -> None:
             key=str(payload.get("call_id") or capability_ref),
             data={"capability_ref": capability_ref, "status": "succeeded"},
         )
+    _record_tool_result_facts(state, payload)
+    _record_transfer_fact(state, payload)
     for artifact in _extract_artifacts(payload):
         _record_artifact(state, artifact)
     operation = payload.get("operation")
@@ -220,8 +222,18 @@ def _resolve_pending_operation(state: JsonDict, payload: JsonDict, *, event_type
         state,
         kind="operation",
         key=operation_id,
-        data={"operation_id": operation_id, "status": status},
+        data={
+            "operation_id": operation_id,
+            "status": status,
+            "kind": _string(payload.get("kind") or payload.get("operation_kind")),
+            "error_code": _string(payload.get("error_code")),
+            "error_message": _string(payload.get("error_message") or payload.get("message"))[
+                :500
+            ],
+            "artifacts": _small_payload(payload.get("artifacts")),
+        },
     )
+    _record_transfer_fact(state, payload)
 
 
 def _record_artifact(state: JsonDict, payload: JsonDict) -> None:
@@ -234,6 +246,12 @@ def _record_artifact(state: JsonDict, payload: JsonDict) -> None:
         "artifact_type": _string(payload.get("artifact_type") or payload.get("kind")),
         "content_type": _string(payload.get("content_type")),
         "node_id": _string(payload.get("node_id")),
+        "line_range": _dict(payload.get("line_range")),
+        "matched_lines": _dict(payload.get("matched_lines")),
+        "truncated": (
+            payload.get("truncated") if isinstance(payload.get("truncated"), bool) else None
+        ),
+        "read_ref": _string(payload.get("read_ref") or payload.get("ref_id")),
         "updated_at": _now_iso(),
     }
     append_unique_item(state["artifacts"], artifact, key="artifact_id")
@@ -269,16 +287,134 @@ def _record_fact(state: JsonDict, *, kind: str, key: str, data: JsonDict) -> Non
 def _record_blocker(state: JsonDict, payload: JsonDict, *, terminal: bool) -> None:
     key = _string(payload.get("error_code")) or _string(payload.get("approval_id"))
     key = key or _string(payload.get("operation_id")) or f"blocker_{len(state['blockers']) + 1}"
+    classification = _classify_blocker(payload, terminal=terminal)
     append_unique_item(
         state["blockers"],
         {
             "key": key,
-            "terminal": terminal,
+            "terminal": classification["terminal"],
+            "repairable": classification["repairable"],
+            "classification": classification["classification"],
             "error_code": _string(payload.get("error_code")),
             "message": _string(payload.get("error_message") or payload.get("message")),
+            "capability_ref": _capability_ref(payload),
+            "target_node_id": _string(payload.get("target_node_id") or payload.get("node_id")),
+            "details": _small_payload(
+                _dict(payload.get("details") or payload.get("error_details"))
+            ),
             "updated_at": _now_iso(),
         },
         key="key",
+    )
+    _record_tool_result_facts(state, payload)
+    _record_transfer_fact(state, payload)
+
+
+def _record_tool_result_facts(state: JsonDict, payload: JsonDict) -> None:
+    capability_ref = _capability_ref(payload)
+    if capability_ref != "capability.invoke" and not capability_ref.endswith("exec.run"):
+        return
+    result = _dict(payload.get("result"))
+    details = _dict(payload.get("details") or payload.get("error_details"))
+    invoked = _dict(payload.get("input"))
+    nested_input = _dict(invoked.get("input"))
+    command = _string(result.get("command") or nested_input.get("command"))
+    profile = _string(result.get("profile") or nested_input.get("profile"))
+    exit_code = result.get("exit_code")
+    error_code = _string(payload.get("error_code"))
+    message = _string(payload.get("error_message") or payload.get("message"))
+    fact: JsonDict = {
+        "capability_ref": capability_ref,
+        "status": _string(payload.get("status")) or ("failed" if error_code else "succeeded"),
+        "target_node_id": _string(payload.get("target_node_id") or payload.get("node_id")),
+        "profile": profile,
+        "command": command[:500],
+        "exit_code": exit_code if isinstance(exit_code, int) else None,
+        "error_code": error_code,
+        "message": message[:500],
+        "available_execution_profiles": details.get("available_execution_profiles"),
+    }
+    if _looks_like_permission_denied(message, error_code):
+        fact["permission_denied"] = True
+    if error_code in {"missing_required_slot", "unsupported_enum_value"}:
+        fact["schema_error"] = details
+    key = _string(payload.get("call_id")) or f"exec_fact_{len(state['facts']) + 1}"
+    _record_fact(state, kind="exec.run", key=key, data=fact)
+
+
+def _record_transfer_fact(state: JsonDict, payload: JsonDict) -> None:
+    transfer = _first_mapping(
+        payload,
+        "transfer",
+        "transfer_session",
+        "session",
+        "result",
+        "output",
+        "output_data",
+    )
+    transfer_id = _string(payload.get("transfer_id")) or _string(transfer.get("transfer_id"))
+    if not transfer_id:
+        return
+    data: JsonDict = {
+        "transfer_id": transfer_id,
+        "status": _string(payload.get("status") or transfer.get("status")),
+        "source_node_id": _string(payload.get("source_node_id") or transfer.get("source_node_id")),
+        "target_node_id": _string(payload.get("target_node_id") or transfer.get("target_node_id")),
+        "source_path": _string(payload.get("source_path") or transfer.get("source_path")),
+        "target_path": _string(payload.get("target_path") or transfer.get("target_path")),
+        "target_output_dir": _string(
+            payload.get("target_output_dir") or transfer.get("target_output_dir")
+        ),
+        "size_bytes": _int_or_none(payload.get("size_bytes") or transfer.get("size_bytes")),
+        "sha256": _string(payload.get("sha256") or transfer.get("sha256")),
+        "resumable": _bool_or_none(payload.get("resumable") or transfer.get("resumable")),
+        "failed_side": _string(payload.get("failed_side") or transfer.get("failed_side")),
+        "error_code": _string(payload.get("error_code") or transfer.get("error_code")),
+        "error_message": _string(
+            payload.get("error_message") or payload.get("message") or transfer.get("error_message")
+        )[:500],
+    }
+    _record_fact(state, kind="transfer", key=transfer_id, data=data)
+
+
+def _classify_blocker(payload: JsonDict, *, terminal: bool) -> JsonDict:
+    error_code = _string(payload.get("error_code"))
+    message = _string(payload.get("error_message") or payload.get("message"))
+    details = _dict(payload.get("details") or payload.get("error_details"))
+    if error_code in {"missing_required_slot", "unsupported_enum_value", "invalid_input"}:
+        return {
+            "terminal": False,
+            "repairable": True,
+            "classification": "schema_or_slot_error",
+        }
+    if _looks_like_permission_denied(message, error_code):
+        return {
+            "terminal": False,
+            "repairable": True,
+            "classification": "permission_denied_retry_readonly_admin_if_available",
+        }
+    if details.get("available_execution_profiles") and (
+        "profile" in message.lower() or error_code in {"profile_unavailable"}
+    ):
+        return {
+            "terminal": False,
+            "repairable": True,
+            "classification": "profile_selection_error",
+        }
+    return {"terminal": terminal, "repairable": False, "classification": "tool_failure"}
+
+
+def _looks_like_permission_denied(message: str, error_code: str) -> bool:
+    normalized = f"{error_code} {message}".lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "permission denied",
+            "access denied",
+            "operation not permitted",
+            "eacces",
+            "unauthorized",
+        )
     )
 
 
@@ -468,7 +604,9 @@ def _capability_ref(payload: JsonDict) -> str | None:
     )
 
 
-def _small_payload(payload: JsonDict) -> JsonDict:
+def _small_payload(payload: object) -> JsonDict:
+    if not isinstance(payload, dict):
+        return {}
     return {
         key: value
         for key, value in payload.items()
@@ -486,6 +624,26 @@ def _small_payload(payload: JsonDict) -> JsonDict:
             "error_message",
         }
     }
+
+
+def _dict(value: object) -> JsonDict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_mapping(payload: JsonDict, *keys: str) -> JsonDict:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _string(value: object) -> str:

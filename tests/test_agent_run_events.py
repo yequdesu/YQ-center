@@ -5,6 +5,7 @@ from yequ.models.session import Session
 from yequ.runtime.agent_plan_service import create_agent_plan, get_agent_plan_projection
 from yequ.runtime.agent_run_resume import append_event_and_reduce
 from yequ.runtime.agent_run_service import create_agent_run
+from yequ.runtime.replanner import final_candidate_gate
 from yequ.runtime.task_state import get_task_state
 
 
@@ -160,3 +161,140 @@ async def test_agent_run_events_bind_plan_step_by_tool_and_operation(
     assert tool_steps[0]["tool_call_id"] == "call_1"
     assert tool_steps[0]["operation_id"] == "op_1"
     assert tool_steps[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_replanner_blocks_final_candidate_when_error_is_repairable(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_repairable_final"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="repairable-final",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        user_message="read protected logs autonomously",
+        trace_id="trace-repairable-final",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.failed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_1",
+            "function_name": "capability.invoke",
+            "capability_ref": "capability.invoke",
+            "target_node_id": "node-1",
+            "error_code": "unsupported_enum_value",
+            "message": "unsupported profile: admin",
+            "details": {
+                "field": "profile",
+                "available_execution_profiles": ["user.readonly", "admin.readonly"],
+            },
+        },
+    )
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="llm.final_candidate",
+        source="agent.provider",
+        payload={"message": "请告诉我要不要使用 admin。"},
+    )
+
+    state = get_task_state(run)
+    decision = final_candidate_gate(state)
+    assert decision.action == "continue_llm"
+    assert decision.reason_code == "final_candidate_blocked_by_repairable_error"
+    assert state["blockers"][0]["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_run_reducer_extracts_transfer_and_artifact_facts(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_domain_facts"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="domain-facts",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        user_message="transfer and read artifact",
+        trace_id="trace-domain-facts",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="operation.succeeded",
+        source="operation",
+        payload={
+            "operation_id": "op_transfer",
+            "kind": "transfer",
+            "status": "succeeded",
+            "transfer": {
+                "transfer_id": "trf_1",
+                "status": "succeeded",
+                "source_node_id": "winClient",
+                "target_node_id": "linux-node-01",
+                "source_path": "E:\\payload.zip",
+                "target_path": "/home/yequdesu/payload.zip",
+                "size_bytes": 123,
+                "sha256": "abc",
+                "resumable": True,
+            },
+        },
+    )
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="artifact.read",
+        source="agent.tool",
+        payload={
+            "artifact_id": "art_1",
+            "title": "journal.log",
+            "artifact_type": "log",
+            "content_type": "text/plain",
+            "line_range": {"start": 1, "end": 20},
+            "matched_lines": {"count": 3},
+            "truncated": True,
+            "read_ref": "ctxref_1",
+        },
+    )
+
+    state = get_task_state(run)
+    transfer_facts = [item for item in state["facts"] if item["kind"] == "transfer"]
+    assert transfer_facts
+    assert transfer_facts[0]["data"]["transfer_id"] == "trf_1"
+    assert transfer_facts[0]["data"]["target_node_id"] == "linux-node-01"
+    artifact = state["artifacts"][0]
+    assert artifact["artifact_id"] == "art_1"
+    assert artifact["line_range"] == {"start": 1, "end": 20}
+    assert artifact["matched_lines"] == {"count": 3}
+    assert artifact["truncated"] is True
+    assert artifact["read_ref"] == "ctxref_1"

@@ -770,7 +770,9 @@ async def agent_invoke_stream(
             provider_tool_calls: list[dict[str, object]] = []
             provider_usage: dict[str, object] = {}
             provider_error: str | None = None
+            provider_delta_events: list[StreamEvent] = []
             provider_started = perf_counter()
+            provider_first_delta_ms: float | None = None
             try:
                 async for chunk in provider.invoke_stream(
                     "",
@@ -786,12 +788,19 @@ async def agent_invoke_stream(
                     chunk_type = chunk.get("type")
                     if chunk_type == "delta":
                         content = _as_str(chunk.get("content", ""))
+                        if provider_first_delta_ms is None:
+                            provider_first_delta_ms = round(
+                                (perf_counter() - provider_started) * 1000,
+                                3,
+                            )
                         assistant_text += content
-                        yield _event(
-                            "agent.output.delta",
-                            session_id,
-                            trace_id,
-                            {"content": content},
+                        provider_delta_events.append(
+                            _event(
+                                "agent.output.delta",
+                                session_id,
+                                trace_id,
+                                {"content": content},
+                            )
                         )
                     elif chunk_type == "done":
                         provider_tool_calls = _as_object_dict_list(chunk.get("tool_calls", []))
@@ -816,6 +825,7 @@ async def agent_invoke_stream(
                         "elapsed_ms": provider_elapsed_ms,
                         "provider_name": provider.provider_name(),
                         "error_message": provider_error,
+                        "first_delta_ms": provider_first_delta_ms,
                         "tool_call_count": len(provider_tool_calls),
                         "output_chars": len(assistant_text),
                     },
@@ -855,6 +865,7 @@ async def agent_invoke_stream(
                 {
                     "step": current_step,
                     "elapsed_ms": provider_elapsed_ms,
+                    "first_delta_ms": provider_first_delta_ms,
                     "provider_name": provider.provider_name(),
                     "tool_call_count": len(provider_tool_calls),
                     "output_chars": len(assistant_text),
@@ -898,6 +909,8 @@ async def agent_invoke_stream(
             )
             loop_state = run_graph.loop_state
             if provider_decision.kind == "continue":
+                for delta_event in provider_delta_events:
+                    yield delta_event
                 await _update_agent_run_checkpoint(
                     agent_run_id,
                     status="validating_tools",
@@ -905,6 +918,8 @@ async def agent_invoke_stream(
                 )
 
             if provider_decision.kind == "failure":
+                for delta_event in provider_delta_events:
+                    yield delta_event
                 await _update_agent_run_checkpoint(
                     agent_run_id,
                     status="failed",
@@ -930,6 +945,41 @@ async def agent_invoke_stream(
                 break
             if provider_decision.kind == "final":
                 final_message = provider_decision.final_message
+                final_gate = await _agent_run_final_candidate_gate(
+                    agent_run_id,
+                    final_message=final_message,
+                )
+                if final_gate and final_gate.get("action") == "continue_llm":
+                    history.append(
+                        AgentMessage(
+                            role="system",
+                            content=str(final_gate.get("next_prompt") or ""),
+                        )
+                    )
+                    record_session_audit_event(
+                        session_id,
+                        "agent.replanner.final_candidate_blocked",
+                        {
+                            "step": current_step,
+                            "decision": final_gate,
+                            "final_message_chars": len(final_message),
+                        },
+                        trace_id=trace_id,
+                        source="agent.replanner",
+                    )
+                    yield _event(
+                        "agent.replanner.decision",
+                        session_id,
+                        trace_id,
+                        {
+                            "phase": "final_candidate_gate",
+                            "decision": final_gate,
+                        },
+                    )
+                    loop_state = "observing"
+                    continue
+                for delta_event in provider_delta_events:
+                    yield delta_event
                 loop_state = provider_decision.status
                 await _record_agent_run_final_step(
                     agent_run_id,
@@ -1489,6 +1539,49 @@ async def _load_agent_run_task_state(run_id: str | None) -> dict[str, object] | 
         if run is None:
             return None
         return get_task_state(run)
+
+
+async def _agent_run_final_candidate_gate(
+    run_id: str | None,
+    *,
+    final_message: str,
+) -> dict[str, object] | None:
+    if not run_id:
+        return None
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_events import append_agent_run_event
+    from yequ.runtime.replanner import final_candidate_gate
+    from yequ.runtime.task_state import get_task_state
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            return None
+        decision = final_candidate_gate(get_task_state(run))
+        payload = {
+            "goal": run.user_message,
+            "chosen_action": decision.action,
+            "why": decision.reason_code,
+            "next_state": decision.action,
+            "blocked_by": decision.blocked_evidence,
+            "final_message_preview": final_message[:500],
+            "next_prompt": decision.next_prompt,
+        }
+        await append_agent_run_event(
+            db,
+            run,
+            event_type="decision.summary",
+            source="agent.replanner",
+            payload=payload,
+            plan_id=_agent_run_plan_id(run),
+        )
+        metadata = dict(run.metadata_json or {})
+        metadata["last_replanner_decision"] = decision.to_dict()
+        run.metadata_json = metadata
+        await db.commit()
+        return decision.to_dict()
 
 
 async def _update_agent_plan_checkpoint(

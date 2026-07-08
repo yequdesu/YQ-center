@@ -92,6 +92,18 @@ def decide_next_action(task_state: JsonDict) -> ReplannerDecision:
             reason_code="all_paths_failed",
             blocked_evidence=blockers,
         )
+    repairable = _repairable_blockers(task_state)
+    if repairable:
+        return ReplannerDecision(
+            action="continue_llm",
+            reason_code="repairable_blocker_needs_retry",
+            blocked_evidence=repairable,
+            next_prompt=(
+                "The previous tool result contains a repairable error. Fix the tool "
+                "arguments or choose the next available capability, then continue. "
+                "Do not ask the user unless required user-only information is missing."
+            ),
+        )
     return ReplannerDecision(action="continue_llm", reason_code="ready_to_continue")
 
 
@@ -127,6 +139,41 @@ def _has_viable_working_set(task_state: JsonDict) -> bool:
 def _all_paths_failed(task_state: JsonDict) -> bool:
     blockers = _dict_items(task_state.get("blockers"))
     return bool(blockers) and all(item.get("terminal") is True for item in blockers)
+
+
+def final_candidate_gate(task_state: JsonDict) -> ReplannerDecision:
+    """Decide whether a provider final answer may terminate the run.
+
+    A normal final answer is allowed unless deterministic runtime facts show
+    that the run is waiting or contains a repairable blocker. This gate does
+    not generate domain actions; it only prevents premature completion.
+    """
+
+    decision = decide_next_action(task_state)
+    if decision.action in {"wait_approval", "wait_operation", "fail", "ask_user"}:
+        return decision
+    repairable = _repairable_blockers(task_state)
+    if repairable:
+        return ReplannerDecision(
+            action="continue_llm",
+            reason_code="final_candidate_blocked_by_repairable_error",
+            blocked_evidence=repairable,
+            next_prompt=(
+                "Your previous answer tried to stop, but Center state still has a "
+                "repairable blocker. Continue autonomously by correcting the tool "
+                "call, using the target Node's actual schema/profiles, or selecting "
+                "the next deterministic read path."
+            ),
+        )
+    return ReplannerDecision(action="complete", reason_code="final_candidate_allowed")
+
+
+def _repairable_blockers(task_state: JsonDict) -> list[JsonDict]:
+    return [
+        item
+        for item in _dict_items(task_state.get("blockers"))
+        if item.get("repairable") is True and item.get("terminal") is not True
+    ]
 
 
 def _dict_items(value: object) -> list[JsonDict]:

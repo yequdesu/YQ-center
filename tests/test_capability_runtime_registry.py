@@ -1321,6 +1321,247 @@ async def test_capability_describe_reports_runtime_execution_profiles(
     assert result.output_data is not None
     source = result.output_data["capability"]["sources"][0]
     assert source["available_execution_profiles"] == ["user.readonly", "user.write"]
+    contract = result.output_data["capability"]["execution_profile_contract"]
+    assert contract["field"] == "profile"
+    assert contract["profiles_by_node"][node.node_id] == ["user.readonly", "user.write"]
+    assert "admin" in contract["forbidden_values"]
+
+
+@pytest.mark.asyncio
+async def test_capability_invoke_rejects_unsupported_exec_profile_at_center(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    auth = {"Authorization": f"Bearer {token}"}
+    hello = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={
+                "daemon_version": "0.2.0",
+                "platform": {"os": "linux", "arch": "x86_64"},
+                "runtimes": [
+                    {
+                        "runtime_id": "linux-user-exec",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "user",
+                        "labels": ["linux", "exec"],
+                        "metadata": {
+                            "execution_profiles": [
+                                {"profile": "user.readonly"},
+                                {"profile": "admin.readonly"},
+                            ]
+                        },
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert hello.status_code == 200, hello.text
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.exec",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.exec.run",
+                                "description": "Run a command string.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "profile": {
+                                            "type": "string",
+                                            "enum": [
+                                                "user.readonly",
+                                                "user.write",
+                                                "admin.readonly",
+                                                "admin.write",
+                                            ],
+                                        },
+                                        "command": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["profile", "command", "reason"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "exec"],
+                                    "execution_profiles": [
+                                        "user.readonly",
+                                        "user.write",
+                                        "admin.readonly",
+                                        "admin.write",
+                                    ],
+                                },
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ],
+                "runtimes": [
+                    {
+                        "runtime_id": "linux-user-exec",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "user",
+                        "labels": ["linux", "exec"],
+                        "metadata": {
+                            "execution_profiles": [
+                                {"profile": "user.readonly"},
+                                {"profile": "admin.readonly"},
+                            ]
+                        },
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert registered.status_code == 200, registered.text
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.invoke",
+            input_data={
+                "capability_ref": "exec.run",
+                "node_id": node.node_id,
+                "input": {
+                    "profile": "admin",
+                    "command": "whoami",
+                    "reason": "check command execution identity",
+                },
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "unsupported_enum_value"
+    assert result.error_details is not None
+    assert result.error_details["field"] == "profile"
+    assert result.error_details["available_execution_profiles"] == [
+        "user.readonly",
+        "admin.readonly",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capability_invoke_rejects_exec_when_runtime_profiles_are_missing(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    auth = {"Authorization": f"Bearer {token}"}
+    hello = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={
+                "daemon_version": "0.2.0",
+                "platform": {"os": "linux", "arch": "x86_64"},
+                "runtimes": [
+                    {
+                        "runtime_id": "linux-user-exec",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "user",
+                        "labels": ["linux", "exec"],
+                        "metadata": {},
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert hello.status_code == 200, hello.text
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.exec",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.exec.run",
+                                "description": "Run a command string.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "profile": {"type": "string"},
+                                        "command": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["profile", "command", "reason"],
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "exec"],
+                                },
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert registered.status_code == 200, registered.text
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.invoke",
+            input_data={
+                "capability_ref": "exec.run",
+                "node_id": node.node_id,
+                "input": {
+                    "profile": "user.readonly",
+                    "command": "whoami",
+                    "reason": "check command execution identity",
+                },
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "profile_unavailable"
+    assert result.error_details is not None
+    assert result.error_details["field"] == "profile"
+    assert result.error_details["available_execution_profiles"] == []
 
 
 @pytest.mark.asyncio

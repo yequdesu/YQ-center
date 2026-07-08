@@ -160,6 +160,10 @@ class CenterExecutionRuntime:
         except ValueError as exc:
             return runtime_error(command, _capability_invoke_error_code(exc), str(exc))
 
+        validation_error = _validate_invoked_tool_input(command, target, dict(tool_input))
+        if validation_error is not None:
+            return validation_error
+
         delegated = RuntimeCommand(
             function_name=target.registered_name,
             input_data=dict(tool_input),
@@ -806,6 +810,140 @@ def _capability_invoke_error_code(exc: ValueError) -> str:
     if "capability_ref or source_id is required" in message:
         return "invalid_input"
     return "capability_not_found"
+
+
+def _validate_invoked_tool_input(
+    command: RuntimeCommand,
+    target,
+    input_data: dict[str, object],
+) -> ExecuteToolResult | None:
+    schema = target.input_schema if isinstance(target.input_schema, dict) else {}
+    properties = schema.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    required = [
+        str(item)
+        for item in schema.get("required", [])
+        if isinstance(item, str) and item
+    ]
+    if (
+        target.canonical_name == "exec.run"
+        and "profile" in required
+        and not target.available_execution_profiles
+    ):
+        return ExecuteToolResult(
+            status="failed",
+            function_name=command.function_name,
+            target_node_id=target.node_id,
+            risk=target.risk,
+            effect=target.effect,
+            error_code="profile_unavailable",
+            error_message=_schema_error_message(
+                "target runtime did not report any execution profile",
+                required=required,
+                target=target,
+                field="profile",
+                allowed=[],
+            ),
+            error_details={
+                "capability_ref": target.canonical_name,
+                "source_id": target.source_id,
+                "registered_name": target.registered_name,
+                "field": "profile",
+                "required": required,
+                "available_execution_profiles": [],
+            },
+        )
+    missing = [
+        field
+        for field in required
+        if field not in input_data or _missing_required_value(input_data[field])
+    ]
+    if missing:
+        return ExecuteToolResult(
+            status="failed",
+            function_name=command.function_name,
+            target_node_id=target.node_id,
+            risk=target.risk,
+            effect=target.effect,
+            error_code="missing_required_slot",
+            error_message=_schema_error_message(
+                f"{', '.join(missing)} is required",
+                required=required,
+                target=target,
+            ),
+            error_details={
+                "capability_ref": target.canonical_name,
+                "source_id": target.source_id,
+                "registered_name": target.registered_name,
+                "missing": missing,
+                "required": required,
+                "available_execution_profiles": list(target.available_execution_profiles),
+            },
+        )
+
+    for field, value in input_data.items():
+        prop = properties.get(field)
+        if not isinstance(prop, dict):
+            continue
+        allowed = [item for item in prop.get("enum", []) if isinstance(item, str)]
+        if field == "profile" and target.canonical_name == "exec.run":
+            allowed = list(target.available_execution_profiles)
+        if not allowed or value in allowed:
+            continue
+        return ExecuteToolResult(
+            status="failed",
+            function_name=command.function_name,
+            target_node_id=target.node_id,
+            risk=target.risk,
+            effect=target.effect,
+            error_code="unsupported_enum_value",
+            error_message=_schema_error_message(
+                f"unsupported {field}: {value}",
+                required=required,
+                target=target,
+                field=field,
+                allowed=allowed,
+            ),
+            error_details={
+                "capability_ref": target.canonical_name,
+                "source_id": target.source_id,
+                "registered_name": target.registered_name,
+                "field": field,
+                "value": value,
+                "allowed": allowed,
+                "required": required,
+                "available_execution_profiles": list(target.available_execution_profiles),
+            },
+        )
+    return None
+
+
+def _missing_required_value(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _schema_error_message(
+    message: str,
+    *,
+    required: list[str],
+    target,
+    field: str | None = None,
+    allowed: list[str] | None = None,
+) -> str:
+    parts = [
+        message,
+        f"capability={target.canonical_name}",
+        f"node_id={target.node_id}",
+    ]
+    if required:
+        parts.append(f"required={required}")
+    if field:
+        parts.append(f"field={field}")
+    if allowed is not None:
+        parts.append(f"allowed={allowed}")
+    if target.available_execution_profiles:
+        parts.append(f"available_execution_profiles={target.available_execution_profiles}")
+    return "; ".join(parts)
 
 
 def _guard_error(
