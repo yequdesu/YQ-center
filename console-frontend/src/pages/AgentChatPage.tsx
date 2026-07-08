@@ -629,19 +629,6 @@ export function AgentChatPage() {
     () => blocks.filter((block) => block.type !== "operation_card"),
     [blocks],
   );
-  const latestContinuableOperation = useMemo(
-    () =>
-      [...operationBlocks]
-        .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))
-        .find(
-          (operation) =>
-            isOperationTerminal(operation.status) &&
-            !continuedOperationIds.has(operation.operationId) &&
-            operationContext?.operationId !== operation.operationId,
-        ),
-    [continuedOperationIds, operationBlocks, operationContext],
-  );
-
   return (
     <div className="flex h-[calc(100vh-var(--topbar-height))]">
       {/* Session Sidebar */}
@@ -826,22 +813,6 @@ export function AgentChatPage() {
                 onApprove={() => handleToolApprovalDecision(pendingApprovals[0], "approve")}
                 onDeny={() => handleToolApprovalDecision(pendingApprovals[0], "deny")}
               />
-            )}
-            {latestContinuableOperation && !isStreaming && (
-              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px]">
-                <Info size={14} className="text-[var(--info)]" />
-                <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">
-                  Operation {latestContinuableOperation.operationId} is {latestContinuableOperation.status}.
-                </span>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => handleResumeOperation(latestContinuableOperation.operationId)}
-                >
-                  <Bot size={13} />
-                  <span className="ml-1">Append</span>
-                </Button>
-              </div>
             )}
             <div className="flex items-center gap-2">
               <select
@@ -1316,10 +1287,11 @@ function ActivityPanel({
 
 function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
   const taskState = run?.task_state ?? null;
+  const objectiveText = runtimeObjectiveText(taskState?.objective, run?.user_message);
   const pendingOperations = countArray(taskState?.pending_operations);
   const pendingApprovals = countArray(taskState?.pending_approvals);
   const artifacts = countArray(taskState?.artifacts);
-  const workingSet = countArray(taskState?.working_set);
+  const workingSet = runtimeWorkingSetCount(taskState?.working_set);
   const facts = countArray(taskState?.facts);
   const blockers = countArray(taskState?.blockers);
   const completionStatus =
@@ -1345,7 +1317,7 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
         <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px]">
           <div className="min-w-0">
             <div className="truncate font-medium text-[var(--text)]">
-              {String(taskState?.objective || run.user_message || "Agent task")}
+              {objectiveText}
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
               <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono">
@@ -1403,6 +1375,31 @@ function RuntimeMetric({ label, value }: { label: string; value: number }) {
 
 function countArray(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
+}
+
+function runtimeObjectiveText(objective: unknown, fallback?: string): string {
+  if (typeof objective === "string" && objective.trim()) {
+    return objective;
+  }
+  if (objective && typeof objective === "object" && !Array.isArray(objective)) {
+    const text = (objective as Record<string, unknown>).text;
+    if (typeof text === "string" && text.trim()) {
+      return text;
+    }
+  }
+  return fallback?.trim() || "Agent task";
+}
+
+function runtimeWorkingSetCount(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+  return Object.values(value as Record<string, unknown>).reduce<number>((total, item) => {
+    return total + (Array.isArray(item) ? item.length : 0);
+  }, 0);
 }
 
 function AgentPlanPanel({ plan }: { plan: AgentRuntimePlan | null }) {
