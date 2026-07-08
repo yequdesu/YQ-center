@@ -1,19 +1,10 @@
 @echo off
 cd /d "%~dp0"
 
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found. Run: python -m venv .venv
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-gui.ps1"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] YeQu Windows Client failed to start.
     pause
     exit /b 1
-)
-
-if not exist "config.local.yaml" (
-    echo [INFO] Config not found, initializing...
-    call ".venv\Scripts\python.exe" -m node_win_client.cli config init
-)
-
-if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".venv\Scripts\pythonw.exe" -m node_win_client.cli gui -c config.local.yaml
-) else (
-    start "" ".venv\Scripts\python.exe" -m node_win_client.cli gui -c config.local.yaml
 )
