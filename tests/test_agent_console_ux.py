@@ -669,8 +669,8 @@ async def test_prompt_context_lists_source_nodes_for_duplicate_capabilities(
     prompt_context = next(e for e in events if e["event_type"] == "agent.prompt_context")
     functions = prompt_context["data"]["available_functions"]
     assert [f["name"] for f in functions] == [
-        "capability.search",
-        "capability.describe",
+        "capability.groups",
+        "capability.group.open",
         "capability.invoke",
     ]
     nodes = {
@@ -746,7 +746,7 @@ async def test_available_functions_filters_to_pinned_node_in_production_mode(
         await db_gen.aclose()
 
     names = {func.name for func in funcs}
-    assert names == {"capability.search", "capability.describe", "capability.invoke"}
+    assert names == {"capability.groups", "capability.group.open", "capability.invoke"}
     assert "linux.system.info" not in names
     assert "system.info" not in names
 

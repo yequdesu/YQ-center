@@ -364,7 +364,10 @@ def render_capability_context_prompt(
         count = node.get("registered_capability_count")
         if isinstance(count, int):
             lines.append(f"Registered capability count: {count}")
-        lines.append("Use capability.search to discover callable capabilities.")
+        lines.append(
+            "Use capability.groups and capability.group.open for Center meta tools; "
+            "open the capabilities group before using capability.search for Node/Product tools."
+        )
 
     same_name = capability_context.get("same_name_capabilities")
     if isinstance(same_name, dict) and same_name:

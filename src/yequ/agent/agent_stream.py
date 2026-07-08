@@ -244,6 +244,7 @@ def _ycr_context_event_data(
         session_state = _as_object_dict(provider_context.get("session_state"))
         capability_context_payload = _as_object_dict(provider_context.get("capability_context"))
         capability_candidates = provider_context.get("capability_candidates")
+        tool_strategy = _as_object_dict(provider_context.get("tool_strategy"))
         usage = usage or {}
         completion_payload: dict[str, object] = {
             "assistant_text": assistant_text,
@@ -287,6 +288,12 @@ def _ycr_context_event_data(
                 "capability_context_snapshot": capability_context_payload.get("snapshot") or {},
                 "history_compaction": context_estimate.get("history_compaction") or {},
                 "working_set_count": _optional_int(context_estimate.get("working_set_count")),
+                "tool_strategy": {
+                    "mode": tool_strategy.get("mode"),
+                    "reason": tool_strategy.get("reason"),
+                    "candidate_count": tool_strategy.get("candidate_count"),
+                    "working_set_count": tool_strategy.get("working_set_count"),
+                },
             },
             "projections": context_packet.get("projections") or [],
             "ycr": context_packet.get("ycr")
@@ -477,6 +484,7 @@ async def agent_invoke_stream(
     # -- Block 1: session validation + timeline (short-lived session) --
     async with async_session_factory() as db:
         from yequ.runtime.agent_plan_service import create_agent_plan
+        from yequ.runtime.agent_run_resume import append_event_and_reduce
         from yequ.runtime.agent_run_service import create_agent_run
 
         result = await db.execute(select(Session).where(Session.session_id == session_id))
@@ -541,6 +549,19 @@ async def agent_invoke_stream(
         metadata = dict(agent_run.metadata_json or {})
         metadata["plan_id"] = agent_plan.plan_id
         agent_run.metadata_json = metadata
+        await append_event_and_reduce(
+            db,
+            agent_run,
+            event_type="run.created",
+            source="agent.runtime",
+            payload={
+                "prompt": visible_prompt,
+                "provider_name": provider.provider_name(),
+                "execution_mode": execution_mode,
+                "target_node_id": target_node_id,
+            },
+            plan_id=agent_plan.plan_id,
+        )
         await db.commit()
 
     yield _event(
@@ -619,6 +640,7 @@ async def agent_invoke_stream(
                 metadata={"current_step": current_step},
             )
             agent_plan_projection = await _load_agent_plan_projection(agent_plan_id)
+            task_state_projection = await _load_agent_run_task_state(agent_run_id)
             ycr_build_started = perf_counter()
             try:
                 context_packet = await get_ycr_client().build_turn(
@@ -632,11 +654,13 @@ async def agent_invoke_stream(
                     ],
                     capability_context=capability_context or {},
                     agent_plan=agent_plan_projection or {},
+                    task_state=task_state_projection or {},
                     step=current_step,
                 )
                 ycr_build_elapsed_ms = round((perf_counter() - ycr_build_started) * 1000, 3)
                 provider_messages = _agent_messages_from_ycr_packet(context_packet)
                 provider_context = _as_object_dict(context_packet.get("provider_context", {}))
+                tool_strategy = _as_object_dict(provider_context.get("tool_strategy"))
                 record_session_audit_event(
                     session_id,
                     "agent.ycr.build_turn.completed",
@@ -655,6 +679,11 @@ async def agent_invoke_stream(
                             if isinstance(provider_context.get("capability_candidates"), list)
                             else []
                         ),
+                        "tool_strategy": {
+                            "mode": tool_strategy.get("mode"),
+                            "reason": tool_strategy.get("reason"),
+                            "candidate_count": tool_strategy.get("candidate_count"),
+                        },
                     },
                     trace_id=trace_id,
                     source="agent.ycr",
@@ -1197,6 +1226,7 @@ async def _record_agent_run_provider_step(
         return
     from yequ.db import async_session_factory
     from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_resume import append_event_and_reduce
     from yequ.runtime.agent_run_service import append_agent_run_step
 
     async with async_session_factory() as db:
@@ -1204,7 +1234,7 @@ async def _record_agent_run_provider_step(
         run = result.scalar_one_or_none()
         if run is None:
             raise ValueError(f"AgentRun {run_id!r} not found")
-        await append_agent_run_step(
+        step = await append_agent_run_step(
             db,
             run,
             step_index=step_index,
@@ -1218,6 +1248,44 @@ async def _record_agent_run_provider_step(
             error_message=error_message,
             metadata=_agent_run_provider_ycr_metadata(context_packet),
         )
+        if status == "failed":
+            await append_event_and_reduce(
+                db,
+                run,
+                event_type="run.failed",
+                source="agent.provider",
+                payload={
+                    "error_code": error_code or "llm_error",
+                    "error_message": error_message or "Provider failed.",
+                },
+                step_id=step.step_id,
+                plan_id=_agent_run_plan_id(run),
+            )
+        elif tool_calls:
+            for tool_call in tool_calls:
+                await append_event_and_reduce(
+                    db,
+                    run,
+                    event_type="llm.tool_call_requested",
+                    source="agent.provider",
+                    payload={
+                        "call_id": tool_call.get("call_id"),
+                        "capability_ref": tool_call.get("name"),
+                        "function_name": tool_call.get("name"),
+                    },
+                    step_id=step.step_id,
+                    plan_id=_agent_run_plan_id(run),
+                )
+        else:
+            await append_event_and_reduce(
+                db,
+                run,
+                event_type="llm.final_candidate",
+                source="agent.provider",
+                payload={"message": assistant_text},
+                step_id=step.step_id,
+                plan_id=_agent_run_plan_id(run),
+            )
         await db.commit()
 
 
@@ -1232,6 +1300,7 @@ async def _record_agent_run_tool_step(
         return
     from yequ.db import async_session_factory
     from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_resume import append_event_and_reduce
     from yequ.runtime.agent_run_service import append_agent_run_step
 
     async with async_session_factory() as db:
@@ -1240,7 +1309,7 @@ async def _record_agent_run_tool_step(
         if run is None:
             raise ValueError(f"AgentRun {run_id!r} not found")
         status = str(result.get("status") or "succeeded")
-        await append_agent_run_step(
+        step = await append_agent_run_step(
             db,
             run,
             step_index=step_index,
@@ -1260,6 +1329,19 @@ async def _record_agent_run_tool_step(
                 **_agent_run_tool_ycr_metadata(result, ycr_storage),
             },
         )
+        await append_event_and_reduce(
+            db,
+            run,
+            event_type=_agent_run_tool_event_type(status),
+            source="agent.tool",
+            payload={
+                **result,
+                "capability_ref": result.get("capability_ref") or result.get("name"),
+                "function_name": result.get("name"),
+            },
+            step_id=step.step_id,
+            plan_id=_agent_run_plan_id(run),
+        )
         await db.commit()
 
 
@@ -1273,6 +1355,7 @@ async def _record_agent_run_final_step(
         return
     from yequ.db import async_session_factory
     from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_resume import append_event_and_reduce
     from yequ.runtime.agent_run_service import append_agent_run_step
 
     async with async_session_factory() as db:
@@ -1280,13 +1363,22 @@ async def _record_agent_run_final_step(
         run = result.scalar_one_or_none()
         if run is None:
             raise ValueError(f"AgentRun {run_id!r} not found")
-        await append_agent_run_step(
+        step = await append_agent_run_step(
             db,
             run,
             step_index=step_index,
             step_type="final",
             status="succeeded",
             output_data={"message": final_message},
+        )
+        await append_event_and_reduce(
+            db,
+            run,
+            event_type="run.completed",
+            source="agent.runtime",
+            payload={"message": final_message},
+            step_id=step.step_id,
+            plan_id=_agent_run_plan_id(run),
         )
         await db.commit()
 
@@ -1322,6 +1414,24 @@ def _agent_run_tool_ycr_metadata(
             metadata["raw_ref_id"] = stored_ref.get("ref_id")
             metadata["raw_ref"] = stored_ref
     return metadata
+
+
+def _agent_run_plan_id(run: object) -> str | None:
+    metadata = getattr(run, "metadata_json", None)
+    if not isinstance(metadata, dict):
+        return None
+    plan_id = metadata.get("plan_id")
+    return plan_id if isinstance(plan_id, str) and plan_id else None
+
+
+def _agent_run_tool_event_type(status: str) -> str:
+    if status == "waiting_approval":
+        return "approval.waiting"
+    if status == "waiting_operation":
+        return "operation.waiting"
+    if status in {"failed", "error", "denied", "timeout"}:
+        return "tool.failed"
+    return "tool.completed"
 
 
 async def _update_agent_run_checkpoint(
@@ -1364,6 +1474,21 @@ async def _load_agent_plan_projection(plan_id: str | None) -> dict[str, object] 
 
     async with async_session_factory() as db:
         return await get_agent_plan_projection(db, plan_id)
+
+
+async def _load_agent_run_task_state(run_id: str | None) -> dict[str, object] | None:
+    if not run_id:
+        return None
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.task_state import get_task_state
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            return None
+        return get_task_state(run)
 
 
 async def _update_agent_plan_checkpoint(

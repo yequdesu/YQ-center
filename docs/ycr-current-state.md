@@ -1,7 +1,7 @@
 # YCR 当前实现现状
 
 状态：当前权威实现说明
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 本文只描述当前代码已经落地的 YeQu Context Router（YCR）行为。早期设计提案和历史计划只能作为背景；当它们与本文冲突时，以本文和代码为准。
 
@@ -50,11 +50,6 @@ Agent Runtime
 | `YEQU_YCR_SCHEDULER_EMBEDDING_CONCURRENCY` | YCR scheduler 允许同时提交的 embedding 请求数，默认 1。 |
 | `YEQU_YCR_SCHEDULER_RERANK_CONCURRENCY` | YCR scheduler 允许同时提交的 rerank 请求数，默认 1。 |
 | `YEQU_YCR_SCHEDULER_BACKGROUND_BATCH_SIZE` | capability index 后台 worker 单轮处理数量，默认 5。 |
-| `YEQU_YCR_SUMMARY_BASE_URL` | YCR session history 摘要模型地址；未设置时复用 DeepSeek base URL。 |
-| `YEQU_YCR_SUMMARY_API_KEY` | YCR session history 摘要模型 API Key；未设置时复用 DeepSeek API Key。 |
-| `YEQU_YCR_SUMMARY_MODEL` | YCR session history 摘要模型名；未设置时复用 DeepSeek model。 |
-| `YEQU_YCR_SUMMARY_TIMEOUT_SEC` | YCR 摘要模型调用超时，默认 20 秒。 |
-| `YEQU_YCR_SUMMARY_INPUT_CHARS` | 单次摘要输入字符上限，默认 16000。 |
 | `YEQU_EMBEDDER_EMBEDDING_CONCURRENCY` | embedder 服务内 embedding 模型推理并发，默认 1。 |
 | `YEQU_EMBEDDER_RERANK_CONCURRENCY` | embedder 服务内 reranker 模型推理并发，默认 1。 |
 | `YEQU_YCR_PROJECTION_INLINE_BYTES` | 默认投影 inline 上限。 |
@@ -185,13 +180,9 @@ YCR 不再设置 provider 总 token hard limit；它只输出 `context_estimate`
 build-turn 会对较早的 session history 做 turn-level compaction：
 
 1. 最近消息窗口原样保留，较早消息压缩为 provider-visible session memory。
-2. YCR 优先使用 openai-compatible LLM summary provider 生成摘要，并按 session/input hash 持久缓存为 `agent_session_summary` ContextRef。
-3. `YEQU_YCR_SUMMARY_*` 未配置或摘要模型失败时，YCR 使用确定性结构化摘要，并在 `history_compaction.summary.status` 中标明原因；不会回退到 raw 大历史。
-4. `test_mode` 下不调用外部摘要模型。
-
-默认 summary provider 配置会复用 DeepSeek 配置；也可以通过
-`YEQU_YCR_SUMMARY_BASE_URL`、`YEQU_YCR_SUMMARY_API_KEY` 和
-`YEQU_YCR_SUMMARY_MODEL` 单独指定。
+2. 热路径只使用确定性结构化摘要，不调用 LLM，不访问外部 provider，不写入 `agent_session_summary` ContextRef。
+3. `history_compaction.summary.mode` 固定为 `deterministic`，`llm` 固定为 `disabled`。
+4. 压缩失败时不回退到 raw 大历史；构建失败会按 YCR fail-closed 策略暴露错误。
 
 ## 6. Tool RAG
 
@@ -229,15 +220,39 @@ Tool RAG 的职责是 candidate loader，不是流程规划器。当前实现分
 
 YCR Session State 当前已持久维护 capability、artifact、artifact focus、operation 和 node working set。
 它仍不是业务 workflow：它只保存当前 session 的 typed facts，帮助 provider 避免从长历史里恢复状态。
-剩余缺口是 task working set、Plan 面板与通用 AgentPlan 的绑定，以及更完整的前端 runtime state 聚合展示，
+剩余缺口是 task working set、Replanner/任务完成判定、以及更完整的前端 runtime state 聚合展示，
 归属 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md`。
 
-当前 provider 默认只直接看到 `capability.search`、`capability.describe`、
-`capability.invoke` 三个 bootstrap protocol tools。Center meta tools 与 Node runtime
-capability 都统一注册到 capability registry：`node.*`、`context.*`、`artifact.*`、
-`operation.*`、`transfer.*` 是 `scope=center` capability；Node 上报能力是
-`scope=node` capability。Agent 通过 search/describe/invoke 发现并调用能力，调用仍经
+当前 provider 默认只直接看到三个 bootstrap protocol tools：
+
+```text
+capability.groups
+capability.group.open
+capability.invoke
+```
+
+`capability.groups` 返回 Center meta tool 分组目录；`capability.group.open` 返回指定分组的
+invoke-ready capability refs 和 schema；`capability.invoke` 执行具体 capability。当前分组为：
+
+| 分组 | 工具 |
+|---|---|
+| `nodes` | `node.list`、`node.status` |
+| `capabilities` | `capability.search`、`capability.describe` |
+| `context` | `context.status`、`context.inspect`、`context.expand`、`context.tail`、`context.schema`、`context.search` |
+| `artifacts` | `artifact.list`、`artifact.get`、`artifact.read_text`、`artifact.present`、`artifact.deploy.preflight`、`artifact.deploy` |
+| `operations` | `operation.status`、`operation.cancel` |
+| `transfers` | `transfer.preflight`、`transfer.create`、`transfer.status`、`transfer.resume`、`transfer.cancel` |
+
+Center meta tools 与 Node runtime capability 都统一注册到 capability registry：`node.*`、
+`context.*`、`artifact.*`、`operation.*`、`transfer.*` 是 `scope=center` capability；
+Node 上报能力是 `scope=node` capability。Agent 通过分组目录、session working set、
+`capability.search` / `capability.describe` / `capability.invoke` 发现并调用能力，调用仍经
 Center runtime、policy、operation/job dispatch 路径执行。
+
+`artifact.read_text` 是 Center 文本 artifact 读取入口，支持 `artifact_id` 或
+`artifact_pattern`、`head` / `tail` / `range` / `full`、负数行号从文件尾部计数、
+`line_glob` 行过滤和 `max_bytes` 限制。文本读取不通过 `context.expand` 全量展开，
+避免日志、配置、txt、json、csv 等 artifact 直接塞爆 provider 上下文。
 
 Unified registry 的完整收敛已经完成；历史实施计划已归档到
 `docs/archive/todos/2026-07-06-unified-capability-registry-plan.md`。后续只在行为修正文档中

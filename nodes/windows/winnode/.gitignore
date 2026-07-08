@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+config.local.yaml
+desktop-ui/node_modules/
+desktop-ui/dist/
+desktop-ui/*.tsbuildinfo

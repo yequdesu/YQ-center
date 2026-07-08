@@ -123,7 +123,7 @@ impl Daemon {
 
         // Convert CapabilityManifests to PluginManifests for the protocol
         let plugins = vec![PluginManifest {
-            plugin_id: "linux.system".into(),
+            plugin_id: "linux.capabilities".into(),
             plugin_version: "0.1.0".into(),
             functions: filtered_manifests
                 .iter()
@@ -590,12 +590,31 @@ fn build_user_runtime() -> RuntimeSnapshot {
         privilege: Some(RuntimePrivilege::User),
         labels: Some(vec![
             "linux".into(),
+            "exec".into(),
             "filesystem".into(),
             "filesystem:limited".into(),
             "network".into(),
         ]),
         owner: None,
-        metadata: Some(serde_json::json!({"user": user})),
+        metadata: Some(serde_json::json!({
+            "user": user,
+            "execution_profiles": [
+                {
+                    "profile": "user.readonly",
+                    "filesystem_intent": "readonly",
+                    "timeout_sec": 10,
+                    "max_stdout_bytes": 65536,
+                    "max_stderr_bytes": 8192
+                },
+                {
+                    "profile": "user.write",
+                    "filesystem_intent": "write",
+                    "timeout_sec": 10,
+                    "max_stdout_bytes": 65536,
+                    "max_stderr_bytes": 8192
+                }
+            ]
+        })),
     }
 }
 
@@ -608,13 +627,33 @@ fn build_sudo_runtime() -> RuntimeSnapshot {
         privilege: Some(RuntimePrivilege::Root),
         labels: Some(vec![
             "linux".into(),
+            "exec".into(),
             "filesystem".into(),
             "artifact".into(),
             "sudoers:yequnode".into(),
             "filesystem:host".into(),
         ]),
         owner: None,
-        metadata: Some(serde_json::json!({"sudoers_file": "/etc/sudoers.d/yequnode"})),
+        metadata: Some(serde_json::json!({
+            "sudoers_file": "/etc/sudoers.d/yequnode",
+            "execution_profiles": [
+                {
+                    "profile": "admin.readonly",
+                    "filesystem_intent": "readonly",
+                    "timeout_sec": 10,
+                    "max_stdout_bytes": 65536,
+                    "max_stderr_bytes": 8192
+                },
+                {
+                    "profile": "admin.write",
+                    "filesystem_intent": "write",
+                    "timeout_sec": 10,
+                    "approval_required": true,
+                    "max_stdout_bytes": 65536,
+                    "max_stderr_bytes": 8192
+                }
+            ]
+        })),
     }
 }
 

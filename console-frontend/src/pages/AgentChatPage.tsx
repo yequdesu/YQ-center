@@ -4,7 +4,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   createSession,
-  getSessionAgentPlan,
+  getSessionRuntimeState,
+  type AgentRunProjection,
   type AgentRuntimePlan,
 } from "@/api/agent";
 import {
@@ -17,7 +18,6 @@ import {
   renameSession,
   deleteSession,
   getApproval,
-  getJob,
   getOperation,
   cancelOperation,
   denyApproval,
@@ -38,7 +38,7 @@ import {
   type YcrTokenSummary,
   type YcrTraceItem,
 } from "@/hooks/useAgentChat";
-import type { AgentSessionSummary, JobSummary, MaintenanceArtifactDetail } from "@/api/types";
+import type { AgentSessionSummary, MaintenanceArtifactDetail } from "@/api/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JsonView } from "@/components/JsonView";
 import { ArtifactList, artifactsFromResult } from "@/components/ArtifactCards";
@@ -117,18 +117,16 @@ export function AgentChatPage() {
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
-  const [autoContinuing, setAutoContinuing] = useState(false);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
   const [operationContext, setOperationContext] = useState<OperationContextChip | null>(() =>
     readStoredOperationContext(sessionId),
   );
   const queryClient = useQueryClient();
-  const approvalRunPromisesRef = useRef(new Map<string, Promise<ApprovalRunOutcome>>());
   const refreshSessionHistory = useCallback(() => {
     if (!sessionId) return;
     queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
-    queryClient.invalidateQueries({ queryKey: ["agent-runtime-plan", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["agent-runtime-state", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
   }, [queryClient, sessionId]);
 
@@ -167,11 +165,11 @@ export function AgentChatPage() {
     patchOperation,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
-  const agentPlanQuery = useQuery({
-    queryKey: ["agent-runtime-plan", sessionId],
+  const runtimeStateQuery = useQuery({
+    queryKey: ["agent-runtime-state", sessionId],
     queryFn: async () => {
       if (!sessionId) return null;
-      return getSessionAgentPlan(sessionId);
+      return getSessionRuntimeState(sessionId);
     },
     enabled: !!sessionId,
     retry: false,
@@ -179,15 +177,15 @@ export function AgentChatPage() {
   });
 
   useEffect(() => {
-    const plan = agentPlanQuery.data?.plan;
+    const plan = runtimeStateQuery.data?.plan;
     if (!plan || !isAgentPlanTerminal(plan.status)) return;
     const refreshKey = `${plan.plan_id}:${plan.status}`;
     if (terminalPlanRefreshRef.current.has(refreshKey)) return;
     terminalPlanRefreshRef.current.add(refreshKey);
     refreshSessionHistory();
   }, [
-    agentPlanQuery.data?.plan?.plan_id,
-    agentPlanQuery.data?.plan?.status,
+    runtimeStateQuery.data?.plan?.plan_id,
+    runtimeStateQuery.data?.plan?.status,
     refreshSessionHistory,
   ]);
 
@@ -350,69 +348,6 @@ export function AgentChatPage() {
     setPrompt("");
   };
 
-  const waitForJobTerminal = useCallback(
-    async (jobId: string, approvalId: string, toolName: string): Promise<ApprovalRunOutcome> => {
-      const terminalStatuses = new Set(["succeeded", "failed", "timeout", "cancelled"]);
-      for (let attempt = 0; attempt < 70; attempt += 1) {
-        const job = await getJob(jobId);
-        patchToolCall(jobToToolPatch(job, approvalId));
-        if (terminalStatuses.has(job.status)) return jobToApprovalOutcome(job, approvalId, toolName);
-        await sleep(1200);
-      }
-      patchToolCall({
-        approvalId,
-        status: "failed",
-        errorCode: "job_poll_timeout",
-        errorMessage: "Timed out while waiting for the approved job to finish.",
-      });
-      return {
-        approvalId,
-        toolName,
-        jobId,
-        status: "failed",
-        errorCode: "job_poll_timeout",
-        errorMessage: "Timed out while waiting for the approved job to finish.",
-      };
-    },
-    [patchToolCall],
-  );
-
-  const scheduleAutoContinue = useCallback(async () => {
-    if (!sessionId || autoContinuing) return;
-    setAutoContinuing(true);
-    try {
-      const pendingRuns = Array.from(approvalRunPromisesRef.current.values());
-      approvalRunPromisesRef.current.clear();
-      const outcomes: ApprovalRunOutcome[] = [];
-      if (pendingRuns.length > 0) {
-        const settled = await Promise.allSettled(pendingRuns);
-        for (const item of settled) {
-          if (item.status === "fulfilled") {
-            outcomes.push(item.value);
-          } else {
-            outcomes.push({
-              approvalId: "unknown",
-              toolName: "unknown",
-              status: "failed",
-              errorCode: "approval_result_unavailable",
-              errorMessage: item.reason instanceof Error ? item.reason.message : String(item.reason),
-            });
-          }
-        }
-      }
-      if (outcomes.length === 0) {
-        return;
-      }
-      sendInvoke(buildApprovalContinuationPromptV2(outcomes), "", providerName, executionMode, {
-        visible: false,
-        suppressUserMessage: true,
-        maxSteps,
-      });
-    } finally {
-      setAutoContinuing(false);
-    }
-  }, [autoContinuing, executionMode, maxSteps, providerName, sendInvoke, sessionId]);
-
   const pendingApprovals = useMemo(
     () =>
       blocks.flatMap((block) =>
@@ -437,10 +372,19 @@ export function AgentChatPage() {
     });
   }, []);
 
+  const restoreApproval = useCallback((approvalId: string) => {
+    setDismissedApprovalIds((prev) => {
+      if (!prev.has(approvalId)) return prev;
+      const next = new Set(prev);
+      next.delete(approvalId);
+      return next;
+    });
+  }, []);
+
   const syncProcessedApproval = useCallback(
-    async (approvalId: string, toolName: string): Promise<ApprovalRunOutcome | null> => {
+    async (approvalId: string): Promise<boolean> => {
       const approval = await getApproval(approvalId);
-      if (approval.status === "pending") return null;
+      if (approval.status === "pending") return false;
 
       if (approval.status === "denied") {
         dismissApproval(approvalId);
@@ -450,12 +394,7 @@ export function AgentChatPage() {
           errorCode: null,
           errorMessage: "Denied by user.",
         });
-        return {
-          approvalId,
-          toolName,
-          status: "denied",
-          errorMessage: "Denied by user.",
-        };
+        return true;
       }
 
       if (approval.status === "expired") {
@@ -466,55 +405,36 @@ export function AgentChatPage() {
           errorCode: "approval_expired",
           errorMessage: "Approval expired.",
         });
-        return {
-          approvalId,
-          toolName,
-          status: "failed",
-          errorCode: "approval_expired",
-          errorMessage: "Approval expired.",
-        };
+        return true;
       }
 
       if (approval.status === "consumed") {
         dismissApproval(approvalId);
         const jobId = approval.consumed_invocation?.jobs?.[0]?.job_id ?? approval.invocation?.jobs?.[0]?.job_id;
-        if (!jobId) {
-          patchToolCall({
-            approvalId,
-            status: "running",
-            errorCode: null,
-            errorMessage: null,
-          });
-          return {
-            approvalId,
-            toolName,
-            status: "consumed",
-            errorMessage: "Approval was already consumed; waiting for linked job data.",
-          };
-        }
-        const job = await getJob(jobId);
-        patchToolCall(jobToToolPatch(job, approvalId));
-        if (["succeeded", "failed", "timeout", "cancelled"].includes(job.status)) {
-          return jobToApprovalOutcome(job, approvalId, toolName);
-        }
-        const runPromise = waitForJobTerminal(job.job_id, approvalId, toolName);
-        approvalRunPromisesRef.current.set(approvalId, runPromise);
-        return runPromise;
+        patchToolCall({
+          approvalId,
+          status: "running",
+          jobId,
+          errorCode: null,
+          errorMessage: "Approved action is running; Center will report the result.",
+        });
+        return true;
       }
 
       if (approval.status === "approved") {
+        dismissApproval(approvalId);
         patchToolCall({
           approvalId,
-          status: "waiting_approval",
+          status: "running",
           errorCode: "approval_already_approved",
-          errorMessage: "Approval is already approved but not consumed yet.",
+          errorMessage: "Approval is approved; waiting for execution to start.",
         });
-        return null;
+        return true;
       }
 
-      return null;
+      return false;
     },
-    [dismissApproval, patchToolCall, waitForJobTerminal],
+    [dismissApproval, patchToolCall],
   );
 
   useEffect(() => {
@@ -537,7 +457,7 @@ export function AgentChatPage() {
     for (const tool of waitingTools) {
       const approvalId = String(tool.approvalId);
       reconciledApprovalIdsRef.current.add(approvalId);
-      void syncProcessedApproval(approvalId, tool.name).catch((error) => {
+      void syncProcessedApproval(approvalId).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("not found") || message.includes("404")) {
           dismissApproval(approvalId);
@@ -557,16 +477,11 @@ export function AgentChatPage() {
       const approvalId = toolCall.approvalId;
       if (!approvalId || approvalBusyId) return;
 
-      const isLastApproval = pendingApprovals.length <= 1;
       setApprovalBusyId(approvalId);
       setApprovalActionError(null);
+      dismissApproval(approvalId);
       try {
-        const processed = await syncProcessedApproval(approvalId, toolCall.name);
-        if (processed) {
-          approvalRunPromisesRef.current.set(approvalId, Promise.resolve(processed));
-          if (isLastApproval) {
-            void scheduleAutoContinue();
-          }
+        if (await syncProcessedApproval(approvalId)) {
           return;
         }
 
@@ -578,45 +493,30 @@ export function AgentChatPage() {
             status: "denied",
             errorMessage: "Denied by user.",
           });
-          approvalRunPromisesRef.current.set(
-            approvalId,
-            Promise.resolve({
-              approvalId,
-              toolName: toolCall.name,
-              status: "denied",
-              errorCode: "approval_denied",
-              errorMessage: "User denied this approval. No action was executed.",
-            }),
-          );
         } else {
           const result = await approveAndRunApproval(approvalId, "Approved from Agent chat");
           patchToolCall({
             approvalId,
-            status: "running",
+            status: result.operation_id ? "waiting_operation" : "running",
             invocationId: result.invocation_id,
             jobId: result.job_id,
+            operationId: result.operation_id ?? undefined,
+            waitHandle: result.wait_handle ?? undefined,
             errorCode: null,
-            errorMessage: null,
+            errorMessage: result.operation_id
+              ? "Approved action is running as a Center operation."
+              : "Approved action is running; Center will refresh the session.",
           });
-          const runPromise = waitForJobTerminal(result.job_id, approvalId, toolCall.name);
-          approvalRunPromisesRef.current.set(approvalId, runPromise);
         }
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
         queryClient.invalidateQueries({ queryKey: ["approvals"] });
         queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        if (isLastApproval) {
-          void scheduleAutoContinue();
-        }
+        refreshSessionHistory();
       } catch (error) {
         const message = error instanceof Error ? error.message : "Approval action failed.";
         if (message.includes("consumed") || message.includes("expected pending")) {
           try {
-            const processed = await syncProcessedApproval(approvalId, toolCall.name);
-            if (processed) {
-              approvalRunPromisesRef.current.set(approvalId, Promise.resolve(processed));
-              if (isLastApproval) {
-                void scheduleAutoContinue();
-              }
+            if (await syncProcessedApproval(approvalId)) {
               return;
             }
           } catch {
@@ -624,6 +524,7 @@ export function AgentChatPage() {
           }
         }
         setApprovalActionError(message);
+        restoreApproval(approvalId);
         patchToolCall({
           approvalId,
           status: "waiting_approval",
@@ -638,11 +539,10 @@ export function AgentChatPage() {
       approvalBusyId,
       dismissApproval,
       patchToolCall,
-      pendingApprovals.length,
+      restoreApproval,
       queryClient,
-      scheduleAutoContinue,
+      refreshSessionHistory,
       syncProcessedApproval,
-      waitForJobTerminal,
     ],
   );
 
@@ -902,7 +802,8 @@ export function AgentChatPage() {
           </div>
           <ActivityPanel
             operations={operationBlocks}
-            agentPlan={agentPlanQuery.data?.plan ?? null}
+            agentRun={runtimeStateQuery.data?.run ?? null}
+            agentPlan={runtimeStateQuery.data?.plan ?? null}
             promptContext={promptContext}
             ycrTrace={ycrTrace}
             ycrTokenSummary={ycrTokenSummary}
@@ -940,12 +841,6 @@ export function AgentChatPage() {
                   <Bot size={13} />
                   <span className="ml-1">Append</span>
                 </Button>
-              </div>
-            )}
-            {autoContinuing && (
-              <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
-                <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
-                Waiting for approved jobs to finish, then continuing automatically...
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -1352,6 +1247,7 @@ function ArtifactPresentationBubble({ block }: { block: ArtifactPresentationBloc
 
 function ActivityPanel({
   operations,
+  agentRun,
   agentPlan,
   promptContext,
   ycrTrace,
@@ -1360,6 +1256,7 @@ function ActivityPanel({
   onOperationStatusChange,
 }: {
   operations: OperationCardBlock[];
+  agentRun: AgentRunProjection | null;
   agentPlan: AgentRuntimePlan | null;
   promptContext: PromptContextData | null;
   ycrTrace: YcrTraceItem[];
@@ -1402,6 +1299,8 @@ function ActivityPanel({
           )}
         </section>
 
+        <AgentRunStatePanel run={agentRun} />
+
         <AgentPlanPanel plan={agentPlan} />
 
         <YcrActivityPanel
@@ -1413,6 +1312,97 @@ function ActivityPanel({
       </div>
     </aside>
   );
+}
+
+function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
+  const taskState = run?.task_state ?? null;
+  const pendingOperations = countArray(taskState?.pending_operations);
+  const pendingApprovals = countArray(taskState?.pending_approvals);
+  const artifacts = countArray(taskState?.artifacts);
+  const workingSet = countArray(taskState?.working_set);
+  const facts = countArray(taskState?.facts);
+  const blockers = countArray(taskState?.blockers);
+  const completionStatus =
+    typeof taskState?.completion === "object" && taskState.completion !== null
+      ? String((taskState.completion as Record<string, unknown>).status ?? "")
+      : "";
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2">
+        <Bot size={14} className="text-[var(--text-muted)]" />
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+          Runtime
+        </h2>
+        <span className="flex-1" />
+        {run && <StatusBadge status={run.status} />}
+      </div>
+      {!run ? (
+        <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px] text-[var(--text-subtle)]">
+          No AgentRun state has been recorded in this session.
+        </div>
+      ) : (
+        <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3 text-[12px]">
+          <div className="min-w-0">
+            <div className="truncate font-medium text-[var(--text)]">
+              {String(taskState?.objective || run.user_message || "Agent task")}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
+              <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono">
+                {run.run_id}
+              </span>
+              <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5">
+                {run.provider_name}
+              </span>
+              {run.target_node_id && (
+                <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5">
+                  @{run.target_node_id}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <RuntimeMetric label="events" value={run.events.length} />
+            <RuntimeMetric label="steps" value={run.steps.length} />
+            <RuntimeMetric label="facts" value={facts} />
+            <RuntimeMetric label="blockers" value={blockers} />
+            <RuntimeMetric label="operations" value={pendingOperations} />
+            <RuntimeMetric label="approvals" value={pendingApprovals} />
+            <RuntimeMetric label="artifacts" value={artifacts} />
+            <RuntimeMetric label="working set" value={workingSet} />
+          </div>
+          {completionStatus && (
+            <div className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
+              completion: {completionStatus}
+            </div>
+          )}
+          {run.error_message && (
+            <div className="rounded-[var(--radius-sm)] border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-700">
+              {run.error_code ? `${run.error_code}: ` : ""}
+              {run.error_message}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RuntimeMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-[0.06em] text-[var(--text-subtle)]">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-[12px] font-semibold text-[var(--text)]">
+        {value.toLocaleString()}
+      </div>
+    </div>
+  );
+}
+
+function countArray(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
 }
 
 function AgentPlanPanel({ plan }: { plan: AgentRuntimePlan | null }) {
@@ -2733,105 +2723,3 @@ function formatRelativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-interface ApprovalRunOutcome {
-  approvalId: string;
-  toolName: string;
-  status: string;
-  invocationId?: string;
-  jobId?: string;
-  result?: Record<string, unknown>;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-}
-
-function jobToToolPatch(
-  job: JobSummary,
-  approvalId: string,
-): {
-  approvalId: string;
-  status: ToolCallState["status"];
-  invocationId: string;
-  jobId: string;
-  result?: Record<string, unknown>;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-} {
-  if (job.status === "succeeded") {
-    return {
-      approvalId,
-      status: "succeeded",
-      invocationId: job.invocation_id,
-      jobId: job.job_id,
-      result: job.output ?? undefined,
-      errorCode: null,
-      errorMessage: null,
-    };
-  }
-  if (job.status === "failed" || job.status === "timeout" || job.status === "cancelled") {
-    return {
-      approvalId,
-      status: "failed",
-      invocationId: job.invocation_id,
-      jobId: job.job_id,
-      errorCode: job.error_code ?? job.status,
-      errorMessage: job.error_message ?? `Job ${job.status}`,
-    };
-  }
-  return {
-    approvalId,
-    status: "running",
-    invocationId: job.invocation_id,
-    jobId: job.job_id,
-    errorCode: null,
-    errorMessage: null,
-  };
-}
-
-function jobToApprovalOutcome(job: JobSummary, approvalId: string, toolName: string): ApprovalRunOutcome {
-  return {
-    approvalId,
-    toolName,
-    status: job.status,
-    invocationId: job.invocation_id,
-    jobId: job.job_id,
-    result: job.output ?? undefined,
-    errorCode: job.error_code,
-    errorMessage: job.error_message,
-  };
-}
-
-function buildApprovalContinuationPrompt(outcomes: ApprovalRunOutcome[]): string {
-  const payload = JSON.stringify(outcomes, null, 2);
-  return [
-    "以下是刚才用户在 Agent Console 审批条中处理过的审批结果，已经由系统执行或拒绝，不需要再次请求同一个写操作。",
-    "",
-    "请遵守：",
-    "1. 不要重复调用这些 approval_id 对应的写操作，除非用户明确要求重试。",
-    "2. 如果 status 是 succeeded，直接基于 result 给出结论；必要时只能调用只读工具复核状态。",
-    "3. 如果 status 是 failed/cancelled/timeout/denied，解释失败原因并给出下一步。",
-    "",
-    "approval_results:",
-    payload,
-  ].join("\n");
-}
-
-function buildApprovalContinuationPromptV2(outcomes: ApprovalRunOutcome[]): string {
-  const payload = JSON.stringify(outcomes, null, 2);
-  return [
-    "The user has just handled approval requests in YeQu Agent Console.",
-    "These results are authoritative. Do not repeat the same write action unless the user explicitly asks to retry.",
-    "",
-    "Rules:",
-    "1. If a result status is succeeded, summarize the result. You may use read-only tools only if verification is necessary.",
-    "2. If a result status is denied, cancelled, failed, or timeout, explain that no approved write action was completed.",
-    "3. Denied means the user rejected the action. Do not call the same write tool again.",
-    "4. Do not use dry_run as a workaround after denial. dry_run is only a preflight check, not execution permission.",
-    "",
-    "approval_results:",
-    payload,
-  ].join("\n");
-}

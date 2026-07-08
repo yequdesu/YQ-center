@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,12 @@ class AgentRun(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="AgentRunStep.step_index",
     )
+    events: Mapped[list[AgentRunEvent]] = relationship(
+        "AgentRunEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AgentRunEvent.seq",
+    )
 
 
 class AgentRunStep(Base, TimestampMixin):
@@ -75,3 +81,31 @@ class AgentRunStep(Base, TimestampMixin):
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped[AgentRun] = relationship("AgentRun", back_populates="steps")
+
+
+class AgentRunEvent(Base, TimestampMixin):
+    """Run-scoped durable event source for Agent runtime state."""
+
+    __tablename__ = "agent_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_record_id", "seq", name="uq_agent_run_events_run_seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=generate_uuid)
+    event_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    run_record_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    step_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    plan_step_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    run: Mapped[AgentRun] = relationship("AgentRun", back_populates="events")

@@ -217,6 +217,125 @@ async def test_agent_artifact_meta_tools_list_and_present(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_artifact_read_text_supports_pattern_range_and_line_glob(db_session) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.config import get_settings
+    from yequ.runtime import CenterExecutionRuntime
+    from yequ.services.artifact_service import ArtifactPayload, create_artifact
+
+    payload = "\n".join(
+        [
+            "INFO boot",
+            "WARN disk",
+            "ERROR permission",
+            "INFO recovered",
+            "ERROR retry",
+        ]
+    ).encode("utf-8")
+    artifact = await create_artifact(
+        db_session,
+        ArtifactPayload(
+            data=payload,
+            artifact_type="log",
+            content_type="text/plain",
+            title="journal-test.log",
+            session_id="sess_artifact_read_text",
+            node_id="linux-node-01",
+        ),
+        settings=get_settings(),
+    )
+    await db_session.commit()
+
+    service = CenterExecutionRuntime(db_session)
+    ranged = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.read_text",
+            input_data={
+                "artifact_pattern": "*.log",
+                "mode": "range",
+                "line_start": -3,
+                "line_end": -1,
+            },
+            session_id="sess_artifact_read_text",
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert ranged.status == "succeeded"
+    assert ranged.output_data is not None
+    assert ranged.output_data["artifact"]["artifact_id"] == artifact.artifact_id
+    assert ranged.output_data["content"] == "ERROR permission\nINFO recovered\nERROR retry"
+    assert ranged.output_data["read"]["line_selection"]["line_start"] == -3
+
+    filtered = await service.execute(
+        ExecuteToolCommand(
+            function_name="artifact.read_text",
+            input_data={
+                "artifact_id": artifact.artifact_id,
+                "mode": "full",
+                "line_glob": "ERROR*",
+            },
+            session_id="sess_artifact_read_text",
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert filtered.status == "succeeded"
+    assert filtered.output_data is not None
+    assert filtered.output_data["content"] == "ERROR permission\nERROR retry"
+    assert filtered.output_data["read"]["line_selection"]["line_glob"] == "ERROR*"
+
+
+@pytest.mark.asyncio
+async def test_agent_center_meta_groups_open_artifacts(db_session) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    service = CenterExecutionRuntime(db_session)
+    groups = await service.execute(
+        ExecuteToolCommand(
+            function_name="capability.groups",
+            input_data={},
+            session_id="sess_center_groups",
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert groups.status == "succeeded"
+    assert groups.output_data is not None
+    assert "artifacts" in {group["group_id"] for group in groups.output_data["groups"]}
+
+    opened = await service.execute(
+        ExecuteToolCommand(
+            function_name="capability.group.open",
+            input_data={"group_id": "artifacts", "projection": "invoke_ready"},
+            session_id="sess_center_groups",
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert opened.status == "succeeded"
+    assert opened.output_data is not None
+    capabilities = opened.output_data["capabilities"]
+    assert "artifact.read_text" in {capability["capability_ref"] for capability in capabilities}
+    read_text = next(
+        capability
+        for capability in capabilities
+        if capability["capability_ref"] == "artifact.read_text"
+    )
+    assert read_text["input_schema"]["properties"]["mode"]["enum"] == [
+        "head",
+        "tail",
+        "range",
+        "full",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_artifact_deploy_requires_preflight_before_job(db_session) -> None:
     from sqlalchemy import select
 

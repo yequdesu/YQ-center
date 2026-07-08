@@ -12,6 +12,8 @@ from yequ.runtime.admission.schemas import ExecutionPlan
 INLINE_TOOLS = {
     "node.list",
     "node.status",
+    "capability.groups",
+    "capability.group.open",
     "capability.search",
     "capability.describe",
     "context.inspect",
@@ -22,6 +24,7 @@ INLINE_TOOLS = {
     "context.status",
     "artifact.list",
     "artifact.get",
+    "artifact.read_text",
     "artifact.present",
     "artifact.deploy.preflight",
     "operation.status",

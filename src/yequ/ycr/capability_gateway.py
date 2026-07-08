@@ -73,6 +73,29 @@ async def search_capability_registry(
         "invocation_surface": _str_or_none(filters.get("invocation_surface")) or "agent",
     }
     if query and query.strip():
+        if _tool_rag_mode() == "registry":
+            capabilities = await capability_search(
+                db,
+                query=query.strip(),
+                **common_filters,
+                limit=limit,
+            )
+            return attach_ycr_entities(
+                {
+                    "kind": "capability_registry_search_result",
+                    "query": query.strip(),
+                    "matches": capabilities,
+                    "match_count": len(capabilities),
+                    "retrieval": {
+                        "strategy": "registry_query_v1",
+                        "semantic": {
+                            "enabled": False,
+                            "reason": "YEQU_YCR_TOOL_RAG_MODE=registry",
+                        },
+                    },
+                },
+                capabilities=capabilities,
+            )
         return await _search_capability_rag(
             db,
             query=query.strip(),
@@ -142,6 +165,16 @@ def _bool_or_none(value: object) -> bool | None:
 
 def _bool_filter(value: object, *, default: bool | None) -> bool | None:
     return value if isinstance(value, bool) else default
+
+
+def _tool_rag_mode() -> str:
+    mode = get_settings().ycr_tool_rag_mode.strip().lower()
+    if mode in {"semantic", "registry"}:
+        return mode
+    raise ValueError(
+        "invalid_capability_search_request: "
+        "YEQU_YCR_TOOL_RAG_MODE must be semantic or registry"
+    )
 
 
 async def _search_capability_rag(

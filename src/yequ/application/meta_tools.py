@@ -3,6 +3,8 @@
 CENTER_META_TOOLS = {
     "node.list",
     "node.status",
+    "capability.groups",
+    "capability.group.open",
     "capability.search",
     "capability.describe",
     "context.inspect",
@@ -13,6 +15,7 @@ CENTER_META_TOOLS = {
     "context.status",
     "artifact.list",
     "artifact.get",
+    "artifact.read_text",
     "artifact.present",
     "artifact.deploy.preflight",
     "artifact.deploy",

@@ -1,7 +1,7 @@
 # 文档索引
 
 状态：当前文档入口
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 本文是 YeQu Center 文档系统的唯一入口。当前开发只应引用“当前权威文档”和“活跃待办”；`docs/archive/` 下内容只解释历史演进，不能覆盖当前代码、协议和合同。
 
@@ -26,7 +26,8 @@
 | `docs/todos/README.md` | 当前待办目录说明。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 全局质量门禁：文档系统收口、代码质量审查、架构边界复核、Node/capability 插拔性、错误传播和无静默 fallback。 |
 | `docs/todos/2026-07-06-ycr-agent-routing-and-transfer-corrections.md` | 行为缺陷修正和验收：Tool RAG / projection 已完成项的真实任务验收、Linux yq-croc receive 状态复验、Center transfer fact 继承复验、meta tool 默认输出和空错误传播。 |
-| `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` | Agent Runtime 架构收敛：Run/Turn 状态机、通用 Plan、Operation Event Queue、YCR Session State、Snapshot Cache、Tool RAG Candidate Loader、前端状态绑定和审计 span 化。 |
+| `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` | Agent Runtime 架构收敛：Run/Turn 状态机、通用 Plan、Operation Event Queue、YCR Session State、Snapshot Cache、Tool RAG Candidate Loader、Center meta tool 分组、Task Runtime/Replanner、前端状态绑定和审计 span 化。 |
+| `docs/todos/2026-07-08-exec-profile-controlled-exec-design.md` | Exec Profile 与受控 `exec.run` 待办：固定 Product/Core/Primitive 三层能力面，Windows Everything 文件发现保留为 Core Capability，普通命令收敛到 `exec.run`，当前静态走通用 approval/audit，不保留伪动态 policy，并删除重复、低质量、无业务语义的 primitive 小能力。 |
 | `docs/todos/2026-06-29-agent-provider-system.md` | Provider 系统：Provider registry、模型发现、连通性/tool/stream probe、Console 动态 provider/model 选择和显式 provider 错误报告。 |
 
 ## 3. 当前设计提案

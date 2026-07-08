@@ -107,10 +107,9 @@ Node 启动时必须对 capability 做 permission probe。未通过 probe 的能
 
 | capability | 权限策略 |
 |---|---|
-| `linux.system.info` | 普通用户可执行。 |
-| `linux.metrics.snapshot` | 普通用户可执行。 |
-| `linux.process.list` | 普通用户可执行，但输出可能因权限受限而不完整，必须在 output 中标明 partial/limited。 |
-| `linux.filesystem.stat` | 仅允许白名单路径，且必须当前用户可访问。不可访问时返回 `permission_denied`。 |
+| `linux.exec.run` | 普通用户和 sudo/root runtime 均可上报 profile；Center 不解析命令语义，第一版静态按 `maintenance/write` 走通用 approval/audit。 |
+| `linux.artifact.*` | 需要 sudo/root 或可选 framebuffer 探测；用于 artifact 上传、下载、诊断包和截图。 |
+| `linux.transfer.*` | 由 yq-croc runtime 与 transfer 本地 fact 能力承担；send/receive 只由 Center transfer workflow 调度。 |
 
 普通用户 runtime 示例：
 
@@ -150,17 +149,18 @@ sudo/root runtime 示例：
 }
 ```
 
-高权限 capability 示例：
+高权限 runtime 示例：
 
 ```json
 {
-  "name": "linux.filesystem.stat.privileged",
-  "risk": "maintenance",
-  "effect": "read",
-  "execution_requirements": {
-    "runtime_kind": "privileged",
-    "privilege": "root",
-    "labels": ["filesystem:host"]
+  "runtime_id": "sudo-limited",
+  "kind": "privileged",
+  "status": "online",
+  "interactive": false,
+  "privilege": "root",
+  "labels": ["linux", "exec", "filesystem", "artifact", "sudoers:yequnode", "filesystem:host"],
+  "metadata": {
+    "execution_profiles": ["admin.readonly", "admin.write"]
   }
 }
 ```
@@ -262,134 +262,30 @@ Linux Node 必须把 Center artifact 下发和 croc 跨 Node 传输区分开：
 
 ## 文件系统写能力合同
 
-Linux Node 的文件系统写能力必须明确区分“普通用户权限可写”和“sudo/root 才可写”。能力不得在权限不足时改写到其他目录，也不得静默降级。
+Linux Node 不再暴露 `linux.filesystem.*`、`linux.system.*`、`linux.network.*`、`linux.service.*`、`linux.log.*` 这类低价值 primitive 能力。目录创建、普通文件读写、hash、stat、系统诊断、网络诊断、日志查看等简单命令由 `linux.exec.run` 承载。第一版不实现命令语义门控，`linux.exec.run` 静态按 `maintenance/write` 进入 Center 通用 approval/audit。
 
-### `linux.filesystem.mkdir`
+结构化业务写能力仍然保留为独立 capability，例如 artifact 下载、transfer 接收和服务维护。能力不得在权限不足时改写到其他目录，也不得静默降级。
 
-用途：创建明确指定的目录，主要服务于 transfer 目标目录准备、artifact 下发落点准备和常规 Linux 文件管理。
-
-输入：
+`linux.exec.run` 输入必须包含：
 
 ```json
 {
-  "path": "/tmp/yequ-transfer",
-  "parents": true,
-  "exist_ok": true,
-  "mode": "0755"
+  "profile": "user.readonly",
+  "command": "sha256sum /home/yequdesu/file.zip",
+  "reason": "verify downloaded file checksum"
 }
 ```
-
-字段要求：
-
-| 字段 | 要求 |
-|---|---|
-| `path` | 必填。必须是用户明确指定或已确认的路径；Agent 不得猜测落点。 |
-| `parents` | 可选，默认 true。true 时创建缺失父目录。 |
-| `exist_ok` | 可选，默认 true。false 且目录已存在时返回 `target_exists`。 |
-| `mode` | 可选，八进制权限字符串，例如 `755` 或 `0750`。 |
-
-输出：
-
-```json
-{
-  "path": "/tmp/yequ-transfer",
-  "created": true,
-  "already_exists": false,
-  "is_dir": true,
-  "mode": "0755"
-}
-```
-
-manifest 要求：
-
-- `risk=maintenance`
-- `effect=write`
-- `execution_requirements.labels` 至少包含 `linux` 和 `filesystem`
-- `resource_keys=["node.filesystem"]`
-- `conflict_policy=serialize`
-- `required_intent_slots=["path"]`
-- `preconditions` 至少表达 `target.path_explicit` 和 `target.parent_writable`
 
 执行要求：
 
-- 使用当前 runtime 的 OS 权限创建目录；
-- 权限不足返回 `permission_denied`；
-- 目标已存在且不是目录，或 `exist_ok=false` 时目录已存在，返回 `target_exists`；
-- 不得 fallback 到 `/tmp`、`/home/user` 或其他目录。
+- Node 只负责按 profile 执行命令并返回 exit code、stdout/stderr preview、截断标记和错误信息；
+- Center 不做命令语义判断；第一版只按 `linux.exec.run` manifest 的 `maintenance/write` 进入通用 approval/audit；
+- 权限不足必须返回显式失败；
+- 不得 fallback 到其他目录、其他用户或其他 runtime。
 
-## 网络探测能力合同
+## 网络探测任务
 
-Linux Node 的网络探测能力用于回答“从这个 Node 看，某个域名、端口或服务是否可达”。这些能力是 read-only，不得修改系统网络配置。
-
-### `linux.network.dns_lookup`
-
-用途：使用 Linux Node 的系统 resolver 解析 hostname。
-
-输入：
-
-```json
-{
-  "hostname": "example.com",
-  "port": 80
-}
-```
-
-要求：
-
-- `hostname` 必填，不能包含 URL scheme、斜杠或路径；
-- `port` 仅用于系统 resolver API，默认 80；
-- `risk=safe`，`effect=read`；
-- `execution_requirements.labels` 至少包含 `linux` 和 `network`；
-- `required_intent_slots=["hostname"]`。
-
-输出：
-
-```json
-{
-  "hostname": "example.com",
-  "port": 80,
-  "addresses": ["93.184.216.34"],
-  "count": 1
-}
-```
-
-### `linux.network.port_check`
-
-用途：从 Linux Node 发起 TCP connect，检查某个 host:port 是否可达。
-
-输入：
-
-```json
-{
-  "host": "127.0.0.1",
-  "port": 22,
-  "timeout_ms": 3000
-}
-```
-
-要求：
-
-- `host` 和 `port` 必填；
-- `host` 不能包含 URL scheme、斜杠或路径；
-- `timeout_ms` 必须被限制在合理范围；
-- `risk=safe`，`effect=read`；
-- `execution_requirements.labels` 至少包含 `linux` 和 `network`；
-- `required_intent_slots=["host", "port"]`。
-
-输出：
-
-```json
-{
-  "host": "127.0.0.1",
-  "port": 22,
-  "reachable": true,
-  "latency_ms": 3.2,
-  "error_code": null,
-  "error_message": null
-}
-```
-
-连接失败不是 capability 执行失败；应返回 `reachable=false` 和稳定 `error_code`，让 Agent 能解释网络状态。
+Linux Node 不再暴露独立网络探测 capability。网络诊断通过 `linux.exec.run` 执行系统命令，例如 `getent hosts example.com`、`nc -vz host port`、`curl -I URL`。连接失败体现为命令 exit code 和 stderr/stdout，由 Agent 解释为网络状态。
 
 错误码要求：
 
@@ -704,10 +600,7 @@ Linux Node 当前生产能力清单以 `nodes/linux/yequnode/yequnode-core/src/r
 
 | 分类 | 能力前缀或代表能力 | Runtime / 探测来源 |
 |---|---|---|
-| 系统与进程 | `linux.system.info`、`linux.metrics.snapshot`、`linux.process.list`、`linux.user.list`、`linux.package.list`、`linux.dmesg` | user runtime；依赖 `/proc`、`dmesg` 等本地探测。 |
-| 文件系统读取与轻量写入 | `linux.filesystem.stat`、`linux.filesystem.hash`、`linux.filesystem.disk_usage`、`linux.filesystem.read_text`、`linux.filesystem.find`、`linux.filesystem.list_dir`、`linux.filesystem.mkdir` | user runtime；受 runtime 可见性、路径策略和 OS 权限限制。 |
-| 网络诊断 | `linux.network.interfaces`、`linux.network.routes`、`linux.network.connections`、`linux.network.dns_lookup`、`linux.network.port_check` | user runtime；依赖 `ip`、`ss`、系统 resolver 或 TCP connect。 |
-| 服务与日志 | `linux.service.list`、`linux.service.status`、`linux.service.restart`、`linux.log.journal` | 读能力使用 user runtime；restart 和特权日志类能力要求 sudo/root runtime。 |
+| Primitive exec | `linux.exec.run` | user/sudo/root runtime；第一版静态按 `maintenance/write` 进入 Center 通用 approval/audit。 |
 | Artifact | `linux.artifact.upload_file`、`linux.artifact.download_file`、`linux.artifact.upload_log`、`linux.artifact.diagnostics`、`linux.artifact.upload_proc`、`linux.artifact.screenshot_via_fb` | 需要 sudo/root 或可选 framebuffer 探测；必须遵守 artifact 合同。 |
 | Transfer | `linux.transfer.local.stat`、`linux.transfer.croc.status`、`linux.transfer.croc.send`、`linux.transfer.croc.receive`、`linux.transfer.croc.reconcile` | yq-croc transfer runtime；由 `transfer.yq_croc` 配置和二进制可执行性决定是否注册 send/receive。 |
 
@@ -761,15 +654,15 @@ Node 不应静默 fallback。
 1. 在 Center 预配置 Linux node，生成 token。
 2. Linux node 启动并发送 `node.hello`。
 3. Console Nodes 页面应看到 Windows node 与 Linux node。
-4. Console Node detail 或 `/admin/capabilities?node_id=<linux-node-id>` 应看到 Linux capabilities。
+4. Console Node detail 或 `/admin/capabilities?node_id=<linux-node-id>` 应看到 `linux.exec.run`、artifact 和 transfer capabilities。
 5. Agent target node 选择对应 Linux node id。
-6. 调用 `linux.system.info`。
+6. 调用 `linux.exec.run` 执行只读命令，例如 `uname -a`。
 7. Linux node poll 到 Job，执行并 `job.finished`。
 8. Center Job/Invocation/Timeline 页面能看到完整链路。
 
 ## 9. 当前明确不做
 
-- 不提供任意 shell 执行入口。
+- 不提供绕过 Center policy/approval/audit 的任意 shell 执行入口。
 - 不自动发现或自动注册未预配置 Node。
 - 不让 Linux Node 主动发起 transfer、retry、resume、relay switch 或 code rotation。
 - 不把 artifact bytes、croc code、relay password、Node token 或 Center token 写入 Agent prompt、tool JSON、普通日志或 Timeline。

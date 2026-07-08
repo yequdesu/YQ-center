@@ -149,6 +149,21 @@ async def get_session_agent_plan_endpoint(
     return {"plan": plan}
 
 
+@router.get("/sessions/{session_id}/runtime-state")
+async def get_session_runtime_state_endpoint(
+    session_id: str,
+    _token: dict[str, str] = Depends(get_agent_token),
+) -> dict[str, object]:
+    """Return the backend-owned Agent Runtime state for a session."""
+    from yequ.runtime.agent_plan_service import get_latest_agent_plan_for_session
+    from yequ.runtime.agent_run_service import get_latest_agent_run_for_session
+
+    async with yequ_db.async_session_factory() as db:
+        run = await get_latest_agent_run_for_session(db, session_id=session_id)
+        plan = await get_latest_agent_plan_for_session(db, session_id=session_id)
+    return {"run": run, "plan": plan}
+
+
 @router.post("/invoke/stream")
 async def invoke_agent_stream_endpoint(
     body: InvokeAgentRequest,

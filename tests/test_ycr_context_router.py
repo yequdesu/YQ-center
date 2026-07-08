@@ -49,6 +49,42 @@ async def test_ycr_tool_projection_refs_large_stdout(db_session) -> None:
     assert result["expand_hints"][0]["preferred_ops"] == ["tail", "search", "expand"]
 
 
+async def test_ycr_tool_projection_refs_large_exec_stdout_preview(db_session) -> None:
+    value = {
+        "profile": "user.readonly",
+        "exit_code": 0,
+        "stdout_preview": "line\n" * 5000,
+        "stderr_tail": "",
+        "truncated": True,
+        "duration_ms": 42,
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_exec",
+        path="$",
+        value=value,
+        summary="linux.exec.run succeeded",
+        session_id="sess_1",
+    )
+    projected = project_tool_observation_from_ref(
+        name="linux.exec.run",
+        call_id="call_exec",
+        status="succeeded",
+        result=value,
+        raw_ref=raw_ref,
+        target_node_id="linux-node-01",
+    )
+
+    result = projected["result"]
+    assert result["facts"]["exit_code"] == 0
+    assert result["facts"]["stdout_preview"]["$ycr_ref"] == raw_ref["ref_id"]
+    assert result["facts"]["stdout_preview"]["path"] == "$.stdout_preview"
+    assert result["structured_refs"]["by_path"]["$.stdout_preview"]["value_type"] == "string"
+    assert result["expand_hints"][0]["preferred_ops"] == ["tail", "search", "expand"]
+
+
 async def test_ycr_tool_projection_refs_medium_meta_tool_output(db_session) -> None:
     value = {
         "capabilities": [
@@ -341,7 +377,10 @@ async def test_ycr_build_turn_compacts_old_history_and_injects_working_set(
     assert packet["context_estimate"]["working_set_count"] == 1
     assert packet["provider_context"]["working_set"][0]["canonical_name"] == "screen.capture"
     assert "YCR capability working set" in packet["messages"][0]["content"]
-    assert "YCR conversation summary" in packet["messages"][1]["content"]
+    assert "YCR deterministic conversation summary" in packet["messages"][1]["content"]
+    summary = packet["context_estimate"]["history_compaction"]["summary"]
+    assert summary["mode"] == "deterministic"
+    assert summary["llm"] == "disabled"
 
 
 async def test_ycr_tool_observation_updates_session_state_for_next_turn(
@@ -436,6 +475,56 @@ async def test_ycr_tool_observation_updates_session_state_for_next_turn(
     assert packet["context_estimate"]["session_state_tokens"] > 0
     assert packet["context_estimate"]["capability_candidate_count"] == 1
     assert "YCR Session State" in packet["messages"][0]["content"]
+
+
+async def test_ycr_task_state_working_set_drives_tool_strategy(
+    db_session,
+    override_settings,
+) -> None:
+    task_state = {
+        "objective": {"text": "capture the windows screen"},
+        "working_set": {
+            "capabilities": [
+                {
+                    "capability_ref": "screen.capture",
+                    "canonical_name": "screen.capture",
+                    "source_id": "src_screen",
+                    "node_id": "winClient",
+                    "registered_name": "windows.screen.capture",
+                    "status": "succeeded",
+                }
+            ],
+            "nodes": [],
+            "artifacts": [],
+        },
+        "completion": {"status": "in_progress", "criteria": [], "satisfied": [], "missing": []},
+        "pending_operations": [],
+        "pending_approvals": [],
+        "facts": [],
+        "blockers": [],
+        "artifacts": [],
+    }
+
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_strategy",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "capture the win screen"}],
+        available_functions=[{"name": "capability.invoke", "input_schema": {}}],
+        capability_context={"nodes": []},
+        task_state=task_state,
+        profile=projection_profile_from_settings(override_settings),
+        step=2,
+    )
+
+    strategy = packet["provider_context"]["tool_strategy"]
+    assert strategy["mode"] == "reuse_working_set"
+    assert strategy["preferred_candidates"][0]["capability_ref"] == "screen.capture"
+    assert packet["context_estimate"]["tool_strategy_tokens"] > 0
+    assert "YCR Tool Strategy" in packet["messages"][0]["content"]
+    assert "YCR capability working set" in packet["messages"][2]["content"]
 
 
 def test_result_ingestion_preserves_small_output() -> None:

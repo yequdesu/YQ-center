@@ -1,7 +1,7 @@
 # Agent SSE 事件合同
 
 状态：当前前后端流式事件合同
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 Agent 流式事件通过 `POST /agent/invoke/stream` 和
 `POST /agent/plan/stream` 返回，响应类型为 `text/event-stream`。
@@ -93,10 +93,10 @@ stream.close
 
 ## 4. Plan Stream 事件类型
 
-当前 `POST /agent/plan/stream` 是维护计划路径的流式事件合同，不等同于
-`docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` 中规划的通用
-Agent Runtime Plan。下一阶段若引入通用 Plan/PlanStep，必须扩展本文或新增对应章节，
-并避免与 MaintenancePlan 语义混用。
+当前 `POST /agent/plan/stream` 仍是维护计划路径的流式事件合同，不等同于
+`/agent/invoke/stream` 主链路中已经落地的通用 Agent Runtime `AgentPlan` /
+`AgentPlanStep`。通用 AgentPlan 通过 `/agent/sessions/{session_id}/plan`
+读取，并由右侧 Plan 面板展示；MaintenancePlan 与 AgentPlan 语义不得混用。
 
 | 事件类型 | `data.*` |
 |---|---|

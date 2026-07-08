@@ -177,6 +177,8 @@ export interface ApproveAndRunResult {
   approval_id: string;
   invocation_id: string;
   job_id: string;
+  operation_id?: string | null;
+  wait_handle?: Record<string, unknown> | null;
   function_name: string;
   target_node_id: string;
   status: string;

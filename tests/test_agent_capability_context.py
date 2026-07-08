@@ -56,7 +56,7 @@ async def test_capability_context_groups_by_node(db_session):
     assert "No single current node is pinned." in prompt
     assert "Node: winClient" in prompt
     assert "Node: linux-node-01" in prompt
-    assert "Use capability.search to discover callable capabilities." in prompt
+    assert "Use capability.groups and capability.group.open" in prompt
 
 
 @pytest.mark.asyncio

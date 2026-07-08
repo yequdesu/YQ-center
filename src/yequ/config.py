@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     ycr_timeout_sec: float = 45.0
     ycr_fail_closed: bool = True
     ycr_service_token: str = ""
+    ycr_tool_rag_mode: str = "semantic"  # semantic or registry
     ycr_embedding_provider: str = "openai_compatible"
     ycr_embedding_model: str = "BAAI/bge-m3"
     ycr_embedding_base_url: str = ""
@@ -90,12 +91,6 @@ class Settings(BaseSettings):
     ycr_scheduler_embedding_concurrency: int = 1
     ycr_scheduler_rerank_concurrency: int = 1
     ycr_scheduler_background_batch_size: int = 5
-    ycr_summary_provider: str = "openai_compatible"
-    ycr_summary_base_url: str = ""
-    ycr_summary_api_key: str = ""
-    ycr_summary_model: str = ""
-    ycr_summary_timeout_sec: float = 20.0
-    ycr_summary_input_chars: int = 16_000
 
     # DeepSeek LLM Provider
     deepseek_api_key: str = ""  # Set via YEQU_DEEPSEEK_API_KEY env var

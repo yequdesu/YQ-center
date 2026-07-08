@@ -12,6 +12,7 @@ from yequ.models.approval import ApprovalRequest
 from yequ.models.invocation import Invocation
 from yequ.models.job import Job
 from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
+from yequ.runtime.agent_run_service import promote_approval_wait_to_operation_wait
 from yequ.services.token_auth import hash_token as hash_api_token
 from yequ.shared_types import JsonObject
 
@@ -195,10 +196,24 @@ async def approve_endpoint(
     if a is None:
         raise HTTPException(404, f"Approval {approval_id!r} not found")
     reason = body.get("reason") if body else None
+    from yequ.runtime.agent_run_resume import append_event_to_latest_waiting_run
     from yequ.services.approval_service import approve_approval
 
     try:
         await approve_approval(db, a, approved_by="admin", reason=reason)
+        await append_event_to_latest_waiting_run(
+            db,
+            session_id=a.session_id,
+            approval_id=a.approval_id,
+            event_type="approval.approved",
+            source="approval",
+            payload={
+                "approval_id": a.approval_id,
+                "function_name": a.function_name,
+                "target_node_id": a.target_node_id,
+                "status": "approved",
+            },
+        )
         return _approval_dict(a)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
@@ -218,10 +233,25 @@ async def deny_endpoint(
     if a is None:
         raise HTTPException(404, f"Approval {approval_id!r} not found")
     reason = body.get("reason") if body else None
+    from yequ.runtime.agent_run_resume import append_event_to_latest_waiting_run
     from yequ.services.approval_service import deny_approval
 
     try:
         await deny_approval(db, a, denied_by="admin", reason=reason)
+        await append_event_to_latest_waiting_run(
+            db,
+            session_id=a.session_id,
+            approval_id=a.approval_id,
+            event_type="approval.rejected",
+            source="approval",
+            payload={
+                "approval_id": a.approval_id,
+                "function_name": a.function_name,
+                "target_node_id": a.target_node_id,
+                "status": "rejected",
+                "message": reason,
+            },
+        )
         return _approval_dict(a)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
@@ -254,6 +284,7 @@ async def approve_and_run_endpoint(
             f"Approval {approval_id!r} is {a.status}, expected pending",
         )
 
+    from yequ.runtime.agent_run_resume import append_event_to_latest_waiting_run
     from yequ.services.approval_service import approve_approval
 
     reason = body.get("reason") if body else None
@@ -286,10 +317,56 @@ async def approve_and_run_endpoint(
             },
         )
 
+    promoted_run_ids = await promote_approval_wait_to_operation_wait(
+        db,
+        session_id=a.session_id,
+        approval_id=a.approval_id,
+        operation_id=app_result.operation_id or "",
+        wait_handle=app_result.wait_handle,
+        invocation_id=app_result.invocation_id,
+        job_id=app_result.job_id,
+    )
+    await append_event_to_latest_waiting_run(
+        db,
+        session_id=a.session_id,
+        approval_id=a.approval_id,
+        event_type="approval.approved",
+        source="approval",
+        payload={
+            "approval_id": a.approval_id,
+            "operation_id": app_result.operation_id,
+            "function_name": a.function_name,
+            "target_node_id": a.target_node_id,
+            "status": "approved",
+        },
+    )
+    if app_result.operation_id:
+        await append_event_to_latest_waiting_run(
+            db,
+            session_id=a.session_id,
+            operation_id=app_result.operation_id,
+            event_type="operation.waiting",
+            source="operation",
+            payload={
+                "approval_id": a.approval_id,
+                "operation_id": app_result.operation_id,
+                "function_name": a.function_name,
+                "target_node_id": a.target_node_id,
+                "status": "waiting",
+                "wait_handle": app_result.wait_handle or {},
+                "invocation_id": app_result.invocation_id,
+                "job_id": app_result.job_id,
+            },
+        )
+    await db.commit()
+
     return {
         "approval_id": a.approval_id,
         "invocation_id": app_result.invocation_id,
         "job_id": app_result.job_id,
+        "operation_id": app_result.operation_id,
+        "wait_handle": app_result.wait_handle,
+        "promoted_agent_run_ids": promoted_run_ids,
         "function_name": a.function_name,
         "target_node_id": a.target_node_id,
         "status": "queued" if app_result.status == "created" else app_result.status,

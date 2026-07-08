@@ -14,6 +14,7 @@ from sqlalchemy.orm import joinedload
 from yequ.models.base import generate_uuid
 from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
 from yequ.models.node import Node
+from yequ.models.runtime_instance import RuntimeInstance
 from yequ.protocol import NodeStatus
 from yequ.shared_types import JsonObject
 
@@ -422,7 +423,14 @@ async def capability_describe(
         preflight_supported=None,
         include_inactive=include_inactive,
     )
-    return _definition_detail(definition, sources, sections=sections, projection=projection)
+    runtime_profiles = await _runtime_profiles_for_sources(db, sources)
+    return _definition_detail(
+        definition,
+        sources,
+        sections=sections,
+        projection=projection,
+        runtime_profiles_by_source=runtime_profiles,
+    )
 
 
 async def resolve_capability_invoke_target(
@@ -946,6 +954,7 @@ def _definition_search_summary(
                 "source_id": only_source.source_id,
                 "registered_name": only_source.registered_name,
                 "node_id": only_source.node.node_id if only_source.node else "",
+                "platform_os": only_source.platform_os,
             }
         )
     data["invoke"] = invoke
@@ -989,6 +998,7 @@ def _definition_detail(
     *,
     sections: list[str] | None = None,
     projection: str = "detail",
+    runtime_profiles_by_source: dict[str, list[str]] | None = None,
 ) -> JsonObject:
     requested = {section.strip() for section in sections or [] if section.strip()}
     include_all = not requested
@@ -1020,7 +1030,14 @@ def _definition_detail(
         data["failure_modes"] = _merge_source_failure_modes(sources)
     if include_all or "sources" in requested or "runtime" in requested:
         data["sources"] = [
-            _source_summary(source, definition, source.node)
+            _source_summary(
+                source,
+                definition,
+                source.node,
+                available_execution_profiles=(runtime_profiles_by_source or {}).get(
+                    source.source_id, []
+                ),
+            )
             for source in sorted(
                 sources,
                 key=lambda item: (
@@ -1061,6 +1078,8 @@ def _source_summary(
     source: CapabilitySource,
     definition: CapabilityDefinition,
     node: Node | None,
+    *,
+    available_execution_profiles: list[str] | None = None,
 ) -> JsonObject:
     return {
         "source_id": source.source_id,
@@ -1079,6 +1098,7 @@ def _source_summary(
         "is_active": source.is_active,
         "unavailable_reason": source.unavailable_reason,
         "execution_requirements": source.execution_requirements,
+        "available_execution_profiles": list(available_execution_profiles or []),
         "risk": definition.risk,
         "effect": definition.effect,
         "timeout_sec": source.timeout_sec,
@@ -1144,6 +1164,115 @@ def _source_projection(
     elif projection in {"invoke_ready", "schema"}:
         data["unavailable_reasons"] = _source_unavailable_reasons(source)
     return data
+
+
+async def _runtime_profiles_for_sources(
+    db: AsyncSession,
+    sources: list[CapabilitySource],
+) -> dict[str, list[str]]:
+    node_record_ids = {
+        source.node_record_id
+        for source in sources
+        if getattr(source, "node_record_id", None) is not None
+    }
+    if not node_record_ids:
+        return {}
+
+    result = await db.execute(
+        select(RuntimeInstance).where(
+            RuntimeInstance.node_record_id.in_(node_record_ids),
+            RuntimeInstance.status.in_(["online", "degraded"]),
+        )
+    )
+    runtimes_by_node: dict[str, list[RuntimeInstance]] = {}
+    for runtime in result.scalars().all():
+        runtimes_by_node.setdefault(str(runtime.node_record_id), []).append(runtime)
+
+    profiles_by_source: dict[str, list[str]] = {}
+    for source in sources:
+        profiles: list[str] = []
+        requirements = (
+            source.execution_requirements
+            if isinstance(source.execution_requirements, dict)
+            else {}
+        )
+        supported_profiles = _execution_profiles_from_requirements(requirements)
+        for runtime in runtimes_by_node.get(str(source.node_record_id), []):
+            if not _runtime_matches_requirements(runtime, requirements):
+                continue
+            for profile in _execution_profiles_from_runtime(runtime):
+                if supported_profiles and profile not in supported_profiles:
+                    continue
+                if profile not in profiles:
+                    profiles.append(profile)
+        profiles_by_source[source.source_id] = profiles
+    return profiles_by_source
+
+
+def _runtime_matches_requirements(
+    runtime: RuntimeInstance,
+    requirements: JsonObject,
+) -> bool:
+    allowed_kinds = {
+        str(item)
+        for item in _json_list(requirements.get("allowed_runtime_kinds"))
+        if isinstance(item, str)
+    }
+    runtime_kind = requirements.get("runtime_kind")
+    if isinstance(runtime_kind, str) and runtime_kind:
+        allowed_kinds.add(runtime_kind)
+    if allowed_kinds and runtime.kind not in allowed_kinds:
+        return False
+
+    required_interactive = requirements.get("interactive")
+    if required_interactive is not None and bool(runtime.interactive) != bool(
+        required_interactive
+    ):
+        return False
+
+    required_privilege = requirements.get("privilege")
+    if (
+        isinstance(required_privilege, str)
+        and required_privilege
+        and runtime.privilege != required_privilege
+    ):
+        return False
+
+    required_labels = {
+        str(item)
+        for item in _json_list(requirements.get("labels"))
+        if isinstance(item, str) and item
+    }
+    runtime_labels = {str(item) for item in (runtime.labels or [])}
+    return required_labels.issubset(runtime_labels)
+
+
+def _execution_profiles_from_requirements(requirements: JsonObject) -> list[str]:
+    return [
+        str(item)
+        for item in _json_list(requirements.get("execution_profiles"))
+        if isinstance(item, str) and item
+    ]
+
+
+def _json_list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _execution_profiles_from_runtime(runtime: RuntimeInstance) -> list[str]:
+    metadata = runtime.metadata_json if isinstance(runtime.metadata_json, dict) else {}
+    raw_profiles = metadata.get("execution_profiles")
+    profiles: list[str] = []
+    if not isinstance(raw_profiles, list):
+        return profiles
+    for item in raw_profiles:
+        if isinstance(item, str) and item:
+            profiles.append(item)
+        elif isinstance(item, dict):
+            profile = item.get("profile")
+            if isinstance(profile, str) and profile:
+                profiles.append(profile)
+    return profiles
 
 
 def _source_visible(

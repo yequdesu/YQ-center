@@ -94,6 +94,14 @@ async def test_agent_stream_persists_turn_and_events(client: AsyncClient, db_ses
     assert plan_projection["plan_id"] == plan.plan_id
     assert plan_projection["status"] == "succeeded"
     assert plan_projection["steps"][0]["status"] == "succeeded"
+    runtime_resp = await client.get(f"/agent/sessions/{session_id}/runtime-state")
+    assert runtime_resp.status_code == 200
+    runtime_state = runtime_resp.json()
+    assert runtime_state["plan"]["plan_id"] == plan.plan_id
+    assert runtime_state["run"]["run_id"] == run.run_id
+    assert runtime_state["run"]["status"] == "succeeded"
+    assert runtime_state["run"]["task_state"]["objective"]["text"] == "check the machine"
+    assert runtime_state["run"]["events"]
     assert provider.last_messages is not None
     assert any(
         message.role == "system"

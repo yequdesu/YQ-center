@@ -8,8 +8,8 @@ def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> N
     assert "never guess shortened aliases" in prompt
     assert "do not guess the source node" in prompt
     assert "resume_mode is user intent" in prompt
-    assert "Provider-visible tools are only capability.search" in prompt
-    assert "Center node.list capability and invoke it through capability.invoke" in prompt
+    assert "Provider-visible tools are only capability.groups" in prompt
+    assert "For Center meta tools, first list groups or open the relevant group" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt
     assert "Before artifact.deploy, use artifact.deploy.preflight" in prompt
     assert "dispatchable=false" in prompt

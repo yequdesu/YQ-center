@@ -309,6 +309,7 @@ class OperationService:
                 event_id=event.event_id,
             )
         if operation.status in TERMINAL_OPERATION_STATUSES and operation.session_id:
+            from yequ.runtime.agent_run_resume import append_event_to_latest_waiting_run
             from yequ.services.agent_operation_notifications import (
                 AgentOperationNotificationService,
             )
@@ -316,6 +317,25 @@ class OperationService:
             await AgentOperationNotificationService(self.db).enqueue_terminal_event(
                 operation=operation,
                 event=event,
+            )
+            await append_event_to_latest_waiting_run(
+                self.db,
+                session_id=operation.session_id,
+                operation_id=operation.operation_id,
+                event_type=_agent_run_operation_event_type(operation.status),
+                source="operation",
+                payload={
+                    "operation_id": operation.operation_id,
+                    "status": operation.status,
+                    "kind": operation.kind,
+                    "title": operation.title,
+                    "ref_type": operation.ref_type,
+                    "ref_id": operation.ref_id,
+                    "progress_pct": operation.progress_pct,
+                    "progress_message": operation.progress_message,
+                    "error_code": operation.error_code,
+                    "error_message": operation.error_message,
+                },
             )
         record_session_audit_event(
             operation.session_id,
@@ -417,6 +437,18 @@ def _job_summary(value: dict[str, object]) -> dict[str, object]:
         "started_at": value.get("started_at"),
         "finished_at": value.get("finished_at"),
     }
+
+
+def _agent_run_operation_event_type(status: str) -> str:
+    if status == "succeeded":
+        return "operation.succeeded"
+    if status == "failed":
+        return "operation.failed"
+    if status == "cancelled":
+        return "operation.cancelled"
+    if status == "timeout":
+        return "operation.timeout"
+    return "operation.completed"
 
 
 def _artifact_summary(value: dict[str, object]) -> dict[str, object]:

@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn test_plugin_manifest_functions_always_array() {
         let p = PluginManifest {
-            plugin_id: "linux.system".into(),
+            plugin_id: "linux.capabilities".into(),
             plugin_version: "0.1.0".into(),
             functions: vec![],
             signals: vec![],
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn test_function_manifest_contract_fields() {
         let fm = FunctionManifest {
-            name: "linux.system.info".into(),
+            name: "linux.exec.run".into(),
             description: "desc".into(),
             agent_description: Some("agent desc".into()),
             user_visible_name: None,

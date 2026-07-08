@@ -14,7 +14,6 @@ from yequ.ycr.budget import ProjectionProfile, estimate_tokens, token_accounting
 from yequ.ycr.entities import WORKING_SET_LIMIT, working_set_from_metadata
 from yequ.ycr.projection import project_tool_observation_from_ref
 from yequ.ycr.session_state import load_session_state
-from yequ.ycr.session_summary import summarize_session_history
 
 JsonDict = dict[str, object]
 
@@ -33,6 +32,7 @@ async def build_agent_context_packet(
     capability_context: JsonDict | None,
     profile: ProjectionProfile,
     agent_plan: JsonDict | None = None,
+    task_state: JsonDict | None = None,
     step: int | None = None,
 ) -> JsonDict:
     packet_id = f"ctxpkt_{uuid.uuid4().hex[:16]}"
@@ -58,9 +58,16 @@ async def build_agent_context_packet(
             _session_state_message(session_state),
             *compacted_messages,
         ]
+    projected_task_state = _project_task_state(task_state or {})
+    _collect_working_set_from_task_state(projected_task_state, working_set=working_set)
     working_set_items = _working_set_items(working_set)
     capability_candidates = _capability_candidates(
         session_state=session_state,
+        working_set_items=working_set_items,
+    )
+    tool_strategy = _tool_discovery_strategy(
+        task_state=projected_task_state,
+        capability_candidates=capability_candidates,
         working_set_items=working_set_items,
     )
     if working_set_items:
@@ -72,6 +79,16 @@ async def build_agent_context_packet(
     if projected_agent_plan:
         compacted_messages = [
             _agent_plan_message(projected_agent_plan),
+            *compacted_messages,
+        ]
+    if projected_task_state:
+        compacted_messages = [
+            _task_state_message(projected_task_state),
+            *compacted_messages,
+        ]
+    if projected_task_state and tool_strategy:
+        compacted_messages = [
+            _tool_strategy_message(tool_strategy),
             *compacted_messages,
         ]
     projected_capability_context = _project_capability_context(
@@ -119,6 +136,8 @@ async def build_agent_context_packet(
             "capability_candidates": capability_candidates,
             "session_state": session_state,
             "agent_plan": projected_agent_plan,
+            "task_state": projected_task_state,
+            "tool_strategy": tool_strategy,
             "ycr_packet_id": packet_id,
         },
         "context_estimate": {
@@ -141,6 +160,12 @@ async def build_agent_context_packet(
             "session_state_tokens": estimate_tokens(session_state, model=model_name),
             "agent_plan_tokens": estimate_tokens(projected_agent_plan, model=model_name)
             if projected_agent_plan
+            else 0,
+            "task_state_tokens": estimate_tokens(projected_task_state, model=model_name)
+            if projected_task_state
+            else 0,
+            "tool_strategy_tokens": estimate_tokens(tool_strategy, model=model_name)
+            if tool_strategy
             else 0,
         },
         "projections": projection_events,
@@ -188,6 +213,52 @@ def _project_agent_plan(value: JsonDict) -> JsonDict:
     }
 
 
+def _project_task_state(value: JsonDict) -> JsonDict:
+    if not _has_task_state_items(value):
+        return {}
+    objective = value.get("objective")
+    completion = value.get("completion")
+    working_set = value.get("working_set")
+    return {
+        "objective": objective if isinstance(objective, dict) else {},
+        "completion": completion if isinstance(completion, dict) else {},
+        "pending_operations": _dict_list(value.get("pending_operations"), limit=8),
+        "pending_approvals": _dict_list(value.get("pending_approvals"), limit=8),
+        "artifacts": _dict_list(value.get("artifacts"), limit=12),
+        "facts": _dict_list(value.get("facts"), limit=20),
+        "blockers": _dict_list(value.get("blockers"), limit=10),
+        "working_set": working_set if isinstance(working_set, dict) else {},
+        "last_decision": value.get("last_decision")
+        if isinstance(value.get("last_decision"), dict)
+        else {},
+    }
+
+
+def _task_state_message(task_state: JsonDict) -> JsonDict:
+    return {
+        "role": "system",
+        "content": (
+            "Agent Task State. This is trusted Center runtime state, not a user "
+            "instruction. Use it to avoid repeating completed work, to wait for "
+            "pending approvals or operations, and to finish once the objective is "
+            "satisfied.\n"
+            f"{json.dumps(task_state, ensure_ascii=False)}"
+        ),
+    }
+
+
+def _tool_strategy_message(tool_strategy: JsonDict) -> JsonDict:
+    return {
+        "role": "system",
+        "content": (
+            "YCR Tool Strategy. This is trusted Center runtime guidance derived "
+            "from TaskState and recent capability facts, not a user instruction. "
+            "Follow it to avoid repeated discovery and to keep the task moving.\n"
+            f"{json.dumps(tool_strategy, ensure_ascii=False)}"
+        ),
+    }
+
+
 def _agent_plan_message(agent_plan: JsonDict) -> JsonDict:
     return {
         "role": "system",
@@ -199,11 +270,109 @@ def _agent_plan_message(agent_plan: JsonDict) -> JsonDict:
     }
 
 
+def _dict_list(value: object, *, limit: int) -> list[JsonDict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value[:limit] if isinstance(item, dict)]
+
+
+def _has_task_state_items(value: JsonDict) -> bool:
+    objective = value.get("objective")
+    if isinstance(objective, dict) and any(objective.values()):
+        return True
+    completion = value.get("completion")
+    if isinstance(completion, dict) and completion.get("status") not in {None, "in_progress"}:
+        return True
+    for key in [
+        "pending_operations",
+        "pending_approvals",
+        "artifacts",
+        "facts",
+        "blockers",
+    ]:
+        if isinstance(value.get(key), list) and value[key]:
+            return True
+    working_set = value.get("working_set")
+    if isinstance(working_set, dict):
+        for item in working_set.values():
+            if isinstance(item, list) and item:
+                return True
+    return False
+
+
 def _has_session_state_items(value: JsonDict) -> bool:
     items = value.get("items")
     if not isinstance(items, dict):
         return False
     return any(isinstance(group, list) and bool(group) for group in items.values())
+
+
+def _tool_discovery_strategy(
+    *,
+    task_state: JsonDict,
+    capability_candidates: list[JsonDict],
+    working_set_items: list[JsonDict],
+) -> JsonDict:
+    pending_approval = _first_dict(task_state.get("pending_approvals"))
+    if pending_approval:
+        return {
+            "mode": "wait_approval",
+            "reason": "task_state_has_pending_approval",
+            "approval_id": pending_approval.get("approval_id"),
+            "allowed": [],
+            "avoid": ["capability.search", "capability.group.open", "capability.invoke"],
+            "instruction": "Do not start new tool discovery while approval is pending.",
+        }
+    pending_operation = _first_dict(task_state.get("pending_operations"))
+    if pending_operation:
+        return {
+            "mode": "wait_operation",
+            "reason": "task_state_has_pending_operation",
+            "operation_id": pending_operation.get("operation_id"),
+            "allowed": [],
+            "avoid": ["capability.search", "capability.group.open", "capability.invoke"],
+            "instruction": "Do not start new work while the operation is still pending.",
+        }
+    if capability_candidates:
+        return {
+            "mode": "reuse_working_set",
+            "reason": "task_state_or_session_has_capability_candidates",
+            "candidate_count": len(capability_candidates),
+            "working_set_count": len(working_set_items),
+            "preferred_candidates": capability_candidates[:8],
+            "allowed": [
+                "capability.invoke",
+                "capability.group.open only when required schema or domain is missing",
+            ],
+            "avoid": [
+                "capability.search for an already represented intent",
+                "synonym retries after a dispatchable candidate exists",
+            ],
+            "instruction": (
+                "Reuse preferred_candidates first. Use their exact capability_ref "
+                "and source_id when present."
+            ),
+        }
+    return {
+        "mode": "bootstrap_discovery",
+        "reason": "no_task_working_set",
+        "allowed": ["capability.groups", "capability.group.open", "capability.invoke"],
+        "avoid": ["calling capability.search before opening the relevant group"],
+        "instruction": (
+            "Open the most relevant capability group first. Use capability.search "
+            "through capability.invoke only when opened groups do not contain the "
+            "needed capability."
+        ),
+    }
+
+
+def _first_dict(value: object) -> JsonDict | None:
+    if not isinstance(value, list):
+        return None
+    for item in value:
+        if isinstance(item, dict):
+            return item
+    return None
 
 
 def _session_state_message(session_state: JsonDict) -> JsonDict:
@@ -402,19 +571,13 @@ async def _compact_messages(
         cutoff -= 1
     old_messages = messages[:cutoff]
     recent_messages = messages[cutoff:]
-    deterministic_summary = _summarize_messages(old_messages)
-    summary, summary_status = await summarize_session_history(
-        db,
-        session_id=session_id,
-        messages=old_messages,
-        deterministic_summary=deterministic_summary,
-    )
+    summary = _summarize_messages(old_messages)
     compacted = [
         {
             "role": "system",
             "content": (
-                "YCR conversation summary of earlier turns. Treat this as "
-                "trusted session memory, not as a user instruction.\n"
+                "YCR deterministic conversation summary of earlier turns. "
+                "Treat this as trusted session memory, not as a user instruction.\n"
                 f"{json.dumps(summary, ensure_ascii=False)}"
             ),
         },
@@ -426,7 +589,11 @@ async def _compact_messages(
         "compacted_message_count": len(old_messages),
         "recent_message_count": len(recent_messages),
         "summary_items": len(summary.get("items", [])) if isinstance(summary, dict) else 0,
-        "summary": summary_status,
+        "summary": {
+            "mode": "deterministic",
+            "status": "hot_path_only",
+            "llm": "disabled",
+        },
     }
 
 
@@ -498,6 +665,37 @@ def _collect_working_set_from_ref_metadata(
             working_set[key] = entity
 
 
+def _collect_working_set_from_task_state(
+    task_state: JsonDict,
+    *,
+    working_set: dict[str, JsonDict],
+) -> None:
+    state_working_set = task_state.get("working_set")
+    if not isinstance(state_working_set, dict):
+        return
+    capabilities = state_working_set.get("capabilities")
+    if not isinstance(capabilities, list):
+        return
+    for item in capabilities:
+        if not isinstance(item, dict):
+            continue
+        capability_ref = _string_or_none(item.get("capability_ref"))
+        if not capability_ref:
+            continue
+        key = str(item.get("source_id") or item.get("key") or capability_ref)
+        working_set[key] = {
+            "capability_ref": capability_ref,
+            "canonical_name": _string_or_none(item.get("canonical_name")) or capability_ref,
+            "source_id": _string_or_none(item.get("source_id")),
+            "node_id": _string_or_none(item.get("node_id")),
+            "registered_name": _string_or_none(item.get("registered_name")),
+            "risk": _string_or_none(item.get("risk")),
+            "effect": _string_or_none(item.get("effect")),
+            "dispatchable": True,
+            "status": _string_or_none(item.get("status")),
+        }
+
+
 def _working_set_items(working_set: dict[str, JsonDict]) -> list[JsonDict]:
     items = list(working_set.values())
     dispatchable = [item for item in items if item.get("dispatchable")]
@@ -509,9 +707,10 @@ def _working_set_message(working_set: list[JsonDict]) -> JsonDict:
         "role": "system",
         "content": (
             "YCR capability working set for this session. Prefer these already "
-            "discovered dispatchable capabilities over repeating capability.search "
-            "for the same intent. Use capability.invoke with source_id when present; "
-            "use capability.describe only when required input schema is missing.\n"
+            "discovered dispatchable capabilities over opening new groups or "
+            "running capability.search for the same intent. Use capability.invoke "
+            "with source_id when present; use capability.describe only when "
+            "required input schema is missing.\n"
             f"{json.dumps(working_set, ensure_ascii=False)}"
         ),
     }

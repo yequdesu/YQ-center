@@ -82,6 +82,7 @@ class BuildTurnRequest(BaseModel):
     available_functions: list[dict[str, object]] = Field(default_factory=list)
     capability_context: dict[str, object] = Field(default_factory=dict)
     agent_plan: dict[str, object] = Field(default_factory=dict)
+    task_state: dict[str, object] = Field(default_factory=dict)
     step: int | None = None
 
 
@@ -285,10 +286,14 @@ async def context_status(session_id: str | None = Query(default=None)) -> dict[s
         "rerank_model": settings.ycr_rerank_model,
         "capability_discovery": {
             "strategies": ["registry_filter_v2", "tool_rag_bge_m3_rrf_rerank_v2"],
+            "mode": settings.ycr_tool_rag_mode,
             "tool_rag": (
                 "enabled"
-                if settings.ycr_embedding_provider == "openai_compatible"
+                if settings.ycr_tool_rag_mode == "semantic"
+                and settings.ycr_embedding_provider == "openai_compatible"
                 and bool(settings.ycr_embedding_base_url)
+                else "disabled"
+                if settings.ycr_tool_rag_mode == "registry"
                 else "unavailable"
             ),
             "rag_cache": rag_cache_stats(),
@@ -301,15 +306,7 @@ async def context_status(session_id: str | None = Query(default=None)) -> dict[s
             "model": _profile().model,
             "default_inline_bytes": _profile().default.inline_bytes,
             "default_preview_chars": _profile().default.preview_chars,
-            "history_summary": {
-                "provider": settings.ycr_summary_provider,
-                "model": settings.ycr_summary_model or settings.deepseek_model,
-                "configured": bool(
-                    (settings.ycr_summary_api_key or settings.deepseek_api_key)
-                    and (settings.ycr_summary_base_url or settings.deepseek_base_url)
-                    and (settings.ycr_summary_model or settings.deepseek_model)
-                ),
-            },
+            "history_summary": {"mode": "deterministic", "llm": "disabled"},
         },
         "capabilities": [
             "build_turn",
@@ -421,6 +418,7 @@ async def build_turn(body: BuildTurnRequest) -> dict[str, object]:
                 available_functions=body.available_functions,
                 capability_context=body.capability_context,
                 agent_plan=body.agent_plan,
+                task_state=body.task_state,
                 profile=_profile(),
                 step=body.step,
             )

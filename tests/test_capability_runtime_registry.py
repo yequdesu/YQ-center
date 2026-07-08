@@ -605,6 +605,9 @@ async def test_meta_capability_search_and_describe_api(
     matches = search_resp.json()
     assert [item["canonical_name"] for item in matches] == ["system.info"]
     assert matches[0]["sources"][0]["registered_name"] == "linux.system.info"
+    assert matches[0]["sources"][0]["platform_os"] == "linux"
+    assert matches[0]["invoke"]["registered_name"] == "linux.system.info"
+    assert matches[0]["invoke"]["platform_os"] == "linux"
 
     describe_resp = await client.get("/admin/meta/capabilities/linux.system.info")
     assert describe_resp.status_code == 200, describe_resp.text
@@ -612,6 +615,7 @@ async def test_meta_capability_search_and_describe_api(
     assert detail["canonical_name"] == "system.info"
     assert detail["sources"][0]["node_id"] == node.node_id
     assert detail["sources"][0]["registered_name"] == "linux.system.info"
+    assert detail["sources"][0]["platform_os"] == "linux"
 
     node_resp = await client.get(f"/admin/meta/nodes/{node.node_id}")
     assert node_resp.status_code == 200, node_resp.text
@@ -1205,6 +1209,118 @@ async def test_capability_describe_sections_return_only_requested_detail(
     ]
     assert "input_schema" not in capability
     assert "sources" not in capability
+
+
+@pytest.mark.asyncio
+async def test_capability_describe_reports_runtime_execution_profiles(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    auth = {"Authorization": f"Bearer {token}"}
+    hello = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.hello",
+            node.node_id,
+            payload={
+                "daemon_version": "0.2.0",
+                "platform": {"os": "linux", "arch": "x86_64"},
+                "runtimes": [
+                    {
+                        "runtime_id": "linux-user-exec",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "user",
+                        "labels": ["linux", "exec"],
+                        "metadata": {
+                            "execution_profiles": [
+                                {"profile": "user.readonly"},
+                                {"profile": "user.write"},
+                            ]
+                        },
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert hello.status_code == 200, hello.text
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.exec",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.exec.run",
+                                "description": "Run a command string.",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object"},
+                                "risk": "safe",
+                                "effect": "read",
+                                "execution_requirements": {
+                                    "runtime_kind": "privileged",
+                                    "labels": ["linux", "exec"],
+                                    "execution_profiles": [
+                                        "user.readonly",
+                                        "user.write",
+                                        "admin.readonly",
+                                    ],
+                                },
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ],
+                "runtimes": [
+                    {
+                        "runtime_id": "linux-user-exec",
+                        "kind": "privileged",
+                        "status": "online",
+                        "privilege": "user",
+                        "labels": ["linux", "exec"],
+                        "metadata": {
+                            "execution_profiles": [
+                                {"profile": "user.readonly"},
+                                {"profile": "user.write"},
+                            ]
+                        },
+                    }
+                ],
+            },
+        ),
+        headers=auth,
+    )
+    assert registered.status_code == 200, registered.text
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "exec.run",
+                "node_id": node.node_id,
+                "sections": ["runtime"],
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    source = result.output_data["capability"]["sources"][0]
+    assert source["available_execution_profiles"] == ["user.readonly", "user.write"]
 
 
 @pytest.mark.asyncio

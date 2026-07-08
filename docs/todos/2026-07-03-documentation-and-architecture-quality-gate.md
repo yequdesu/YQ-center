@@ -32,6 +32,8 @@
 | `docs/documentation-policy.md` | 文档编码、状态、归档和事实来源规则。 |
 | `docs/todos/2026-07-03-documentation-and-architecture-quality-gate.md` | 本阶段质量门禁。 |
 | `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md` | Agent Runtime、Plan、Operation Event Queue、YCR Session State、Snapshot Cache 和 Candidate Loader 架构收敛。 |
+| `docs/todos/2026-07-08-exec-profile-controlled-exec-design.md` | Exec Profile、`exec.run` 和 Node primitive 能力收敛。 |
+| `docs/todos/2026-06-29-agent-provider-system.md` | Provider registry、模型发现、probe 和 provider/model 前端选择。 |
 | `docs/todos/README.md` | 当前活跃待办职责边界。 |
 
 其他历史计划、提案、复盘和展示材料只作为背景材料阅读，不能覆盖当前合同。
@@ -54,7 +56,7 @@
 | 优先级 | 范围 | 判定标准 |
 |---|---|---|
 | P0 | Node 接入插拔性 | 新增任意平台 Node 后，只要完成 provisioning、YQP hello、runtime 上报和 capability 注册，Center 不需要新增平台分支即可调度。 |
-| P0 | Capability 插拔性 | 新 capability 只要按 manifest 合同注册，Agent 就能通过 `capability.search` / `capability.describe` / `capability.invoke` 发现和调用，不需要改 Center meta tool 列表或 Agent prompt。 |
+| P0 | Capability 插拔性 | 新 capability 只要按 manifest 合同注册，Agent 就能通过分组目录、session working set、`capability.search` / `capability.describe` / `capability.invoke` 发现和调用，不需要改 Agent prompt。Center meta tool 分组本身是 Center 内部目录，不应随 Node capability 增加而修改。 |
 | P0 | 错误传播 | Provider、Runtime、Tool、YQP、Operation 统一稳定错误码和 problem projection；前端不得收到伪成功或空失败。 |
 | P0 | 无静默 fallback | 生产路径不得保留旧 croc CLI、rclone、直连传输、未注册 capability 执行或 provider 自动切换。 |
 | P1 | 模块职责 | 拆分过大的 `CenterExecutionRuntime`、`TransferApplicationService` 和 Agent route，避免新大总管形成。 |

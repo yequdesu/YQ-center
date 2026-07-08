@@ -1,0 +1,80 @@
+center:
+  base_url: "https://gtw.yequdesu.top"
+  yqp_path: "/yqp/"
+  timeout_sec: 30
+
+node:
+  node_id: "winClient"
+  node_name: "Windows Client"
+  token: "replace-with-pre-provisioned-node-token"
+  role:
+    - "compute"
+  locality: "lan"
+
+daemon:
+  heartbeat_interval_sec: 10
+  signal_report_interval_sec: 5
+  job_poll_interval_sec: 3
+  max_concurrent_jobs: 4
+  capability_refresh_interval_sec: 300
+  reconnect_initial_delay_sec: 2
+  reconnect_max_delay_sec: 60
+  reconnect_ready_delay_sec: 5
+  reconnect_probe_interval_sec: 2
+
+runtime:
+  mode: "hybrid"
+  gui_start_at_login: false
+  close_to_tray: true
+  service_startup: "automatic"
+
+paths:
+  data_dir: "./data"
+  log_dir: "./logs"
+
+safety:
+  allow_write_actions: true
+  allowed_services:
+    - "Spooler"
+    - "W32Time"
+    - "BITS"
+
+l2:
+  allowed_task_prefixes:
+    - "\\YeQu\\"
+  allowed_temp_paths:
+    - "%TEMP%"
+    - "C:\\Windows\\Temp"
+  # Read-only windows.file.* tools can inspect any path visible to the worker.
+  # This list is retained for future write tools and does not constrain read/search.
+  allowed_file_roots:
+    - "%TEMP%"
+    - "%USERPROFILE%\\Desktop"
+    - "%USERPROFILE%\\Downloads"
+    - "%USERPROFILE%\\Documents"
+    - "%PUBLIC%\\Desktop"
+  forbidden_file_paths:
+    - "C:\\Windows\\System32"
+    - "%USERPROFILE%\\.ssh"
+    - "%USERPROFILE%\\.gnupg"
+    - "%LOCALAPPDATA%\\Google\\Chrome\\User Data"
+    - "%APPDATA%\\Mozilla\\Firefox\\Profiles"
+  allowed_templates:
+    - "check_port_owner"
+    - "clear_app_cache"
+    - "collect_iis_logs"
+    - "rotate_app_logs"
+
+cache:
+  job_result_ttl_hours: 24
+
+transfer:
+  yq_croc:
+    enabled: true
+    binary_path: "./tools/yq-croc/current/yq-croc.exe"
+    relay_url: null
+    relay_password_env: null
+    temp_dir: "./data/transfers"
+    allow_send: true
+    allow_receive: true
+    max_concurrent_transfers: 1

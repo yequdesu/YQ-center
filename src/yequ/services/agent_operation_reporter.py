@@ -91,11 +91,35 @@ async def report_operation_notification(notification: dict[str, object]) -> None
         return
 
     try:
-        provider_name = await _resolve_report_provider(session_id)
-        provider = await resolve_provider(provider_name)
         async with yequ_db.async_session_factory() as db:
             session = await _load_session(db, session_id)
             operation_observation = await OperationService(db).status(operation_id)
+            has_waiting_run = await _has_waiting_operation_agent_state(
+                db,
+                session_id=session_id,
+                operation_id=operation_id,
+            )
+        if not has_waiting_run:
+            async with yequ_db.async_session_factory() as db:
+                await AgentOperationNotificationService(db).mark_reported(
+                    notification_id=notification_id,
+                    turn_id=None,
+                )
+                await db.commit()
+            record_session_audit_event(
+                session_id,
+                "agent.operation_report.skipped",
+                {
+                    "operation_id": operation_id,
+                    "notification_id": notification_id,
+                    "reason": "no_waiting_operation_agent_run",
+                },
+                source="agent.operation_reporter",
+                event_time=datetime.now(UTC),
+            )
+            return
+        provider_name = await _resolve_report_provider(session_id)
+        provider = await resolve_provider(provider_name)
         execution_mode = session.execution_mode
         prompt = _operation_report_prompt(
             operation_observation,
@@ -316,6 +340,22 @@ async def reconcile_waiting_operation_agent_state(
         source="agent.operation_reporter",
         event_time=now,
     )
+
+
+async def _has_waiting_operation_agent_state(
+    db,
+    *,
+    session_id: str,
+    operation_id: str,
+) -> bool:
+    result = await db.execute(
+        select(AgentRun)
+        .where(AgentRun.session_id == session_id)
+        .where(AgentRun.status == "waiting_operation")
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(50)
+    )
+    return any(_run_waits_for_operation(run, operation_id) for run in result.scalars().all())
 
 
 async def _resolve_report_provider(session_id: str) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.application.schemas import ExecuteToolResult
@@ -9,11 +11,24 @@ from yequ.runtime.command import RuntimeCommand
 from yequ.runtime.input_utils import (
     dedupe_strings,
     int_or_default,
+    int_or_none,
     required_string,
     runtime_error,
     string_list,
     string_or_none,
 )
+
+TEXT_ARTIFACT_CONTENT_TYPES = {
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/json",
+    "application/x-ndjson",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+}
+MAX_ARTIFACT_READ_BYTES = 128 * 1024
 
 
 def _score_recommendation(item: dict[str, object], terms: list[str]) -> int:
@@ -28,6 +43,186 @@ def _score_recommendation(item: dict[str, object], terms: list[str]) -> int:
     )
 
 
+def _is_text_artifact(content_type: object, title: object) -> bool:
+    normalized = str(content_type or "").split(";", 1)[0].strip().lower()
+    if normalized.startswith("text/") or normalized in TEXT_ARTIFACT_CONTENT_TYPES:
+        return True
+    suffix = str(title or "").lower().rsplit(".", 1)
+    return len(suffix) == 2 and suffix[1] in {
+        "txt",
+        "log",
+        "md",
+        "csv",
+        "json",
+        "jsonl",
+        "xml",
+        "yaml",
+        "yml",
+    }
+
+
+def _decode_text_artifact(data: bytes, encoding: str) -> tuple[str, str]:
+    normalized = encoding.strip() or "utf-8"
+    try:
+        return data.decode(normalized), normalized
+    except LookupError as exc:
+        raise ValueError(f"unknown encoding {encoding!r}") from exc
+    except UnicodeDecodeError:
+        if normalized.lower().replace("_", "-") == "utf-8":
+            return data.decode("utf-8", errors="replace"), "utf-8-replace"
+        raise ValueError(f"artifact content cannot be decoded as {encoding!r}") from None
+
+
+def _slice_text(
+    text: str,
+    *,
+    mode: str,
+    lines: int,
+    line_start: int | None,
+    line_end: int | None,
+    line_glob: str | None,
+) -> tuple[str, bool, dict[str, object]]:
+    if mode == "full":
+        selected = text.splitlines()
+        if line_glob:
+            selected = [line for line in selected if fnmatch(line, line_glob)]
+        return "\n".join(selected), False, _line_selection(mode, selected, line_glob)
+    split = text.splitlines()
+    if mode == "tail":
+        sliced = split[-lines:]
+    elif mode == "range":
+        start = _resolve_line_index(line_start or 1, len(split), default=1)
+        end = _resolve_line_index(line_end, len(split), default=start + lines - 1)
+        sliced = [] if end < start else split[start - 1 : end]
+    else:
+        sliced = split[:lines]
+    if line_glob:
+        sliced = [line for line in sliced if fnmatch(line, line_glob)]
+    return (
+        "\n".join(sliced),
+        len(split) > len(sliced) if not line_glob else True,
+        _line_selection(mode, sliced, line_glob, line_start=line_start, line_end=line_end),
+    )
+
+
+def _resolve_line_index(value: int | None, total: int, *, default: int) -> int:
+    if value is None:
+        return max(1, min(default, max(total, 1)))
+    if value < 0:
+        return max(1, total + value + 1)
+    return max(1, value)
+
+
+def _line_selection(
+    mode: str,
+    selected: list[str],
+    line_glob: str | None,
+    *,
+    line_start: int | None = None,
+    line_end: int | None = None,
+) -> dict[str, object]:
+    return {
+        "mode": mode,
+        "selected_line_count": len(selected),
+        "line_start": line_start,
+        "line_end": line_end,
+        "line_glob": line_glob,
+    }
+
+
+async def _resolve_read_artifact(
+    db: AsyncSession,
+    *,
+    artifact_id: str | None,
+    artifact_pattern: str | None,
+    session_id: str | None,
+):
+    from yequ.services.artifact_service import get_artifact, list_artifacts
+
+    if artifact_id:
+        return await get_artifact(db, artifact_id)
+    if not artifact_pattern:
+        raise ValueError("artifact_id or artifact_pattern is required")
+    artifacts = await list_artifacts(db, session_id=session_id, limit=100)
+    matches = [
+        artifact
+        for artifact in artifacts
+        if fnmatch(artifact.artifact_id, artifact_pattern)
+        or fnmatch(str(artifact.title or ""), artifact_pattern)
+    ]
+    if not matches:
+        raise ValueError(f"No artifact matches pattern {artifact_pattern!r}")
+    for artifact in matches:
+        if _is_text_artifact(artifact.content_type, artifact.title):
+            return artifact
+    raise ValueError(f"No text-like artifact matches pattern {artifact_pattern!r}")
+
+
+def _center_function_by_name() -> dict[str, object]:
+    from yequ.api.agent_tool_catalog import _center_meta_functions
+
+    return {function.name: function for function in _center_meta_functions()}
+
+
+def _center_group_summaries() -> list[dict[str, object]]:
+    from yequ.api.agent_tool_catalog import center_meta_tool_groups
+
+    groups = center_meta_tool_groups()
+    return [
+        {
+            "group_id": group_id,
+            "title": str(group.get("title") or group_id),
+            "description": str(group.get("description") or ""),
+            "tool_count": len(group.get("tools") or []),
+            "open": {
+                "capability_ref": "capability.group.open",
+                "input": {"group_id": group_id},
+            },
+        }
+        for group_id, group in groups.items()
+    ]
+
+
+def _open_center_group(group_id: str, *, projection: str) -> dict[str, object]:
+    from yequ.api.agent_tool_catalog import center_meta_tool_groups
+
+    groups = center_meta_tool_groups()
+    group = groups.get(group_id)
+    if group is None:
+        raise ValueError(f"Unknown capability group {group_id!r}")
+    functions = _center_function_by_name()
+    tools = []
+    for name in group.get("tools") or []:
+        function = functions.get(str(name))
+        if function is None:
+            continue
+        item = {
+            "capability_ref": function.name,
+            "canonical_name": function.name,
+            "description": function.description,
+            "risk": function.risk,
+            "effect": function.effect,
+            "dispatchable": True,
+        }
+        if projection == "invoke_ready":
+            item["input_schema"] = function.input_schema or {}
+            item["invoke"] = {
+                "capability_ref": function.name,
+                "input_field": "input",
+            }
+        tools.append(item)
+    return {
+        "group": {
+            "group_id": group_id,
+            "title": str(group.get("title") or group_id),
+            "description": str(group.get("description") or ""),
+            "projection": projection,
+        },
+        "capabilities": tools,
+        "capability_count": len(tools),
+    }
+
+
 async def execute_inline_meta_tool(
     db: AsyncSession,
     command: RuntimeCommand,
@@ -37,6 +232,7 @@ async def execute_inline_meta_tool(
         artifact_to_dict,
         get_artifact,
         list_artifacts,
+        resolve_download,
     )
     from yequ.services.capability_registry import node_list, node_status
     from yequ.services.operation_service import OperationService
@@ -58,6 +254,23 @@ async def execute_inline_meta_tool(
                     projection=string_or_none(input_data.get("projection")) or "summary",
                 )
             }
+        elif command.function_name == "capability.groups":
+            output = {
+                "groups": _center_group_summaries(),
+                "strategy": "center_meta_group_directory_v1",
+            }
+        elif command.function_name == "capability.group.open":
+            projection = string_or_none(input_data.get("projection")) or "invoke_ready"
+            if projection not in {"summary", "invoke_ready"}:
+                return runtime_error(
+                    command,
+                    "invalid_input",
+                    "projection must be summary or invoke_ready",
+                )
+            output = _open_center_group(
+                required_string(input_data.get("group_id"), "group_id"),
+                projection=projection,
+            )
         elif command.function_name == "capability.search":
             search_result = await ycr_client.tool_search(
                 query=string_or_none(input_data.get("query"))
@@ -174,6 +387,80 @@ async def execute_inline_meta_tool(
             output = {
                 "artifact": artifact_to_dict(artifact, projection=projection),
                 "projection": projection,
+            }
+        elif command.function_name == "artifact.read_text":
+            artifact_id = string_or_none(input_data.get("artifact_id"))
+            artifact_pattern = string_or_none(input_data.get("artifact_pattern"))
+            session_id = string_or_none(input_data.get("session_id")) or command.session_id
+            mode = string_or_none(input_data.get("mode")) or "head"
+            if mode not in {"head", "tail", "range", "full"}:
+                return runtime_error(
+                    command,
+                    "invalid_input",
+                    "mode must be head, tail, range, or full",
+                )
+            max_bytes = min(
+                int_or_default(input_data.get("max_bytes"), 64 * 1024),
+                MAX_ARTIFACT_READ_BYTES,
+            )
+            if max_bytes < 1:
+                return runtime_error(command, "invalid_input", "max_bytes must be positive")
+            lines = max(1, min(int_or_default(input_data.get("lines"), 200), 2000))
+            line_start = int_or_none(input_data.get("line_start"))
+            line_end = int_or_none(input_data.get("line_end"))
+            line_glob = string_or_none(input_data.get("line_glob"))
+            encoding = string_or_none(input_data.get("encoding")) or "utf-8"
+            artifact_ref = await _resolve_read_artifact(
+                db,
+                artifact_id=artifact_id,
+                artifact_pattern=artifact_pattern,
+                session_id=session_id,
+            )
+            download = await resolve_download(db, artifact_ref.artifact_id)
+            artifact = download.artifact
+            content_type = artifact.content_type or download.blob.content_type
+            if not _is_text_artifact(content_type, artifact.title):
+                return runtime_error(
+                    command,
+                    "unsupported_artifact_type",
+                    "artifact.read_text only supports text-like artifacts; "
+                    f"artifact_id={artifact.artifact_id}, content_type={content_type}, "
+                    f"artifact_type={artifact.artifact_type}",
+                )
+            raw = download.path.read_bytes()
+            read_from_tail = mode == "tail" or (
+                mode == "range" and any((value or 0) < 0 for value in (line_start, line_end))
+            )
+            raw_slice = raw[-max_bytes:] if read_from_tail else raw[:max_bytes]
+            try:
+                text, used_encoding = _decode_text_artifact(raw_slice, encoding)
+            except ValueError as exc:
+                return runtime_error(command, "invalid_encoding", str(exc))
+            content, line_truncated, line_selection = _slice_text(
+                text,
+                mode=mode,
+                lines=lines,
+                line_start=line_start,
+                line_end=line_end,
+                line_glob=line_glob,
+            )
+            byte_truncated = len(raw) > len(raw_slice)
+            output = {
+                "artifact": artifact_to_dict(artifact, projection="summary"),
+                "content": content,
+                "read": {
+                    "mode": mode,
+                    "encoding": used_encoding,
+                    "bytes_read": len(raw_slice),
+                    "total_bytes": len(raw),
+                    "max_bytes": max_bytes,
+                    "lines": lines,
+                    "truncated": byte_truncated or line_truncated,
+                    "byte_truncated": byte_truncated,
+                    "line_truncated": line_truncated,
+                    "line_selection": line_selection,
+                    "artifact_pattern": artifact_pattern,
+                },
             }
         elif command.function_name == "artifact.present":
             artifact_ids = string_list(input_data.get("artifact_ids"))

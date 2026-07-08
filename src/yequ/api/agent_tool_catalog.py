@@ -11,10 +11,105 @@ from yequ.models.capability import Capability
 from yequ.models.node import Node
 from yequ.runtime.capability_context import JsonDict
 
+CENTER_META_TOOL_GROUPS: dict[str, dict[str, object]] = {
+    "nodes": {
+        "title": "Nodes",
+        "description": "List and inspect connected nodes and platform/runtime status.",
+        "tools": ["node.list", "node.status"],
+    },
+    "capabilities": {
+        "title": "Capability Discovery",
+        "description": (
+            "Search or describe non-opened capabilities when group directory is insufficient."
+        ),
+        "tools": ["capability.search", "capability.describe"],
+    },
+    "context": {
+        "title": "YCR Context",
+        "description": "Inspect, expand, tail, schema, search, and status for YCR context refs.",
+        "tools": [
+            "context.status",
+            "context.inspect",
+            "context.expand",
+            "context.tail",
+            "context.schema",
+            "context.search",
+        ],
+    },
+    "artifacts": {
+        "title": "Artifacts",
+        "description": "List, inspect, read text, present, preflight, and deploy Center artifacts.",
+        "tools": [
+            "artifact.list",
+            "artifact.get",
+            "artifact.read_text",
+            "artifact.present",
+            "artifact.deploy.preflight",
+            "artifact.deploy",
+        ],
+    },
+    "operations": {
+        "title": "Operations",
+        "description": "Inspect or cancel waitable Center operations.",
+        "tools": ["operation.status", "operation.cancel"],
+    },
+    "transfers": {
+        "title": "Transfers",
+        "description": (
+            "Preflight, create, inspect, resume, or cancel Center-managed node transfers."
+        ),
+        "tools": [
+            "transfer.preflight",
+            "transfer.create",
+            "transfer.status",
+            "transfer.resume",
+            "transfer.cancel",
+        ],
+    },
+}
+
+
+def center_meta_tool_groups() -> dict[str, dict[str, object]]:
+    return CENTER_META_TOOL_GROUPS
+
 
 def _center_meta_functions() -> list[AgentFunction]:
     """Stable Center meta tools for capability discovery."""
     return [
+        AgentFunction(
+            name="capability.groups",
+            description=(
+                "List stable Center meta-tool groups. Open a relevant group with "
+                "capability.group.open before using Center meta capabilities."
+            ),
+            input_schema={"type": "object", "properties": {}},
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="capability.group.open",
+            description=(
+                "Open one Center meta-tool group and return invoke-ready capability "
+                "refs and input schemas. Use this instead of capability.search for "
+                "Center meta tools."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "string"},
+                    "projection": {
+                        "type": "string",
+                        "enum": ["summary", "invoke_ready"],
+                        "default": "invoke_ready",
+                    },
+                },
+                "required": ["group_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
         AgentFunction(
             name="node.list",
             description="List known nodes, current status, platform, and capability counts.",
@@ -289,6 +384,76 @@ def _center_meta_functions() -> list[AgentFunction]:
                     },
                 },
                 "required": ["artifact_id"],
+            },
+            risk="safe",
+            effect="read",
+            timeout_sec=5,
+        ),
+        AgentFunction(
+            name="artifact.read_text",
+            description=(
+                "Read bounded text from a Center-managed text artifact. Use this "
+                "to inspect logs, txt, markdown, csv, json, or other text artifacts "
+                "without deploying them to a Node. Supports artifact/title glob matching, "
+                "head/tail/range line reads, negative line indexes from file end, and "
+                "line_glob filtering. Do not use for images or binary files."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "artifact_pattern": {
+                        "type": "string",
+                        "description": (
+                            "Glob matched against artifact_id and title; latest text match is used."
+                        ),
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Defaults to current Agent session when artifact_pattern is used."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["head", "tail", "range", "full"],
+                        "default": "head",
+                    },
+                    "lines": {
+                        "type": "integer",
+                        "default": 200,
+                        "maximum": 2000,
+                    },
+                    "line_start": {
+                        "type": "integer",
+                        "description": (
+                            "1-based inclusive line start for mode=range; negative counts from end."
+                        ),
+                    },
+                    "line_end": {
+                        "type": "integer",
+                        "description": (
+                            "1-based inclusive line end for mode=range; negative counts from end."
+                        ),
+                    },
+                    "line_glob": {
+                        "type": "string",
+                        "description": (
+                            "Optional shell-style glob filter applied to selected lines."
+                        ),
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "default": 65536,
+                        "maximum": 131072,
+                    },
+                    "encoding": {"type": "string", "default": "utf-8"},
+                },
+                "anyOf": [
+                    {"required": ["artifact_id"]},
+                    {"required": ["artifact_pattern"]},
+                ],
+                "additionalProperties": False,
             },
             risk="safe",
             effect="read",
@@ -670,13 +835,13 @@ async def _available_functions(
     """Build the Agent tool list.
 
     Production exposes only stable bootstrap protocol tools. Center meta tools
-    and raw Node capabilities remain in Center's registry and are reached
-    through capability.search, capability.describe, and capability.invoke.
+    are reached through grouped progressive expansion. Raw Node/Product
+    capabilities remain discoverable through the capability discovery group.
 
     Tests that need static tools must register a fake provider explicitly.
     """
     del db, target_node_id
-    bootstrap = {"capability.search", "capability.describe", "capability.invoke"}
+    bootstrap = {"capability.groups", "capability.group.open", "capability.invoke"}
     return [function for function in _center_meta_functions() if function.name in bootstrap]
 
 

@@ -103,5 +103,5 @@ async def test_available_functions_preserve_registered_tool_contract(db_session)
     funcs = await _available_functions(db_session)
     names = [func.name for func in funcs]
 
-    assert names == ["capability.search", "capability.describe", "capability.invoke"]
+    assert names == ["capability.groups", "capability.group.open", "capability.invoke"]
     assert "contract.user.desktop_shortcuts" not in names

@@ -154,6 +154,84 @@ async def test_execute_write_function_returns_approval_required(
     assert approval.function_name == "test.write"
 
 
+async def test_execute_exec_run_uses_static_manifest_policy(
+    client,
+    db_session,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _register_function(
+        client,
+        node.node_id,
+        token,
+        name="linux.exec.run",
+        risk="maintenance",
+        effect="write",
+        resource_keys=["node.exec"],
+    )
+    await db_session.rollback()
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type="agent",
+                actor_id="agent-test",
+                session_id="sess-test",
+                function_name="linux.exec.run",
+                input_data={
+                    "profile": "user.readonly",
+                    "command": "whoami",
+                    "reason": "test generic manifest policy",
+                },
+                target_node_id=node.node_id,
+            )
+        )
+    )
+
+    assert result.status == "approval_required"
+    assert result.risk == "maintenance"
+    assert result.effect == "write"
+
+
+async def test_execute_exec_run_user_write_requires_approval(
+    client,
+    db_session,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _register_function(
+        client,
+        node.node_id,
+        token,
+        name="linux.exec.run",
+        risk="maintenance",
+        effect="write",
+        resource_keys=["node.exec"],
+    )
+    await db_session.rollback()
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type="agent",
+                actor_id="agent-test",
+                session_id="sess-test",
+                function_name="linux.exec.run",
+                input_data={
+                    "profile": "user.write",
+                    "command": "mkdir -p /tmp/yequ-test",
+                    "reason": "test policy",
+                },
+                target_node_id=node.node_id,
+            )
+        )
+    )
+
+    assert result.status == "approval_required"
+    assert result.risk == "maintenance"
+    assert result.effect == "write"
+
+
 async def test_execute_unknown_function_returns_unavailable(
     client,
     db_session,

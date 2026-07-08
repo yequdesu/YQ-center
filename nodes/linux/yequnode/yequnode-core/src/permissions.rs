@@ -57,133 +57,19 @@ fn probe_framebuffer() -> bool {
     std::fs::metadata("/dev/fb0").is_ok()
 }
 
-fn probe_filesystem() -> bool {
-    std::fs::metadata("/").is_ok()
-}
-
 /// Run all probes. Returns results for each declared capability.
 /// Capabilities whose probes fail are excluded from registration.
 pub fn run_probes() -> Vec<ProbeResult> {
     let mut results = Vec::new();
     let proc_ok = probe_proc().is_ok();
     let has_journalctl = probe_command("journalctl");
-    let has_systemctl = probe_command("systemctl");
-    let has_dmesg = probe_command("dmesg");
-    let has_ip = probe_command("ip");
-    let has_ss = probe_command("ss");
     let has_sudo = probe_sudo();
     let has_fb = probe_framebuffer();
-    let fs_ok = probe_filesystem();
 
     // -- user runtime capabilities --
-    add(&mut results, "linux.system.info", proc_ok, "/proc required");
-    add(
-        &mut results,
-        "linux.metrics.snapshot",
-        proc_ok,
-        "/proc required",
-    );
-    add(
-        &mut results,
-        "linux.process.list",
-        proc_ok,
-        "/proc required",
-    );
-    add(
-        &mut results,
-        "linux.disk.detail",
-        proc_ok,
-        "/proc/mounts required",
-    );
-    add(
-        &mut results,
-        "linux.network.interfaces",
-        has_ip,
-        "ip command not found",
-    );
-    add(
-        &mut results,
-        "linux.network.routes",
-        has_ip,
-        "ip command not found",
-    );
-    add(
-        &mut results,
-        "linux.network.connections",
-        has_ss,
-        "ss command not found",
-    );
-    add(
-        &mut results,
-        "linux.network.dns_lookup",
-        true,
-        "system resolver required",
-    );
-    add(
-        &mut results,
-        "linux.network.port_check",
-        true,
-        "tcp connect required",
-    );
-    add(
-        &mut results,
-        "linux.service.list",
-        has_systemctl,
-        "systemctl not found",
-    );
-    add(
-        &mut results,
-        "linux.service.status",
-        has_systemctl,
-        "systemctl not found",
-    );
-    add(
-        &mut results,
-        "linux.log.journal",
-        has_journalctl,
-        "journalctl not found",
-    );
-    add(&mut results, "linux.user.list", true, "always available");
-    add(&mut results, "linux.package.list", true, "always available");
-    add(&mut results, "linux.dmesg", has_dmesg, "dmesg not found");
-    add(
-        &mut results,
-        "linux.filesystem.stat",
-        fs_ok,
-        "/ not accessible",
-    );
-    add(
-        &mut results,
-        "linux.filesystem.read_text",
-        fs_ok,
-        "/ not accessible",
-    );
-    add(
-        &mut results,
-        "linux.filesystem.find",
-        true,
-        "always available",
-    );
-    add(
-        &mut results,
-        "linux.filesystem.list_dir",
-        fs_ok,
-        "/ not accessible",
-    );
-    add(
-        &mut results,
-        "linux.filesystem.mkdir",
-        fs_ok,
-        "/ not accessible",
-    );
+    add(&mut results, "linux.exec.run", true, "always available");
 
     // -- sudo runtime capabilities --
-    add(
-        &mut results,
-        "linux.service.restart",
-        has_systemctl && has_sudo,
-        "systemctl + sudo required",
-    );
     add(
         &mut results,
         "linux.artifact.upload_file",

@@ -852,6 +852,8 @@ def _should_create_job_operation(
     command: RuntimeCommand,
     resolved: ResolvedCapability,
 ) -> bool:
+    if command.approval_id:
+        return True
     if command.suppress_operation or command.wait_for_result:
         return False
     timeout_sec = command.timeout_sec or resolved.timeout_sec or 30

@@ -2,7 +2,7 @@
 
 from yequ.models.agent_message import AgentMessage
 from yequ.models.agent_plan import AgentPlan, AgentPlanStep
-from yequ.models.agent_run import AgentRun, AgentRunStep
+from yequ.models.agent_run import AgentRun, AgentRunEvent, AgentRunStep
 from yequ.models.agent_turn import AgentTurn, AgentTurnEvent
 from yequ.models.api_token import ApiToken
 from yequ.models.approval import ApprovalRequest
@@ -43,6 +43,7 @@ __all__ = [
     "AgentPlan",
     "AgentPlanStep",
     "AgentRun",
+    "AgentRunEvent",
     "AgentRunStep",
     "AgentTurn",
     "AgentTurnEvent",
