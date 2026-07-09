@@ -147,14 +147,14 @@ async def reduce_agent_run_event(
 
 
 def _record_tool_request(state: JsonDict, payload: JsonDict) -> None:
-    capability_ref = _capability_ref(payload)
+    capability_ref = _invoked_capability_ref(payload)
     if capability_ref:
         _record_working_capability(
             state,
             {
                 "capability_ref": capability_ref,
-                "source_id": _string(payload.get("source_id")),
-                "node_id": _string(payload.get("node_id") or payload.get("target_node_id")),
+                "source_id": _invoked_source_id(payload),
+                "node_id": _invoked_node_id(payload),
                 "status": "requested",
             },
         )
@@ -334,6 +334,9 @@ def _record_final_candidate(state: JsonDict, payload: JsonDict) -> None:
 
 
 def _record_working_capability(state: JsonDict, value: JsonDict) -> None:
+    capability_ref = _string(value.get("capability_ref"))
+    if _is_bootstrap_gateway_capability(capability_ref):
+        return
     key = _string(value.get("source_id")) or _string(value.get("capability_ref"))
     if not key:
         return
@@ -761,6 +764,38 @@ def _capability_ref(payload: JsonDict) -> str | None:
         or payload.get("name")
         or payload.get("tool_name")
     )
+
+
+def _invoked_capability_ref(payload: JsonDict) -> str | None:
+    capability_ref = _capability_ref(payload)
+    if capability_ref != "capability.invoke":
+        return capability_ref
+    invoked = _dict(payload.get("input"))
+    return _string(invoked.get("capability_ref")) or capability_ref
+
+
+def _invoked_source_id(payload: JsonDict) -> str:
+    source_id = _string(payload.get("source_id"))
+    if source_id:
+        return source_id
+    invoked = _dict(payload.get("input"))
+    return _string(invoked.get("source_id"))
+
+
+def _invoked_node_id(payload: JsonDict) -> str:
+    node_id = _string(payload.get("node_id") or payload.get("target_node_id"))
+    if node_id:
+        return node_id
+    invoked = _dict(payload.get("input"))
+    return _string(invoked.get("node_id") or invoked.get("target_node_id"))
+
+
+def _is_bootstrap_gateway_capability(capability_ref: str) -> bool:
+    return capability_ref in {
+        "capability.invoke",
+        "capability.groups",
+        "capability.group.open",
+    }
 
 
 def _small_payload(payload: object) -> JsonDict:

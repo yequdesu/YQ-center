@@ -133,7 +133,20 @@ def _has_viable_working_set(task_state: JsonDict) -> bool:
     if not isinstance(working_set, dict):
         return False
     capabilities = working_set.get("capabilities")
-    return isinstance(capabilities, list) and bool(capabilities)
+    if not isinstance(capabilities, list):
+        return False
+    return any(_is_real_capability(item) for item in capabilities)
+
+
+def _is_real_capability(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    capability_ref = str(value.get("capability_ref") or "").strip()
+    return bool(
+        capability_ref
+        and capability_ref
+        not in {"capability.invoke", "capability.groups", "capability.group.open"}
+    )
 
 
 def _all_paths_failed(task_state: JsonDict) -> bool:

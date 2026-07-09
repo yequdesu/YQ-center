@@ -1376,6 +1376,11 @@ async def _record_agent_run_provider_step(
                         "call_id": tool_call.get("call_id"),
                         "capability_ref": tool_call.get("name"),
                         "function_name": tool_call.get("name"),
+                        "input": (
+                            tool_call.get("input")
+                            if isinstance(tool_call.get("input"), dict)
+                            else {}
+                        ),
                     },
                     step_id=step.step_id,
                     plan_id=_agent_run_plan_id(run),

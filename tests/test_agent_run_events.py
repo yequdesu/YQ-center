@@ -8,7 +8,7 @@ from yequ.runtime.agent_run_resume import (
     append_event_to_latest_waiting_run,
 )
 from yequ.runtime.agent_run_service import create_agent_run, update_agent_run_status
-from yequ.runtime.replanner import final_candidate_gate
+from yequ.runtime.replanner import decide_next_action, final_candidate_gate
 from yequ.runtime.task_state import get_task_state
 
 
@@ -83,6 +83,94 @@ async def test_agent_run_events_drive_task_state_waits(
     assert state["completion"]["status"] == "in_progress"
     assert state["last_decision"]["action"] == "continue_llm"
     assert state["pending_operations"] == []
+
+
+@pytest.mark.asyncio
+async def test_capability_invoke_request_records_real_working_capability(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_working_set_request"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="working-set-request",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="winClient",
+        user_message="list a known directory",
+        trace_id="trace-working-set-request",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="llm.tool_call_requested",
+        source="agent.provider",
+        payload={
+            "call_id": "call_exec",
+            "function_name": "capability.invoke",
+            "capability_ref": "capability.invoke",
+            "input": {
+                "capability_ref": "exec.run",
+                "source_id": "src_exec_win",
+                "node_id": "winClient",
+                "input": {
+                    "command": "cmd /c dir F:\\Desktop",
+                    "profile": "user.readonly",
+                    "reason": "list directory",
+                },
+            },
+        },
+    )
+
+    state = get_task_state(run)
+    assert state["working_set"]["capabilities"] == [
+        {
+            "capability_ref": "exec.run",
+            "source_id": "src_exec_win",
+            "node_id": "winClient",
+            "status": "requested",
+            "key": "src_exec_win",
+        }
+    ]
+
+
+def test_gateway_only_working_set_is_not_viable() -> None:
+    decision = decide_next_action(
+        {
+            "pending_approvals": [],
+            "pending_operations": [],
+            "blockers": [],
+            "completion": {
+                "status": "in_progress",
+                "criteria": [],
+                "satisfied": [],
+                "missing": [{"slot": "target_path"}],
+            },
+            "working_set": {
+                "capabilities": [
+                    {
+                        "capability_ref": "capability.invoke",
+                        "source_id": "",
+                        "node_id": "",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert decision.action == "ask_user"
+    assert decision.reason_code == "missing_user_information"
 
 
 @pytest.mark.asyncio
