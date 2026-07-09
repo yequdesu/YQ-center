@@ -140,6 +140,7 @@ export interface YcrTraceItem {
   step?: number;
   providerName?: string;
   model?: string;
+  toolCount?: number;
   toolName?: string;
   callId?: string;
   targetNodeId?: string;

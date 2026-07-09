@@ -222,16 +222,21 @@ Tool RAG 的职责是 candidate loader，不是流程规划器。当前实现分
 
 YCR Session State 当前已持久维护 capability、artifact、artifact focus、operation 和 node working set。
 它仍不是业务 workflow：它只保存当前 session 的 typed facts，帮助 provider 避免从长历史里恢复状态。
-剩余缺口是 task working set、Replanner/任务完成判定、以及更完整的前端 runtime state 聚合展示，
-归属 `docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md`。
+TaskState working set、Replanner/任务完成判定和前端 runtime state 聚合展示已经完成基础实现。
+剩余缺口是复杂真实任务验收、completion criteria 强化、PlanStep 多分支归属和前端业务残留清理，
+归属 `docs/todos/2026-07-08-post-basic-runtime-closure.md`。
 
-当前 provider 默认只直接看到三个 bootstrap protocol tools：
+Provider bootstrap 工具面仍是三个 protocol tools：
 
 ```text
 capability.groups
 capability.group.open
 capability.invoke
 ```
+
+实际每轮 provider 工具面由 YCR/Agent Runtime 的 tool strategy 收窄：当当前 turn 已有
+`reuse_working_set` 候选时，provider 只看到 `capability.invoke`；只有空 working set
+或候选不足时才暴露 `capability.groups` / `capability.group.open` 渐进发现入口。
 
 `capability.groups` 返回 Center meta tool 分组目录；`capability.group.open` 返回指定分组的
 invoke-ready capability refs 和 schema；`capability.invoke` 执行具体 capability。当前分组为：

@@ -1784,6 +1784,7 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
           {item.capabilityCandidateCount !== undefined && (
             <span>{formatTokenCount(item.capabilityCandidateCount)} candidates</span>
           )}
+          {item.toolCount !== undefined && <span>{item.toolCount} tools</span>}
           {item.sessionStateCounts && Object.keys(item.sessionStateCounts).length > 0 && (
             <span>state {formatStateCounts(item.sessionStateCounts)}</span>
           )}

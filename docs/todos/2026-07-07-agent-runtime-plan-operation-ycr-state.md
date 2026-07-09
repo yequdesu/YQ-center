@@ -609,7 +609,7 @@ JSONL 审计已能快速定位真实会话问题。下一步是 span 化和把 e
 | 已完成基础实现 | Tool RAG Candidate Loader | RAG 负责候选加载；候选不足时仍允许 `capability.search` 扩检索。 |
 | 已完成基础实现 | Center meta tool 分组展开 | 默认 provider 工具面为 groups/open/invoke；search/describe 不再常驻。 |
 | 已完成基础实现 | `artifact.read_text` | 文本 artifact 可按行、首尾、range、通配符和 line_glob 读取。 |
-| 待实现 | ReAct Runtime / TaskState / Replanner | 解决 Agent 绕路、重复搜索、Operation/Approval 恢复、前端 waiting、断点续跑粒度粗和长任务无法稳定收敛的问题。 |
+| 已完成基础实现，待收口验收 | ReAct Runtime / TaskState / Replanner | AgentRunEvent、TaskState、Observation Reducer、Replanner、PlanStep 绑定、后端 Operation/Approval 恢复和 Working Set Tool Loading 已落地；剩余收口以 `docs/todos/2026-07-08-post-basic-runtime-closure.md` 为准。 |
 | 已完成基础实现 | 前端状态绑定重构 | UI 已绑定 Operation、YCR state、通用 AgentPlan；后续优化视觉细节。 |
 | 已完成基础实现 | 审计 span 化 | 已记录 context refs、available functions、capability context、YCR build-turn、provider、tool execution 耗时。 |
 | 正交待办 | meta tool 合同继续审计 | 默认输出必须是 decision view，detail/diagnostics 显式请求。 |
@@ -682,9 +682,9 @@ docs/todos/2026-07-07-agent-runtime-plan-operation-ycr-state.md
 当前代码不是“烂掉”，但已经出现典型快速迭代后的结构漂移：
 
 - 有基础模型，Run/Turn、Plan、Operation Queue、YCR Session State 已完成基础实现；
-- 有 YCR 投影、RAG 和 Session State，但 task working set 与 Replanner 仍未完成；
+- 有 YCR 投影、RAG、Session State、TaskState working set 和 Replanner 基础实现；
 - 有 OperationEvent 和 Agent notification queue，但仍需继续用真实会话验收长任务恢复和连续 operation 汇报；
-- 有通用 AgentPlan，但 PlanStep 与实际 tool step 的映射仍偏粗；
+- 有通用 AgentPlan，PlanStep 与实际 tool/operation/approval/artifact 的基础映射已落地，但复杂多分支任务仍需收敛；
 - 文档已覆盖最新暴露的架构问题，后续必须跟随代码继续维护状态表。
 
 下一步应停止继续堆局部补丁，先把 Agent Runtime 的主线收敛出来。只要 Plan、Operation Queue、YCR Session State、Snapshot Cache 这四个控制面立住，现有 Registry、YCR ref/projection、Operation、audit log 都可以继续复用，项目不会需要推翻重做。

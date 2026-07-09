@@ -159,7 +159,7 @@ YCR 也不再只做 provider 前置投影器。当前已经新增基础 `YcrSess
 - operation working set；
 - node facts；
 
-AgentRunEvent 统一事实源、run-level TaskState、Observation Reducer、Replanner/任务完成判定、Operation/Approval 后端状态回填、YCR TaskState 输入、PlanStep 精确事件绑定、TaskState working set 与 `tool_strategy` 已经完成基础实现。Console 已新增后端只读 `runtime-state` 投影，右侧 Runtime/Plan 面板读取最新非 internal AgentRun、TaskState、events 和 AgentPlan。仍需继续收敛的是旧 ChatTimeline 局部 patch 状态与真实会话验收。真实会话已经暴露出 Agent 绕路、重复搜索工具、Operation 完成后不自动继续、Approval 后状态错乱、前端闪现/卡 waiting、断点续跑粒度粗和长任务无法稳定收敛的问题；这些问题归属 Agent Runtime 主控层，不归因于 RAG 或具体工具。
+AgentRunEvent 统一事实源、run-level TaskState、Observation Reducer、Replanner/任务完成判定、Operation/Approval 后端状态回填、YCR TaskState 输入、PlanStep 精确事件绑定、TaskState working set 与 `tool_strategy` 已经完成基础实现。Console 已新增后端只读 `runtime-state` 投影，右侧 Runtime/Plan 面板读取最新非 internal AgentRun、TaskState、events 和 AgentPlan。Tool Candidate Loader 已从“提示优先候选”收敛为实际工具面控制：当 YCR 返回 `reuse_working_set` 且存在候选时，本轮 provider 只看到 `capability.invoke`；空 working set 或候选不足时才暴露 `capability.groups` / `capability.group.open` 渐进发现入口。仍需继续收敛的是旧 ChatTimeline 局部 patch 状态、复杂真实会话验收、completion criteria 强化、PlanStep 多分支归属、Result RAG deterministic read/tail 路径验收和前端业务残留清理。
 
 ## 4. 当前主要待办
 

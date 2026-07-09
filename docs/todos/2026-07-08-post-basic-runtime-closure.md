@@ -412,12 +412,13 @@
   - [x] 当前 `fallback` 命中分为三类合法语义：SPA 路由回退、UI 文案默认值、文档质量门禁描述；生产执行路径静默 fallback 已删除或显式错误化。
   - [x] `AgentChatPage` 内部 transcript reducer 的 `patchToolCall` 只合并实时流式事件到同一张工具卡；`useAgentChat` 不再向页面暴露 patch API，不能作为前端业务推进入口。
 - [x] 对新增 Replanner/Reducer/TaskState 逻辑补最小单元测试；对真实任务补少量端到端验收记录，不追求大规模测试。
+- [x] Console YCR trace 显示每轮实际 provider tool count；Prompt Context 面板保留 bootstrap 合同，避免把 bootstrap 三工具误读为 working set 生效后的实际工具面。
 - [ ] 每个 active todo 必须更新状态；已完成或被本文吸收的文档必须归档或标注 owner，不能保留互相冲突的执行路线。
 
 验收：
 
 - [x] `rg "fallback|mock|alias|admin ->|NotImplemented|TODO" src nodes console-frontend docs/todos` 中与当前主线冲突的项清零或有明确保留理由。
-- [ ] Provider 默认工具面、YCR 职责、Replanner 职责、Console 职责在文档和代码中一致。
+- [x] Provider bootstrap 工具面、working-set 后实际工具面、YCR 职责、Replanner 职责、Console 职责在文档和代码中一致。当前文档明确：bootstrap 是 `capability.groups` / `capability.group.open` / `capability.invoke`；`reuse_working_set` 且候选存在时实际 provider 工具面收窄为 `capability.invoke`。
 - [ ] 刷新前端、approval、operation completion、manual Append、resume 均不依赖前端业务推进。
 - [ ] 文档入口只指向当前活跃待办，不出现“已完成但其实未验收”的模糊描述。
 

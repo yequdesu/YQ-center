@@ -513,6 +513,7 @@ function appendYcrContextTrace(
     step: optionalNumber(data.step),
     providerName: optionalString(data.provider_name),
     model: optionalString(data.model),
+    toolCount: optionalNumber(data.tool_count),
     uploadEstimatedTokens: optionalNumber(tokens.upload_estimated),
     downloadEstimatedTokens: optionalNumber(tokens.download_estimated),
     uploadActualTokens: optionalNumber(tokens.upload_actual),
