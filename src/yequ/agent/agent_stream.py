@@ -895,6 +895,22 @@ async def agent_invoke_stream(
                 ),
             )
             executable_calls = list(provider_tool_calls)
+            record_session_audit_event(
+                session_id,
+                "agent.tool_calls.planned",
+                {
+                    "step": current_step,
+                    "total": len(executable_calls),
+                    "counts": _tool_call_name_counts(executable_calls),
+                    "tool_names": [
+                        str(item.get("name") or "")
+                        for item in executable_calls
+                        if str(item.get("name") or "")
+                    ],
+                },
+                trace_id=trace_id,
+                source="agent.provider",
+            )
             await _record_agent_run_provider_step(
                 agent_run_id,
                 step_index=current_step * 100,
@@ -1359,6 +1375,7 @@ async def _record_agent_run_tool_step(
         if run is None:
             raise ValueError(f"AgentRun {run_id!r} not found")
         status = str(result.get("status") or "succeeded")
+        tool_ycr_metadata = _agent_run_tool_ycr_metadata(result, ycr_storage)
         step = await append_agent_run_step(
             db,
             run,
@@ -1376,7 +1393,7 @@ async def _record_agent_run_tool_step(
                 "operation_id": result.get("operation_id"),
                 "approval_id": result.get("approval_id"),
                 "target_node_id": result.get("target_node_id"),
-                **_agent_run_tool_ycr_metadata(result, ycr_storage),
+                **tool_ycr_metadata,
             },
         )
         await append_event_and_reduce(
@@ -1388,6 +1405,7 @@ async def _record_agent_run_tool_step(
                 **result,
                 "capability_ref": result.get("capability_ref") or result.get("name"),
                 "function_name": result.get("name"),
+                **tool_ycr_metadata,
             },
             step_id=step.step_id,
             plan_id=_agent_run_plan_id(run),
@@ -1482,6 +1500,16 @@ def _agent_run_tool_event_type(status: str) -> str:
     if status in {"failed", "error", "denied", "timeout"}:
         return "tool.failed"
     return "tool.completed"
+
+
+def _tool_call_name_counts(tool_calls: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in tool_calls:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 async def _update_agent_run_checkpoint(

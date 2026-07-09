@@ -10,10 +10,17 @@ def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> N
     assert "resume_mode is user intent" in prompt
     assert "Provider-visible tools are only capability.groups" in prompt
     assert "For Center meta tools, first list groups or open the relevant group" in prompt
+    assert "target is binding" in prompt
+    assert "source_id returned for another node is not usable" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt
     assert "Before artifact.deploy, use artifact.deploy.preflight" in prompt
+    assert "Do not invoke a node-local artifact.download_file source directly" in prompt
     assert "dispatchable=false" in prompt
     assert "unavailable_reasons" in prompt
+    assert "always provide an exact execution profile" in prompt
+    assert "Never use bare values such as admin" in prompt
+    assert "retry with admin.readonly instead of asking the user" in prompt
+    assert "Do not end with suggested next steps while a schema error" in prompt
 
 
 def test_deepseek_system_prompt_uses_shared_policy() -> None:

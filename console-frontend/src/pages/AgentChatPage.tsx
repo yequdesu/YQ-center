@@ -7,6 +7,7 @@ import {
   getSessionRuntimeState,
   type AgentRunProjection,
   type AgentRuntimePlan,
+  type AgentRuntimeTiming,
 } from "@/api/agent";
 import {
   getSession,
@@ -161,8 +162,6 @@ export function AgentChatPage() {
     detach,
     clearBlocks,
     loadPersistedSession,
-    patchToolCall,
-    patchOperation,
   } = useAgentChat({ sessionId, onConversationSettled: refreshSessionHistory });
 
   const runtimeStateQuery = useQuery({
@@ -349,18 +348,32 @@ export function AgentChatPage() {
   };
 
   const pendingApprovals = useMemo(
-    () =>
-      blocks.flatMap((block) =>
-        block.type === "tool_group"
-          ? block.tool_calls.filter(
-              (tool) =>
-                tool.status === "waiting_approval" &&
-                Boolean(tool.approvalId) &&
-                !dismissedApprovalIds.has(String(tool.approvalId)),
-            )
-          : [],
-      ),
-    [blocks, dismissedApprovalIds],
+    () => {
+      const approvals = runtimeStateQuery.data?.run?.task_state?.pending_approvals;
+      if (!Array.isArray(approvals)) return [];
+      return approvals.flatMap((approval, index): ToolCallState[] => {
+        if (!approval || typeof approval !== "object") return [];
+        const item = approval as Record<string, unknown>;
+        const approvalId = typeof item.approval_id === "string" ? item.approval_id : "";
+        if (!approvalId || dismissedApprovalIds.has(approvalId)) return [];
+        const functionName =
+          typeof item.function_name === "string" && item.function_name
+            ? item.function_name
+            : "approval";
+        return [
+          {
+            callId: `approval_${approvalId}_${index}`,
+            name: functionName,
+            input: {},
+            status: "waiting_approval",
+            approvalId,
+            targetNodeId:
+              typeof item.target_node_id === "string" ? item.target_node_id : undefined,
+          },
+        ];
+      });
+    },
+    [runtimeStateQuery.data?.run?.task_state?.pending_approvals, dismissedApprovalIds],
   );
 
   const dismissApproval = useCallback((approvalId: string) => {
@@ -388,53 +401,31 @@ export function AgentChatPage() {
 
       if (approval.status === "denied") {
         dismissApproval(approvalId);
-        patchToolCall({
-          approvalId,
-          status: "denied",
-          errorCode: null,
-          errorMessage: "Denied by user.",
-        });
+        refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "expired") {
         dismissApproval(approvalId);
-        patchToolCall({
-          approvalId,
-          status: "failed",
-          errorCode: "approval_expired",
-          errorMessage: "Approval expired.",
-        });
+        refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "consumed") {
         dismissApproval(approvalId);
-        const jobId = approval.consumed_invocation?.jobs?.[0]?.job_id ?? approval.invocation?.jobs?.[0]?.job_id;
-        patchToolCall({
-          approvalId,
-          status: "running",
-          jobId,
-          errorCode: null,
-          errorMessage: "Approved action is running; Center will report the result.",
-        });
+        refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "approved") {
         dismissApproval(approvalId);
-        patchToolCall({
-          approvalId,
-          status: "running",
-          errorCode: "approval_already_approved",
-          errorMessage: "Approval is approved; waiting for execution to start.",
-        });
+        refreshSessionHistory();
         return true;
       }
 
       return false;
     },
-    [dismissApproval, patchToolCall],
+    [dismissApproval, refreshSessionHistory],
   );
 
   useEffect(() => {
@@ -461,16 +452,18 @@ export function AgentChatPage() {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("not found") || message.includes("404")) {
           dismissApproval(approvalId);
-          patchToolCall({
-            approvalId,
-            status: "failed",
-            errorCode: "approval_not_found",
-            errorMessage: "Approval no longer exists.",
-          });
+          refreshSessionHistory();
         }
       });
     }
-  }, [blocks, dismissedApprovalIds, dismissApproval, patchToolCall, sessionId, syncProcessedApproval]);
+  }, [
+    blocks,
+    dismissedApprovalIds,
+    dismissApproval,
+    refreshSessionHistory,
+    sessionId,
+    syncProcessedApproval,
+  ]);
 
   const handleToolApprovalDecision = useCallback(
     async (toolCall: ToolCallState, decision: "approve" | "deny") => {
@@ -488,25 +481,10 @@ export function AgentChatPage() {
         if (decision === "deny") {
           await denyApproval(approvalId, "Denied from Agent chat");
           dismissApproval(approvalId);
-          patchToolCall({
-            approvalId,
-            status: "denied",
-            errorMessage: "Denied by user.",
-          });
+          refreshSessionHistory();
         } else {
-          const result = await approveAndRunApproval(approvalId, "Approved from Agent chat");
-          patchToolCall({
-            approvalId,
-            status: result.operation_id ? "waiting_operation" : "running",
-            invocationId: result.invocation_id,
-            jobId: result.job_id,
-            operationId: result.operation_id ?? undefined,
-            waitHandle: result.wait_handle ?? undefined,
-            errorCode: null,
-            errorMessage: result.operation_id
-              ? "Approved action is running as a Center operation."
-              : "Approved action is running; Center will refresh the session.",
-          });
+          await approveAndRunApproval(approvalId, "Approved from Agent chat");
+          refreshSessionHistory();
         }
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
         queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -525,12 +503,6 @@ export function AgentChatPage() {
         }
         setApprovalActionError(message);
         restoreApproval(approvalId);
-        patchToolCall({
-          approvalId,
-          status: "waiting_approval",
-          errorCode: "approval_action_failed",
-          errorMessage: message,
-        });
       } finally {
         setApprovalBusyId(null);
       }
@@ -538,7 +510,6 @@ export function AgentChatPage() {
     [
       approvalBusyId,
       dismissApproval,
-      patchToolCall,
       restoreApproval,
       queryClient,
       refreshSessionHistory,
@@ -571,17 +542,10 @@ export function AgentChatPage() {
   );
   const handleOperationStatusChange = useCallback(
     (update: OperationStatusUpdate) => {
-      patchOperation(update);
       const terminal = isOperationTerminal(update.status);
       const wasAlreadyTerminal = update.previousStatus
         ? isOperationTerminal(update.previousStatus)
         : false;
-      patchToolCall({
-        operationId: update.operationId,
-        status: terminal ? operationStatusToToolStatus(update.status) : "waiting_operation",
-        errorCode: update.errorCode,
-        errorMessage: update.errorMessage,
-      });
       if (!terminal) return;
       if (wasAlreadyTerminal) return;
       if (!terminalOperationRefreshRef.current.has(update.operationId)) {
@@ -596,8 +560,6 @@ export function AgentChatPage() {
     [
       continuedOperationIds,
       operationContext?.operationId,
-      patchOperation,
-      patchToolCall,
       refreshSessionHistory,
     ],
   );
@@ -624,6 +586,10 @@ export function AgentChatPage() {
   const operationBlocks = useMemo(
     () => blocks.filter((block): block is OperationCardBlock => block.type === "operation_card"),
     [blocks],
+  );
+  const toolStatusOverrides = useMemo(
+    () => buildToolStatusOverrides(runtimeStateQuery.data?.run ?? null, runtimeStateQuery.data?.plan ?? null),
+    [runtimeStateQuery.data?.run, runtimeStateQuery.data?.plan],
   );
   const conversationBlocks = useMemo(
     () => blocks.filter((block) => block.type !== "operation_card"),
@@ -772,6 +738,7 @@ export function AgentChatPage() {
                     key={block.id}
                     block={block}
                     ycrTrace={ycrTrace}
+                    toolStatusOverrides={toolStatusOverrides}
                     onApproveAndRun={handleApproveAndRun}
                     onResumeOperation={handleResumeOperation}
                     onOperationStatusChange={handleOperationStatusChange}
@@ -791,6 +758,7 @@ export function AgentChatPage() {
             operations={operationBlocks}
             agentRun={runtimeStateQuery.data?.run ?? null}
             agentPlan={runtimeStateQuery.data?.plan ?? null}
+            runtimeTiming={runtimeStateQuery.data?.timing ?? null}
             promptContext={promptContext}
             ycrTrace={ycrTrace}
             ycrTokenSummary={ycrTokenSummary}
@@ -1003,12 +971,14 @@ function PromptComposerInput({
 function ChatTimelineBlock({
   block,
   ycrTrace,
+  toolStatusOverrides,
   onApproveAndRun,
   onResumeOperation,
   onOperationStatusChange,
 }: {
   block: ChatBlock;
   ycrTrace?: YcrTraceItem[];
+  toolStatusOverrides?: Map<string, Partial<ToolCallState>>;
   onApproveAndRun?: (planId: string, onRunStarted: (runId: string) => void) => void;
   onResumeOperation?: (operationId: string) => void;
   onOperationStatusChange?: (update: OperationStatusUpdate) => void;
@@ -1026,7 +996,7 @@ function ChatTimelineBlock({
     case "tool_group":
       return (
         <WithYcrInline trace={inlineYcr}>
-          <ToolGroupBubble block={block} />
+          <ToolGroupBubble block={block} toolStatusOverrides={toolStatusOverrides} />
         </WithYcrInline>
       );
     case "artifact_presentation":
@@ -1220,6 +1190,7 @@ function ActivityPanel({
   operations,
   agentRun,
   agentPlan,
+  runtimeTiming,
   promptContext,
   ycrTrace,
   ycrTokenSummary,
@@ -1229,6 +1200,7 @@ function ActivityPanel({
   operations: OperationCardBlock[];
   agentRun: AgentRunProjection | null;
   agentPlan: AgentRuntimePlan | null;
+  runtimeTiming: AgentRuntimeTiming | null;
   promptContext: PromptContextData | null;
   ycrTrace: YcrTraceItem[];
   ycrTokenSummary: YcrTokenSummary;
@@ -1270,7 +1242,7 @@ function ActivityPanel({
           )}
         </section>
 
-        <AgentRunStatePanel run={agentRun} />
+        <AgentRunStatePanel run={agentRun} timing={runtimeTiming} />
 
         <AgentPlanPanel plan={agentPlan} />
 
@@ -1285,7 +1257,13 @@ function ActivityPanel({
   );
 }
 
-function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
+function AgentRunStatePanel({
+  run,
+  timing,
+}: {
+  run: AgentRunProjection | null;
+  timing: AgentRuntimeTiming | null;
+}) {
   const taskState = run?.task_state ?? null;
   const objectiveText = runtimeObjectiveText(taskState?.objective, run?.user_message);
   const pendingOperations = countArray(taskState?.pending_operations);
@@ -1294,6 +1272,8 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
   const workingSet = runtimeWorkingSetCount(taskState?.working_set);
   const facts = countArray(taskState?.facts);
   const blockers = countArray(taskState?.blockers);
+  const latestFact = latestRuntimeItemSummary(taskState?.facts);
+  const latestBlocker = latestRuntimeItemSummary(taskState?.blockers);
   const completionStatus =
     typeof taskState?.completion === "object" && taskState.completion !== null
       ? String((taskState.completion as Record<string, unknown>).status ?? "")
@@ -1357,15 +1337,145 @@ function AgentRunStatePanel({ run }: { run: AgentRunProjection | null }) {
               {latestDecision.reason && <div>{latestDecision.reason}</div>}
             </div>
           )}
+          {latestBlocker && (
+            <div className="rounded-[var(--radius-sm)] border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-700">
+              blocker: {latestBlocker}
+            </div>
+          )}
+          {latestFact && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
+              fact: {latestFact}
+            </div>
+          )}
           {run.error_message && (
             <div className="rounded-[var(--radius-sm)] border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-700">
               {run.error_code ? `${run.error_code}: ` : ""}
               {run.error_message}
             </div>
           )}
+          {timing && (
+            <RuntimeTimingSummary timing={timing} />
+          )}
         </div>
       )}
     </section>
+  );
+}
+
+function RuntimeTimingSummary({ timing }: { timing: AgentRuntimeTiming }) {
+  const topSegments = timing.top_segments.slice(0, 3);
+  const categoryTotals = Object.entries(timing.category_totals_ms)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+  const ycrSpans = Object.entries(timing.ycr_build_turn_timing_ms)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  const toolCounts = prioritizedToolCounts(timing.tool_call_counts);
+  const operationWaits = (timing.operation_wait_segments ?? []).slice(0, 2);
+  const dbErrors = (timing.db_errors ?? []).slice(-2).reverse();
+
+  if (
+    topSegments.length === 0 &&
+    categoryTotals.length === 0 &&
+    ycrSpans.length === 0 &&
+    toolCounts.length === 0 &&
+    operationWaits.length === 0 &&
+    dbErrors.length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-2 text-[11px] text-[var(--text-muted)]">
+      <div className="font-medium text-[var(--text)]">timing</div>
+      {topSegments.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-[0.06em] text-[var(--text-subtle)]">
+            slowest
+          </div>
+          {topSegments.map((segment, index) => (
+            <div key={`${segment.event_type}-${index}`} className="flex gap-2">
+              <span className="w-16 flex-shrink-0 font-mono text-[var(--text)]">
+                {formatDurationMs(segment.elapsed_ms)}
+              </span>
+              <span className="min-w-0 truncate">
+                {segment.event_type}
+                {segment.step !== undefined && segment.step !== null ? ` · step ${segment.step}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {categoryTotals.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {categoryTotals.map(([name, value]) => (
+            <span
+              key={name}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 font-mono"
+            >
+              {name}:{formatDurationMs(value)}
+            </span>
+          ))}
+        </div>
+      )}
+      {operationWaits.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-[0.06em] text-[var(--text-subtle)]">
+            operation wait
+          </div>
+          {operationWaits.map((segment) => (
+            <div key={segment.operation_id} className="flex gap-2">
+              <span className="w-16 flex-shrink-0 font-mono text-[var(--text)]">
+                {formatDurationMs(segment.elapsed_ms)}
+              </span>
+              <span className="min-w-0 truncate">
+                {displayText(segment.kind, "operation")} · {displayText(segment.status, "done")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {ycrSpans.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {ycrSpans.map(([name, value]) => (
+            <span
+              key={name}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 font-mono"
+            >
+              ycr.{name}:{formatDurationMs(value)}
+            </span>
+          ))}
+        </div>
+      )}
+      {toolCounts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {toolCounts.map(([name, value]) => (
+            <span
+              key={name}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] px-1.5 py-0.5 font-mono"
+            >
+              {name}:{value}
+            </span>
+          ))}
+        </div>
+      )}
+      {dbErrors.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-[0.06em] text-[var(--text-subtle)]">
+            db errors {timing.db_error_count ? `(${timing.db_error_count})` : ""}
+          </div>
+          {dbErrors.map((item, index) => (
+            <div
+              key={`${item.recorded_at ?? "db"}-${index}`}
+              className="truncate rounded-[var(--radius-sm)] border border-red-200 bg-red-50 px-1.5 py-0.5 text-red-700"
+              title={displayText(item.message, "")}
+            >
+              {displayText(item.error_code, "db_error")} · {displayText(item.name, displayText(item.phase, ""))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1418,6 +1528,42 @@ function runtimeObjectiveText(objective: unknown, fallback?: string): string {
   return fallback?.trim() || "Agent task";
 }
 
+function latestRuntimeItemSummary(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const item = value[value.length - 1];
+  if (!item || typeof item !== "object") return displayText(item, "");
+  const data = item as Record<string, unknown>;
+  const kind = displayText(data.kind, "");
+  const key = displayText(data.key, "");
+  const payload = data.data && typeof data.data === "object" ? data.data : data;
+  const details = payload as Record<string, unknown>;
+  const status = displayText(details.status, "");
+  const code = displayText(details.error_code, "");
+  const message = displayText(details.error_message ?? details.message, "");
+  const capability = displayText(details.capability_ref, "");
+  const pieces = [kind, key, capability, status, code, message].filter(Boolean);
+  if (pieces.length > 0) return pieces.join(" · ").slice(0, 500);
+  return displayText(item, "").slice(0, 500) || null;
+}
+
+function displayText(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const data = value as Record<string, unknown>;
+    for (const key of ["text", "title", "objective", "message", "name"]) {
+      const candidate = data[key];
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+    try {
+      return JSON.stringify(data).slice(0, 500);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 function runtimeWorkingSetCount(value: unknown): number {
   if (Array.isArray(value)) {
     return value.length;
@@ -1450,7 +1596,7 @@ function AgentPlanPanel({ plan }: { plan: AgentRuntimePlan | null }) {
         <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-solid)] p-3">
           <div>
             <div className="line-clamp-2 text-[12px] font-medium text-[var(--text)]">
-              {plan.objective}
+              {displayText(plan.objective, "Agent plan")}
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
               <span className="rounded-[var(--radius-sm)] bg-[var(--surface-muted)] px-1.5 py-0.5 font-mono">
@@ -1478,7 +1624,9 @@ function AgentPlanPanel({ plan }: { plan: AgentRuntimePlan | null }) {
                       {step.step_index}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-[12px] text-[var(--text)]">{step.title}</div>
+                      <div className="truncate text-[12px] text-[var(--text)]">
+                        {displayText(step.title, step.kind)}
+                      </div>
                       <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-subtle)]">
                         <span>{step.kind}</span>
                         {step.operation_id && <span>op {step.operation_id}</span>}
@@ -1587,6 +1735,8 @@ function YcrMetric({
 
 function YcrTraceRow({ item }: { item: YcrTraceItem }) {
   const step = item.step ? `step ${item.step}` : "step ?";
+  const resultRag = findResultRag(item.data);
+  const resultRagStatus = typeof resultRag.status === "string" ? resultRag.status : "";
   const title =
     item.kind === "tool_storage"
       ? item.toolName ?? "tool result"
@@ -1637,6 +1787,7 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
           {item.sessionStateCounts && Object.keys(item.sessionStateCounts).length > 0 && (
             <span>state {formatStateCounts(item.sessionStateCounts)}</span>
           )}
+          {resultRagStatus && <span>rag {resultRagStatus}</span>}
         </div>
       </summary>
       <div className="mt-2 space-y-1.5">
@@ -1656,9 +1807,38 @@ function YcrTraceRow({ item }: { item: YcrTraceItem }) {
         {item.kind === "registry_search" && (
           <RegistrySearchSummary item={item} />
         )}
+        {resultRagStatus && (
+          <ResultRagSummary resultRag={resultRag} />
+        )}
         {item.data && <JsonView data={item.data} />}
       </div>
     </details>
+  );
+}
+
+function ResultRagSummary({ resultRag }: { resultRag: Record<string, unknown> }) {
+  const index = asPanelRecord(resultRag.index);
+  const status = String(resultRag.status ?? "unknown");
+  const matchCount =
+    typeof resultRag.match_count === "number" ? resultRag.match_count : undefined;
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-subtle)] px-2 py-1">
+      <div className="grid grid-cols-2 gap-1.5 font-mono text-[10px] text-[var(--text-subtle)]">
+        <span>result rag: {status}</span>
+        {matchCount !== undefined && <span>matches: {formatTokenCount(matchCount)}</span>}
+        {typeof index.status === "string" && <span>index: {index.status}</span>}
+        {typeof index.indexed_chunks === "number" && typeof index.total_chunks === "number" && (
+          <span>
+            chunks: {formatTokenCount(index.indexed_chunks)} / {formatTokenCount(index.total_chunks)}
+          </span>
+        )}
+      </div>
+      {(status === "not_indexed" || status === "no_refs" || status === "miss") && (
+        <p className="mt-1 text-[11px] text-[var(--text-subtle)]">
+          Result RAG did not provide a usable hit; deterministic inspect/tail/read tools should be used for this ref.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -2132,6 +2312,28 @@ function formatTokenCount(value: number) {
   return Math.round(value).toLocaleString("en-US");
 }
 
+function prioritizedToolCounts(value: Record<string, number>): Array<[string, number]> {
+  const entries = Object.entries(value).filter(([, count]) => count > 0);
+  const priority = [
+    "capability.search",
+    "capability.group.open",
+    "capability.groups",
+    "capability.describe",
+    "capability.invoke",
+    "context.search",
+  ];
+  const selected = new Map<string, number>();
+  for (const name of priority) {
+    const count = value[name];
+    if (typeof count === "number" && count > 0) selected.set(name, count);
+  }
+  for (const [name, count] of entries.sort((a, b) => b[1] - a[1])) {
+    if (selected.size >= 8) break;
+    if (!selected.has(name)) selected.set(name, count);
+  }
+  return [...selected.entries()];
+}
+
 function formatStateCounts(value: Record<string, unknown>) {
   return Object.entries(value)
     .filter(([, count]) => typeof count === "number" && count > 0)
@@ -2143,6 +2345,24 @@ function asPanelRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function findResultRag(value: unknown): Record<string, unknown> {
+  const root = asPanelRecord(value);
+  const direct = asPanelRecord(root.result_rag);
+  if (direct.status) return direct;
+  const context = asPanelRecord(root.context);
+  const contextResult = asPanelRecord(context.result_rag);
+  if (contextResult.status) return contextResult;
+  const result = asPanelRecord(root.result);
+  const resultContext = asPanelRecord(result.context);
+  const resultContextRag = asPanelRecord(resultContext.result_rag);
+  if (resultContextRag.status) return resultContextRag;
+  const facts = asPanelRecord(root.facts);
+  const factsContext = asPanelRecord(facts.context);
+  const factsContextRag = asPanelRecord(factsContext.result_rag);
+  if (factsContextRag.status) return factsContextRag;
+  return {};
 }
 
 function formatPhase(value: string) {
@@ -2158,6 +2378,12 @@ function formatDuration(seconds: number) {
   const hours = Math.floor(minutes / 60);
   const minuteRest = minutes % 60;
   return minuteRest ? `${hours}h ${minuteRest}m` : `${hours}h`;
+}
+
+function formatDurationMs(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
 function formatTimestamp(value: string) {
@@ -2259,10 +2485,6 @@ function isAgentPlanTerminal(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
 }
 
-function operationStatusToToolStatus(status: string): ToolCallState["status"] {
-  return status === "succeeded" ? "succeeded" : "failed";
-}
-
 function operationStatusMessage(status: string, fallback?: string) {
   switch (status) {
     case "succeeded":
@@ -2282,15 +2504,141 @@ function operationStatusMessage(status: string, fallback?: string) {
   }
 }
 
+function buildToolStatusOverrides(
+  run: AgentRunProjection | null,
+  plan: AgentRuntimePlan | null,
+): Map<string, Partial<ToolCallState>> {
+  const overrides = new Map<string, Partial<ToolCallState>>();
+  const operationToCallId = new Map<string, string>();
+
+  const merge = (callId: string, patch: Partial<ToolCallState>) => {
+    if (!callId) return;
+    const next = { ...(overrides.get(callId) ?? {}), ...patch };
+    overrides.set(callId, next);
+    if (next.operationId) operationToCallId.set(next.operationId, callId);
+  };
+
+  for (const step of run?.steps ?? []) {
+    if (step.step_type !== "tool_observation") continue;
+    const input = recordValue(step.input_data) ?? {};
+    const output = recordValue(step.output_data) ?? {};
+    const callId = stringValue(output.call_id) || stringValue(input.call_id);
+    if (!callId) continue;
+    const patch: Partial<ToolCallState> = {};
+    const status = normalizeToolStatus(output.status ?? step.status);
+    if (status) patch.status = status;
+    const targetNodeId = stringValue(output.target_node_id ?? step.metadata?.target_node_id);
+    const invocationId = stringValue(output.invocation_id);
+    const jobId = stringValue(output.job_id);
+    const approvalId = stringValue(output.approval_id ?? step.metadata?.approval_id);
+    const operationId = stringValue(output.operation_id ?? step.metadata?.operation_id);
+    const errorCode = stringValue(output.error_code ?? step.error_code);
+    const errorMessage = stringValue(output.error_message ?? output.error ?? step.error_message);
+    if (targetNodeId) patch.targetNodeId = targetNodeId;
+    if (invocationId) patch.invocationId = invocationId;
+    if (jobId) patch.jobId = jobId;
+    if (approvalId) patch.approvalId = approvalId;
+    if (operationId) patch.operationId = operationId;
+    if (errorCode) patch.errorCode = errorCode;
+    if (errorMessage) patch.errorMessage = errorMessage;
+    merge(callId, patch);
+  }
+
+  for (const event of run?.events ?? []) {
+    const payload = event.payload ?? {};
+    const callId =
+      event.tool_call_id ||
+      stringValue(payload.call_id) ||
+      (event.operation_id ? operationToCallId.get(event.operation_id) : undefined) ||
+      "";
+    if (!callId) continue;
+    const patch: Partial<ToolCallState> = {};
+    const eventStatus = normalizeToolEventStatus(event.event_type, payload.status);
+    if (eventStatus) patch.status = eventStatus;
+    const operationId = event.operation_id || stringValue(payload.operation_id);
+    const approvalId = event.approval_id || stringValue(payload.approval_id);
+    const targetNodeId = stringValue(payload.target_node_id);
+    const errorCode = stringValue(payload.error_code);
+    const errorMessage = stringValue(payload.error_message ?? payload.message);
+    if (operationId) patch.operationId = operationId;
+    if (approvalId) patch.approvalId = approvalId;
+    if (targetNodeId) patch.targetNodeId = targetNodeId;
+    if (errorCode) patch.errorCode = errorCode;
+    if (errorMessage && eventStatus === "failed") patch.errorMessage = errorMessage;
+    merge(callId, patch);
+  }
+
+  for (const step of plan?.steps ?? []) {
+    const callId = step.tool_call_id || (step.operation_id ? operationToCallId.get(step.operation_id) : undefined);
+    if (!callId) continue;
+    const patch: Partial<ToolCallState> = {};
+    const status = normalizeToolStatus(step.status);
+    if (status) patch.status = status;
+    if (step.operation_id) patch.operationId = step.operation_id;
+    merge(callId, patch);
+  }
+
+  return overrides;
+}
+
+function normalizeToolEventStatus(
+  eventType: string,
+  rawStatus: unknown,
+): ToolCallState["status"] | undefined {
+  if (eventType === "tool.completed" || eventType === "operation.succeeded") return "succeeded";
+  if (eventType === "tool.failed" || eventType === "operation.failed") return "failed";
+  if (eventType === "approval.waiting") return "waiting_approval";
+  if (eventType === "approval.rejected") return "denied";
+  if (eventType === "approval.approved" || eventType === "operation.waiting") {
+    return "waiting_operation";
+  }
+  return normalizeToolStatus(rawStatus);
+}
+
+function normalizeToolStatus(rawStatus: unknown): ToolCallState["status"] | undefined {
+  const status = (stringValue(rawStatus) ?? "").toLowerCase();
+  if (!status) return undefined;
+  if (status === "succeeded" || status === "success" || status === "completed") {
+    return "succeeded";
+  }
+  if (status === "failed" || status === "error" || status === "timeout" || status === "cancelled") {
+    return "failed";
+  }
+  if (status === "denied" || status === "rejected") return "denied";
+  if (status === "waiting_approval" || status === "approval_required" || status === "requires_approval") {
+    return "waiting_approval";
+  }
+  if (status === "waiting_operation" || status === "operation_waiting") {
+    return "waiting_operation";
+  }
+  if (status === "running" || status === "queued") return "running";
+  if (status === "pending" || status === "created") return "pending";
+  return undefined;
+}
+
 // ── Tool Group Bubble ──
 
-function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
-  const succeeded = block.tool_calls.filter((t) => t.status === "succeeded").length;
-  const failed = block.tool_calls.filter((t) => t.status === "failed" || t.status === "denied").length;
-  const running = block.tool_calls.filter(
+function ToolGroupBubble({
+  block,
+  toolStatusOverrides,
+}: {
+  block: ToolGroupBlock;
+  toolStatusOverrides?: Map<string, Partial<ToolCallState>>;
+}) {
+  const toolCalls = useMemo(
+    () =>
+      block.tool_calls.map((toolCall) => ({
+        ...toolCall,
+        ...(toolStatusOverrides?.get(toolCall.callId) ?? {}),
+      })),
+    [block.tool_calls, toolStatusOverrides],
+  );
+  const succeeded = toolCalls.filter((t) => t.status === "succeeded").length;
+  const failed = toolCalls.filter((t) => t.status === "failed" || t.status === "denied").length;
+  const running = toolCalls.filter(
     (t) => t.status === "running" || t.status === "pending",
   ).length;
-  const waiting = block.tool_calls.filter(
+  const waiting = toolCalls.filter(
     (t) => t.status === "waiting_approval" || t.status === "waiting_operation",
   ).length;
 
@@ -2314,7 +2662,7 @@ function ToolGroupBubble({ block }: { block: ToolGroupBlock }) {
           {failed > 0 && <span className="text-[11px] text-[var(--danger)]">{failed} failed</span>}
         </div>
         <div className="space-y-1.5">
-          {block.tool_calls.map((tc) => (
+          {toolCalls.map((tc) => (
             <ToolCallCard key={tc.callId} toolCall={tc} />
           ))}
         </div>

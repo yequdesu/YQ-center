@@ -187,7 +187,29 @@ async def test_ycr_context_tools_expand_and_search_ref(db_session) -> None:
     assert "alpha" in expanded["value"]
     assert tail["tail"] == ["beta failure", "omega"]
     assert "failure" in searched["matches"][0]["snippet"]
+    assert searched["result_rag"]["status"] == "hit"
+    assert searched["index_status"]["status"] == "ready"
     assert status["status"] == "ready"
+
+
+async def test_ycr_context_search_reports_unindexed_ref(db_session) -> None:
+    ref = await upsert_ref(
+        db_session,
+        ref_type="job_output",
+        source_type="job",
+        source_id="job_unindexed",
+        path="$.stdout",
+        value="alpha failure beta",
+        summary="Unindexed stdout",
+    )
+    await db_session.commit()
+
+    searched = await search_ref(db_session, str(ref["ref_id"]), query="failure")
+
+    assert searched["matches"] == []
+    assert searched["match_count"] == 0
+    assert searched["index_status"]["status"] == "not_indexed"
+    assert searched["result_rag"]["status"] == "not_indexed"
 
 
 async def test_ycr_expand_large_root_requires_specific_path(db_session, override_settings) -> None:

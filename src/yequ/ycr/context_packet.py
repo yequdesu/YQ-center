@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,8 @@ async def build_agent_context_packet(
     packet_id = f"ctxpkt_{uuid.uuid4().hex[:16]}"
     projection_events: list[JsonDict] = []
     working_set: dict[str, JsonDict] = {}
+    timing_ms: JsonDict = {}
+    started = perf_counter()
     projected_messages = [
         await _project_message(
             db,
@@ -47,12 +50,18 @@ async def build_agent_context_packet(
         )
         for message in messages
     ]
+    timing_ms["message_projection"] = _elapsed_ms(started)
+    started = perf_counter()
     compacted_messages, history_compaction = await _compact_messages(
         db,
         session_id=session_id,
         messages=projected_messages,
     )
+    timing_ms["history_compaction"] = _elapsed_ms(started)
+    started = perf_counter()
     session_state = await load_session_state(db, session_id=session_id)
+    timing_ms["session_state_load"] = _elapsed_ms(started)
+    started = perf_counter()
     if _has_session_state_items(session_state):
         compacted_messages = [
             _session_state_message(session_state),
@@ -91,12 +100,16 @@ async def build_agent_context_packet(
             _tool_strategy_message(tool_strategy),
             *compacted_messages,
         ]
+    timing_ms["state_projection"] = _elapsed_ms(started)
+    started = perf_counter()
     projected_capability_context = _project_capability_context(
         capability_context or {},
         working_set=working_set_items,
     )
     tool_definitions = [_project_tool_definition(item) for item in available_functions]
+    timing_ms["capability_context_projection"] = _elapsed_ms(started)
 
+    started = perf_counter()
     model_name = model or profile.model
     token_accounting = token_accounting_metadata(model=model_name)
     raw_message_tokens = estimate_tokens(projected_messages, model=model_name)
@@ -120,6 +133,15 @@ async def build_agent_context_packet(
         if isinstance(event.get("context_estimate"), dict)
     )
     saved_tokens = max(0, raw_tokens - projected_tokens)
+    session_state_tokens = estimate_tokens(session_state, model=model_name)
+    agent_plan_tokens = (
+        estimate_tokens(projected_agent_plan, model=model_name) if projected_agent_plan else 0
+    )
+    task_state_tokens = (
+        estimate_tokens(projected_task_state, model=model_name) if projected_task_state else 0
+    )
+    tool_strategy_tokens = estimate_tokens(tool_strategy, model=model_name) if tool_strategy else 0
+    timing_ms["token_accounting"] = _elapsed_ms(started)
 
     return {
         "packet_id": packet_id,
@@ -157,16 +179,11 @@ async def build_agent_context_packet(
             "history_compaction": history_compaction,
             "working_set_count": len(working_set_items),
             "capability_candidate_count": len(capability_candidates),
-            "session_state_tokens": estimate_tokens(session_state, model=model_name),
-            "agent_plan_tokens": estimate_tokens(projected_agent_plan, model=model_name)
-            if projected_agent_plan
-            else 0,
-            "task_state_tokens": estimate_tokens(projected_task_state, model=model_name)
-            if projected_task_state
-            else 0,
-            "tool_strategy_tokens": estimate_tokens(tool_strategy, model=model_name)
-            if tool_strategy
-            else 0,
+            "session_state_tokens": session_state_tokens,
+            "agent_plan_tokens": agent_plan_tokens,
+            "task_state_tokens": task_state_tokens,
+            "tool_strategy_tokens": tool_strategy_tokens,
+            "timing_ms": timing_ms,
         },
         "projections": projection_events,
         "refs": [
@@ -181,6 +198,10 @@ async def build_agent_context_packet(
             "projection_version": 2,
         },
     }
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
 
 
 def _project_agent_plan(value: JsonDict) -> JsonDict:
@@ -313,26 +334,6 @@ def _tool_discovery_strategy(
     capability_candidates: list[JsonDict],
     working_set_items: list[JsonDict],
 ) -> JsonDict:
-    pending_approval = _first_dict(task_state.get("pending_approvals"))
-    if pending_approval:
-        return {
-            "mode": "wait_approval",
-            "reason": "task_state_has_pending_approval",
-            "approval_id": pending_approval.get("approval_id"),
-            "allowed": [],
-            "avoid": ["capability.search", "capability.group.open", "capability.invoke"],
-            "instruction": "Do not start new tool discovery while approval is pending.",
-        }
-    pending_operation = _first_dict(task_state.get("pending_operations"))
-    if pending_operation:
-        return {
-            "mode": "wait_operation",
-            "reason": "task_state_has_pending_operation",
-            "operation_id": pending_operation.get("operation_id"),
-            "allowed": [],
-            "avoid": ["capability.search", "capability.group.open", "capability.invoke"],
-            "instruction": "Do not start new work while the operation is still pending.",
-        }
     if capability_candidates:
         return {
             "mode": "reuse_working_set",
@@ -364,15 +365,6 @@ def _tool_discovery_strategy(
             "needed capability."
         ),
     }
-
-
-def _first_dict(value: object) -> JsonDict | None:
-    if not isinstance(value, list):
-        return None
-    for item in value:
-        if isinstance(item, dict):
-            return item
-    return None
 
 
 def _session_state_message(session_state: JsonDict) -> JsonDict:

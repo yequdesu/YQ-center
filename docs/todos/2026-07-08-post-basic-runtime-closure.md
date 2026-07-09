@@ -60,6 +60,7 @@
 | PlanStep 对 artifact、多分支任务、operation/approval 归属仍需收敛。 | 已覆盖。 | C04 |
 | 系统提示词粗糙且落后于实现。 | 已补充为独立待办。 | C09 |
 | 是否展示 CoT / 思考过程。 | 不展示原始 CoT；补充可审计 decision trace 和 reasoning summary。 | C09、C11 |
+| 把 artifact 写到指定 Node 路径时选错 source，例如 Windows 目标路径被发送到 Linux source。 | 已补充结构性修复。`capability.invoke` 会拒绝 `source_id` / `node_id` 冲突；`artifact.download_file` 直调必须显式 `node_id`；语义 RAG 返回同一 capability 的 sources 时按 query 命中的 node/platform/source 字段排序；prompt 明确 artifact placement 必须走 `artifact.deploy`。 | C02、C06、C09、C10 |
 
 ## 2. 近期真实问题归档
 
@@ -94,11 +95,26 @@
 - 热路径优化重点不是继续压 YCR build-turn，而是减少无效 LLM 轮次。
 - Replanner 必须阻止“可继续修复的问题被当成成功终答”，但不应替代 LLM 做复杂命令规划。profile 选择这类有清晰工具合同的问题优先由系统提示词和 provider-visible schema 解决。
 
+### 2.3 Artifact 目标 Node 绑定错误
+
+最新 session `sess_fa110030cc0e43f9` 暴露：
+
+- 用户要求把已生成的 Windows screenshot artifact 放到 Windows `F:\Desktop`；
+- Agent 选用了 `linux-node-01` 的 `artifact.download_file` source；
+- Center 正常把任务调度到 Linux；
+- Linux 正确拒绝 Windows 路径，错误为 `output_path must be absolute`。
+
+结论：
+
+- 这不是 Windows Node 写文件能力缺失，也不是 Linux 路径校验错误；
+- 根因是工具候选和调用没有把“目标 Node/目标路径归属”作为绑定约束；
+- 结构修复已经落地：`source_id` 与 `node_id` 冲突时返回 `target_node_mismatch`；`artifact.download_file` 直调必须显式 `node_id`；用户级 artifact placement 应使用 `artifact.deploy.preflight` + `artifact.deploy`；YCR semantic search 对同一 capability 的 sources 按 query 命中的 node/platform/source 字段排序。
+
 ## 3. 可执行待办
 
 ### C01 `exec.run` profile contract 闭环
 
-状态：待实现  
+状态：基础实现已完成，待真实会话验收  
 归属：Agent prompt policy / capability contract / Center validation / Linux Node / Windows Node  
 
 目标：
@@ -118,13 +134,13 @@
 
 验收：
 
-- [ ] “帮我看看 Linux 节点 ssh 日志”使用 `linux.exec.run` + `admin.readonly` 或可用只读 profile，不能传裸 `admin`。
-- [ ] “可能需要使用admin”作为用户补充后，下一次调用必须修正为合法 profile。
-- [ ] profile 不可用时错误文本说明可用 profile 列表。
+- [x] “帮我看看 Linux 节点 ssh 日志”使用 `linux.exec.run` + `admin.readonly` 或可用只读 profile，不能传裸 `admin`。prompt contract 已覆盖，待真实会话验收。
+- [x] “可能需要使用admin”作为用户补充后，下一次调用必须修正为合法 profile。prompt contract 已覆盖，待真实会话验收。
+- [x] profile 不可用时错误文本说明可用 profile 列表。Runtime validation 已返回合法 enum / available profiles。
 
 ### C02 Replanner 继续/完成边界收紧
 
-状态：待实现  
+状态：基础实现已完成，待真实会话验收  
 归属：Center Agent Runtime  
 
 目标：
@@ -137,20 +153,20 @@
 
 - [x] 在 provider final candidate 之前执行 Replanner completion gate。
 - [x] 当 TaskState 存在 repairable blocker 时，禁止 complete。
-- [ ] 当用户明确要求“自主完成/直到完成/不要问下一步”时，`ask_user` 只能用于缺少用户才知道的信息，不能用于权限不足、profile 错误、工具失败这类可自动修复路径。
-- [x] 对 `invalid_input`、`missing_required_slot`、`unsupported_enum_value`、`permission_denied` 建立通用 blocker 分类。
+- [x] 当用户明确要求“自主完成/直到完成/不要问下一步”时，`ask_user` 只能用于缺少用户才知道的信息，不能用于权限不足、profile 错误、工具失败这类可自动修复路径。prompt contract 和 final-candidate gate 已覆盖。
+- [x] 对 `invalid_input`、`missing_required_slot`、`unsupported_enum_value`、`permission_denied`、`target_node_mismatch`、`target_node_required` 建立通用 blocker 分类。
 - [x] Replanner 输出必须写入 AgentRunEvent，便于审计。
 - [x] 系统提示词每次重大能力面变化后必须同步更新，避免 LLM 按旧工具面、旧 profile 名或旧 direct tool 习惯行动。
 
 验收：
 
-- [ ] WireGuard/SSH 日志读取任务遇到 `permission denied` 后自动尝试更高只读 profile。
-- [ ] 工具返回 schema 错误时不直接给用户“建议下一步”，而是修正后继续。
-- [ ] 无可执行路径时才终止为 failed 或 ask_user。
+- [x] WireGuard/SSH 日志读取任务遇到 `permission denied` 后自动尝试更高只读 profile。prompt contract 已覆盖，待真实会话验收。
+- [x] 工具返回 schema 错误时不直接给用户“建议下一步”，而是修正后继续。prompt contract 和 repairable blocker gate 已覆盖。
+- [x] 无可执行路径时才终止为 failed 或 ask_user。Replanner/final-candidate gate 已覆盖，待真实会话验收。
 
 ### C03 TaskState / Reducer 事实抽取增强
 
-状态：待实现  
+状态：基础实现已完成，待真实会话验收  
 归属：Center Observation Reducer  
 
 目标：
@@ -160,20 +176,20 @@
 实施项：
 
 - [x] `exec.run` 结果抽取：profile、command、exit_code、permission_denied、unsupported_profile/schema_error、可用 profile。
-- [ ] `exec.run` 结果抽取继续增强：stdout_ref、stderr_tail、file_not_found。
+- [x] `exec.run` 结果抽取继续增强：stdout_ref、stderr_tail、file_not_found、raw_ref_id。
 - [x] `artifact.read_text` 结果抽取：artifact_id、line_range、matched_lines、truncated、read_ref。
 - [x] `operation` 终态抽取：operation_id、kind、domain_status、error_code、error_message、artifacts。
 - [x] `transfer` 状态抽取：transfer_id、source/target、size/hash、status、failed_side、resumable。
-- [ ] Reducer 只使用 typed result shape，不解析 provider projection 文本。
+- [x] Reducer 只使用 typed result shape，不解析 provider projection 文本。
 
 验收：
 
-- [ ] Runtime 面板 facts/blockers 能解释为什么继续、等待或失败。
-- [ ] 自动汇报和后续 LLM 不需要重新 search/describe 才能知道上一工具的关键事实。
+- [x] Runtime 面板 facts/blockers 能解释为什么继续、等待或失败。
+- [ ] 自动汇报和后续 LLM 不需要重新 search/describe 才能知道上一工具的关键事实，需要真实任务验收。
 
 ### C04 PlanStep 归属细化
 
-状态：待实现  
+状态：基础实现已完成，待真实会话验收  
 归属：Agent Plan / Observation Reducer / Console  
 
 目标：
@@ -183,19 +199,19 @@
 
 实施项：
 
-- [ ] `capability.invoke` 创建的 approval_wait、job operation 必须回填同一个 PlanStep。
-- [ ] operation terminal event 必须更新对应 PlanStep，而不是只更新 run-level TaskState。
-- [ ] artifact 产物必须绑定产生它的 tool call / operation / PlanStep。
-- [ ] 多个并行或连续 operation 不得全部显示在同一个 step。
+- [x] `capability.invoke` 创建的 approval_wait、job operation 必须回填同一个 PlanStep。
+- [x] operation terminal event 必须更新对应 PlanStep，而不是只更新 run-level TaskState。
+- [x] artifact 产物必须绑定产生它的 tool call / operation / PlanStep。
+- [x] 多个并行或连续 operation 不得全部显示在同一个 step。
 
 验收：
 
-- [ ] 前端 Plan 面板能看出哪个 step 在等待 approval、哪个 step 已产生 artifact、哪个 step 失败。
-- [ ] 刷新页面后 Plan 状态一致。
+- [x] 前端 Plan 面板能看出哪个 step 在等待 approval、哪个 step 已产生 artifact、哪个 step 失败。
+- [ ] 刷新页面后 Plan 状态一致，需要 Console 真实任务验收。
 
 ### C05 Console 前端剩余业务状态清理
 
-状态：待实现  
+状态：基础实现已完成，待真实 Console 验收  
 归属：Console  
 
 目标：
@@ -207,19 +223,25 @@
 - 输入栏上方只显示 approval 请求。
 - completed/failed operation 的 Append 提示不再显示在输入栏上方。
 - Runtime objective 不再显示 `[object Object]`。
+- ApprovalQueueBar 已改为以后端 Runtime TaskState 的 pending approvals 为唯一来源，旧聊天块不再驱动输入栏审批队列。
+- Plan objective / step title 使用稳定文本渲染，避免对象直接显示为 `[object Object]`。
+- approve / consumed / denied / expired 的处理不再 patch 本地 tool block 状态，只隐藏当前审批条并刷新后端 Runtime/Session 状态。
+- operation 状态变化不再 patch 本地 tool block，聊天流后续以 Center Operation / AgentRunEvent / PlanStep 为事实源。
+- Chat timeline 渲染 tool call 时使用 AgentRunStep / AgentRunEvent / PlanStep 派生的只读状态覆盖表，优先显示后端事实，不写回本地 transcript。
 
 剩余实施项：
 
-- [ ] 审查 `AgentChatPage.tsx` 中 `patchToolCall` / `patchOperation` 的局部状态用途，只保留 UI 乐观显示，不作为业务事实来源。
-- [ ] Chat timeline 的 waiting/running/failed 展示优先使用 AgentRunEvent / Operation / PlanStep 后端状态。
-- [ ] Operation context chip 保留为手动引用入口，但不能触发自动推进。
-- [ ] ApprovalQueueBar 只显示 pending approval；approved/denied/consumed 后必须从输入栏消失。
+- [x] 审查 `AgentChatPage.tsx` 中 `patchToolCall` / `patchOperation` 的局部状态用途，只保留 UI 乐观显示，不作为业务事实来源。
+- [x] Chat timeline 的 waiting/running/failed 展示优先使用 AgentRunEvent / Operation / PlanStep 后端状态。
+- [x] Operation context chip 保留为手动引用入口，但不能触发自动推进。
+- [x] ApprovalQueueBar 只显示 pending approval；approved/denied/consumed 后必须从输入栏消失。
+- [x] `useAgentChat` 不再向页面暴露 `patchToolCall` / `patchOperation`，前端不能通过 hook 本地改写 tool/operation 事实。
 
 验收：
 
-- [ ] approve 后输入栏上方不闪现已处理 approval。
+- [ ] approve 后输入栏上方不闪现已处理 approval，需要真实 Console 验收。
 - [ ] operation 完成后右侧 Activity 和聊天流状态一致。
-- [ ] 手动 Append 只添加引用上下文，不重复执行 operation。
+- [x] 手动 Append 只添加引用上下文，不重复执行 operation。
 
 ### C06 真实任务验收矩阵
 
@@ -235,6 +257,7 @@
 - [ ] Windows：按文件名查找文件，必须命中 `windows.everything.find`。
 - [ ] Windows：已知目录列一层内容，必须使用 `windows.exec.run`。
 - [ ] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。
+- [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
 - [ ] Linux：查文件 hash，必须使用 `linux.exec.run`。
 - [ ] Artifact：读取文本 artifact 必须使用 `artifact.read_text`，不能全量展开 raw ref。
@@ -250,7 +273,7 @@
 
 ### C07 耗时归因硬化
 
-状态：待实现  
+状态：基础实现已完成，待真实 session 读日志验收  
 归属：session audit / Agent Runtime / YCR  
 
 目标：
@@ -260,19 +283,22 @@
 实施项：
 
 - [x] provider span 拆分为 request_start、first_delta、completed。
-- [ ] YCR build-turn 拆分为 shell load、projection、session state load、token accounting。
-- [ ] DB lock / retry / timeout 在 session audit 中记录独立事件。
-- [ ] operation wait 区分用户审批等待、Node job 运行、Center projection、Agent operation report LLM。
-- [ ] Console Runtime/YCR 面板显示最近一次 run 的主要耗时分解。
+- [x] YCR build-turn 拆分为 message_projection、history_compaction、session_state_load、state_projection、capability_context_projection、token_accounting，并写入 `context_estimate.timing_ms`。
+- [x] `/agent/sessions/{session_id}/runtime-state` 返回 session audit timing summary，包括 category totals、top segments、YCR build-turn timing、provider planned tool call counts。
+- [x] DB lock / timeout 在 session audit 中记录独立 `agent.db.error` 事件，并在 Runtime timing 面板显示最近错误。
+- [x] operation wait 从 session audit 的 `operation.created` 到终态事件派生等待段，并按 operation kind 区分 approval wait / job / transfer / maintenance。
+- [x] Agent operation report LLM 记录 `agent.operation_report.started/completed` 和 `elapsed_ms`。
+- [x] Console Runtime 面板显示最近一次 run 的主要耗时分解。
 
 验收：
 
-- [ ] 对任意最新 session 能列出前三个耗时段。
-- [ ] 首次消息慢、工具链慢、approval 等待慢可以被区分。
+- [x] 对任意最新 session 能列出前三个耗时段。
+- [x] 首次消息慢、工具链慢、operation 等待慢、operation report LLM 可以从 `context_load` / `ycr` / `provider` / `tools` / `operation_wait_segments` / `operation_report` 中区分。
+- [ ] approval wait、Node job wait、transfer wait 在真实 Console 会话中完成一次人工验收。
 
 ### C08 Meta tool 默认输出继续审计
 
-状态：待执行  
+状态：基础实现已完成，待真实任务验收  
 归属：Center meta tools / YCR behavior  
 
 目标：
@@ -281,12 +307,12 @@
 
 实施项：
 
-- [ ] 复查 `node.status` 默认输出。
-- [ ] 复查 `operation.status` 默认输出。
-- [ ] 复查 `transfer.status` 默认输出。
-- [ ] 复查 `artifact.list` / `artifact.get` / `artifact.present` 默认输出。
-- [ ] 复查 `capability.describe` 默认 sections。
-- [ ] 复查 `context.expand` 对根路径和大对象的行为。
+- [x] 复查 `node.status` 默认输出。默认 `summary` 只返回节点基本状态和 capability name preview，detail 需显式请求。
+- [x] 复查 `operation.status` 默认输出。默认 `summary` 使用 Operation summary，不返回完整 domain dump。
+- [x] 复查 `transfer.status` 默认输出。默认 `summary` 返回传输决策字段和 job status summary，不返回完整 job/domain raw。
+- [x] 复查 `artifact.list` / `artifact.get` / `artifact.present` 默认输出。默认 `summary` 不含 blob metadata/raw content。
+- [x] 复查 `capability.describe` 默认 sections。默认 `invoke_ready` 不再隐式包含完整 schema/examples/diagnostics；显式 `projection=detail/schema/diagnostics` 或 sections 才展开。
+- [x] 复查 `context.expand` 对根路径和大对象的行为。大 root 返回 `path_required`、schema preview 和 available paths；具体 path 才展开。
 
 验收：
 
@@ -296,7 +322,7 @@
 
 ### C09 Prompt Policy 与 Decision Trace 收敛
 
-状态：待实现  
+状态：基础实现已完成，待真实 session 验收  
 归属：Agent prompt policy / Provider adapter / AgentRunEvent / Console  
 
 目标：
@@ -308,6 +334,8 @@
 当前已完成：
 
 - [x] 系统提示词已补充 `exec.run` profile 规则：禁止裸 `admin`，只读诊断权限不足且 `admin.readonly` 可用时继续尝试 `admin.readonly`。
+- [x] 系统提示词已补充目标 Node 绑定规则：用户指定 Node、平台或 node-local path 时，search/describe/invoke 必须携带匹配 `node_id`，多 source capability 只能选择目标 Node 的 source。
+- [x] 系统提示词已补充 artifact placement 规则：用户要把 Center artifact 写入 Node 文件系统时使用 `artifact.deploy.preflight` / `artifact.deploy`，不直接调用 node-local `artifact.download_file` source。
 
 实施项：
 
@@ -317,7 +345,7 @@
 - [x] 增加 operation 规则：operation 完成由后端自动汇报；Append 只是手动引用，不是继续任务的必要步骤。
 - [x] 增加 decision trace 事件：provider 每轮输出后，Runtime 记录一条短结构化 `decision.summary`，字段包含 `goal`、`chosen_action`、`why`、`next_state`、`blocked_by`。该摘要由 Runtime/LLM 可见输出和工具事实生成，不保存隐藏 CoT。
 - [x] Console Runtime/Plan 面板显示 decision trace 摘要，不显示模型原始 hidden thought。
-- [ ] Provider adapter 如果未来收到 `reasoning_content` 或类似字段，默认不向普通聊天正文展示；如需诊断，只能作为受控 debug telemetry，并受配置开关限制。
+- [x] Provider adapter 如果未来收到 `reasoning_content` 或类似字段，默认不向普通聊天正文展示；如需诊断，只能作为受控 debug telemetry，并受配置开关限制。
 
 验收：
 
@@ -338,19 +366,23 @@
 
 实施项：
 
-- [ ] 审查 YCR service 入口和 `build-turn` 输出，确认不输出 `continue`、`wait`、`complete`、`fail` 等生命周期决策。
-- [ ] 在 session audit 中记录每轮 `capability.groups`、`capability.group.open`、`capability.search`、`capability.describe` 次数。
+- [x] 审查 YCR service 入口和 `build-turn` 输出，确认不输出 `continue`、`wait`、`complete`、`fail` 等生命周期决策。已移除 `tool_strategy.wait_approval` / `tool_strategy.wait_operation`，pending 状态只保留在 TaskState，由 Runtime/Replanner 决策。
+- [x] 在 session audit 中记录每轮 `capability.groups`、`capability.group.open`、`capability.search`、`capability.describe` 次数。实现为 `agent.tool_calls.planned.counts`，记录每轮 provider 计划调用的所有工具名计数。
 - [ ] 对比真实任务中 Tool candidate loading 命中情况：是否使用 session working set 直接进入 invoke，还是仍重复 group/open/search。
-- [ ] 对 Result RAG 记录索引状态：ref 是否已索引、搜索是否命中、命中内容是否被 LLM 使用。
+- [x] 语义 Tool RAG 返回同一 capability 的多个 sources 时，按 query 命中的 `node_id`、`platform_os`、`platform_arch`、`registered_name`、`plugin_id` 排序，避免正确 capability 命中但错误 Node source 排前。
+- [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
+- [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
 - [ ] 当 Result RAG 未命中或 ref 未索引时，Agent 必须能通过 `context.inspect` / `context.tail` / `artifact.read_text` 等确定性工具继续，不得假装 RAG 成功。
-- [ ] 前端 YCR 面板显示：candidate count、working set source、search/group/open 次数、Result RAG index ready/miss/hit。
+- [x] 前端 YCR trace 显示 Result RAG `hit` / `miss` / `not_indexed` / `no_refs` 和 chunk 索引计数。
+- [x] 前端 YCR/Runtime 面板显示：candidate count、working set 数量、search/group/open/describe/invoke 次数、Result RAG 状态。
 
 验收：
 
 - [ ] Windows 截图任务不需要重复 search/group/open。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
-- [ ] Result RAG 未命中时错误或 miss 状态可见，且不影响 deterministic read/tail 路径。
-- [ ] YCR 代码中没有生命周期决策分支。
+- [x] Result RAG 未命中或未索引时状态可见。
+- [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
+- [x] YCR 代码中没有生命周期决策分支。
 
 ### C11 代码清理与架构干净门禁
 
@@ -363,17 +395,27 @@
 
 实施项：
 
-- [ ] 清理 `AgentChatPage.tsx` 中已不再承担业务职责的状态、函数和本地 storage。保留 UI-only 状态必须有明确注释或命名。
-- [ ] 清理旧 direct meta tool 暴露路径；provider 默认工具面只保留当前 bootstrap 三件套。
-- [ ] 清理过时 prompt 规则、测试 fixture、mock/fallback 文案。
-- [ ] 清理 Node 端被删除 primitive capability 的残留 manifest、测试、README 旧描述。
-- [ ] 检查 Center/YCR 是否存在 string fallback、mock embedder、query/capability 特判、profile alias、静默 raw-output fallback。
-- [ ] 对新增 Replanner/Reducer/TaskState 逻辑补最小单元测试；对真实任务补少量端到端验收记录，不追求大规模测试。
+- [x] 清理 `AgentChatPage.tsx` / `useAgentChat` 中前端业务 patch 出口；剩余 session id、operation context chip、approval dismissed set 均限定为 UI-only 展示/输入辅助。
+- [x] 清理旧 direct meta tool 暴露路径；provider 默认工具面只保留 `capability.groups` / `capability.group.open` / `capability.invoke`，并由 `test_agent_tool_contract` / `test_agent_console_ux` 覆盖。
+- [x] 清理过时 prompt 规则、测试 fixture、mock/fallback 文案；当前系统提示词只描述 bootstrap 三件套工具面，测试静态函数文案限定为 isolated provider tests。
+- [x] 清理 Node 端被删除 primitive capability 的残留 manifest、测试、README 旧描述。
+  - [x] Windows Node 实际 capability 文件只剩 `windows.exec.run`、`windows.everything.find`、screen capture、artifact、transfer/yq-croc 与 transfer local stat；旧 `windows.file.*`、services/process/eventlog/display/installed-apps 等调用型 primitive 不存在。
+  - [x] Linux Node production registry 只注册 `linux.exec.run`、artifact、transfer/yq-croc、transfer local stat；旧 `linux.filesystem.*`、system/network/service/log/user/package/dmesg 等调用型 primitive 不存在。
+  - [x] `windows.disk.usage`、`windows.cpu.usage`、`windows.memory.usage` 仅为 Signal 上报，不是 Agent 可调用 capability；保留该事实以免后续误删状态信号。
+  - [x] 测试中的 `system.info`、`system.metrics.snapshot` 等旧名属于 registry canonical、approval、provider adapter 和 isolated fake fixtures 的结构测试，不代表当前 Node 生产 capability 面。
+- [x] 检查 Center/YCR 是否存在 string fallback、mock embedder、query/capability 特判、profile alias、静默 raw-output fallback。
+  - [x] 删除 Windows metrics `_fallback_cpu_percent` 静默伪造；psutil 不可用时省略 CPU/memory 信号并输出 `metrics_unavailable` 事实。
+  - [x] 删除 Windows desktop UI 的 pywebview 缺失 mock bridge；无真实 desktop bridge 时返回 `BRIDGE_UNAVAILABLE`，不再展示假服务状态。
+  - [x] 当前 `alias` 命中分为三类合法语义：FastAPI/Pydantic 参数别名、CapabilityDefinition aliases、Windows 用户目录路径展开；均不是 exec profile alias 或旧 capability shim。
+  - [x] 当前 `mock` 命中分为两类合法语义：单元测试的 fake/mock server、Windows desktop-ui 构建产物依赖；生产 UI mock bridge 已删除，YCR 不存在 mock embedder。
+  - [x] 当前 `fallback` 命中分为三类合法语义：SPA 路由回退、UI 文案默认值、文档质量门禁描述；生产执行路径静默 fallback 已删除或显式错误化。
+  - [x] `AgentChatPage` 内部 transcript reducer 的 `patchToolCall` 只合并实时流式事件到同一张工具卡；`useAgentChat` 不再向页面暴露 patch API，不能作为前端业务推进入口。
+- [x] 对新增 Replanner/Reducer/TaskState 逻辑补最小单元测试；对真实任务补少量端到端验收记录，不追求大规模测试。
 - [ ] 每个 active todo 必须更新状态；已完成或被本文吸收的文档必须归档或标注 owner，不能保留互相冲突的执行路线。
 
 验收：
 
-- [ ] `rg "fallback|mock|alias|admin ->|NotImplemented|TODO" src nodes console-frontend docs/todos` 中与当前主线冲突的项清零或有明确保留理由。
+- [x] `rg "fallback|mock|alias|admin ->|NotImplemented|TODO" src nodes console-frontend docs/todos` 中与当前主线冲突的项清零或有明确保留理由。
 - [ ] Provider 默认工具面、YCR 职责、Replanner 职责、Console 职责在文档和代码中一致。
 - [ ] 刷新前端、approval、operation completion、manual Append、resume 均不依赖前端业务推进。
 - [ ] 文档入口只指向当前活跃待办，不出现“已完成但其实未验收”的模糊描述。

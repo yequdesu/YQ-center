@@ -160,6 +160,17 @@ class CenterExecutionRuntime:
         except ValueError as exc:
             return runtime_error(command, _capability_invoke_error_code(exc), str(exc))
 
+        if target.canonical_name == "artifact.download_file" and not node_id:
+            return runtime_error(
+                command,
+                "target_node_required",
+                (
+                    "node_id is required for artifact.download_file because output_path "
+                    "is interpreted on the target Node filesystem. Use artifact.deploy "
+                    "for user-facing artifact placement."
+                ),
+            )
+
         validation_error = _validate_invoked_tool_input(command, target, dict(tool_input))
         if validation_error is not None:
             return validation_error
@@ -803,6 +814,8 @@ def _as_runtime_command(command: RuntimeCommand | ExecuteToolCommand) -> Runtime
 
 def _capability_invoke_error_code(exc: ValueError) -> str:
     message = str(exc).lower()
+    if "target_node_mismatch" in message:
+        return "target_node_mismatch"
     if "ambiguous" in message:
         return "ambiguous_capability_source"
     if "no active capability source matches" in message:

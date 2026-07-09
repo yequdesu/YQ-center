@@ -1,8 +1,8 @@
 """Test-only AgentFunction fixtures.
 
 Production Agent functions must come from Center meta tools and the capability
-registry.  These static functions exist only for legacy planner/provider tests
-that do not provision a node.
+registry. These static functions exist only for isolated planner/provider tests
+that intentionally avoid provisioning a node.
 """
 
 from __future__ import annotations

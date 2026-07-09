@@ -194,6 +194,83 @@ async def test_agent_session_audit_log_persists_lifecycle_events(
 
 
 @pytest.mark.asyncio
+async def test_runtime_state_timing_summary_reports_operation_wait_and_db_errors(
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch,
+):
+    from yequ.config import get_settings
+    from yequ.services.session_audit import record_session_audit_event
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "session_audit_enabled", True)
+    monkeypatch.setattr(settings, "session_audit_log_dir", str(tmp_path / "session-audit"))
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "timing-summary-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    record_session_audit_event(
+        session_id,
+        "operation.created",
+        {
+            "operation_id": "op_timing_1",
+            "operation_kind": "job",
+            "operation_status": "running",
+            "title": "exec.run",
+        },
+        event_time="2026-07-09T00:00:00+00:00",
+        source="operation",
+    )
+    record_session_audit_event(
+        session_id,
+        "operation.succeeded",
+        {
+            "operation_id": "op_timing_1",
+            "operation_kind": "job",
+            "operation_status": "succeeded",
+        },
+        event_time="2026-07-09T00:00:02+00:00",
+        source="operation",
+    )
+    record_session_audit_event(
+        session_id,
+        "agent.operation_report.completed",
+        {
+            "operation_id": "op_timing_1",
+            "notification_id": "noti_1",
+            "turn_id": "turn_1",
+            "elapsed_ms": 123.4,
+        },
+        source="agent.operation_reporter",
+    )
+    record_session_audit_event(
+        session_id,
+        "agent.db.error",
+        {
+            "phase": "execute_serial",
+            "name": "capability.invoke",
+            "target_node_id": "linux-node-01",
+            "error_code": "db_lock_timeout",
+            "message": "canceling statement due to lock timeout",
+        },
+        source="agent.tools",
+    )
+
+    runtime_resp = await client.get(f"/agent/sessions/{session_id}/runtime-state")
+    assert runtime_resp.status_code == 200
+    timing = runtime_resp.json()["timing"]
+    assert timing["db_error_count"] == 1
+    assert timing["db_errors"][0]["error_code"] == "db_lock_timeout"
+    assert timing["category_totals_ms"]["operation_report"] == 123.4
+    assert timing["operation_wait_segments"][0]["operation_id"] == "op_timing_1"
+    assert timing["operation_wait_segments"][0]["elapsed_ms"] == 2000
+
+
+@pytest.mark.asyncio
 async def test_agent_turn_stream_close_fails_open_turn(db_session):
     from sqlalchemy import select
 

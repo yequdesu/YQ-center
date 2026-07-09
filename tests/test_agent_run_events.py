@@ -164,6 +164,96 @@ async def test_agent_run_events_bind_plan_step_by_tool_and_operation(
 
 
 @pytest.mark.asyncio
+async def test_agent_run_events_bind_approval_operation_and_artifact_to_one_plan_step(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_plan_artifact"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="plan-artifact",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        user_message="read a protected artifact",
+        trace_id="trace-plan-artifact",
+        metadata={},
+    )
+    plan = await create_agent_plan(
+        db_session,
+        session_id=session_id,
+        run_id=run.run_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        objective="read a protected artifact",
+        metadata={},
+    )
+    run.metadata_json = {"plan_id": plan.plan_id}
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="approval.waiting",
+        source="agent.tool",
+        payload={
+            "call_id": "call_1",
+            "approval_id": "apv_1",
+            "function_name": "capability.invoke",
+            "capability_ref": "exec.run",
+            "target_node_id": "node-1",
+        },
+        plan_id=plan.plan_id,
+    )
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="approval.approved",
+        source="approval",
+        payload={
+            "approval_id": "apv_1",
+            "operation_id": "op_1",
+            "function_name": "capability.invoke",
+            "capability_ref": "exec.run",
+            "target_node_id": "node-1",
+        },
+        plan_id=plan.plan_id,
+    )
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="artifact.read",
+        source="agent.tool",
+        payload={
+            "artifact_id": "art_1",
+            "title": "journal.log",
+            "content_type": "text/plain",
+        },
+        plan_id=plan.plan_id,
+        step_id=None,
+    )
+
+    projection = await get_agent_plan_projection(db_session, plan.plan_id)
+    steps = projection["steps"]
+    approval_steps = [step for step in steps if step["kind"] == "approval"]
+    assert len(approval_steps) == 1
+    assert approval_steps[0]["operation_id"] == "op_1"
+    assert approval_steps[0]["status"] == "succeeded"
+    artifact_steps = [step for step in steps if step["kind"] == "agent_task"]
+    assert artifact_steps
+    assert artifact_steps[0]["metadata"]["artifact_ids"] == ["art_1"]
+
+
+@pytest.mark.asyncio
 async def test_replanner_blocks_final_candidate_when_error_is_repairable(
     db_session: AsyncSession,
 ) -> None:
@@ -298,3 +388,62 @@ async def test_agent_run_reducer_extracts_transfer_and_artifact_facts(
     assert artifact["matched_lines"] == {"count": 3}
     assert artifact["truncated"] is True
     assert artifact["read_ref"] == "ctxref_1"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_reducer_extracts_exec_refs_tails_and_file_missing_fact(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_exec_facts"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="exec-facts",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        user_message="read a missing file",
+        trace_id="trace-exec-facts",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.failed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_missing",
+            "function_name": "capability.invoke",
+            "capability_ref": "linux.exec.run",
+            "target_node_id": "node-1",
+            "error_code": "execution_failed",
+            "message": "command failed",
+            "raw_ref_id": "ctxref_raw",
+            "result": {
+                "command": "cat /missing",
+                "profile": "user.readonly",
+                "exit_code": 1,
+                "stdout_ref": "ctxref_stdout",
+                "stderr_tail": "cat: /missing: No such file or directory",
+            },
+        },
+    )
+
+    state = get_task_state(run)
+    exec_facts = [item for item in state["facts"] if item["kind"] == "exec.run"]
+    assert exec_facts
+    data = exec_facts[0]["data"]
+    assert data["raw_ref_id"] == "ctxref_raw"
+    assert data["stdout_ref"] == "ctxref_stdout"
+    assert data["stderr_tail"] == "cat: /missing: No such file or directory"
+    assert data["file_not_found"] is True

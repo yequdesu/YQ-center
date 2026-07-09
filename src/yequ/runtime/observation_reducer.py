@@ -73,9 +73,23 @@ async def reduce_agent_run_event(
         _resolve_pending_approval(state, payload, status="approved")
         if _string(payload.get("operation_id")):
             _record_pending_operation(state, payload)
+        await _update_plan_step(
+            db,
+            run=run,
+            event=event,
+            status="succeeded",
+            payload=payload,
+        )
     elif event_type == "approval.rejected":
         _resolve_pending_approval(state, payload, status="rejected")
         _record_blocker(state, payload, terminal=True)
+        await _update_plan_step(
+            db,
+            run=run,
+            event=event,
+            status="failed",
+            payload=payload,
+        )
     elif event_type == "operation.waiting":
         _record_pending_operation(state, payload)
         await _update_plan_step(
@@ -108,6 +122,13 @@ async def reduce_agent_run_event(
         )
     elif event_type in {"artifact.created", "artifact.presented", "artifact.read"}:
         _record_artifact(state, payload)
+        await _update_plan_step(
+            db,
+            run=run,
+            event=event,
+            status="succeeded",
+            payload=payload,
+        )
     elif event_type == "llm.final_candidate":
         _record_final_candidate(state, payload)
     elif event_type == "run.completed":
@@ -315,14 +336,23 @@ def _record_tool_result_facts(state: JsonDict, payload: JsonDict) -> None:
     if capability_ref != "capability.invoke" and not capability_ref.endswith("exec.run"):
         return
     result = _dict(payload.get("result"))
+    output = _dict(payload.get("output") or payload.get("output_data"))
     details = _dict(payload.get("details") or payload.get("error_details"))
     invoked = _dict(payload.get("input"))
     nested_input = _dict(invoked.get("input"))
-    command = _string(result.get("command") or nested_input.get("command"))
-    profile = _string(result.get("profile") or nested_input.get("profile"))
-    exit_code = result.get("exit_code")
+    command = _string(result.get("command") or output.get("command") or nested_input.get("command"))
+    profile = _string(result.get("profile") or output.get("profile") or nested_input.get("profile"))
+    exit_code = result.get("exit_code") if "exit_code" in result else output.get("exit_code")
     error_code = _string(payload.get("error_code"))
     message = _string(payload.get("error_message") or payload.get("message"))
+    stdout_tail = _string(result.get("stdout_tail") or output.get("stdout_tail"))
+    stderr_tail = _string(result.get("stderr_tail") or output.get("stderr_tail"))
+    stdout_ref = _string(result.get("stdout_ref") or output.get("stdout_ref"))
+    stderr_ref = _string(result.get("stderr_ref") or output.get("stderr_ref"))
+    raw_ref_id = _string(payload.get("raw_ref_id"))
+    raw_ref = _dict(payload.get("raw_ref"))
+    if not raw_ref_id:
+        raw_ref_id = _string(raw_ref.get("ref_id"))
     fact: JsonDict = {
         "capability_ref": capability_ref,
         "status": _string(payload.get("status")) or ("failed" if error_code else "succeeded"),
@@ -333,9 +363,16 @@ def _record_tool_result_facts(state: JsonDict, payload: JsonDict) -> None:
         "error_code": error_code,
         "message": message[:500],
         "available_execution_profiles": details.get("available_execution_profiles"),
+        "stdout_ref": stdout_ref or None,
+        "stderr_ref": stderr_ref or None,
+        "raw_ref_id": raw_ref_id or None,
+        "stdout_tail": stdout_tail[:1000],
+        "stderr_tail": stderr_tail[:1000],
     }
     if _looks_like_permission_denied(message, error_code):
         fact["permission_denied"] = True
+    if _looks_like_file_not_found(message, error_code, stdout_tail, stderr_tail):
+        fact["file_not_found"] = True
     if error_code in {"missing_required_slot", "unsupported_enum_value"}:
         fact["schema_error"] = details
     key = _string(payload.get("call_id")) or f"exec_fact_{len(state['facts']) + 1}"
@@ -381,7 +418,13 @@ def _classify_blocker(payload: JsonDict, *, terminal: bool) -> JsonDict:
     error_code = _string(payload.get("error_code"))
     message = _string(payload.get("error_message") or payload.get("message"))
     details = _dict(payload.get("details") or payload.get("error_details"))
-    if error_code in {"missing_required_slot", "unsupported_enum_value", "invalid_input"}:
+    if error_code in {
+        "missing_required_slot",
+        "unsupported_enum_value",
+        "invalid_input",
+        "target_node_mismatch",
+        "target_node_required",
+    }:
         return {
             "terminal": False,
             "repairable": True,
@@ -418,6 +461,26 @@ def _looks_like_permission_denied(message: str, error_code: str) -> bool:
     )
 
 
+def _looks_like_file_not_found(
+    message: str,
+    error_code: str,
+    stdout_tail: str,
+    stderr_tail: str,
+) -> bool:
+    normalized = f"{error_code} {message} {stdout_tail} {stderr_tail}".lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "no such file",
+            "not found",
+            "cannot access",
+            "cannot stat",
+            "path not found",
+            "file not found",
+        )
+    )
+
+
 async def _update_plan_step(
     db: AsyncSession,
     *,
@@ -440,12 +503,23 @@ async def _update_plan_step(
         return
     step.status = status
     operation_id = _string(payload.get("operation_id"))
+    approval_id = _string(payload.get("approval_id"))
     tool_call_id = _string(payload.get("tool_call_id") or payload.get("call_id"))
     if operation_id:
         step.operation_id = operation_id
     if tool_call_id:
         step.tool_call_id = tool_call_id
     metadata = dict(step.metadata_json or {})
+    if approval_id:
+        metadata["approval_id"] = approval_id
+    artifact_id = _string(payload.get("artifact_id"))
+    if artifact_id:
+        artifact_ids = metadata.get("artifact_ids")
+        if not isinstance(artifact_ids, list):
+            artifact_ids = []
+        if artifact_id not in artifact_ids:
+            artifact_ids.append(artifact_id)
+        metadata["artifact_ids"] = artifact_ids[:20]
     if payload:
         metadata["last_event"] = {
             "event_id": event.event_id,

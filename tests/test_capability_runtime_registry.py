@@ -803,6 +803,10 @@ async def test_center_capabilities_are_registered_and_describable(
     assert capability["dispatch_kind"] == "workflow"
     assert capability["invocation_surface"] == "agent"
     assert capability["invoke"]["source_id"] == "center:transfer.create"
+    assert "input_schema" not in capability
+    assert "output_schema" not in capability
+    assert "examples" not in capability
+    assert "failure_modes" not in capability
 
 
 @pytest.mark.asyncio
@@ -1678,6 +1682,84 @@ async def test_capability_diagnostics_reports_artifact_download_contract_issues(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_file_requires_explicit_target_node_binding(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    node, token = provisioned_node
+    await _hello_linux_node(client, node.node_id, token)
+    registered = await client.post(
+        "/yqp/",
+        json=make_yqp_envelope(
+            "node.register_capabilities",
+            node.node_id,
+            payload={
+                "plugins": [
+                    {
+                        "plugin_id": "linux.artifact",
+                        "plugin_version": "1.0",
+                        "status": "loaded",
+                        "functions": [
+                            {
+                                "name": "linux.artifact.download_file",
+                                "description": "Download a Center artifact to a Linux file path.",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "artifact_id": {"type": "string"},
+                                        "output_path": {"type": "string"},
+                                    },
+                                    "required": ["artifact_id", "output_path"],
+                                    "additionalProperties": False,
+                                },
+                                "output_schema": {"type": "object"},
+                                "risk": "maintenance",
+                                "effect": "write",
+                                "timeout_sec": 300,
+                                "execution_context": "system",
+                            }
+                        ],
+                        "signals": [],
+                    }
+                ]
+            },
+        ),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert registered.status_code == 200, registered.text
+
+    source_result = await db_session.execute(
+        select(CapabilitySource).where(
+            CapabilitySource.registered_name == "linux.artifact.download_file"
+        )
+    )
+    source = source_result.scalar_one()
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.invoke",
+            input_data={
+                "source_id": source.source_id,
+                "input": {
+                    "artifact_id": "id_example",
+                    "output_path": "/tmp/example.bin",
+                },
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "target_node_required"
+    assert "node_id is required" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
 async def test_admin_meta_capability_diagnostics_exposes_contract_issues(
     client: AsyncClient,
     provisioned_node,
@@ -1799,3 +1881,84 @@ async def test_capability_invoke_requires_disambiguation_for_multiple_sources(
     assert resolved.function_name == "linux.system.info"
     assert resolved.target_node_id == "linux-node-b"
     assert resolved.job_id is not None
+
+
+@pytest.mark.asyncio
+async def test_capability_invoke_rejects_source_id_from_different_target_node(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    linux_node, linux_token = provisioned_node
+    win_token = "test-token-winclient"
+    await _provision_node(db_session, node_id="winClient", token=win_token)
+
+    await _hello_linux_node(client, linux_node.node_id, linux_token)
+    await _hello_windows_node(client, "winClient", win_token)
+    await _register_linux_system_info(client, linux_node.node_id, linux_token)
+    await _register_platform_system_info(
+        client,
+        "winClient",
+        win_token,
+        platform_os="windows",
+    )
+
+    source_result = await db_session.execute(
+        select(CapabilitySource).where(CapabilitySource.registered_name == "linux.system.info")
+    )
+    linux_source = source_result.scalar_one()
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.invoke",
+            input_data={
+                "capability_ref": "system.info",
+                "source_id": linux_source.source_id,
+                "node_id": "winClient",
+                "input": {},
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "target_node_mismatch"
+    assert "belongs to node" in (result.error_message or "")
+    assert result.job_id is None
+
+
+@pytest.mark.asyncio
+async def test_capability_search_ranks_sources_matching_query_target_node(
+    client: AsyncClient,
+    db_session,
+    provisioned_node,
+) -> None:
+    from yequ.services.capability_registry import capability_search
+
+    linux_node, linux_token = provisioned_node
+    win_token = "test-token-winclient"
+    await _provision_node(db_session, node_id="winClient", token=win_token)
+
+    await _hello_linux_node(client, linux_node.node_id, linux_token)
+    await _hello_windows_node(client, "winClient", win_token)
+    await _register_linux_system_info(client, linux_node.node_id, linux_token)
+    await _register_platform_system_info(
+        client,
+        "winClient",
+        win_token,
+        platform_os="windows",
+    )
+
+    matches = await capability_search(
+        db_session,
+        query="winClient system",
+        projection="invoke_ready",
+        limit=5,
+    )
+
+    system_info = next(item for item in matches if item["canonical_name"] == "system.info")
+    assert system_info["sources"][0]["node_id"] == "winClient"

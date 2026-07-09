@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.provider import AgentFunction
@@ -19,6 +21,7 @@ from yequ.application.schemas import ExecuteToolCommand, ToolPreflightCommand
 from yequ.application.tool_preflight import ToolPreflightApplicationService
 from yequ.logconfig import get_logger
 from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
+from yequ.services.session_audit import record_session_audit_event
 
 StreamEvent = dict[str, object]
 EventFactory = Callable[[str, dict[str, object] | None], StreamEvent]
@@ -128,15 +131,55 @@ async def execute_tool_calls_scheduled(
         func_meta = next((f for f in available_functions if f.name == tc_name), None)
         risk = func_meta.risk if func_meta else "safe"
         effect = func_meta.effect if func_meta else "read"
-        preflight = await preflight_service.check(
-            ToolPreflightCommand(
-                function_name=tc_name,
-                execution_mode=execution_mode,
-                target_node_id=target_node_id,
-                declared_risk=risk,
-                declared_effect=effect,
+        try:
+            preflight = await preflight_service.check(
+                ToolPreflightCommand(
+                    function_name=tc_name,
+                    execution_mode=execution_mode,
+                    target_node_id=target_node_id,
+                    declared_risk=risk,
+                    declared_effect=effect,
+                )
             )
-        )
+        except Exception as exc:
+            with suppress(Exception):
+                await db.rollback()
+            error_code = _record_tool_exception(
+                session_id,
+                phase="preflight",
+                call_id=tc_call_id,
+                name=tc_name,
+                target_node_id=target_node_id,
+                exc=exc,
+            )
+            yield make_event(
+                "agent.tool_call.created",
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "target_node_id": target_node_id,
+                },
+            )
+            yield make_event(
+                "agent.tool_call.failed",
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "error_code": error_code,
+                    "message": str(exc)[:500],
+                    "target_node_id": target_node_id,
+                },
+            )
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": error_code,
+                }
+            )
+            continue
 
         yield make_event(
             "agent.tool_call.created",
@@ -265,13 +308,21 @@ async def execute_tool_calls_scheduled(
                         "concurrent tool execution failed: call_id=%s",
                         tool_info["call_id"],
                     )
+                    error_code = _record_tool_exception(
+                        session_id,
+                        phase="execute_concurrent",
+                        call_id=str(tool_info["call_id"]),
+                        name=str(tool_info["name"]),
+                        target_node_id=target_node_id,
+                        exc=exc,
+                    )
                     collected_events.append(
                         make_event(
                             "agent.tool_call.failed",
                             {
                                 "call_id": tool_info["call_id"],
                                 "name": tool_info["name"],
-                                "error_code": "internal_error",
+                                "error_code": error_code,
                                 "message": str(exc)[:500],
                                 "target_node_id": target_node_id,
                             },
@@ -306,12 +357,20 @@ async def execute_tool_calls_scheduled(
                     yield event
         except Exception as exc:
             log.exception("serial tool execution failed: call_id=%s", tool_info["call_id"])
+            error_code = _record_tool_exception(
+                session_id,
+                phase="execute_serial",
+                call_id=str(tool_info["call_id"]),
+                name=str(tool_info["name"]),
+                target_node_id=target_node_id,
+                exc=exc,
+            )
             yield make_event(
                 "agent.tool_call.failed",
                 {
                     "call_id": tool_info["call_id"],
                     "name": tool_info["name"],
-                    "error_code": "internal_error",
+                    "error_code": error_code,
                     "message": str(exc)[:500],
                     "target_node_id": target_node_id,
                 },
@@ -628,3 +687,58 @@ async def _execute_and_stream(
                 "target_node_id": result.target_node_id,
             },
         )
+
+
+def _record_tool_exception(
+    session_id: str,
+    *,
+    phase: str,
+    call_id: str,
+    name: str,
+    target_node_id: str | None,
+    exc: Exception,
+) -> str:
+    error_code = _tool_exception_error_code(exc)
+    if error_code in {"db_lock_timeout", "db_statement_timeout", "db_error"}:
+        record_session_audit_event(
+            session_id,
+            "agent.db.error",
+            {
+                "phase": phase,
+                "call_id": call_id,
+                "name": name,
+                "target_node_id": target_node_id,
+                "error_code": error_code,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:1000],
+            },
+            source="agent.tools",
+        )
+    return error_code
+
+
+def _tool_exception_error_code(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(
+        marker in text
+        for marker in (
+            "locknotavailable",
+            "lock timeout",
+            "could not obtain lock",
+            "database is locked",
+            "deadlock detected",
+        )
+    ):
+        return "db_lock_timeout"
+    if any(
+        marker in text
+        for marker in (
+            "statement timeout",
+            "querycancelederror",
+            "canceling statement due to statement timeout",
+        )
+    ):
+        return "db_statement_timeout"
+    if isinstance(exc, DBAPIError | OperationalError):
+        return "db_error"
+    return "internal_error"

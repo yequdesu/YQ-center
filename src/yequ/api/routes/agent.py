@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime
 from time import perf_counter
 from typing import Any
 
@@ -54,7 +55,7 @@ from yequ.api.agent_tool_catalog import (
 )
 from yequ.api.deps import get_agent_token
 from yequ.runtime.capability_context import build_capability_context
-from yequ.services.session_audit import record_session_audit_event
+from yequ.services.session_audit import read_session_audit_events, record_session_audit_event
 from yequ.shared_types import JsonObject
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -73,6 +74,164 @@ def _as_nested_str(value: object, *path: str) -> str | None:
 
 async def _resolve_provider(provider_name: str) -> AgentProvider:
     return await resolve_provider(provider_name)
+
+
+def _session_timing_summary(session_id: str) -> dict[str, object]:
+    events = read_session_audit_events(session_id, tail=1000)
+    segments: list[dict[str, object]] = []
+    category_totals: dict[str, float] = {}
+    ycr_timing_totals: dict[str, float] = {}
+    tool_call_counts: dict[str, int] = {}
+    db_errors: list[dict[str, object]] = []
+    operation_starts: dict[str, dict[str, object]] = {}
+    operation_wait_segments: list[dict[str, object]] = []
+
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        if event_type == "operation.created":
+            operation_id = str(payload.get("operation_id") or "")
+            if operation_id:
+                operation_starts[operation_id] = {
+                    "started_ms": _event_time_epoch_ms(event),
+                    "operation_id": operation_id,
+                    "kind": payload.get("operation_kind"),
+                    "status": payload.get("operation_status"),
+                    "title": payload.get("title"),
+                    "ref_type": payload.get("ref_type"),
+                    "ref_id": payload.get("ref_id"),
+                    "recorded_at": event.get("recorded_at"),
+                }
+        elif event_type in {
+            "operation.succeeded",
+            "operation.failed",
+            "operation.cancelled",
+            "operation.timeout",
+        }:
+            operation_id = str(payload.get("operation_id") or "")
+            started = operation_starts.get(operation_id)
+            started_ms = started.get("started_ms") if started else None
+            completed_ms = _event_time_epoch_ms(event)
+            if isinstance(started_ms, float) and completed_ms is not None:
+                operation_wait_segments.append(
+                    {
+                        "operation_id": operation_id,
+                        "kind": started.get("kind") if started else payload.get("operation_kind"),
+                        "status": payload.get("operation_status"),
+                        "terminal_event": event_type,
+                        "title": started.get("title") if started else payload.get("title"),
+                        "ref_type": started.get("ref_type") if started else payload.get("ref_type"),
+                        "ref_id": started.get("ref_id") if started else payload.get("ref_id"),
+                        "elapsed_ms": round(completed_ms - started_ms, 3),
+                        "recorded_at": event.get("recorded_at"),
+                    }
+                )
+        if event_type == "agent.db.error":
+            db_errors.append(
+                {
+                    "recorded_at": event.get("recorded_at"),
+                    "phase": payload.get("phase"),
+                    "name": payload.get("name"),
+                    "target_node_id": payload.get("target_node_id"),
+                    "error_code": payload.get("error_code"),
+                    "message": payload.get("message"),
+                }
+            )
+        elapsed_ms = _float_or_none(payload.get("elapsed_ms"))
+        if elapsed_ms is not None:
+            category = _timing_category(event_type)
+            segment = {
+                "event_type": event_type,
+                "category": category,
+                "elapsed_ms": round(elapsed_ms, 3),
+                "recorded_at": event.get("recorded_at"),
+                "step": payload.get("step"),
+            }
+            if event_type == "agent.provider.completed":
+                segment["first_delta_ms"] = payload.get("first_delta_ms")
+                segment["tool_call_count"] = payload.get("tool_call_count")
+            segments.append(segment)
+            category_totals[category] = round(category_totals.get(category, 0.0) + elapsed_ms, 3)
+
+        if event_type == "agent.ycr.build_turn.completed":
+            context_estimate = payload.get("context_estimate")
+            timing_ms = (
+                context_estimate.get("timing_ms")
+                if isinstance(context_estimate, dict)
+                else None
+            )
+            if isinstance(timing_ms, dict):
+                for key, value in timing_ms.items():
+                    numeric = _float_or_none(value)
+                    if numeric is not None:
+                        ycr_timing_totals[str(key)] = round(
+                            ycr_timing_totals.get(str(key), 0.0) + numeric,
+                            3,
+                        )
+
+        if event_type == "agent.tool_calls.planned":
+            counts = payload.get("counts")
+            if isinstance(counts, dict):
+                for name, count in counts.items():
+                    if isinstance(name, str) and isinstance(count, int):
+                        tool_call_counts[name] = tool_call_counts.get(name, 0) + count
+
+    top_segments = sorted(
+        segments,
+        key=lambda item: float(item.get("elapsed_ms") or 0),
+        reverse=True,
+    )[:5]
+    return {
+        "event_count": len(events),
+        "segment_count": len(segments),
+        "category_totals_ms": category_totals,
+        "top_segments": top_segments,
+        "operation_wait_segments": sorted(
+            operation_wait_segments,
+            key=lambda item: float(item.get("elapsed_ms") or 0),
+            reverse=True,
+        )[:5],
+        "ycr_build_turn_timing_ms": ycr_timing_totals,
+        "tool_call_counts": tool_call_counts,
+        "db_errors": db_errors[-10:],
+        "db_error_count": len(db_errors),
+    }
+
+
+def _timing_category(event_type: str) -> str:
+    if event_type.startswith("agent.ycr."):
+        return "ycr"
+    if event_type.startswith("agent.provider."):
+        return "provider"
+    if event_type.startswith("agent.tools.") or event_type.startswith("agent.tool_"):
+        return "tools"
+    if event_type.startswith("agent.operation_report."):
+        return "operation_report"
+    if event_type.startswith("agent.db."):
+        return "db"
+    if event_type.startswith("agent.invoke.context_"):
+        return "context_load"
+    if event_type.startswith("agent.replanner."):
+        return "replanner"
+    return "other"
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _event_time_epoch_ms(event: dict[str, object]) -> float | None:
+    value = event.get("event_time") or event.get("recorded_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
 
 
 def _sse_response(
@@ -161,7 +320,7 @@ async def get_session_runtime_state_endpoint(
     async with yequ_db.async_session_factory() as db:
         run = await get_latest_agent_run_for_session(db, session_id=session_id)
         plan = await get_latest_agent_plan_for_session(db, session_id=session_id)
-    return {"run": run, "plan": plan}
+    return {"run": run, "plan": plan, "timing": _session_timing_summary(session_id)}
 
 
 @router.post("/invoke/stream")

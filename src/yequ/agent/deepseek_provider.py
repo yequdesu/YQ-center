@@ -329,10 +329,12 @@ class DeepSeekProvider(AgentProvider):
             if delta is None:
                 continue
 
-            # Text content delta
-            if delta.content:
-                text_buffer.append(delta.content)
-                yield {"type": "delta", "content": delta.content}
+            # Text content delta. Provider-specific reasoning fields are
+            # intentionally not surfaced as user-visible chat content.
+            visible_content = _visible_delta_content(delta)
+            if visible_content:
+                text_buffer.append(visible_content)
+                yield {"type": "delta", "content": visible_content}
 
             # Tool call deltas
             if delta.tool_calls:
@@ -538,6 +540,11 @@ def _is_projected_tool_observation(value: object) -> bool:
         return True
     result = value.get("result")
     return isinstance(result, dict) and bool(result.get("projection_policy"))
+
+
+def _visible_delta_content(delta: object) -> str:
+    content = getattr(delta, "content", None)
+    return content if isinstance(content, str) else ""
 
 
 def _system_prompt_text_enhanced(capability_context_text: str) -> str:

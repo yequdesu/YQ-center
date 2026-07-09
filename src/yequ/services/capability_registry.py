@@ -451,6 +451,28 @@ async def resolve_capability_invoke_target(
     if not capability_ref and not source_id:
         raise ValueError("capability_ref or source_id is required")
 
+    if source_id and node_id:
+        source_node_result = await db.execute(
+            select(CapabilitySource, CapabilityDefinition, Node)
+            .join(CapabilityDefinition, CapabilitySource.definition_id == CapabilityDefinition.id)
+            .join(Node, CapabilitySource.node_record_id == Node.id)
+            .where(
+                CapabilityDefinition.capability_type == "function",
+                CapabilitySource.is_active == True,  # noqa: E712
+                CapabilitySource.source_id == source_id,
+            )
+        )
+        source_node_row = source_node_result.first()
+        if source_node_row is not None:
+            source, definition, node = source_node_row
+            if node.node_id != node_id:
+                raise ValueError(
+                    "target_node_mismatch: "
+                    f"source_id {source.source_id!r} belongs to node {node.node_id!r} "
+                    f"for capability {definition.canonical_name!r}, "
+                    f"but requested node_id is {node_id!r}"
+                )
+
     stmt = (
         select(CapabilitySource, CapabilityDefinition, Node)
         .join(CapabilityDefinition, CapabilitySource.definition_id == CapabilityDefinition.id)
@@ -911,6 +933,7 @@ def _definition_search_summary(
     runtime_profiles_by_source: dict[str, list[str]] | None = None,
 ) -> JsonObject:
     projection = _normalize_projection(projection, default="summary")
+    ordered_sources = _rank_sources_for_terms(sources, terms or [])
     data: JsonObject = {
         "capability_id": definition.capability_id,
         "canonical_name": definition.canonical_name,
@@ -924,7 +947,7 @@ def _definition_search_summary(
         "agent_visible": definition.agent_visible,
         "invocation_surface": definition.invocation_surface,
         "workflow_kind": definition.workflow_kind,
-        "source_count": len(sources),
+        "source_count": len(ordered_sources),
         "match_reasons": _definition_match_reasons(
             definition,
             sources,
@@ -940,14 +963,16 @@ def _definition_search_summary(
                     source.source_id, []
                 ),
             )
-            for source in sources
+            for source in ordered_sources
         ],
     }
-    dispatchable_sources = [source for source in sources if _source_dispatchable(source)]
+    dispatchable_sources = [
+        source for source in ordered_sources if _source_dispatchable(source)
+    ]
     invoke: JsonObject = {
         "capability_ref": definition.canonical_name,
         "canonical_name": definition.canonical_name,
-        "source_count": len(sources),
+        "source_count": len(ordered_sources),
         "dispatchable_source_count": len(dispatchable_sources),
         "dispatch_kind": definition.dispatch_kind,
         "rule": (
@@ -985,7 +1010,11 @@ def _definition_search_summary(
         )
     if projection in {"invoke_ready", "schema", "diagnostics"}:
         data["aliases"] = list(definition.aliases or [])
-        contract = _execution_profile_contract(definition, sources, runtime_profiles_by_source)
+        contract = _execution_profile_contract(
+            definition,
+            ordered_sources,
+            runtime_profiles_by_source,
+        )
         if contract:
             data["execution_profile_contract"] = contract
     if projection == "schema":
@@ -1021,8 +1050,8 @@ def _definition_detail(
     runtime_profiles_by_source: dict[str, list[str]] | None = None,
 ) -> JsonObject:
     requested = {section.strip() for section in sections or [] if section.strip()}
-    include_all = not requested
     projection = _normalize_projection(projection, default="detail")
+    include_all = not requested and projection == "detail"
     base_projection = "summary" if requested and projection == "detail" else projection
     data = _definition_search_summary(
         definition,
@@ -1187,6 +1216,33 @@ def _source_projection(
     elif projection in {"invoke_ready", "schema"}:
         data["unavailable_reasons"] = _source_unavailable_reasons(source)
     return data
+
+
+def _rank_sources_for_terms(
+    sources: list[CapabilitySource],
+    terms: list[str],
+) -> list[CapabilitySource]:
+    if not sources:
+        return []
+
+    normalized_terms = [term.lower() for term in terms if term]
+
+    def sort_key(source: CapabilitySource) -> tuple[int, int, str, str]:
+        node_id = source.node.node_id if source.node else ""
+        source_text = " ".join(
+            [
+                node_id,
+                source.platform_os or "",
+                source.platform_arch or "",
+                source.registered_name,
+                source.plugin_id,
+            ]
+        ).lower()
+        query_score = sum(1 for term in normalized_terms if term in source_text)
+        dispatchable_rank = 0 if _source_dispatchable(source) else 1
+        return (-query_score, dispatchable_rank, node_id, source.registered_name)
+
+    return sorted(sources, key=sort_key)
 
 
 def _execution_profile_contract(

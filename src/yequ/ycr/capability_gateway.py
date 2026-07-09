@@ -289,7 +289,7 @@ async def _search_capability_rag(
             candidate = next(
                 item for item in return_candidates if str(item.get("canonical_name") or "") == name
             )
-        output = dict(candidate)
+        output = _rank_candidate_sources_for_query(dict(candidate), query)
         output["retrieval"] = {
             "strategy": "tool_rag_bge_m3_rrf_v1",
             "score": rerank_item.score,
@@ -347,6 +347,54 @@ async def _search_capability_rag(
         },
         capabilities=matches,
     )
+
+
+def _rank_candidate_sources_for_query(
+    candidate: dict[str, object],
+    query: str,
+) -> dict[str, object]:
+    sources = [item for item in candidate.get("sources") or [] if isinstance(item, dict)]
+    if not sources:
+        return candidate
+    terms = [match.group(0).lower() for match in TOKEN_RE.finditer(query)]
+
+    def source_key(source: dict[str, object]) -> tuple[int, int, str, str]:
+        source_text = " ".join(
+            str(source.get(key) or "")
+            for key in (
+                "node_id",
+                "platform_os",
+                "platform_arch",
+                "registered_name",
+                "plugin_id",
+            )
+        ).lower()
+        query_score = sum(1 for term in terms if term in source_text)
+        dispatchable_rank = 0 if source.get("dispatchable") is True else 1
+        return (
+            -query_score,
+            dispatchable_rank,
+            str(source.get("node_id") or ""),
+            str(source.get("registered_name") or ""),
+        )
+
+    ranked = sorted(sources, key=source_key)
+    candidate["sources"] = ranked
+    dispatchable = [source for source in ranked if source.get("dispatchable") is True]
+    invoke = candidate.get("invoke")
+    if isinstance(invoke, dict) and len(dispatchable) == 1:
+        only = dispatchable[0]
+        invoke = dict(invoke)
+        invoke.update(
+            {
+                "source_id": only.get("source_id"),
+                "node_id": only.get("node_id"),
+                "registered_name": only.get("registered_name"),
+                "platform_os": only.get("platform_os"),
+            }
+        )
+        candidate["invoke"] = invoke
+    return candidate
 
 
 async def _compute_retrieval_candidate_rows(

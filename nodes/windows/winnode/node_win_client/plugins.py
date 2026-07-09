@@ -88,19 +88,7 @@ class FakeSystemPlugin:
     def collect_signals(self) -> list[SignalValue]:
         snapshot = collect_metrics()
         now = datetime.now(UTC)
-        return [
-            SignalValue(
-                name="windows.cpu.usage",
-                value=snapshot["cpu"],
-                collected_at=now,
-                ttl_sec=15,
-            ),
-            SignalValue(
-                name="windows.memory.usage",
-                value=snapshot["memory"],
-                collected_at=now,
-                ttl_sec=15,
-            ),
+        signals = [
             SignalValue(
                 name="windows.disk.usage",
                 value=snapshot["disk"],
@@ -108,6 +96,25 @@ class FakeSystemPlugin:
                 ttl_sec=30,
             ),
         ]
+        if isinstance(snapshot.get("cpu"), int | float):
+            signals.append(
+                SignalValue(
+                    name="windows.cpu.usage",
+                    value=snapshot["cpu"],
+                    collected_at=now,
+                    ttl_sec=15,
+                )
+            )
+        if isinstance(snapshot.get("memory"), int | float):
+            signals.append(
+                SignalValue(
+                    name="windows.memory.usage",
+                    value=snapshot["memory"],
+                    collected_at=now,
+                    ttl_sec=15,
+                )
+            )
+        return signals
 
     async def execute(self, function: str, input_data: dict[str, Any]) -> dict[str, Any]:
         runtime_id = str(input_data.pop("__runtime_id", "") or "")
@@ -353,19 +360,24 @@ def collect_metrics() -> dict[str, Any]:
 
         cpu = float(psutil.cpu_percent(interval=0.1))
         memory = float(psutil.virtual_memory().percent)
-    except Exception:
-        cpu = _fallback_cpu_percent()
-        memory = 0.0
+        metrics_error = None
+    except Exception as exc:
+        cpu = None
+        memory = None
+        metrics_error = {"code": "metrics_unavailable", "message": str(exc)[:300]}
 
     total, used, _free = disk_usage(os.getcwd())
     disk = round((used / total) * 100, 2) if total else 0.0
-    return {
-        "cpu": round(cpu, 2),
-        "memory": round(memory, 2),
+    result: dict[str, Any] = {
+        "cpu": round(cpu, 2) if cpu is not None else None,
+        "memory": round(memory, 2) if memory is not None else None,
         "disk": disk,
         "hostname": platform.node(),
         "platform": platform.platform(),
     }
+    if metrics_error is not None:
+        result["metrics_error"] = metrics_error
+    return result
 
 
 def capture_screen(input_data: dict[str, Any]) -> dict[str, Any]:
@@ -595,13 +607,6 @@ def _artifact_pending_output(
             }
         ],
     }
-
-
-def _fallback_cpu_percent() -> float:
-    start = time.process_time()
-    time.sleep(0.05)
-    elapsed = max(time.process_time() - start, 0.0)
-    return round(min(elapsed / 0.05 * 100, 100), 2)
 
 
 def _run_powershell_json(command: str, env_vars: dict[str, str], timeout_sec: int) -> Any:

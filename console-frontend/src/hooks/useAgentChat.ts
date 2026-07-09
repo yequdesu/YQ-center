@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createEventStream } from "@/api/stream";
 import {
   appendOptimisticUserPrompt,
-  applyOperationPatch,
-  applyToolPatch,
   emptyTranscript,
   reduceSseEvent,
   transcriptFromPersisted,
@@ -12,7 +10,6 @@ import type {
   ChatBlock,
   PlanStepState,
   PromptContextData,
-  ToolCallPatch,
   ToolCallState,
   UserBlock,
   AssistantTextBlock,
@@ -30,7 +27,6 @@ export type {
   ChatBlock,
   PlanStepState,
   PromptContextData,
-  ToolCallPatch,
   ToolCallState,
   UserBlock,
   AssistantTextBlock,
@@ -98,26 +94,6 @@ export function useAgentChat({
     },
     [],
   );
-
-  const patchToolCall = useCallback((patch: ToolCallPatch) => {
-    setTranscript((prev) => applyToolPatch(prev, patch));
-  }, []);
-
-  const patchOperation = useCallback((patch: {
-    operationId: string;
-    status?: string;
-    title?: string;
-    kind?: string;
-    refType?: string;
-    refId?: string;
-    message?: string;
-    progressPct?: number | null;
-    progressMessage?: string | null;
-    errorCode?: string | null;
-    errorMessage?: string | null;
-  }) => {
-    setTranscript((prev) => applyOperationPatch(prev, patch));
-  }, []);
 
   const handleInvokeEvent = useCallback((event: SseEvent) => {
     if (event.session_id !== currentSessionIdRef.current) return;
@@ -421,7 +397,5 @@ export function useAgentChat({
     clearBlocks,
     loadPersistedMessages,
     loadPersistedSession,
-    patchToolCall,
-    patchOperation,
   };
 }

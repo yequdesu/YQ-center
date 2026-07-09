@@ -177,6 +177,48 @@ class TestDeepSeekProvider:
         )
 
     @pytest.mark.asyncio
+    async def test_invoke_stream_does_not_surface_reasoning_content(self, deepseek_provider):
+        p = deepseek_provider
+
+        async def fake_stream():
+            yield SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            reasoning_content="hidden chain",
+                            tool_calls=None,
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+            )
+            yield SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="visible", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        p._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+
+        chunks = [
+            chunk
+            async for chunk in p.invoke_stream(
+                "think privately",
+                available_functions=[],
+            )
+        ]
+
+        assert {"type": "delta", "content": "hidden chain"} not in chunks
+        assert chunks[0] == {"type": "delta", "content": "visible"}
+        assert chunks[-1]["message"] == "visible"
+
+    @pytest.mark.asyncio
     async def test_invoke_stream_rejects_unprojected_raw_tool_message(
         self, deepseek_provider
     ):

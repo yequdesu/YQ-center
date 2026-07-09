@@ -6,6 +6,7 @@ import asyncio
 import json
 from contextlib import suppress
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
@@ -174,6 +175,17 @@ async def _run_internal_report_turn(
     turn_id: str | None = None
     completed = False
     trace_id = ""
+    started = perf_counter()
+    record_session_audit_event(
+        session_id,
+        "agent.operation_report.started",
+        {
+            "operation_id": operation_id,
+            "notification_id": notification_id,
+        },
+        source="agent.operation_reporter",
+        event_time=datetime.now(UTC),
+    )
     event_source = agent_invoke_stream(
         provider,
         session_id=session_id,
@@ -245,6 +257,7 @@ async def _run_internal_report_turn(
             "operation_id": operation_id,
             "notification_id": notification_id,
             "turn_id": turn_id,
+            "elapsed_ms": round((perf_counter() - started) * 1000, 3),
         },
         trace_id=trace_id,
         source="agent.operation_reporter",

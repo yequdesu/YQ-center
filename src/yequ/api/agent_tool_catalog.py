@@ -316,7 +316,9 @@ def _center_meta_functions() -> list[AgentFunction]:
             description=(
                 "Invoke one concrete Center capability source. Use source_id from "
                 "capability.search or capability.describe when more than one source "
-                "exists. Put the real capability arguments in input."
+                "exists. If the user specified a target node or node-local path, "
+                "pass node_id and use only a source_id that belongs to that node. "
+                "Put the real capability arguments in input."
             ),
             input_schema={
                 "type": "object",
@@ -327,11 +329,17 @@ def _center_meta_functions() -> list[AgentFunction]:
                     },
                     "source_id": {
                         "type": "string",
-                        "description": "Concrete capability source ID",
+                        "description": (
+                            "Concrete capability source ID. It must belong to node_id "
+                            "when node_id is provided."
+                        ),
                     },
                     "node_id": {
                         "type": "string",
-                        "description": "Optional node filter when using capability_ref",
+                        "description": (
+                            "Target node constraint. Required when the user named a "
+                            "specific node or destination path."
+                        ),
                     },
                     "input": {
                         "type": "object",

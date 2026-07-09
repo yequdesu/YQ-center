@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.config import get_settings
@@ -218,9 +218,24 @@ async def search_context(
 ) -> dict[str, object]:
     if not query.strip():
         raise ValueError("context_search_unavailable: query is required")
-    query_embedding, embedding_provider, embedding_model = await _embed_query(db, query)
+    if not ref_id and not session_id:
+        raise ValueError("context_search_unavailable: ref_id or session_id is required")
     bounded_limit = max(1, min(limit, 50))
     ref = await get_ref(db, ref_id) if ref_id else None
+    index_status = await _context_index_status(db, ref_id=ref_id, session_id=session_id)
+    if index_status["status"] in {"no_refs", "not_indexed"}:
+        return _search_output(
+            query=query,
+            matches=[],
+            ref=ref,
+            embedding_provider="not_used",
+            embedding_model="not_used",
+            limit=limit,
+            index_status=index_status,
+            result_status=str(index_status["status"]),
+        )
+
+    query_embedding, embedding_provider, embedding_model = await _embed_query(db, query)
 
     if db.bind and db.bind.dialect.name == "postgresql":
         where = ["embedding_vector IS NOT NULL"]
@@ -236,8 +251,6 @@ async def search_context(
                 "ref_id IN (SELECT ref_id FROM ycr_context_refs WHERE session_id = :session_id)"
             )
             params["session_id"] = session_id
-        else:
-            raise ValueError("context_search_unavailable: ref_id or session_id is required")
         rows = await db.execute(
             text(
                 "SELECT chunk_id, ref_id, path, text, trust_level, "
@@ -271,18 +284,17 @@ async def search_context(
             )
             ref_ids = [str(item) for item in refs.scalars().all()]
             if not ref_ids:
-                matches = []
                 return _search_output(
                     query=query,
-                    matches=matches,
+                    matches=[],
                     ref=ref,
                     embedding_provider=embedding_provider,
                     embedding_model=embedding_model,
                     limit=limit,
+                    index_status=index_status,
+                    result_status="no_refs",
                 )
             stmt = stmt.where(YcrContextChunk.ref_id.in_(ref_ids))
-        else:
-            raise ValueError("context_search_unavailable: ref_id or session_id is required")
         result = await db.execute(stmt)
         matches = []
         for chunk in result.scalars().all():
@@ -308,10 +320,7 @@ async def search_context(
         matches.sort(key=lambda item: float(item["score"]), reverse=True)
         matches = matches[:bounded_limit]
 
-    if not matches:
-        indexed = await _has_indexed_chunks(db, ref_id=ref_id, session_id=session_id)
-        if not indexed:
-            raise ValueError("context_search_unavailable: context chunks are not indexed")
+    result_status = "hit" if matches else "miss"
     output = _search_output(
         query=query,
         matches=matches,
@@ -319,6 +328,8 @@ async def search_context(
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         limit=limit,
+        index_status=index_status,
+        result_status=result_status,
     )
     await write_ledger(
         db,
@@ -332,7 +343,7 @@ async def search_context(
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         session_id=session_id or (str(ref.get("session_id")) if ref else None),
-        metadata={"limit": limit},
+        metadata={"limit": limit, "index_status": index_status, "result_status": result_status},
     )
     return output
 
@@ -387,25 +398,67 @@ async def _compute_context_query_embedding(query: str) -> YcrEmbedding:
     )
 
 
-async def _has_indexed_chunks(
+async def _context_index_status(
     db: AsyncSession,
     *,
     ref_id: str | None,
     session_id: str | None,
-) -> bool:
-    stmt = select(YcrContextChunk).where(YcrContextChunk.embedding_json.is_not(None)).limit(1)
-    if ref_id:
-        stmt = stmt.where(YcrContextChunk.ref_id == ref_id)
-    elif session_id:
-        refs = await db.execute(
-            select(YcrContextRef.ref_id).where(YcrContextRef.session_id == session_id)
+) -> dict[str, object]:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        where: list[str] = []
+        params: dict[str, object] = {}
+        if ref_id:
+            where.append("ref_id = :ref_id")
+            params["ref_id"] = ref_id
+        elif session_id:
+            where.append(
+                "ref_id IN (SELECT ref_id FROM ycr_context_refs WHERE session_id = :session_id)"
+            )
+            params["session_id"] = session_id
+        else:
+            return {"status": "no_scope", "total_chunks": 0, "indexed_chunks": 0}
+        rows = await db.execute(
+            text(
+                "SELECT COUNT(*) AS total_chunks, "
+                "COUNT(*) FILTER (WHERE embedding_vector IS NOT NULL) AS indexed_chunks "
+                "FROM ycr_context_chunks "
+                f"WHERE {' AND '.join(where)}"
+            ),
+            params,
         )
-        ref_ids = [str(item) for item in refs.scalars().all()]
-        if not ref_ids:
-            return True
-        stmt = stmt.where(YcrContextChunk.ref_id.in_(ref_ids))
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none() is not None
+        row = rows.one()
+        total = int(row.total_chunks or 0)
+        indexed = int(row.indexed_chunks or 0)
+    else:
+        total_stmt = select(
+            func.count(YcrContextChunk.id),
+            func.count(YcrContextChunk.embedding_model),
+        )
+        if ref_id:
+            total_stmt = total_stmt.where(YcrContextChunk.ref_id == ref_id)
+        elif session_id:
+            refs = await db.execute(
+                select(YcrContextRef.ref_id).where(YcrContextRef.session_id == session_id)
+            )
+            ref_ids = [str(item) for item in refs.scalars().all()]
+            if not ref_ids:
+                return {"status": "no_refs", "total_chunks": 0, "indexed_chunks": 0}
+            total_stmt = total_stmt.where(YcrContextChunk.ref_id.in_(ref_ids))
+        else:
+            return {"status": "no_scope", "total_chunks": 0, "indexed_chunks": 0}
+        row = (await db.execute(total_stmt)).one()
+        total = int(row[0] or 0)
+        indexed = int(row[1] or 0)
+
+    if total <= 0:
+        status = "no_refs"
+    elif indexed <= 0:
+        status = "not_indexed"
+    elif indexed < total:
+        status = "partial"
+    else:
+        status = "ready"
+    return {"status": status, "total_chunks": total, "indexed_chunks": indexed}
 
 
 async def _require_record(db: AsyncSession, ref_id: str) -> YcrContextRef:
@@ -491,15 +544,28 @@ def _search_output(
     embedding_provider: str,
     embedding_model: str,
     limit: int,
+    index_status: dict[str, object],
+    result_status: str,
 ) -> dict[str, object]:
     output: dict[str, object] = {
         "query": query,
         "matches": matches[: max(1, min(limit, 50))],
         "match_count": len(matches),
+        "index_status": index_status,
+        "result_rag": {
+            "status": result_status,
+            "index": index_status,
+            "match_count": len(matches),
+        },
         "retrieval": {
             "strategy": "context_vector_search_v2",
             "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
+            "index": index_status,
+            "result_rag": {
+                "status": result_status,
+                "match_count": len(matches),
+            },
         },
     }
     if ref is not None:

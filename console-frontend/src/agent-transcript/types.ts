@@ -101,27 +101,6 @@ export interface ToolCallState {
   projectedEstimatedTokens?: number;
 }
 
-export interface ToolCallPatch {
-  callId?: string;
-  approvalId?: string;
-  status?: ToolCallState["status"];
-  targetNodeId?: string;
-  invocationId?: string;
-  jobId?: string;
-  operationId?: string;
-  waitHandle?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-  ycrStorage?: Record<string, unknown>;
-  ycrProjection?: Record<string, unknown>;
-  rawRefId?: string;
-  rawSizeBytes?: number;
-  shellSizeBytes?: number;
-  projectedSizeBytes?: number;
-  projectedEstimatedTokens?: number;
-}
-
 export interface PlanStepState {
   seq: number;
   kind: string;

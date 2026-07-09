@@ -113,9 +113,53 @@ export interface AgentRunProjection {
   events: AgentRunEvent[];
 }
 
+export interface AgentRuntimeTimingSegment {
+  event_type: string;
+  category: string;
+  elapsed_ms: number;
+  recorded_at?: string | null;
+  step?: number | string | null;
+  first_delta_ms?: number | null;
+  tool_call_count?: number | null;
+}
+
+export interface AgentRuntimeOperationWaitSegment {
+  operation_id: string;
+  kind?: string | null;
+  status?: string | null;
+  terminal_event?: string | null;
+  title?: string | null;
+  ref_type?: string | null;
+  ref_id?: string | null;
+  elapsed_ms: number;
+  recorded_at?: string | null;
+}
+
+export interface AgentRuntimeDbError {
+  recorded_at?: string | null;
+  phase?: string | null;
+  name?: string | null;
+  target_node_id?: string | null;
+  error_code?: string | null;
+  message?: string | null;
+}
+
+export interface AgentRuntimeTiming {
+  event_count: number;
+  segment_count: number;
+  category_totals_ms: Record<string, number>;
+  top_segments: AgentRuntimeTimingSegment[];
+  operation_wait_segments: AgentRuntimeOperationWaitSegment[];
+  ycr_build_turn_timing_ms: Record<string, number>;
+  tool_call_counts: Record<string, number>;
+  db_errors: AgentRuntimeDbError[];
+  db_error_count: number;
+}
+
 export interface AgentRuntimeStateResponse {
   run: AgentRunProjection | null;
   plan: AgentRuntimePlan | null;
+  timing: AgentRuntimeTiming;
 }
 
 export function getSessionRuntimeState(sessionId: string) {
