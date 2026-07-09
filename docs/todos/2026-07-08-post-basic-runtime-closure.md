@@ -261,7 +261,7 @@
 验收任务：
 
 - [x] Windows：按文件名查找文件，必须命中 `windows.everything.find`。2026-07-10 远端 session `sess_78d833ec0a6c46bd` 通过：首次 tool call 即 `capability.invoke` -> `everything.find`，`input_keys=["query"]`，无 `pattern` 误参；找到 `E:\yequdesu_project\SillyTavern-1.17.0.zip`。
-- [ ] Windows：已知目录列一层内容，必须使用 `windows.exec.run`。
+- [x] Windows：已知目录列一层内容，必须命中当前高质量文件系统能力，优先 `everything.find`，只有 Everything 不能表达时才回退 `windows.exec.run`。2026-07-10 远端 session `sess_58da5eb7d9a34554` 通过：首轮直接 `capability.invoke` -> `everything.find`，input 使用 `root=F:\Desktop`、`recursive=false`，无 `capability.groups` / `capability.group.open` / `capability.search` / `capability.describe`，直接完成。
 - [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
 - [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
@@ -274,7 +274,7 @@
 
 记录要求：
 
-- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Windows 文件名查找 `sess_78d833ec0a6c46bd`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
+- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Windows 文件名查找 `sess_78d833ec0a6c46bd`；Windows 目录列举 `sess_58da5eb7d9a34554`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
 - [ ] 每个失败场景写明失败层：LLM 决策、Replanner、YCR、Center runtime、Node runtime、前端展示。
 - [ ] 验收通过后更新本文件状态。
 
@@ -378,6 +378,10 @@
 - [x] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。2026-07-10 远端 Console 验收发现 `sess_5b6` 可直接使用 working set 候选，但后续 `sess_89c` 在截图已生成后仍调用 `capability.groups` / `capability.group.open` 寻找 `artifact.present`，说明“提示优先候选”不稳定。已改为通用工具面控制：`tool_strategy=reuse_working_set` 且存在候选时，本轮 provider 只暴露 `capability.invoke`；空 working set 或候选不足时才保留 `capability.groups` / `capability.group.open` 渐进发现。
 - [x] 对 operation 自动恢复入口做一致性修复。2026-07-10 远端 session `sess_092d39df07474c80` 暴露普通 turn 已使用 working set，但 `agent.operation_reporter` 入口传入 `available_functions=[]`，导致 YCR 候选无法变成 provider 可调用工具面，provider 只能输出 raw tool-call protocol 文本。已修复为与普通 turn 共用 bootstrap functions + capability context，并把 report prompt 改成 resume prompt。
 - [x] 语义 Tool RAG 返回同一 capability 的多个 sources 时，按 query 命中的 `node_id`、`platform_os`、`platform_arch`、`registered_name`、`plugin_id` 排序，避免正确 capability 命中但错误 Node source 排前。
+- [x] Tool candidate loader 修复 working set 事实源：provider 计划调用 `capability.invoke` 时，TaskState 记录被调用的真实 capability/source/node，而不是把 `capability.invoke` 网关本身写入 working set；Replanner 不再把只有 bootstrap 网关的 working set 判定为 viable。
+- [x] Tool candidate loader 修复半成品候选：当 TaskState 中只有 capability_ref/source_id、缺少 input schema 时，YCR 会基于原始 objective 重新从 registry 补齐候选 schema/summary，不再让模型猜 `_describe` / `operation=describe`。
+- [x] Tool candidate loader 修复候选分层：用户绑定 Node 时，YCR 依据 registry 的 `scope` / `plane` / `dispatch_kind` / `node_id` 优先返回该 Node 的可执行能力，Center discovery/meta tool 不再排在真实 Node 能力前面。
+- [x] Registry `invoke_ready` 投影修复：返回 `agent_description` 和 `input_schema`，使 YCR working set 成为真正可调用合同，而不是只有 capability 名称。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
 - [ ] 当 Result RAG 未命中或 ref 未索引时，Agent 必须能通过 `context.inspect` / `context.tail` / `artifact.read_text` 等确定性工具继续，不得假装 RAG 成功。
@@ -387,6 +391,7 @@
 验收：
 
 - [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open。工具面收窄修复后，2026-07-10 远端 Console `sess_289` 验收通过：每轮 `provider_tool_count=1`，实际 provider tools 仅 `capability.invoke`，计划工具调用为 `capability.invoke:2`，无 `capability.groups` / `capability.group.open` / `capability.search`，`ARTIFACTS=1`。
+- [x] Windows 目录列举任务不需要重复 search/group/open/describe。2026-07-10 远端 session `sess_58da5eb7d9a34554` 通过：首轮 `capability.invoke` -> `everything.find`，无 discovery meta tool，`agent.completed` 成功。
 - [x] Operation resume 入口复验：approval 通过后自动恢复 turn 的 provider tool surface 必须与普通 turn 一致，不能再出现 `provider_tool_count=0`。2026-07-10 远端 session `sess_dc5967941a2a4510` 通过。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Linux hash 任务在定位 `exec.run` 后不重复打开无关工具组。`sess_9a012c21bc5740cd` 中计划工具调用为 `capability.invoke`、`capability.invoke`、report turn 无工具调用；无 `capability.groups` / `capability.group.open` / `capability.search`。
