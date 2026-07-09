@@ -1010,6 +1010,8 @@ def _definition_search_summary(
         )
     if projection in {"invoke_ready", "schema", "diagnostics"}:
         data["aliases"] = list(definition.aliases or [])
+        data["agent_description"] = definition.agent_description
+        data["input_schema"] = definition.input_schema or {}
         contract = _execution_profile_contract(
             definition,
             ordered_sources,

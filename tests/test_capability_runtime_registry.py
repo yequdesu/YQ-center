@@ -1022,7 +1022,8 @@ async def test_capability_search_supports_structured_filters_and_projection(
     capability = capabilities[0]
     assert capability["canonical_name"] == "transfer.croc.receive"
     assert "filter:platform_os=linux" in capability["match_reasons"]
-    assert "input_schema" not in capability
+    assert "agent_description" in capability
+    assert capability["input_schema"]["type"] == "object"
     source = capability["sources"][0]
     assert source["node_id"] == node.node_id
     assert source["dispatchable"] is True
