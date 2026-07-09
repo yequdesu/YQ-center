@@ -137,6 +137,7 @@ def override_settings(monkeypatch, db_engine):
                     capability_context=dict(payload.get("capability_context") or {}),
                     profile=projection_profile_from_settings(test_settings),
                     agent_plan=dict(payload.get("agent_plan") or {}),
+                    task_state=dict(payload.get("task_state") or {}),
                     step=int(payload.get("step") or 1),
                 )
 

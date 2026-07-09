@@ -549,6 +549,91 @@ async def test_ycr_task_state_working_set_drives_tool_strategy(
     assert "YCR capability working set" in packet["messages"][2]["content"]
 
 
+async def test_ycr_build_turn_bootstraps_empty_working_set_from_intent(
+    db_session,
+    override_settings,
+    monkeypatch,
+) -> None:
+    async def fake_search_capability_registry(
+        db,
+        *,
+        query=None,
+        node_id=None,
+        platform_os=None,
+        filters=None,
+        limit=10,
+    ):
+        assert query == "capture the windows screen"
+        assert filters == {"projection": "invoke_ready"}
+        assert limit == 6
+        return {
+            "matches": [
+                {
+                    "canonical_name": "screen.capture",
+                    "description": "Capture the interactive desktop.",
+                    "risk": "safe",
+                    "effect": "read",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}},
+                    },
+                    "sources": [
+                        {
+                            "source_id": "src_screen",
+                            "node_id": "winClient",
+                            "registered_name": "windows.screen.capture",
+                            "dispatchable": True,
+                        }
+                    ],
+                    "invoke": {
+                        "capability_ref": "screen.capture",
+                        "source_id": "src_screen",
+                        "node_id": "winClient",
+                        "registered_name": "windows.screen.capture",
+                        "dispatchable_source_count": 1,
+                    },
+                }
+            ],
+            "retrieval": {"strategy": "fake_semantic_v1"},
+        }
+
+    import yequ.ycr.capability_gateway as capability_gateway
+
+    monkeypatch.setattr(
+        capability_gateway,
+        "search_capability_registry",
+        fake_search_capability_registry,
+    )
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_bootstrap",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "capture the windows screen"}],
+        available_functions=[{"name": "capability.invoke", "input_schema": {}}],
+        capability_context={"nodes": []},
+        task_state={
+            "objective": {"text": "capture the windows screen"},
+            "completion": {"status": "in_progress"},
+            "working_set": {"capabilities": [], "nodes": [], "artifacts": []},
+        },
+        profile=projection_profile_from_settings(override_settings),
+        step=1,
+    )
+
+    strategy = packet["provider_context"]["tool_strategy"]
+    working_set = packet["provider_context"]["working_set"]
+    bootstrap = packet["provider_context"]["working_set_bootstrap"]
+    assert bootstrap["status"] == "loaded"
+    assert bootstrap["candidate_count"] == 1
+    assert strategy["mode"] == "reuse_working_set"
+    assert working_set[0]["canonical_name"] == "screen.capture"
+    assert working_set[0]["input_schema"]["properties"]["title"]["type"] == "string"
+    assert packet["context_estimate"]["working_set_count"] == 1
+    assert packet["context_estimate"]["capability_candidate_count"] == 1
+
+
 def test_result_ingestion_preserves_small_output() -> None:
     output = {"status": "ok", "value": 1}
 

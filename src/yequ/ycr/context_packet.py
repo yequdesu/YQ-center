@@ -70,6 +70,18 @@ async def build_agent_context_packet(
     projected_task_state = _project_task_state(task_state or {})
     _collect_working_set_from_task_state(projected_task_state, working_set=working_set)
     working_set_items = _working_set_items(working_set)
+    started_bootstrap = perf_counter()
+    working_set_bootstrap = await _bootstrap_working_set_from_intent(
+        db,
+        task_state=projected_task_state,
+        messages=messages,
+        capability_context=capability_context or {},
+        existing_working_set=working_set_items,
+        session_state=session_state,
+        working_set=working_set,
+    )
+    timing_ms["working_set_bootstrap"] = _elapsed_ms(started_bootstrap)
+    working_set_items = _working_set_items(working_set)
     capability_candidates = _capability_candidates(
         session_state=session_state,
         working_set_items=working_set_items,
@@ -156,6 +168,7 @@ async def build_agent_context_packet(
             "capability_context": projected_capability_context,
             "working_set": working_set_items,
             "capability_candidates": capability_candidates,
+            "working_set_bootstrap": working_set_bootstrap,
             "session_state": session_state,
             "agent_plan": projected_agent_plan,
             "task_state": projected_task_state,
@@ -179,6 +192,7 @@ async def build_agent_context_packet(
             "history_compaction": history_compaction,
             "working_set_count": len(working_set_items),
             "capability_candidate_count": len(capability_candidates),
+            "working_set_bootstrap": working_set_bootstrap,
             "session_state_tokens": session_state_tokens,
             "agent_plan_tokens": agent_plan_tokens,
             "task_state_tokens": task_state_tokens,
@@ -414,6 +428,146 @@ def _capability_candidates(
     return candidates[:WORKING_SET_LIMIT]
 
 
+async def _bootstrap_working_set_from_intent(
+    db: AsyncSession,
+    *,
+    task_state: JsonDict,
+    messages: list[JsonDict],
+    capability_context: JsonDict,
+    existing_working_set: list[JsonDict],
+    session_state: JsonDict,
+    working_set: dict[str, JsonDict],
+) -> JsonDict:
+    if existing_working_set or _session_has_capability_candidates(session_state):
+        return {"status": "skipped", "reason": "working_set_already_available"}
+    query = _intent_query(task_state=task_state, messages=messages)
+    if not query:
+        return {"status": "skipped", "reason": "no_intent_query"}
+    node_id = _target_node_id(task_state=task_state, capability_context=capability_context)
+    from yequ.ycr.capability_gateway import search_capability_registry
+
+    result = await search_capability_registry(
+        db,
+        query=query,
+        node_id=node_id,
+        filters={"projection": "invoke_ready"},
+        limit=min(6, WORKING_SET_LIMIT),
+    )
+    matches = result.get("matches") if isinstance(result, dict) else []
+    added = 0
+    if isinstance(matches, list):
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+            candidate = _capability_candidate_from_match(item)
+            if candidate is None:
+                continue
+            key = str(candidate.get("source_id") or candidate.get("capability_ref"))
+            if not key or key in working_set:
+                continue
+            working_set[key] = candidate
+            added += 1
+    retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
+    index = retrieval.get("index") if isinstance(retrieval.get("index"), dict) else {}
+    return {
+        "status": "loaded" if added else "empty",
+        "source": "intent_query",
+        "query_preview": _truncate(query, 240),
+        "target_node_id": node_id,
+        "candidate_count": added,
+        "retrieval_strategy": retrieval.get("strategy"),
+        "index_status": index.get("status"),
+    }
+
+
+def _session_has_capability_candidates(session_state: JsonDict) -> bool:
+    items = session_state.get("items")
+    if not isinstance(items, dict):
+        return False
+    capabilities = items.get("capability")
+    return isinstance(capabilities, list) and bool(capabilities)
+
+
+def _intent_query(*, task_state: JsonDict, messages: list[JsonDict]) -> str:
+    objective = task_state.get("objective")
+    if isinstance(objective, dict):
+        text = _string_or_none(objective.get("text"))
+        if text:
+            return text[:1000]
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return " ".join(content.strip().split())[:1000]
+    return ""
+
+
+def _target_node_id(*, task_state: JsonDict, capability_context: JsonDict) -> str | None:
+    objective = task_state.get("objective")
+    if isinstance(objective, dict):
+        target = _string_or_none(objective.get("target_node_id") or objective.get("node_id"))
+        if target:
+            return target
+    return _string_or_none(capability_context.get("target_node_id"))
+
+
+def _capability_candidate_from_match(match: JsonDict) -> JsonDict | None:
+    canonical_name = _string_or_none(match.get("canonical_name"))
+    if not canonical_name:
+        return None
+    invoke = match.get("invoke") if isinstance(match.get("invoke"), dict) else {}
+    sources = match.get("sources") if isinstance(match.get("sources"), list) else []
+    source = _candidate_source(invoke=invoke, sources=sources)
+    source_id = _string_or_none(invoke.get("source_id") or source.get("source_id"))
+    node_id = _string_or_none(invoke.get("node_id") or source.get("node_id"))
+    dispatchable = bool(
+        invoke.get("dispatchable_source_count")
+        or source.get("dispatchable")
+        or match.get("dispatchable")
+    )
+    if not dispatchable:
+        return None
+    return {
+        "capability_ref": _string_or_none(invoke.get("capability_ref")) or canonical_name,
+        "canonical_name": canonical_name,
+        "source_id": source_id,
+        "node_id": node_id,
+        "registered_name": _string_or_none(
+            invoke.get("registered_name") or source.get("registered_name")
+        ),
+        "risk": _string_or_none(match.get("risk")),
+        "effect": _string_or_none(match.get("effect")),
+        "status": "candidate",
+        "dispatchable": True,
+        "summary": _string_or_none(match.get("agent_description") or match.get("description")),
+        "input_schema": _compact_schema(match.get("input_schema")),
+        "source": "intent_bootstrap",
+    }
+
+
+def _candidate_source(*, invoke: JsonDict, sources: list[object]) -> JsonDict:
+    invoke_source_id = _string_or_none(invoke.get("source_id"))
+    if invoke_source_id:
+        for item in sources:
+            if isinstance(item, dict) and item.get("source_id") == invoke_source_id:
+                return item
+    for item in sources:
+        if isinstance(item, dict) and item.get("dispatchable") is True:
+            return item
+    for item in sources:
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _compact_schema(value: object) -> JsonDict:
+    if not isinstance(value, dict):
+        return {}
+    preview = _preview(value)
+    return preview if isinstance(preview, dict) else {}
+
+
 def _append_capability_candidate(
     candidates: list[JsonDict],
     seen: set[str],
@@ -440,6 +594,7 @@ def _append_capability_candidate(
             "effect": item.get("effect"),
             "status": item.get("status"),
             "summary": _string_or_none(item.get("summary") or item.get("description")),
+            "input_schema": _compact_schema(item.get("input_schema")),
         }
     )
 
@@ -685,6 +840,8 @@ def _collect_working_set_from_task_state(
             "effect": _string_or_none(item.get("effect")),
             "dispatchable": True,
             "status": _string_or_none(item.get("status")),
+            "summary": _string_or_none(item.get("summary") or item.get("description")),
+            "input_schema": _compact_schema(item.get("input_schema")),
         }
 
 
