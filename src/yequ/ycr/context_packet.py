@@ -463,7 +463,11 @@ async def _bootstrap_working_set_from_intent(
     query = _intent_query(task_state=task_state, messages=messages)
     if not query:
         return {"status": "skipped", "reason": "no_intent_query"}
-    node_id = _target_node_id(task_state=task_state, capability_context=capability_context)
+    node_id = _target_node_id(
+        task_state=task_state,
+        capability_context=capability_context,
+        query=query,
+    )
     from yequ.ycr.capability_gateway import search_capability_registry
 
     result = await search_capability_registry(
@@ -477,6 +481,7 @@ async def _bootstrap_working_set_from_intent(
     matches = result.get("matches") if isinstance(result, dict) else []
     added = 0
     enriched = 0
+    candidates: list[JsonDict] = []
     if isinstance(matches, list):
         for item in matches:
             if not isinstance(item, dict):
@@ -484,15 +489,17 @@ async def _bootstrap_working_set_from_intent(
             candidate = _capability_candidate_from_match(item)
             if candidate is None:
                 continue
-            key = str(candidate.get("source_id") or candidate.get("capability_ref"))
-            if not key:
-                continue
-            if key in working_set:
-                if _merge_working_candidate(working_set[key], candidate):
-                    enriched += 1
-                continue
-            working_set[key] = candidate
-            added += 1
+            candidates.append(candidate)
+    for candidate in _prioritize_bootstrap_candidates(candidates, target_node_id=node_id):
+        key = str(candidate.get("source_id") or candidate.get("capability_ref"))
+        if not key:
+            continue
+        if key in working_set:
+            if _merge_working_candidate(working_set[key], candidate):
+                enriched += 1
+            continue
+        working_set[key] = candidate
+        added += 1
     retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
     index = retrieval.get("index") if isinstance(retrieval.get("index"), dict) else {}
     return {
@@ -599,13 +606,38 @@ def _intent_query(*, task_state: JsonDict, messages: list[JsonDict]) -> str:
     return ""
 
 
-def _target_node_id(*, task_state: JsonDict, capability_context: JsonDict) -> str | None:
+def _target_node_id(
+    *,
+    task_state: JsonDict,
+    capability_context: JsonDict,
+    query: str | None = None,
+) -> str | None:
     objective = task_state.get("objective")
     if isinstance(objective, dict):
         target = _string_or_none(objective.get("target_node_id") or objective.get("node_id"))
         if target:
             return target
-    return _string_or_none(capability_context.get("target_node_id"))
+    target = _string_or_none(capability_context.get("target_node_id"))
+    if target:
+        return target
+    if query:
+        return _infer_target_node_id_from_text(query, capability_context)
+    return None
+
+
+def _infer_target_node_id_from_text(text: str, capability_context: JsonDict) -> str | None:
+    lowered = text.casefold()
+    nodes = capability_context.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    for item in nodes:
+        if not isinstance(item, dict):
+            continue
+        for key in ("node_id", "node_name"):
+            value = _string_or_none(item.get(key))
+            if value and value.casefold() in lowered:
+                return value
+    return None
 
 
 def _capability_candidate_from_match(match: JsonDict) -> JsonDict | None:
@@ -634,6 +666,10 @@ def _capability_candidate_from_match(match: JsonDict) -> JsonDict | None:
         ),
         "risk": _string_or_none(match.get("risk")),
         "effect": _string_or_none(match.get("effect")),
+        "scope": _string_or_none(match.get("scope")),
+        "plane": _string_or_none(match.get("plane")),
+        "dispatch_kind": _string_or_none(match.get("dispatch_kind")),
+        "provider": _string_or_none(match.get("provider")),
         "status": "candidate",
         "dispatchable": True,
         "summary": _string_or_none(match.get("agent_description") or match.get("description")),
@@ -656,6 +692,34 @@ def _candidate_source(*, invoke: JsonDict, sources: list[object]) -> JsonDict:
         if isinstance(item, dict):
             return item
     return {}
+
+
+def _prioritize_bootstrap_candidates(
+    candidates: list[JsonDict],
+    *,
+    target_node_id: str | None,
+) -> list[JsonDict]:
+    if not candidates:
+        return []
+    indexed = list(enumerate(candidates))
+    indexed.sort(key=lambda item: _bootstrap_candidate_sort_key(item[1], item[0], target_node_id))
+    return [candidate for _, candidate in indexed]
+
+
+def _bootstrap_candidate_sort_key(
+    candidate: JsonDict,
+    index: int,
+    target_node_id: str | None,
+) -> tuple[int, int]:
+    if target_node_id and candidate.get("node_id") == target_node_id:
+        return (0, index)
+    if candidate.get("scope") == "node" or candidate.get("dispatch_kind") == "node_job":
+        return (1, index)
+    if candidate.get("plane") == "workflow" or candidate.get("dispatch_kind") == "workflow":
+        return (2, index)
+    if candidate.get("provider") == "center" or candidate.get("scope") == "center":
+        return (3, index)
+    return (4, index)
 
 
 def _compact_schema(value: object) -> JsonDict:
@@ -726,6 +790,10 @@ def _append_capability_candidate(
             "registered_name": _string_or_none(item.get("registered_name")),
             "risk": item.get("risk"),
             "effect": item.get("effect"),
+            "scope": item.get("scope"),
+            "plane": item.get("plane"),
+            "dispatch_kind": item.get("dispatch_kind"),
+            "provider": item.get("provider"),
             "status": item.get("status"),
             "summary": _string_or_none(item.get("summary") or item.get("description")),
             "input_schema": _compact_schema(item.get("input_schema")),
@@ -973,6 +1041,10 @@ def _collect_working_set_from_task_state(
             "registered_name": _string_or_none(item.get("registered_name")),
             "risk": _string_or_none(item.get("risk")),
             "effect": _string_or_none(item.get("effect")),
+            "scope": _string_or_none(item.get("scope")),
+            "plane": _string_or_none(item.get("plane")),
+            "dispatch_kind": _string_or_none(item.get("dispatch_kind")),
+            "provider": _string_or_none(item.get("provider")),
             "dispatchable": True,
             "status": _string_or_none(item.get("status")),
             "summary": _string_or_none(item.get("summary") or item.get("description")),

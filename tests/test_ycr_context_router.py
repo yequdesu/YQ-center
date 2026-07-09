@@ -744,6 +744,111 @@ async def test_ycr_build_turn_enriches_incomplete_working_set_from_intent(
     ]
 
 
+async def test_ycr_bootstrap_prioritizes_target_node_capabilities_over_center_meta(
+    db_session,
+    override_settings,
+    monkeypatch,
+) -> None:
+    async def fake_search_capability_registry(
+        db,
+        *,
+        query=None,
+        node_id=None,
+        platform_os=None,
+        filters=None,
+        limit=10,
+        rerank=True,
+    ):
+        assert node_id == "winClient"
+        return {
+            "matches": [
+                {
+                    "canonical_name": "node.list",
+                    "description": "List known nodes.",
+                    "risk": "safe",
+                    "effect": "read",
+                    "scope": "center",
+                    "plane": "control",
+                    "provider": "center",
+                    "dispatch_kind": "inline",
+                    "input_schema": {"type": "object", "properties": {}},
+                    "sources": [],
+                    "invoke": {
+                        "capability_ref": "node.list",
+                        "source_id": "center:node.list",
+                        "dispatchable_source_count": 1,
+                    },
+                },
+                {
+                    "canonical_name": "exec.run",
+                    "description": "Run one command on a Node.",
+                    "risk": "maintenance",
+                    "effect": "write",
+                    "scope": "node",
+                    "plane": "node_runtime",
+                    "dispatch_kind": "node_job",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["profile", "command", "reason"],
+                        "properties": {
+                            "profile": {"type": "string"},
+                            "command": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                    "sources": [
+                        {
+                            "source_id": "src_exec_win",
+                            "node_id": "winClient",
+                            "registered_name": "windows.exec.run",
+                            "dispatchable": True,
+                        }
+                    ],
+                    "invoke": {
+                        "capability_ref": "exec.run",
+                        "source_id": "src_exec_win",
+                        "node_id": "winClient",
+                        "dispatchable_source_count": 1,
+                    },
+                },
+            ],
+            "retrieval": {"strategy": "fake_semantic_v1"},
+        }
+
+    import yequ.ycr.capability_gateway as capability_gateway
+
+    monkeypatch.setattr(
+        capability_gateway,
+        "search_capability_registry",
+        fake_search_capability_registry,
+    )
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_target_node_priority",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "在 winClient 上列出 F:\\Desktop"}],
+        available_functions=[{"name": "capability.invoke", "input_schema": {}}],
+        capability_context={
+            "nodes": [{"node_id": "winClient", "node_name": "Windows Client"}]
+        },
+        task_state={
+            "objective": {"text": "在 winClient 上列出 F:\\Desktop"},
+            "completion": {"status": "in_progress"},
+            "working_set": {"capabilities": [], "nodes": [], "artifacts": []},
+        },
+        profile=projection_profile_from_settings(override_settings),
+        step=1,
+    )
+
+    working_set = packet["provider_context"]["working_set"]
+    assert packet["provider_context"]["working_set_bootstrap"]["target_node_id"] == "winClient"
+    assert working_set[0]["capability_ref"] == "exec.run"
+    assert working_set[0]["node_id"] == "winClient"
+    assert working_set[1]["capability_ref"] == "node.list"
+
+
 async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
     db_session,
     override_settings,
