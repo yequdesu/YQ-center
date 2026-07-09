@@ -365,8 +365,10 @@ def render_capability_context_prompt(
         if isinstance(count, int):
             lines.append(f"Registered capability count: {count}")
         lines.append(
-            "Use capability.groups and capability.group.open for Center meta tools; "
-            "open the capabilities group before using capability.search for Node/Product tools."
+            "Use YCR working-set candidates first when present. Use capability.groups "
+            "and capability.group.open only when the current working set lacks the "
+            "needed capability, schema, or domain; open the capabilities group before "
+            "using capability.search for Node/Product tools."
         )
 
     same_name = capability_context.get("same_name_capabilities")

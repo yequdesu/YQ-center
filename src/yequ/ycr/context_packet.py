@@ -364,15 +364,25 @@ def _tool_discovery_strategy(
             "preferred_candidates": capability_candidates[:8],
             "allowed": [
                 "capability.invoke",
-                "capability.group.open only when required schema or domain is missing",
+                (
+                    "capability.group.open only if no preferred candidate covers "
+                    "the required schema or domain"
+                ),
             ],
             "avoid": [
+                "capability.groups when preferred_candidates already cover the current intent",
+                (
+                    "capability.group.open when preferred_candidates already include "
+                    "the required input schema"
+                ),
                 "capability.search for an already represented intent",
                 "synonym retries after a dispatchable candidate exists",
             ],
             "instruction": (
-                "Reuse preferred_candidates first. Use their exact capability_ref "
-                "and source_id when present."
+                "Invoke preferred_candidates first with their exact capability_ref "
+                "and source_id. Treat group/open/search as discovery fallback only "
+                "when the preferred candidates do not contain the needed capability "
+                "or input schema."
             ),
         }
     return {

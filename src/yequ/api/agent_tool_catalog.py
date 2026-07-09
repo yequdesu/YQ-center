@@ -79,8 +79,8 @@ def _center_meta_functions() -> list[AgentFunction]:
         AgentFunction(
             name="capability.groups",
             description=(
-                "List stable Center meta-tool groups. Open a relevant group with "
-                "capability.group.open before using Center meta capabilities."
+                "List stable Center meta-tool groups when the current YCR working "
+                "set does not already contain the needed capability."
             ),
             input_schema={"type": "object", "properties": {}},
             risk="safe",
@@ -91,8 +91,8 @@ def _center_meta_functions() -> list[AgentFunction]:
             name="capability.group.open",
             description=(
                 "Open one Center meta-tool group and return invoke-ready capability "
-                "refs and input schemas. Use this instead of capability.search for "
-                "Center meta tools."
+                "refs and input schemas. Use this only when YCR working-set "
+                "candidates do not cover the current intent or schema."
             ),
             input_schema={
                 "type": "object",

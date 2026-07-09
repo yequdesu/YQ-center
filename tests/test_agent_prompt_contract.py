@@ -9,7 +9,8 @@ def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> N
     assert "do not guess the source node" in prompt
     assert "resume_mode is user intent" in prompt
     assert "Provider-visible tools are only capability.groups" in prompt
-    assert "For Center meta tools, first list groups or open the relevant group" in prompt
+    assert "If YCR provides a working set or capability_candidates" in prompt
+    assert "Open groups only when the current working set lacks" in prompt
     assert "target is binding" in prompt
     assert "source_id returned for another node is not usable" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt
