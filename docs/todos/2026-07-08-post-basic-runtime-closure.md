@@ -379,7 +379,7 @@
 
 验收：
 
-- [ ] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open，已完成工具面收窄修复，待重新远端验收。
+- [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open。工具面收窄修复后，2026-07-10 远端 Console `sess_289` 验收通过：每轮 `provider_tool_count=1`，实际 provider tools 仅 `capability.invoke`，计划工具调用为 `capability.invoke:2`，无 `capability.groups` / `capability.group.open` / `capability.search`，`ARTIFACTS=1`。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
