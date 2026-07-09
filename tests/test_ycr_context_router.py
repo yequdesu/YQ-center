@@ -634,6 +634,105 @@ async def test_ycr_build_turn_bootstraps_empty_working_set_from_intent(
     assert packet["context_estimate"]["capability_candidate_count"] == 1
 
 
+async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
+    db_session,
+    override_settings,
+    monkeypatch,
+) -> None:
+    from yequ.ycr.session_state import upsert_session_entity
+
+    await upsert_session_entity(
+        db_session,
+        session_id="sess_artifact_augment",
+        entity_type="artifact",
+        entity_key="id_artifact",
+        status="ready",
+        title="windows-screen-capture.png",
+        data={"artifact_id": "id_artifact", "content_type": "image/png"},
+    )
+    await db_session.commit()
+
+    async def fake_search_capability_registry(
+        db,
+        *,
+        query=None,
+        node_id=None,
+        platform_os=None,
+        filters=None,
+        limit=10,
+    ):
+        if query is not None:
+            assert query == "show the screenshot"
+            assert filters == {"projection": "invoke_ready"}
+            assert limit == 6
+            return {"matches": [], "retrieval": {"strategy": "fake_semantic_v1"}}
+        assert filters == {"projection": "invoke_ready", "artifact_input": True}
+        assert limit == 4
+        return {
+            "matches": [
+                {
+                    "canonical_name": "artifact.present",
+                    "description": "Present a Center artifact in the Console.",
+                    "risk": "safe",
+                    "effect": "read",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["artifact_ids"],
+                        "properties": {"artifact_ids": {"type": "array"}},
+                    },
+                    "sources": [
+                        {
+                            "source_id": "src_artifact_present",
+                            "node_id": None,
+                            "registered_name": "artifact.present",
+                            "dispatchable": True,
+                        }
+                    ],
+                    "invoke": {
+                        "capability_ref": "artifact.present",
+                        "source_id": "src_artifact_present",
+                        "registered_name": "artifact.present",
+                        "dispatchable_source_count": 1,
+                    },
+                }
+            ],
+            "retrieval": {"strategy": "registry_filter_v1"},
+        }
+
+    import yequ.ycr.capability_gateway as capability_gateway
+
+    monkeypatch.setattr(
+        capability_gateway,
+        "search_capability_registry",
+        fake_search_capability_registry,
+    )
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_artifact_augment",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "show the screenshot"}],
+        available_functions=[{"name": "capability.invoke", "input_schema": {}}],
+        capability_context={"nodes": []},
+        task_state={
+            "objective": {"text": "show the screenshot"},
+            "completion": {"status": "in_progress"},
+            "working_set": {"capabilities": [], "nodes": [], "artifacts": []},
+        },
+        profile=projection_profile_from_settings(override_settings),
+        step=2,
+    )
+
+    candidates = packet["provider_context"]["capability_candidates"]
+    bootstrap = packet["provider_context"]["working_set_bootstrap"]
+    assert candidates[0]["capability_ref"] == "artifact.present"
+    assert candidates[0]["source"] == "working_set"
+    assert bootstrap["entity_augments"][0]["source"] == "artifact_entity"
+    assert bootstrap["entity_augments"][0]["candidate_count"] == 1
+    assert packet["provider_context"]["tool_strategy"]["mode"] == "reuse_working_set"
+
+
 def test_result_ingestion_preserves_small_output() -> None:
     output = {"status": "ok", "value": 1}
 

@@ -80,6 +80,13 @@ async def build_agent_context_packet(
         session_state=session_state,
         working_set=working_set,
     )
+    working_set_bootstrap["entity_augments"] = (
+        await _augment_working_set_from_session_entities(
+            db,
+            session_state=session_state,
+            working_set=working_set,
+        )
+    )
     timing_ms["working_set_bootstrap"] = _elapsed_ms(started_bootstrap)
     working_set_items = _working_set_items(working_set)
     capability_candidates = _capability_candidates(
@@ -480,12 +487,81 @@ async def _bootstrap_working_set_from_intent(
     }
 
 
+async def _augment_working_set_from_session_entities(
+    db: AsyncSession,
+    *,
+    session_state: JsonDict,
+    working_set: dict[str, JsonDict],
+) -> list[JsonDict]:
+    augments: list[JsonDict] = []
+    if _session_has_entity_type(session_state, "artifact") or _session_has_entity_type(
+        session_state, "focus"
+    ):
+        augments.append(
+            await _augment_working_set_by_structured_filter(
+                db,
+                working_set=working_set,
+                filters={"projection": "invoke_ready", "artifact_input": True},
+                source="artifact_entity",
+                limit=4,
+            )
+        )
+    return [item for item in augments if item.get("status") != "skipped"]
+
+
+async def _augment_working_set_by_structured_filter(
+    db: AsyncSession,
+    *,
+    working_set: dict[str, JsonDict],
+    filters: JsonDict,
+    source: str,
+    limit: int,
+) -> JsonDict:
+    from yequ.ycr.capability_gateway import search_capability_registry
+
+    result = await search_capability_registry(
+        db,
+        filters=filters,
+        limit=min(limit, WORKING_SET_LIMIT),
+    )
+    matches = result.get("matches") if isinstance(result, dict) else []
+    added = 0
+    if isinstance(matches, list):
+        for item in matches:
+            if not isinstance(item, dict):
+                continue
+            candidate = _capability_candidate_from_match(item)
+            if candidate is None:
+                continue
+            candidate["source"] = source
+            key = str(candidate.get("source_id") or candidate.get("capability_ref"))
+            if not key or key in working_set:
+                continue
+            working_set[key] = candidate
+            added += 1
+    retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
+    return {
+        "status": "loaded" if added else "empty",
+        "source": source,
+        "candidate_count": added,
+        "retrieval_strategy": retrieval.get("strategy"),
+    }
+
+
 def _session_has_capability_candidates(session_state: JsonDict) -> bool:
     items = session_state.get("items")
     if not isinstance(items, dict):
         return False
     capabilities = items.get("capability")
     return isinstance(capabilities, list) and bool(capabilities)
+
+
+def _session_has_entity_type(session_state: JsonDict, entity_type: str) -> bool:
+    items = session_state.get("items")
+    if not isinstance(items, dict):
+        return False
+    values = items.get(entity_type)
+    return isinstance(values, list) and bool(values)
 
 
 def _intent_query(*, task_state: JsonDict, messages: list[JsonDict]) -> str:

@@ -211,7 +211,8 @@ Tool RAG 的职责是 candidate loader，不是流程规划器。当前实现分
 
 1. 每轮 build-turn 从 TaskState working set、`YcrSessionState` 和本轮 projected working set 注入 `provider_context.capability_candidates`。
 2. 当这些来源均为空时，YCR 使用当前 objective 通过既有 registry/RAG 做一次通用 intent working-set bootstrap，并把命中候选注入本轮 provider context。该机制不维护 query/capability 特判或同义词表。
-3. 当候选仍不足或用户任务超出当前 working set 时，Agent 仍可调用 `capability.search` 进入语义检索路径。
+3. 当 session 中已有 artifact/focus 等 typed entity 时，YCR 使用 registry 结构化字段补入对应 entity-input 能力候选，例如处理 Center artifact 的能力；该路径不解析自由文本结果。
+4. 当候选仍不足或用户任务超出当前 working set 时，Agent 仍可调用 `capability.search` 进入语义检索路径。
 
 `capability.search` / `capability.describe` 的结果会由 capability gateway 直接附带
 `ycr_entities.capabilities` typed metadata。`/v1/tool-observations` 存 raw ContextRef
