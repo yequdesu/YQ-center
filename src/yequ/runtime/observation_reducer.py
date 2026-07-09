@@ -159,6 +159,7 @@ def _record_tool_request(state: JsonDict, payload: JsonDict) -> None:
 
 
 def _record_tool_completion(state: JsonDict, payload: JsonDict) -> None:
+    _resolve_repaired_blockers(state, payload)
     capability_ref = _capability_ref(payload)
     if capability_ref:
         _record_working_capability(
@@ -183,6 +184,44 @@ def _record_tool_completion(state: JsonDict, payload: JsonDict) -> None:
     operation = payload.get("operation")
     if isinstance(operation, dict):
         _record_pending_operation(state, operation)
+
+
+def _resolve_repaired_blockers(state: JsonDict, payload: JsonDict) -> None:
+    blockers = state.get("blockers")
+    if not isinstance(blockers, list) or not blockers:
+        return
+    capability_ref = _capability_ref(payload)
+    function_name = _string(payload.get("function_name") or payload.get("name"))
+    target_node_id = _string(payload.get("target_node_id") or payload.get("node_id"))
+    blockers[:] = [
+        item
+        for item in blockers
+        if not (
+            isinstance(item, dict)
+            and item.get("repairable") is True
+            and item.get("terminal") is not True
+            and _blocker_repaired_by_success(
+                item,
+                capability_ref=capability_ref,
+                function_name=function_name,
+                target_node_id=target_node_id,
+            )
+        )
+    ]
+
+
+def _blocker_repaired_by_success(
+    blocker: JsonDict,
+    *,
+    capability_ref: str,
+    function_name: str,
+    target_node_id: str,
+) -> bool:
+    blocker_capability = _string(blocker.get("capability_ref"))
+    if blocker_capability and blocker_capability in {capability_ref, function_name}:
+        return True
+    blocker_node = _string(blocker.get("target_node_id"))
+    return bool(blocker_node and target_node_id and blocker_node == target_node_id)
 
 
 def _record_pending_approval(state: JsonDict, payload: JsonDict, *, status: str) -> None:

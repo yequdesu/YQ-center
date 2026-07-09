@@ -313,6 +313,74 @@ async def test_replanner_blocks_final_candidate_when_error_is_repairable(
 
 
 @pytest.mark.asyncio
+async def test_replanner_allows_final_candidate_after_repairable_error_is_fixed(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_repaired_final"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="repaired-final",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="node-1",
+        user_message="capture screen autonomously",
+        trace_id="trace-repaired-final",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.failed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_bad",
+            "function_name": "capability.invoke",
+            "capability_ref": "capability.invoke",
+            "error_code": "invalid_input",
+            "message": "capability_ref is required",
+        },
+    )
+    assert get_task_state(run)["blockers"]
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.completed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_fixed",
+            "function_name": "capability.invoke",
+            "capability_ref": "capability.invoke",
+            "status": "succeeded",
+        },
+    )
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="llm.final_candidate",
+        source="agent.provider",
+        payload={"message": "截图已完成。"},
+    )
+
+    state = get_task_state(run)
+    decision = final_candidate_gate(state)
+    assert state["blockers"] == []
+    assert decision.action == "complete"
+    assert decision.reason_code == "final_candidate_allowed"
+
+
+@pytest.mark.asyncio
 async def test_agent_run_reducer_extracts_transfer_and_artifact_facts(
     db_session: AsyncSession,
 ) -> None:
