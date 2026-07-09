@@ -338,7 +338,7 @@ Linux Node 分类：
 
 ### T07 真实任务验收
 
-- [ ] Windows：按文件名查找文件，必须命中 `windows.everything.find`。
+- [x] Windows：按文件名查找文件，必须命中 `windows.everything.find`。2026-07-10 远端 session `sess_78d833ec0a6c46bd` 通过：首次 tool call 使用 `everything.find`，输入为 `query`，未再出现 `pattern` 误参。
 - [ ] Windows：已知目录列一层内容，必须命中 `windows.exec.run`。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`。
 - [x] Linux：查文件 hash，必须使用 `linux.exec.run`。2026-07-10 远端 session `sess_9a012c21bc5740cd` 通过：`/etc/hostname` SHA256 为 `a839b15402605681cb77250cb318dcdf34e406f07ad3349472cf0552eb2c4884`，profile 为 `user.readonly`。

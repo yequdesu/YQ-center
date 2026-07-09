@@ -49,6 +49,7 @@ function Invoke-SystemPython {
 $venvDir = Join-Path $PSScriptRoot ".venv"
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 $venvPythonw = Join-Path $venvDir "Scripts\pythonw.exe"
+$sitePackages = Join-Path $venvDir "Lib\site-packages"
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     Write-Host "[INFO] Creating local virtual environment..."
@@ -56,7 +57,20 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     Invoke-SystemPython -PythonCommand $systemPython -Arguments @("-m", "venv", $venvDir)
 }
 
-$dependencyCheck = & $venvPython -c "import node_win_client, httpx, pydantic, yaml, webview, PIL; raise SystemExit(0)" 2>$null
+if (Test-Path -LiteralPath $sitePackages) {
+    Get-ChildItem -LiteralPath $sitePackages -Filter "yequ_win_client_service.pth" | ForEach-Object {
+        $content = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
+        if ($content -and $content -match "node_win_client|Node-winClient|winnode") {
+            if ($content -notmatch [regex]::Escape($PSScriptRoot)) {
+                Write-Host "[INFO] Removing stale Python path file $($_.Name)"
+                Remove-Item -LiteralPath $_.FullName -Force
+            }
+        }
+    }
+}
+
+$dependencyCheckScript = "import pathlib, node_win_client, httpx, pydantic, yaml, webview, PIL; root = pathlib.Path(r'$PSScriptRoot').resolve(); module = pathlib.Path(node_win_client.__file__).resolve(); raise SystemExit(0 if module.is_relative_to(root) else 1)"
+$dependencyCheck = & $venvPython -c $dependencyCheckScript 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[INFO] Installing YeQu Windows Client dependencies..."
     & $venvPython -m pip install --upgrade pip setuptools wheel

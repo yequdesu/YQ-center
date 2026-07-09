@@ -8,76 +8,13 @@ import platform
 import re
 import shutil
 import subprocess
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .config import L2Policy
-from .models import FunctionManifest
 
 SEARCH_MAX_RESULTS = 1000
-
-
-def build_l2b_manifests(l2_policy: L2Policy) -> list[FunctionManifest]:
-    return [
-        _safe_manifest(
-            "windows.everything.find",
-            {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "File name or path query. Supports substring, fuzzy, glob, regex, and exact modes.",
-                    },
-                    "root": {"type": "string", "description": "Optional directory root to constrain Everything results."},
-                    "mode": {
-                        "type": "string",
-                        "enum": ["auto", "exact", "glob", "substring", "fuzzy", "regex"],
-                        "default": "auto",
-                    },
-                    "recursive": {"type": "boolean", "default": True},
-                    "include_files": {"type": "boolean", "default": True},
-                    "include_dirs": {"type": "boolean", "default": True},
-                    "case_sensitive": {"type": "boolean", "default": False},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": SEARCH_MAX_RESULTS},
-                },
-                "additionalProperties": False,
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "backend": {"type": "string"},
-                    "query": {"type": "string"},
-                    "mode": {"type": "string"},
-                    "root": {"type": ["string", "null"]},
-                    "recursive": {"type": "boolean"},
-                    "limit": {"type": "integer"},
-                    "truncated": {"type": "boolean"},
-                    "candidate_count": {"type": "integer"},
-                    "everything_available": {"type": "boolean"},
-                    "everything_path": {"type": "string"},
-                    "matches": {"type": "array"},
-                    "warnings": {"type": "array"},
-                },
-                "required": ["backend", "query", "mode", "limit", "truncated", "matches"],
-            },
-            timeout_sec=20,
-            description="Find Windows files and directories through Everything (es.exe).",
-            agent_description=(
-                "Use this for Windows file discovery. It requires Everything/es.exe and supports "
-                "partial names, glob-like wildcard queries, regex, exact matching, fuzzy name "
-                "matching, file-only/dir-only filters, and optional root constraints. Use this "
-                "for all user-facing Windows file search requests."
-            ),
-            user_visible_name="Search files",
-            examples=[
-                {"input": {"query": "SillyTavern", "mode": "fuzzy", "limit": 20}},
-                {"input": {"root": "C:\\Users", "query": "*.zip", "mode": "glob", "recursive": True}},
-                {"input": {"root": "D:\\Games", "query": ".*server.*\\.jar$", "mode": "regex"}},
-            ],
-        ),
-    ]
 
 
 def execute_l2b(function: str, input_data: dict[str, Any], l2_policy: L2Policy) -> dict[str, Any]:
@@ -100,7 +37,9 @@ def file_search(input_data: dict[str, Any], l2_policy: L2Policy) -> dict[str, An
     everything_path = _find_everything_cli()
 
     if everything_path is None:
-        raise ValueError("everything_unavailable: es.exe was not found. Configure YEQU_EVERYTHING_CLI.")
+        raise ValueError(
+            "everything_unavailable: es.exe was not found. Configure YEQU_EVERYTHING_CLI."
+        )
     if not query and root is None:
         raise ValueError("windows.everything.find requires query or root")
     if not include_files and not include_dirs:
@@ -302,7 +241,7 @@ def _find_everything_cli() -> str | None:
 
 
 def fnmatch_translate(pattern: str) -> str:
-    # Avoid importing fnmatch solely for one translation call while keeping glob matching deterministic.
+    # Keep glob matching deterministic without importing fnmatch for one call.
     escaped = ""
     for char in pattern:
         if char == "*":
@@ -394,43 +333,6 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _safe_manifest(
-    name: str,
-    input_schema: dict[str, Any],
-    output_schema: dict[str, Any],
-    timeout_sec: int = 10,
-    description: str | None = None,
-    agent_description: str | None = None,
-    user_visible_name: str | None = None,
-    examples: list[dict[str, Any]] | None = None,
-) -> FunctionManifest:
-    return FunctionManifest(
-        name=name,
-        description=description or _l2b_read_description(name),
-        agent_description=agent_description or _l2b_read_agent_description(name),
-        user_visible_name=user_visible_name or name,
-        input_schema=input_schema,
-        output_schema=output_schema,
-        risk="safe",
-        effect="read",
-        timeout_sec=timeout_sec,
-        idempotency="idempotent",
-        resource_keys=[],
-        conflict_policy="allow_parallel",
-        examples=examples or [],
-    )
-
-
-def _l2b_read_description(name: str) -> str:
-    descriptions = {}
-    return descriptions.get(name, f"Run read-only Windows capability {name}.")
-
-
-def _l2b_read_agent_description(name: str) -> str:
-    descriptions = {}
-    return descriptions.get(name, _l2b_read_description(name))
 
 
 def _object_schema(name: str) -> dict[str, Any]:

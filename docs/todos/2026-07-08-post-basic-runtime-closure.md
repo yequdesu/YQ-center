@@ -260,7 +260,7 @@
 
 验收任务：
 
-- [ ] Windows：按文件名查找文件，必须命中 `windows.everything.find`。
+- [x] Windows：按文件名查找文件，必须命中 `windows.everything.find`。2026-07-10 远端 session `sess_78d833ec0a6c46bd` 通过：首次 tool call 即 `capability.invoke` -> `everything.find`，`input_keys=["query"]`，无 `pattern` 误参；找到 `E:\yequdesu_project\SillyTavern-1.17.0.zip`。
 - [ ] Windows：已知目录列一层内容，必须使用 `windows.exec.run`。
 - [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
 - [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
@@ -274,7 +274,7 @@
 
 记录要求：
 
-- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
+- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Windows 文件名查找 `sess_78d833ec0a6c46bd`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
 - [ ] 每个失败场景写明失败层：LLM 决策、Replanner、YCR、Center runtime、Node runtime、前端展示。
 - [ ] 验收通过后更新本文件状态。
 

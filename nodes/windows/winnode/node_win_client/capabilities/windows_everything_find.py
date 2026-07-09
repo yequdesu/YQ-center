@@ -18,24 +18,50 @@ CAPABILITY = NodeCapability(
         name="windows.everything.find",
         description="Find Windows files and directories through Everything.",
         agent_description=(
-            "Use for Windows file discovery by name, partial name, glob, regex, exact, "
-            "fuzzy, or root. Requires Everything/es.exe. Use windows.exec.run for "
-            "direct directory listing, stat, hash, or file-content inspection after "
-            "an exact path is known."
+            "Find files or directories on this Windows node through Everything/es.exe. "
+            "For filename, partial-name, wildcard, regex, exact, or fuzzy search, put "
+            "the search text in query. Use root only to restrict results to a directory "
+            "or to list a directory when query is empty. Use windows.exec.run for stat, "
+            "hash, or file-content inspection after an exact path is known."
         ),
         user_visible_name="Find files",
         input_schema={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "root": {"type": "string"},
-                "mode": {"type": "string", "enum": ["auto", "exact", "glob", "substring", "fuzzy", "regex"], "default": "auto"},
-                "recursive": {"type": "boolean", "default": True},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search text for a file or directory name/path. Put the requested "
+                        "filename, partial name, wildcard pattern, or regex here."
+                    ),
+                },
+                "root": {
+                    "type": "string",
+                    "description": (
+                        "Optional absolute Windows directory that limits results, such as "
+                        "C:\\Users\\YeQuDesu\\Desktop. May be used alone to list that tree."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "exact", "glob", "substring", "fuzzy", "regex"],
+                    "default": "auto",
+                    "description": (
+                        "How query is matched. Use auto unless the user asks for "
+                        "regex, exact, or wildcard matching."
+                    ),
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "When root is set, include descendants under that root.",
+                },
                 "include_files": {"type": "boolean", "default": True},
                 "include_dirs": {"type": "boolean", "default": True},
                 "case_sensitive": {"type": "boolean", "default": False},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
             },
+            "anyOf": [{"required": ["query"]}, {"required": ["root"]}],
             "additionalProperties": False,
         },
         output_schema={"type": "object"},
@@ -46,6 +72,11 @@ CAPABILITY = NodeCapability(
         resource_keys=["node.file"],
         conflict_policy="allow_parallel",
         execution_context="user",
+        examples=[
+            {"input": {"query": "SillyTavern-1.17.0.zip", "mode": "auto", "limit": 20}},
+            {"input": {"root": "F:\\Desktop", "query": "*.zip", "mode": "glob", "recursive": True}},
+            {"input": {"root": "C:\\Users\\YeQuDesu\\Desktop", "limit": 50}},
+        ],
     ),
     handler=execute,
 )

@@ -28,6 +28,9 @@ metrics = [
 [project.scripts]
 node-win = "node_win_client.cli:app"
 
+[tool.setuptools.packages.find]
+include = ["node_win_client*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

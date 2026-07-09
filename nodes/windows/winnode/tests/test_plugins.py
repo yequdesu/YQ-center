@@ -73,6 +73,21 @@ def test_exec_functions_are_registered_as_conservative_maintenance() -> None:
         assert function.resource_keys == ["node.exec"]
 
 
+def test_everything_find_manifest_has_unambiguous_query_contract() -> None:
+    manifest = FakeSystemPlugin().manifest()
+    functions = {function.name: function for function in manifest.functions}
+    function = functions["windows.everything.find"]
+
+    assert function.examples
+    assert {"required": ["query"]} in function.input_schema["anyOf"]
+    assert {"required": ["root"]} in function.input_schema["anyOf"]
+    assert function.input_schema["additionalProperties"] is False
+    query_schema = function.input_schema["properties"]["query"]
+    assert "filename" in query_schema["description"]
+    assert "pattern" in query_schema["description"]
+    assert "pattern" not in function.input_schema["properties"]
+
+
 def test_manifest_contains_expected_l1_capacity() -> None:
     manifest = FakeSystemPlugin().manifest()
 
@@ -510,7 +525,11 @@ def test_everything_find_is_not_limited_by_file_root_allowlist(
     target.write_text("ok", encoding="utf-8")
     policy = L2Policy(allowed_file_roots=[str(tmp_path / "allowed")])
 
-    monkeypatch.setattr(l2b, "_find_everything_cli", lambda: "C:\\Program Files\\Everything\\es.exe")
+    monkeypatch.setattr(
+        l2b,
+        "_find_everything_cli",
+        lambda: "C:\\Program Files\\Everything\\es.exe",
+    )
     monkeypatch.setattr(l2b, "_everything_candidates", lambda *args, **kwargs: ([target], None))
     output = execute_l2b(
         "windows.everything.find",
@@ -532,7 +551,11 @@ def test_l2b_file_search_uses_everything_candidates(
     other.write_text("notes", encoding="utf-8")
     policy = L2Policy(allowed_file_roots=[str(tmp_path / "allowed")])
 
-    monkeypatch.setattr(l2b, "_find_everything_cli", lambda: "C:\\Program Files\\Everything\\es.exe")
+    monkeypatch.setattr(
+        l2b,
+        "_find_everything_cli",
+        lambda: "C:\\Program Files\\Everything\\es.exe",
+    )
     monkeypatch.setattr(
         l2b,
         "_everything_candidates",
