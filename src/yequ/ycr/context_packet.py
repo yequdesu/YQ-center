@@ -455,8 +455,11 @@ async def _bootstrap_working_set_from_intent(
     session_state: JsonDict,
     working_set: dict[str, JsonDict],
 ) -> JsonDict:
-    if existing_working_set or _session_has_capability_candidates(session_state):
+    existing_has_contract = _working_set_has_invoke_contract(existing_working_set)
+    if existing_working_set and existing_has_contract:
         return {"status": "skipped", "reason": "working_set_already_available"}
+    if _session_has_capability_candidates(session_state) and existing_has_contract:
+        return {"status": "skipped", "reason": "session_capabilities_already_available"}
     query = _intent_query(task_state=task_state, messages=messages)
     if not query:
         return {"status": "skipped", "reason": "no_intent_query"}
@@ -473,6 +476,7 @@ async def _bootstrap_working_set_from_intent(
     )
     matches = result.get("matches") if isinstance(result, dict) else []
     added = 0
+    enriched = 0
     if isinstance(matches, list):
         for item in matches:
             if not isinstance(item, dict):
@@ -481,18 +485,23 @@ async def _bootstrap_working_set_from_intent(
             if candidate is None:
                 continue
             key = str(candidate.get("source_id") or candidate.get("capability_ref"))
-            if not key or key in working_set:
+            if not key:
+                continue
+            if key in working_set:
+                if _merge_working_candidate(working_set[key], candidate):
+                    enriched += 1
                 continue
             working_set[key] = candidate
             added += 1
     retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
     index = retrieval.get("index") if isinstance(retrieval.get("index"), dict) else {}
     return {
-        "status": "loaded" if added else "empty",
+        "status": "loaded" if added else ("enriched" if enriched else "empty"),
         "source": "intent_query",
         "query_preview": _truncate(query, 240),
         "target_node_id": node_id,
         "candidate_count": added,
+        "enriched_count": enriched,
         "retrieval_strategy": retrieval.get("strategy"),
         "index_status": index.get("status"),
     }
@@ -629,6 +638,7 @@ def _capability_candidate_from_match(match: JsonDict) -> JsonDict | None:
         "dispatchable": True,
         "summary": _string_or_none(match.get("agent_description") or match.get("description")),
         "input_schema": _compact_schema(match.get("input_schema")),
+        "input_required": _schema_required(match.get("input_schema")),
         "source": "intent_bootstrap",
     }
 
@@ -653,6 +663,43 @@ def _compact_schema(value: object) -> JsonDict:
         return {}
     preview = _preview(value)
     return preview if isinstance(preview, dict) else {}
+
+
+def _schema_required(value: object) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    required = value.get("required")
+    if not isinstance(required, list):
+        return []
+    return [str(item) for item in required if isinstance(item, str) and item][:20]
+
+
+def _working_set_has_invoke_contract(items: list[JsonDict]) -> bool:
+    if not items:
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        if not item.get("dispatchable"):
+            return False
+        if not isinstance(item.get("input_schema"), dict) or not item.get("input_schema"):
+            return False
+    return True
+
+
+def _merge_working_candidate(existing: JsonDict, candidate: JsonDict) -> bool:
+    changed = False
+    for key, value in candidate.items():
+        if value in (None, "", [], {}):
+            continue
+        current = existing.get(key)
+        if current in (None, "", [], {}):
+            existing[key] = value
+            changed = True
+    if candidate.get("input_schema") and not existing.get("input_required"):
+        existing["input_required"] = _schema_required(candidate.get("input_schema"))
+        changed = True
+    return changed
 
 
 def _append_capability_candidate(
@@ -682,6 +729,7 @@ def _append_capability_candidate(
             "status": item.get("status"),
             "summary": _string_or_none(item.get("summary") or item.get("description")),
             "input_schema": _compact_schema(item.get("input_schema")),
+            "input_required": _schema_required(item.get("input_schema")),
         }
     )
 
@@ -929,6 +977,7 @@ def _collect_working_set_from_task_state(
             "status": _string_or_none(item.get("status")),
             "summary": _string_or_none(item.get("summary") or item.get("description")),
             "input_schema": _compact_schema(item.get("input_schema")),
+            "input_required": _schema_required(item.get("input_schema")),
         }
 
 
@@ -945,8 +994,12 @@ def _working_set_message(working_set: list[JsonDict]) -> JsonDict:
             "YCR capability working set for this session. Prefer these already "
             "discovered dispatchable capabilities over opening new groups or "
             "running capability.search for the same intent. Use capability.invoke "
-            "with source_id when present; use capability.describe only when "
-            "required input schema is missing.\n"
+            "with source_id when present. Candidate input_schema/input_required "
+            "is the invocation contract for the nested input object. If this "
+            "contract is present, do not describe the capability first. If the "
+            "contract is genuinely missing, inspect metadata by invoking "
+            "capability.describe through capability.invoke; never send ad hoc "
+            "describe fields to the target capability itself.\n"
             f"{json.dumps(working_set, ensure_ascii=False)}"
         ),
     }

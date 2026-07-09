@@ -640,6 +640,110 @@ async def test_ycr_build_turn_bootstraps_empty_working_set_from_intent(
     assert packet["context_estimate"]["capability_candidate_count"] == 1
 
 
+async def test_ycr_build_turn_enriches_incomplete_working_set_from_intent(
+    db_session,
+    override_settings,
+    monkeypatch,
+) -> None:
+    async def fake_search_capability_registry(
+        db,
+        *,
+        query=None,
+        node_id=None,
+        platform_os=None,
+        filters=None,
+        limit=10,
+        rerank=True,
+    ):
+        assert query == "list a known windows directory"
+        assert filters == {"projection": "invoke_ready"}
+        return {
+            "matches": [
+                {
+                    "canonical_name": "exec.run",
+                    "agent_description": "Run an approved command on a Node.",
+                    "risk": "maintenance",
+                    "effect": "write",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["profile", "command", "reason"],
+                        "properties": {
+                            "profile": {
+                                "type": "string",
+                                "enum": ["user.readonly", "user.write"],
+                            },
+                            "command": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                    "sources": [
+                        {
+                            "source_id": "src_exec_win",
+                            "node_id": "winClient",
+                            "registered_name": "windows.exec.run",
+                            "dispatchable": True,
+                        }
+                    ],
+                    "invoke": {
+                        "capability_ref": "exec.run",
+                        "source_id": "src_exec_win",
+                        "node_id": "winClient",
+                        "registered_name": "windows.exec.run",
+                        "dispatchable_source_count": 1,
+                    },
+                }
+            ],
+            "retrieval": {"strategy": "fake_semantic_v1"},
+        }
+
+    import yequ.ycr.capability_gateway as capability_gateway
+
+    monkeypatch.setattr(
+        capability_gateway,
+        "search_capability_registry",
+        fake_search_capability_registry,
+    )
+    packet = await build_agent_context_packet(
+        db_session,
+        session_id="sess_incomplete_working_set",
+        actor_id="agent",
+        provider="test",
+        model="test-model",
+        messages=[{"role": "user", "content": "list a known windows directory"}],
+        available_functions=[{"name": "capability.invoke", "input_schema": {}}],
+        capability_context={"nodes": []},
+        task_state={
+            "objective": {"text": "list a known windows directory"},
+            "completion": {"status": "in_progress"},
+            "working_set": {
+                "capabilities": [
+                    {
+                        "capability_ref": "exec.run",
+                        "source_id": "src_exec_win",
+                        "node_id": "winClient",
+                        "status": "requested",
+                    }
+                ],
+                "nodes": [],
+                "artifacts": [],
+            },
+        },
+        profile=projection_profile_from_settings(override_settings),
+        step=2,
+    )
+
+    working_set = packet["provider_context"]["working_set"]
+    bootstrap = packet["provider_context"]["working_set_bootstrap"]
+    assert bootstrap["status"] == "enriched"
+    assert bootstrap["enriched_count"] == 1
+    assert working_set[0]["capability_ref"] == "exec.run"
+    assert working_set[0]["input_required"] == ["profile", "command", "reason"]
+    assert working_set[0]["input_schema"]["properties"]["profile"]["enum"] == [
+        "user.readonly",
+        "user.write",
+    ]
+
+
 async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
     db_session,
     override_settings,
