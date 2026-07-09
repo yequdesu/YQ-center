@@ -318,7 +318,9 @@ def _center_meta_functions() -> list[AgentFunction]:
                 "capability.search or capability.describe when more than one source "
                 "exists. If the user specified a target node or node-local path, "
                 "pass node_id and use only a source_id that belongs to that node. "
-                "Put the real capability arguments in input."
+                "Always put the real capability arguments in input; use an empty "
+                "object only for capabilities whose own input schema has no "
+                "required fields."
             ),
             input_schema={
                 "type": "object",
@@ -343,9 +345,16 @@ def _center_meta_functions() -> list[AgentFunction]:
                     },
                     "input": {
                         "type": "object",
-                        "description": "Arguments passed to the concrete Node capability",
+                        "description": (
+                            "Arguments passed to the concrete capability. Required "
+                            "for every invocation; use {} only for no-argument "
+                            "capabilities."
+                        ),
                     },
                 },
+                "required": ["input"],
+                "anyOf": [{"required": ["capability_ref"]}, {"required": ["source_id"]}],
+                "additionalProperties": False,
             },
             risk="safe",
             effect="read",
