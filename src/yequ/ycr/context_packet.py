@@ -459,6 +459,7 @@ async def _bootstrap_working_set_from_intent(
         node_id=node_id,
         filters={"projection": "invoke_ready"},
         limit=min(6, WORKING_SET_LIMIT),
+        rerank=False,
     )
     matches = result.get("matches") if isinstance(result, dict) else []
     added = 0

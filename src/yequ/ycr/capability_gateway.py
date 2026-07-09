@@ -51,6 +51,7 @@ async def search_capability_registry(
     platform_os: str | None = None,
     filters: dict[str, object] | None = None,
     limit: int = 10,
+    rerank: bool = True,
 ) -> dict[str, object]:
     filters = filters or {}
     common_filters = {
@@ -101,6 +102,7 @@ async def search_capability_registry(
             query=query.strip(),
             filters=common_filters,
             limit=limit,
+            rerank=rerank,
         )
     if not _has_structured_filter(common_filters):
         raise ValueError(
@@ -183,6 +185,7 @@ async def _search_capability_rag(
     query: str,
     filters: dict[str, object],
     limit: int,
+    rerank: bool,
 ) -> dict[str, object]:
     requested_projection = str(filters.get("projection") or "summary")
     return_candidates = await capability_search(
@@ -265,6 +268,18 @@ async def _search_capability_rag(
         coarse_payloads.append((name, rrf_score, ranks, index, trace))
         rerank_documents_text.append(index.index_text)
 
+    if not rerank:
+        return _coarse_capability_rag_response(
+            query=query,
+            requested_projection=requested_projection,
+            return_candidates=return_candidates,
+            return_by_name=return_by_name,
+            coarse_payloads=coarse_payloads,
+            cached_embedding=cached_embedding,
+            cached_retrieval=cached_retrieval,
+            limit=limit,
+        )
+
     try:
         cached_reranked = await cached_rerank(
             db,
@@ -341,6 +356,78 @@ async def _search_capability_rag(
                         "status": cached_reranked.cache_status,
                         "cache_key": cached_reranked.cache_key,
                         "document_hashes_hash": cached_reranked.document_hashes_hash,
+                    },
+                },
+            },
+        },
+        capabilities=matches,
+    )
+
+
+def _coarse_capability_rag_response(
+    *,
+    query: str,
+    requested_projection: str,
+    return_candidates: list[dict[str, object]],
+    return_by_name: dict[str, dict[str, object]],
+    coarse_payloads: list[
+        tuple[str, float, dict[str, int], YcrCapabilityIndex, dict[str, Any]]
+    ],
+    cached_embedding: Any,
+    cached_retrieval: Any,
+    limit: int,
+) -> dict[str, object]:
+    matches: list[dict[str, object]] = []
+    for name, rrf_score, ranks, index, trace in coarse_payloads[: _bounded_limit(limit)]:
+        candidate = return_by_name.get(name)
+        if candidate is None:
+            continue
+        output = _rank_candidate_sources_for_query(dict(candidate), query)
+        output["retrieval"] = {
+            "strategy": "tool_rag_bge_m3_rrf_v1",
+            "score": rrf_score,
+            "rrf_score": rrf_score,
+            "rerank_score": None,
+            "dense_rank": ranks.get("dense_rank"),
+            "dense_score": trace["dense_score"],
+            "sparse_rank": ranks.get("sparse_rank"),
+            "sparse_score": trace["sparse_score"],
+            "index_id": index.index_id,
+            "document_hash": index.document_hash,
+        }
+        matches.append(output)
+    return attach_ycr_entities(
+        {
+            "kind": "capability_tool_rag_result",
+            "query": query,
+            "matches": matches,
+            "match_count": len(matches),
+            "retrieval": {
+                "strategy": "tool_rag_bge_m3_rrf_v1",
+                "candidate_count": len(return_candidates),
+                "candidate_limit": TOOL_RAG_CANDIDATE_LIMIT,
+                "requested_projection": requested_projection,
+                "indexed_count": len(coarse_payloads),
+                "reranked_count": 0,
+                "rerank": {"enabled": False, "reason": "hot_path_candidate_bootstrap"},
+                "semantic": {
+                    "enabled": True,
+                    "provider": cached_embedding.embedding.provider,
+                    "model": cached_embedding.embedding.model,
+                    "coarse_result_count": len(cached_retrieval.rows),
+                    "match_count": len(matches),
+                },
+                "cache": {
+                    "query_embedding": {
+                        "status": cached_embedding.cache_status,
+                        "cache_key": cached_embedding.cache_key,
+                    },
+                    "retrieval": {
+                        "status": cached_retrieval.cache_status,
+                        "cache_key": cached_retrieval.cache_key,
+                        "query_embedding_hash": cached_retrieval.query_embedding_hash,
+                        "registry_version": cached_retrieval.registry_version,
+                        "filters_hash": cached_retrieval.filters_hash,
                     },
                 },
             },

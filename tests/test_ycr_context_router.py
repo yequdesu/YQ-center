@@ -562,10 +562,12 @@ async def test_ycr_build_turn_bootstraps_empty_working_set_from_intent(
         platform_os=None,
         filters=None,
         limit=10,
+        rerank=True,
     ):
         assert query == "capture the windows screen"
         assert filters == {"projection": "invoke_ready"}
         assert limit == 6
+        assert rerank is False
         return {
             "matches": [
                 {
@@ -660,14 +662,17 @@ async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
         platform_os=None,
         filters=None,
         limit=10,
+        rerank=True,
     ):
         if query is not None:
             assert query == "show the screenshot"
             assert filters == {"projection": "invoke_ready"}
             assert limit == 6
+            assert rerank is False
             return {"matches": [], "retrieval": {"strategy": "fake_semantic_v1"}}
         assert filters == {"projection": "invoke_ready", "artifact_input": True}
         assert limit == 4
+        assert rerank is True
         return {
             "matches": [
                 {
