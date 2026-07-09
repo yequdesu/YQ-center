@@ -60,7 +60,7 @@
 | PlanStep 对 artifact、多分支任务、operation/approval 归属仍需收敛。 | 已覆盖。 | C04 |
 | 系统提示词粗糙且落后于实现。 | 已补充为独立待办。 | C09 |
 | 是否展示 CoT / 思考过程。 | 不展示原始 CoT；补充可审计 decision trace 和 reasoning summary。 | C09、C11 |
-| 把 artifact 写到指定 Node 路径时选错 source，例如 Windows 目标路径被发送到 Linux source。 | 已补充结构性修复。`capability.invoke` 会拒绝 `source_id` / `node_id` 冲突；`artifact.download_file` 直调必须显式 `node_id`；语义 RAG 返回同一 capability 的 sources 时按 query 命中的 node/platform/source 字段排序；prompt 明确 artifact placement 必须走 `artifact.deploy`。 | C02、C06、C09、C10 |
+| 把 artifact 写到指定 Node 路径时选错 source，例如 Windows 目标路径被发送到 Linux source。 | 已补充结构性修复。`capability.invoke` 会拒绝 `source_id` / `node_id` 冲突；Node-local artifact placement 必须显式 `node_id`；语义 RAG 返回同一 capability 的 sources 时按 query 命中的 node/platform/source 字段排序；prompt 只要求使用 registry/workset 中目标 Node 与 schema 匹配的候选，不绑定具体工具链路。 | C02、C06、C09、C10 |
 
 ## 2. 近期真实问题归档
 
@@ -108,7 +108,7 @@
 
 - 这不是 Windows Node 写文件能力缺失，也不是 Linux 路径校验错误；
 - 根因是工具候选和调用没有把“目标 Node/目标路径归属”作为绑定约束；
-- 结构修复已经落地：`source_id` 与 `node_id` 冲突时返回 `target_node_mismatch`；`artifact.download_file` 直调必须显式 `node_id`；用户级 artifact placement 应使用 `artifact.deploy.preflight` + `artifact.deploy`；YCR semantic search 对同一 capability 的 sources 按 query 命中的 node/platform/source 字段排序。
+- 结构修复已经落地：`source_id` 与 `node_id` 冲突时返回 `target_node_mismatch`；Node-local artifact placement 必须显式 `node_id`；用户级 artifact placement 由 registry/workset 选择目标 Node 与 schema 匹配的候选；YCR semantic search 对同一 capability 的 sources 按 query 命中的 node/platform/source 字段排序。
 
 ## 3. 可执行待办
 
@@ -263,7 +263,7 @@
 - [x] Windows：按文件名查找文件，必须命中 `windows.everything.find`。2026-07-10 远端 session `sess_78d833ec0a6c46bd` 通过：首次 tool call 即 `capability.invoke` -> `everything.find`，`input_keys=["query"]`，无 `pattern` 误参；找到 `E:\yequdesu_project\SillyTavern-1.17.0.zip`。
 - [x] Windows：已知目录列一层内容，必须命中当前高质量文件系统能力，优先 `everything.find`，只有 Everything 不能表达时才回退 `windows.exec.run`。2026-07-10 远端 session `sess_58da5eb7d9a34554` 通过：首轮直接 `capability.invoke` -> `everything.find`，input 使用 `root=F:\Desktop`、`recursive=false`，无 `capability.groups` / `capability.group.open` / `capability.search` / `capability.describe`，直接完成。
 - [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
-- [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
+- [x] Artifact：把 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时，必须选择目标 Node 为 `winClient` 且 schema 满足的 artifact placement 候选，不能选择 Linux source。2026-07-10 远端 session `sess_161ff6d1c0274902` 通过：首轮 `screen.capture @ winClient`，随后 `artifact.download_file @ winClient`，`output_path=F:\Desktop\yq-workset-validation.png`，无 Linux source 漂移，最终 succeeded。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
 - [x] Linux：查文件 hash，必须使用 `linux.exec.run`。2026-07-10 远端 session `sess_9a012c21bc5740cd` 通过：`/etc/hostname` SHA256 为 `a839b15402605681cb77250cb318dcdf34e406f07ad3349472cf0552eb2c4884`，profile 为 `user.readonly`，provider tool surface 全程为 `["capability.invoke"]`。
 - [ ] Artifact：读取文本 artifact 必须使用 `artifact.read_text`，不能全量展开 raw ref。
@@ -342,7 +342,7 @@
 
 - [x] 系统提示词已补充 `exec.run` profile 规则：禁止裸 `admin`，只读诊断权限不足且 `admin.readonly` 可用时继续尝试 `admin.readonly`。
 - [x] 系统提示词已补充目标 Node 绑定规则：用户指定 Node、平台或 node-local path 时，search/describe/invoke 必须携带匹配 `node_id`，多 source capability 只能选择目标 Node 的 source。
-- [x] 系统提示词已补充 artifact placement 规则：用户要把 Center artifact 写入 Node 文件系统时使用 `artifact.deploy.preflight` / `artifact.deploy`，不直接调用 node-local `artifact.download_file` source。
+- [x] 系统提示词已补充 artifact placement 规则：用户要把 Center artifact 写入 Node 文件系统时，使用 registry/workset 中目标 Node 与 schema 匹配的候选；提示词不再绑定某个具体 deploy/download 链路。
 
 实施项：
 

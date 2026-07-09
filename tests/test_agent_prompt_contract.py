@@ -14,8 +14,9 @@ def test_shared_agent_system_prompt_contains_phase5i_tool_selection_rules() -> N
     assert "target is binding" in prompt
     assert "source_id returned for another node is not usable" in prompt
     assert "Before transfer.create, use transfer.preflight" in prompt
-    assert "Before artifact.deploy, use artifact.deploy.preflight" in prompt
-    assert "Do not invoke a node-local artifact.download_file source directly" in prompt
+    assert "the registry/workset candidate whose target node and schema match" in prompt
+    assert "If a preflight capability is available" in prompt
+    assert "artifact placement preflight or write reports target_exists" in prompt
     assert "dispatchable=false" in prompt
     assert "unavailable_reasons" in prompt
     assert "always provide an exact execution profile" in prompt
