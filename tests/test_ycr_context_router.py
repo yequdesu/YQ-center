@@ -6,7 +6,11 @@ from yequ.api.agent_tool_catalog import _center_meta_functions
 from yequ.services.result_ingestion import guard_job_output
 from yequ.ycr.budget import projection_profile_from_settings
 from yequ.ycr.context_packet import build_agent_context_packet
-from yequ.ycr.entities import capability_entities, strip_ycr_entities
+from yequ.ycr.entities import (
+    capability_entities,
+    observation_entities_from_result,
+    strip_ycr_entities,
+)
 from yequ.ycr.projection import project_tool_observation_from_ref, tool_observation_shell
 from yequ.ycr.ref_store import (
     expand_ref,
@@ -742,6 +746,27 @@ def test_result_ingestion_preserves_small_output() -> None:
     output = {"status": "ok", "value": 1}
 
     assert guard_job_output(output, job_id="job_1") == output
+
+
+def test_ycr_observation_entities_extract_artifacts() -> None:
+    entities = observation_entities_from_result(
+        {
+            "artifacts": [
+                {
+                    "artifact_id": "art_1",
+                    "artifact_type": "screenshot",
+                    "title": "screen.png",
+                    "content_type": "image/png",
+                    "node_id": "winClient",
+                    "status": "available",
+                    "size_bytes": 123,
+                }
+            ]
+        }
+    )
+
+    assert entities["artifacts"][0]["artifact_id"] == "art_1"
+    assert entities["artifacts"][0]["node_id"] == "winClient"
 
 
 def test_result_ingestion_bounds_large_string_field() -> None:

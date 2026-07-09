@@ -179,6 +179,8 @@ def _record_tool_completion(state: JsonDict, payload: JsonDict) -> None:
         )
     _record_tool_result_facts(state, payload)
     _record_transfer_fact(state, payload)
+    for capability in _extract_entity_capabilities(payload):
+        _record_working_capability(state, capability)
     for artifact in _extract_artifacts(payload):
         _record_artifact(state, artifact)
     operation = payload.get("operation")
@@ -306,6 +308,8 @@ def _record_artifact(state: JsonDict, payload: JsonDict) -> None:
         "artifact_type": _string(payload.get("artifact_type") or payload.get("kind")),
         "content_type": _string(payload.get("content_type")),
         "node_id": _string(payload.get("node_id")),
+        "status": _string(payload.get("status")),
+        "size_bytes": _int_or_none(payload.get("size_bytes")),
         "line_range": _dict(payload.get("line_range")),
         "matched_lines": _dict(payload.get("matched_lines")),
         "truncated": (
@@ -705,7 +709,48 @@ def _extract_artifacts(payload: JsonDict) -> list[JsonDict]:
     result = payload.get("result")
     if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
         return [item for item in result["artifacts"] if isinstance(item, dict)]
+    entities = _entities_from_payload(payload)
+    entity_artifacts = entities.get("artifacts")
+    if isinstance(entity_artifacts, list):
+        return [item for item in entity_artifacts if isinstance(item, dict)]
     return []
+
+
+def _extract_entity_capabilities(payload: JsonDict) -> list[JsonDict]:
+    entities = _entities_from_payload(payload)
+    capabilities = entities.get("capabilities")
+    if not isinstance(capabilities, list):
+        return []
+    output: list[JsonDict] = []
+    for item in capabilities:
+        if not isinstance(item, dict):
+            continue
+        capability_ref = _string(item.get("capability_ref") or item.get("canonical_name"))
+        if not capability_ref:
+            continue
+        output.append(
+            {
+                "capability_ref": capability_ref,
+                "source_id": _string(item.get("source_id")),
+                "node_id": _string(item.get("node_id")),
+                "status": "ready" if item.get("dispatchable") else "known",
+                "canonical_name": _string(item.get("canonical_name")),
+                "registered_name": _string(item.get("registered_name")),
+                "risk": item.get("risk"),
+                "effect": item.get("effect"),
+            }
+        )
+    return output
+
+
+def _entities_from_payload(payload: JsonDict) -> JsonDict:
+    entities = payload.get("entities")
+    if isinstance(entities, dict):
+        return entities
+    storage = payload.get("ycr_storage")
+    if isinstance(storage, dict) and isinstance(storage.get("entities"), dict):
+        return dict(storage["entities"])
+    return {}
 
 
 def _capability_ref(payload: JsonDict) -> str | None:

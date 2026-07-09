@@ -301,6 +301,9 @@ class AgentToolObservationCollector:
                 "context_router_invalid_response",
                 "YCR tool observation store did not return a shell",
             )
+        entities = stored.get("entities")
+        if isinstance(entities, dict) and entities:
+            shell["entities"] = entities
         self._latest_storage = stored
         self._storage_by_call_id[call_id] = stored
         return shell
@@ -326,6 +329,7 @@ class AgentToolObservationCollector:
                 result=data.get("result"),
                 target_node_id=data.get("target_node_id"),
             )
+            _merge_tool_event_context(shell, data)
             self._results.append(shell)
             self._latest_result = shell
             return True
@@ -346,6 +350,7 @@ class AgentToolObservationCollector:
                 error_code=data.get("error_code"),
                 error_details=data.get("details"),
             )
+            _merge_tool_event_context(shell, data)
             self._results.append(shell)
             self._latest_result = shell
             return True
@@ -364,6 +369,7 @@ class AgentToolObservationCollector:
                 result=waiting_result,
                 target_node_id=data.get("target_node_id"),
             )
+            _merge_tool_event_context(shell, data)
             shell["operation_id"] = data.get("operation_id")
             shell["wait_handle"] = data.get("wait_handle")
             self._results.append(shell)
@@ -383,6 +389,7 @@ class AgentToolObservationCollector:
             result=waiting_result,
             target_node_id=data.get("target_node_id"),
         )
+        _merge_tool_event_context(shell, data)
         shell["approval_id"] = data.get("approval_id")
         self._results.append(shell)
         self._latest_result = shell
@@ -393,3 +400,10 @@ class AgentToolObservationCollector:
             self._results,
             key=lambda result: self._provider_call_order.get(str(result["call_id"]), 999),
         )
+
+
+def _merge_tool_event_context(shell: dict[str, object], data: dict[str, object]) -> None:
+    for key in ["capability_ref", "source_id", "node_id", "input"]:
+        value = data.get(key)
+        if value is not None:
+            shell[key] = value

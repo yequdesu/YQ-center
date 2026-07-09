@@ -413,6 +413,7 @@ async def _execute_and_stream(
             )
         )
     )
+    event_context = _tool_event_context(tc_name, tc_input)
 
     if result.status in {"unavailable", "not_found"}:
         yield make_event(
@@ -420,6 +421,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "error_code": result.error_code or "function_not_available",
                 "message": result.error_message or f"No online node has {tc_name!r}",
                 "target_node_id": result.target_node_id,
@@ -433,6 +435,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "error_code": result.error_code or "policy_denied",
                 "message": result.error_message or "Policy denied",
                 "target_node_id": result.target_node_id,
@@ -451,6 +454,7 @@ async def _execute_and_stream(
                 {
                     "call_id": call_id,
                     "name": tc_name,
+                    **event_context,
                     "operation_id": operation_id,
                     "kind": operation.get("kind"),
                     "status": operation.get("status"),
@@ -465,6 +469,7 @@ async def _execute_and_stream(
                 {
                     "call_id": call_id,
                     "name": tc_name,
+                    **event_context,
                     "operation_id": operation_id,
                     "kind": operation.get("kind"),
                     "status": operation.get("status"),
@@ -479,6 +484,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "approval_id": result.approval_id,
                 "operation_id": operation_id,
                 "target_node_id": result.target_node_id,
@@ -489,6 +495,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "approval_id": result.approval_id,
                 "status": "waiting_approval",
                 "message": result.error_message or "Write operation requires approval",
@@ -507,6 +514,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "operation_id": operation_id,
                 "kind": operation.get("kind"),
                 "status": operation.get("status"),
@@ -521,6 +529,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "operation_id": operation_id,
                 "kind": operation.get("kind"),
                 "status": operation.get("status"),
@@ -543,6 +552,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "operation_id": operation_id,
                 "wait_handle": wait_handle,
                 "result": output,
@@ -557,6 +567,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "result": result.output_data or {},
                 "target_node_id": result.target_node_id,
             },
@@ -569,6 +580,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "error_code": result.error_code or "tool_failed",
                 "message": result.error_message or "Tool execution did not create a job",
                 "target_node_id": result.target_node_id,
@@ -584,6 +596,7 @@ async def _execute_and_stream(
         {
             "call_id": call_id,
             "name": tc_name,
+            **event_context,
             "invocation_id": invocation_id,
             "target_node_id": result.target_node_id,
         },
@@ -593,6 +606,7 @@ async def _execute_and_stream(
         {
             "call_id": call_id,
             "name": tc_name,
+            **event_context,
             "invocation_id": invocation_id,
             "job_id": job_id,
             "target_node_id": result.target_node_id,
@@ -621,6 +635,7 @@ async def _execute_and_stream(
                         {
                             "call_id": call_id,
                             "name": tc_name,
+                            **event_context,
                             "job_id": job_id,
                             "status": "running",
                             "target_node_id": result.target_node_id,
@@ -646,6 +661,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "job_id": job_id,
                 "status": final_status,
                 "target_node_id": result.target_node_id,
@@ -658,6 +674,7 @@ async def _execute_and_stream(
                 {
                     "call_id": call_id,
                     "name": tc_name,
+                    **event_context,
                     "result": invocation.result if invocation else {},
                     "target_node_id": result.target_node_id,
                 },
@@ -680,6 +697,7 @@ async def _execute_and_stream(
             {
                 "call_id": call_id,
                 "name": tc_name,
+                **event_context,
                 "status": final_status,
                 "error_code": error_code,
                 "message": error_message,
@@ -687,6 +705,46 @@ async def _execute_and_stream(
                 "target_node_id": result.target_node_id,
             },
         )
+
+
+def _tool_event_context(tc_name: str, tc_input: dict[str, object]) -> dict[str, object]:
+    if tc_name == "capability.invoke":
+        capability_ref = _string_or_none(tc_input.get("capability_ref")) or tc_name
+        return {
+            "capability_ref": capability_ref,
+            "source_id": _string_or_none(tc_input.get("source_id")),
+            "node_id": _string_or_none(tc_input.get("node_id")),
+            "input": _small_tool_input(tc_input),
+        }
+    return {
+        "capability_ref": tc_name,
+        "source_id": _string_or_none(tc_input.get("source_id")),
+        "node_id": _string_or_none(tc_input.get("node_id")),
+        "input": _small_tool_input(tc_input),
+    }
+
+
+def _small_tool_input(value: dict[str, object]) -> dict[str, object]:
+    output: dict[str, object] = {}
+    for key in ["capability_ref", "source_id", "node_id", "target_node_id"]:
+        item = value.get(key)
+        if item is not None:
+            output[key] = item
+    nested = value.get("input")
+    if isinstance(nested, dict):
+        output["input_keys"] = sorted(str(key) for key in nested)[:20]
+        for key in ["profile", "artifact_id", "output_path", "path", "mode"]:
+            item = nested.get(key)
+            if item is not None:
+                output[key] = item
+    return output
+
+
+def _string_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _record_tool_exception(

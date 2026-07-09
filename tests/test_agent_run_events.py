@@ -459,6 +459,81 @@ async def test_agent_run_reducer_extracts_transfer_and_artifact_facts(
 
 
 @pytest.mark.asyncio
+async def test_agent_run_reducer_uses_ycr_entities_for_artifacts_and_capabilities(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_ycr_entities"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="ycr-entities",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="winClient",
+        user_message="capture and show a screenshot",
+        trace_id="trace-ycr-entities",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.completed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_screen",
+            "function_name": "capability.invoke",
+            "capability_ref": "screen.capture",
+            "source_id": "src_screen",
+            "target_node_id": "winClient",
+            "status": "succeeded",
+            "entities": {
+                "artifacts": [
+                    {
+                        "artifact_id": "art_screen",
+                        "artifact_type": "screenshot",
+                        "title": "windows-screen-capture.png",
+                        "content_type": "image/png",
+                        "node_id": "winClient",
+                        "status": "available",
+                        "size_bytes": 1234,
+                    }
+                ],
+                "capabilities": [
+                    {
+                        "capability_ref": "artifact.present",
+                        "canonical_name": "artifact.present",
+                        "source_id": "src_present",
+                        "dispatchable": True,
+                        "effect": "read",
+                        "risk": "safe",
+                    }
+                ],
+            },
+        },
+    )
+
+    state = get_task_state(run)
+    assert state["artifacts"][0]["artifact_id"] == "art_screen"
+    assert state["working_set"]["artifacts"][0]["artifact_id"] == "art_screen"
+    capability_refs = {
+        item["capability_ref"] for item in state["working_set"]["capabilities"]
+    }
+    assert "screen.capture" in capability_refs
+    assert "artifact.present" in capability_refs
+    assert not [fact for fact in state["facts"] if fact["kind"] == "exec.run"]
+
+
+@pytest.mark.asyncio
 async def test_agent_run_reducer_extracts_exec_refs_tails_and_file_missing_fact(
     db_session: AsyncSession,
 ) -> None:

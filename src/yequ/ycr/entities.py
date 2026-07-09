@@ -67,6 +67,32 @@ def metadata_from_result(result: object) -> JsonDict:
     return {"ycr_entities": normalized} if normalized else {}
 
 
+def observation_entities_from_result(result: object) -> JsonDict:
+    if not isinstance(result, dict):
+        return {}
+    entities: JsonDict = {}
+    normalized = normalize_entities(result.get("ycr_entities"))
+    if normalized:
+        entities.update(normalized)
+    artifacts = _artifact_entities_from_result(result)
+    if artifacts:
+        entities["artifacts"] = artifacts
+    operation = result.get("operation")
+    if isinstance(operation, dict):
+        operation_id = _string_or_none(operation.get("operation_id"))
+        if operation_id:
+            entities["operations"] = [
+                {
+                    "entity_type": "operation",
+                    "operation_id": operation_id,
+                    "kind": _string_or_none(operation.get("kind")),
+                    "status": _string_or_none(operation.get("status")),
+                    "title": _truncate(_string_or_none(operation.get("title")) or "", 220),
+                }
+            ]
+    return entities
+
+
 def strip_ycr_entities(result: object) -> object:
     if not isinstance(result, dict) or "ycr_entities" not in result:
         return result
@@ -129,6 +155,41 @@ def _normalize_capability_entity(value: dict[str, Any]) -> JsonDict | None:
         "effect": value.get("effect"),
         "description": _truncate(_string_or_none(value.get("description")) or "", 220),
     }
+
+
+def _artifact_entities_from_result(result: dict[str, object]) -> list[JsonDict]:
+    artifacts: list[JsonDict] = []
+    for item in _artifact_candidates(result):
+        artifact_id = _string_or_none(item.get("artifact_id"))
+        if not artifact_id:
+            continue
+        artifacts.append(
+            {
+                "entity_type": "artifact",
+                "artifact_id": artifact_id,
+                "artifact_type": _string_or_none(item.get("artifact_type") or item.get("kind")),
+                "title": _truncate(_string_or_none(item.get("title")) or "", 220),
+                "content_type": _string_or_none(item.get("content_type")),
+                "node_id": _string_or_none(item.get("node_id")),
+                "status": _string_or_none(item.get("status")),
+                "size_bytes": (
+                    item.get("size_bytes") if isinstance(item.get("size_bytes"), int) else None
+                ),
+                "summary": item.get("summary") if isinstance(item.get("summary"), dict) else {},
+            }
+        )
+    return artifacts[:WORKING_SET_LIMIT]
+
+
+def _artifact_candidates(result: dict[str, object]) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, list):
+        candidates.extend(item for item in artifacts if isinstance(item, dict))
+    artifact = result.get("artifact")
+    if isinstance(artifact, dict):
+        candidates.append(artifact)
+    return candidates
 
 
 def _string_or_none(value: object) -> str | None:

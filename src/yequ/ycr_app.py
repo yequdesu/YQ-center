@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field
 from yequ.config import get_settings
 from yequ.db import async_session_factory
 from yequ.ycr.budget import projection_profile_from_settings
-from yequ.ycr.entities import metadata_from_result, strip_ycr_entities
+from yequ.ycr.entities import (
+    metadata_from_result,
+    observation_entities_from_result,
+    strip_ycr_entities,
+)
 from yequ.ycr.projection import tool_observation_shell
 from yequ.ycr.rag_cache import rag_cache_stats
 from yequ.ycr.ref_store import (
@@ -389,9 +393,11 @@ async def store_tool_observation(body: ToolObservationRequest) -> dict[str, obje
             )
             await db.commit()
             asyncio.create_task(_index_ref_background(str(raw_ref["ref_id"])))
+            entities = observation_entities_from_result(body.result)
             return {
                 "raw_ref": raw_ref,
                 "shell": shell,
+                "entities": entities,
                 "ycr": {
                     "stored": True,
                     "projection_policy": "tool_observation_raw_ref_v1",

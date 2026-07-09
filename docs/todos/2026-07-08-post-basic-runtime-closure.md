@@ -1,8 +1,8 @@
 # Agent Runtime 基础实现后收口待办
 
-状态：active todo，部分收口实现已完成  
-日期：2026-07-08  
-范围：Center / Agent Runtime / YCR / Console / Linux Node / Windows Node  
+状态：active todo，部分收口实现已完成
+日期：2026-07-08
+范围：Center / Agent Runtime / YCR / Console / Linux Node / Windows Node
 
 本文回答“基本完成但未完全完成”的剩余工作。当前不是推翻重做阶段：Run/Turn、Plan、Operation notification、YCR Session State、Tool Candidate Loader、Center meta tool 分组、`exec.run` 和基础前端面板已经可用。未完成的是复杂任务稳定收敛、真实任务验收、少量前端业务残留、`exec.run` profile 使用链路、系统提示词与当前实现一致性、以及耗时归因硬化。
 
@@ -114,8 +114,8 @@
 
 ### C01 `exec.run` profile contract 闭环
 
-状态：基础实现已完成，待真实会话验收  
-归属：Agent prompt policy / capability contract / Center validation / Linux Node / Windows Node  
+状态：基础实现已完成，待真实会话验收
+归属：Agent prompt policy / capability contract / Center validation / Linux Node / Windows Node
 
 目标：
 
@@ -140,8 +140,8 @@
 
 ### C02 Replanner 继续/完成边界收紧
 
-状态：基础实现已完成，待真实会话验收  
-归属：Center Agent Runtime  
+状态：基础实现已完成，待真实会话验收
+归属：Center Agent Runtime
 
 目标：
 
@@ -166,8 +166,8 @@
 
 ### C03 TaskState / Reducer 事实抽取增强
 
-状态：基础实现已完成，待真实会话验收  
-归属：Center Observation Reducer  
+状态：基础实现已完成，待真实会话验收
+归属：Center Observation Reducer
 
 目标：
 
@@ -178,6 +178,7 @@
 - [x] `exec.run` 结果抽取：profile、command、exit_code、permission_denied、unsupported_profile/schema_error、可用 profile。
 - [x] `exec.run` 结果抽取继续增强：stdout_ref、stderr_tail、file_not_found、raw_ref_id。
 - [x] `artifact.read_text` 结果抽取：artifact_id、line_range、matched_lines、truncated、read_ref。
+- [x] YCR tool observation typed entities 进入 Center TaskState：`artifact` / `capability` 轻量实体从 YCR shell 写入 AgentRunEvent，Reducer 不再依赖 provider projection 文本，也不把 `capability.invoke` wrapper 误记为 `exec.run`。
 - [x] `operation` 终态抽取：operation_id、kind、domain_status、error_code、error_message、artifacts。
 - [x] `transfer` 状态抽取：transfer_id、source/target、size/hash、status、failed_side、resumable。
 - [x] Reducer 只使用 typed result shape，不解析 provider projection 文本。
@@ -185,12 +186,12 @@
 验收：
 
 - [x] Runtime 面板 facts/blockers 能解释为什么继续、等待或失败。
-- [ ] 自动汇报和后续 LLM 不需要重新 search/describe 才能知道上一工具的关键事实，需要真实任务验收。
+- [ ] 自动汇报和后续 LLM 不需要重新 search/describe 才能知道上一工具的关键事实，需要真实任务验收。代码层已补 YCR typed entities -> TaskState artifacts/working_set，待远端 Console 验证 Runtime 面板 artifacts 不再为 0。
 
 ### C04 PlanStep 归属细化
 
-状态：基础实现已完成，待真实会话验收  
-归属：Agent Plan / Observation Reducer / Console  
+状态：基础实现已完成，待真实会话验收
+归属：Agent Plan / Observation Reducer / Console
 
 目标：
 
@@ -211,8 +212,8 @@
 
 ### C05 Console 前端剩余业务状态清理
 
-状态：基础实现已完成，待真实 Console 验收  
-归属：Console  
+状态：基础实现已完成，待真实 Console 验收
+归属：Console
 
 目标：
 
@@ -245,8 +246,8 @@
 
 ### C06 真实任务验收矩阵
 
-状态：待执行  
-归属：端到端验收  
+状态：执行中
+归属：端到端验收
 
 目标：
 
@@ -256,7 +257,7 @@
 
 - [ ] Windows：按文件名查找文件，必须命中 `windows.everything.find`。
 - [ ] Windows：已知目录列一层内容，必须使用 `windows.exec.run`。
-- [ ] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。
+- [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
 - [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
 - [ ] Linux：查文件 hash，必须使用 `linux.exec.run`。
@@ -267,14 +268,14 @@
 
 记录要求：
 
-- [ ] 每个场景保存 session_id。
+- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`。
 - [ ] 每个失败场景写明失败层：LLM 决策、Replanner、YCR、Center runtime、Node runtime、前端展示。
 - [ ] 验收通过后更新本文件状态。
 
 ### C07 耗时归因硬化
 
-状态：基础实现已完成，待真实 session 读日志验收  
-归属：session audit / Agent Runtime / YCR  
+状态：基础实现已完成，待真实 session 读日志验收
+归属：session audit / Agent Runtime / YCR
 
 目标：
 
@@ -298,8 +299,8 @@
 
 ### C08 Meta tool 默认输出继续审计
 
-状态：基础实现已完成，待真实任务验收  
-归属：Center meta tools / YCR behavior  
+状态：基础实现已完成，待真实任务验收
+归属：Center meta tools / YCR behavior
 
 目标：
 
@@ -322,8 +323,8 @@
 
 ### C09 Prompt Policy 与 Decision Trace 收敛
 
-状态：基础实现已完成，待真实 session 验收  
-归属：Agent prompt policy / Provider adapter / AgentRunEvent / Console  
+状态：基础实现已完成，待真实 session 验收
+归属：Agent prompt policy / Provider adapter / AgentRunEvent / Console
 
 目标：
 
@@ -356,8 +357,8 @@
 
 ### C10 YCR / RAG 收益与边界验收
 
-状态：待执行  
-归属：YCR / Agent Runtime / Console / session audit  
+状态：执行中
+归属：YCR / Agent Runtime / Console / session audit
 
 目标：
 
@@ -368,7 +369,7 @@
 
 - [x] 审查 YCR service 入口和 `build-turn` 输出，确认不输出 `continue`、`wait`、`complete`、`fail` 等生命周期决策。已移除 `tool_strategy.wait_approval` / `tool_strategy.wait_operation`，pending 状态只保留在 TaskState，由 Runtime/Replanner 决策。
 - [x] 在 session audit 中记录每轮 `capability.groups`、`capability.group.open`、`capability.search`、`capability.describe` 次数。实现为 `agent.tool_calls.planned.counts`，记录每轮 provider 计划调用的所有工具名计数。
-- [ ] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。
+- [x] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。2026-07-10 远端 Console 验收：修复前 `sess_54e` 仍出现 `capability.groups` + `capability.group.open` + 多次 `capability.invoke`；修复后 `sess_5b6` 直接使用 working set 候选，只执行 2 次 `capability.invoke`，无 group/open/search。
 - [x] 语义 Tool RAG 返回同一 capability 的多个 sources 时，按 query 命中的 `node_id`、`platform_os`、`platform_arch`、`registered_name`、`plugin_id` 排序，避免正确 capability 命中但错误 Node source 排前。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
@@ -378,7 +379,7 @@
 
 验收：
 
-- [ ] Windows 截图任务不需要重复 search/group/open。
+- [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
@@ -386,8 +387,8 @@
 
 ### C11 代码清理与架构干净门禁
 
-状态：待执行  
-归属：Center / Agent Runtime / YCR / Console / Nodes / 文档  
+状态：待执行
+归属：Center / Agent Runtime / YCR / Console / Nodes / 文档
 
 目标：
 
