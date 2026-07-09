@@ -341,9 +341,9 @@ Linux Node 分类：
 - [ ] Windows：按文件名查找文件，必须命中 `windows.everything.find`。
 - [ ] Windows：已知目录列一层内容，必须命中 `windows.exec.run`。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`。
-- [ ] Linux：查文件 hash，必须使用 `linux.exec.run`。
+- [x] Linux：查文件 hash，必须使用 `linux.exec.run`。2026-07-10 远端 session `sess_9a012c21bc5740cd` 通过：`/etc/hostname` SHA256 为 `a839b15402605681cb77250cb318dcdf34e406f07ad3349472cf0552eb2c4884`，profile 为 `user.readonly`。
 - [ ] Transfer：Windows -> Linux 传输仍走 `transfer.create` 和 yq-croc runtime，不走 `exec.run`。
-- [ ] 任意 `exec.run`：必须触发 approval。
+- [x] 任意 `exec.run`：必须触发 approval。2026-07-10 远端 session `sess_9a012c21bc5740cd` 中 `linux.exec.run` 创建 approval `apv_f577079e9afa49e6` 并通过 `approve-and-run` 执行。
 
 验收：以上任务在 Console Agent 中完成，YCR projection 正常，provider history 不出现大 raw 输出。
 

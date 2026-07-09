@@ -185,11 +185,13 @@
 - [x] `operation` 终态抽取：operation_id、kind、domain_status、error_code、error_message、artifacts。
 - [x] `transfer` 状态抽取：transfer_id、source/target、size/hash、status、failed_side、resumable。
 - [x] Reducer 只使用 typed result shape，不解析 provider projection 文本。
+- [x] Operation terminal event 会继承 waiting metadata 并清理已被成功操作修复的 repairable blocker；operation report reconcile 会追加 `run.completed` 事件，使 TaskState completion、last decision 和 run.status 一致。
 
 验收：
 
 - [x] Runtime 面板 facts/blockers 能解释为什么继续、等待或失败。
 - [ ] 自动汇报和后续 LLM 不需要重新 search/describe 才能知道上一工具的关键事实，需要真实任务验收。代码层已补 YCR typed entities -> TaskState artifacts/working_set，待远端 Console 验证 Runtime 面板 artifacts 不再为 0。
+- [x] Operation 完成后的原始 waiting run 不保留过期 repairable blocker。2026-07-10 远端 session `sess_9a012c21bc5740cd` 复验通过：最终 `completion=complete`、`blockers=0`、`last_decision=complete`。
 
 ### C04 PlanStep 归属细化
 
@@ -263,16 +265,16 @@
 - [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
 - [ ] Artifact：把上一张 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时必须走 `artifact.deploy.preflight` / `artifact.deploy`，不能选择 Linux source。
 - [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
-- [ ] Linux：查文件 hash，必须使用 `linux.exec.run`。
+- [x] Linux：查文件 hash，必须使用 `linux.exec.run`。2026-07-10 远端 session `sess_9a012c21bc5740cd` 通过：`/etc/hostname` SHA256 为 `a839b15402605681cb77250cb318dcdf34e406f07ad3349472cf0552eb2c4884`，profile 为 `user.readonly`，provider tool surface 全程为 `["capability.invoke"]`。
 - [ ] Artifact：读取文本 artifact 必须使用 `artifact.read_text`，不能全量展开 raw ref。
 - [ ] Transfer：Windows -> Linux 传输仍走 `transfer.preflight` / `transfer.create` / yq-croc runtime，不走 `exec.run`。
-- [ ] 任意 `exec.run`：必须触发通用 approval。
+- [x] 任意 `exec.run`：必须触发通用 approval。2026-07-10 远端 session `sess_9a012c21bc5740cd` 中 `linux.exec.run` 生成 `apv_f577079e9afa49e6` 并通过 `approve-and-run` 执行。
 - [ ] Approval 通过后：后端自动推进或自动汇报，不要求用户手动 Append。
 - [x] Approval/Operation 自动恢复：验证恢复 turn 的 audit 中 `agent.ycr.build_turn.completed.tool_surface.provider_tool_count` 非 0，且 `tool_strategy=reuse_working_set` 时 provider tools 为 `["capability.invoke"]`。2026-07-10 远端 session `sess_dc5967941a2a4510` 通过。
 
 记录要求：
 
-- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`。
+- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
 - [ ] 每个失败场景写明失败层：LLM 决策、Replanner、YCR、Center runtime、Node runtime、前端展示。
 - [ ] 验收通过后更新本文件状态。
 
@@ -299,7 +301,7 @@
 
 - [x] 对任意最新 session 能列出前三个耗时段。
 - [x] 首次消息慢、工具链慢、operation 等待慢、operation report LLM 可以从 `context_load` / `ycr` / `provider` / `tools` / `operation_wait_segments` / `operation_report` 中区分。
-- [ ] approval wait、Node job wait、transfer wait 在真实 Console 会话中完成一次人工验收。
+- [ ] approval wait、Node job wait、transfer wait 在真实 Console 会话中完成一次人工验收。已通过 API/远端会话验证 approval wait + Node job wait：`sess_9a012c21bc5740cd`；仍需 Console 人工刷新展示验收和 transfer wait。
 
 ### C08 Meta tool 默认输出继续审计
 
@@ -387,6 +389,7 @@
 - [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open。工具面收窄修复后，2026-07-10 远端 Console `sess_289` 验收通过：每轮 `provider_tool_count=1`，实际 provider tools 仅 `capability.invoke`，计划工具调用为 `capability.invoke:2`，无 `capability.groups` / `capability.group.open` / `capability.search`，`ARTIFACTS=1`。
 - [x] Operation resume 入口复验：approval 通过后自动恢复 turn 的 provider tool surface 必须与普通 turn 一致，不能再出现 `provider_tool_count=0`。2026-07-10 远端 session `sess_dc5967941a2a4510` 通过。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
+- [x] Linux hash 任务在定位 `exec.run` 后不重复打开无关工具组。`sess_9a012c21bc5740cd` 中计划工具调用为 `capability.invoke`、`capability.invoke`、report turn 无工具调用；无 `capability.groups` / `capability.group.open` / `capability.search`。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
 - [x] YCR 代码中没有生命周期决策分支。
