@@ -155,6 +155,70 @@ async def test_operation_terminal_event_clears_repaired_schema_blocker(
 
 
 @pytest.mark.asyncio
+async def test_tool_success_clears_matching_non_terminal_execution_blocker(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_tool_repairs_execution_blocker"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="tool-repairs-execution-blocker",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="winClient",
+        user_message="find a file",
+        trace_id="trace-tool-repairs-execution-blocker",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.failed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_bad",
+            "function_name": "capability.invoke",
+            "capability_ref": "everything.find",
+            "target_node_id": "winClient",
+            "error_code": "execution_failed",
+            "message": "windows.everything.find requires query or root",
+        },
+    )
+    state = get_task_state(run)
+    assert state["blockers"]
+    assert state["blockers"][0]["terminal"] is False
+    assert state["blockers"][0]["repairable"] is False
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.completed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_fixed",
+            "function_name": "capability.invoke",
+            "capability_ref": "everything.find",
+            "target_node_id": "winClient",
+            "status": "succeeded",
+        },
+    )
+
+    state = get_task_state(run)
+    assert state["blockers"] == []
+    assert state["last_decision"]["action"] == "continue_llm"
+
+
+@pytest.mark.asyncio
 async def test_agent_run_events_bind_plan_step_by_tool_and_operation(
     db_session: AsyncSession,
 ) -> None:

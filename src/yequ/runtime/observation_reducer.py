@@ -202,7 +202,6 @@ def _resolve_repaired_blockers(state: JsonDict, payload: JsonDict) -> None:
         for item in blockers
         if not (
             isinstance(item, dict)
-            and item.get("repairable") is True
             and item.get("terminal") is not True
             and _blocker_repaired_by_success(
                 item,
