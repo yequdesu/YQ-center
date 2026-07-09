@@ -165,7 +165,7 @@
 - [x] WireGuard/SSH 日志读取任务遇到 `permission denied` 后自动尝试更高只读 profile。prompt contract 已覆盖，待真实会话验收。
 - [x] 工具返回 schema 错误时不直接给用户“建议下一步”，而是修正后继续。prompt contract 和 repairable blocker gate 已覆盖。
 - [x] 无可执行路径时才终止为 failed 或 ask_user。Replanner/final-candidate gate 已覆盖，待真实会话验收。
-- [ ] Operation/Approval 完成后的后端自动恢复 turn 必须继续使用 working set，不能出现 `provider_tools=[]` 或把 tool call 协议文本输出成普通回答；代码已修复，待远端 Console 真实会话复验。
+- [x] Operation/Approval 完成后的后端自动恢复 turn 必须继续使用 working set，不能出现 `provider_tools=[]` 或把 tool call 协议文本输出成普通回答。2026-07-10 远端 session `sess_dc5967941a2a4510` 复验通过：operation report turn 中 `bootstrap_tool_count=3`、`provider_tool_count=1`、`provider_tools=["capability.invoke"]`。
 
 ### C03 TaskState / Reducer 事实抽取增强
 
@@ -268,7 +268,7 @@
 - [ ] Transfer：Windows -> Linux 传输仍走 `transfer.preflight` / `transfer.create` / yq-croc runtime，不走 `exec.run`。
 - [ ] 任意 `exec.run`：必须触发通用 approval。
 - [ ] Approval 通过后：后端自动推进或自动汇报，不要求用户手动 Append。
-- [ ] Approval/Operation 自动恢复：验证恢复 turn 的 audit 中 `agent.ycr.build_turn.completed.tool_surface.provider_tool_count` 非 0，且 `tool_strategy=reuse_working_set` 时 provider tools 为 `["capability.invoke"]`。
+- [x] Approval/Operation 自动恢复：验证恢复 turn 的 audit 中 `agent.ycr.build_turn.completed.tool_surface.provider_tool_count` 非 0，且 `tool_strategy=reuse_working_set` 时 provider tools 为 `["capability.invoke"]`。2026-07-10 远端 session `sess_dc5967941a2a4510` 通过。
 
 记录要求：
 
@@ -385,7 +385,7 @@
 验收：
 
 - [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open。工具面收窄修复后，2026-07-10 远端 Console `sess_289` 验收通过：每轮 `provider_tool_count=1`，实际 provider tools 仅 `capability.invoke`，计划工具调用为 `capability.invoke:2`，无 `capability.groups` / `capability.group.open` / `capability.search`，`ARTIFACTS=1`。
-- [ ] Operation resume 入口复验：approval 通过后自动恢复 turn 的 provider tool surface 必须与普通 turn 一致，不能再出现 `provider_tool_count=0`。
+- [x] Operation resume 入口复验：approval 通过后自动恢复 turn 的 provider tool surface 必须与普通 turn 一致，不能再出现 `provider_tool_count=0`。2026-07-10 远端 session `sess_dc5967941a2a4510` 通过。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
