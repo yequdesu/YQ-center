@@ -123,6 +123,33 @@ def _function_debug_summary(func: AgentFunction) -> dict[str, object]:
     }
 
 
+def _provider_functions_for_tool_strategy(
+    available_functions: list[AgentFunction],
+    tool_strategy: dict[str, object],
+) -> list[AgentFunction]:
+    """Return the actual provider tool surface for this turn.
+
+    YCR working-set candidates are a loaded tool surface, not a hint layered on
+    top of bootstrap discovery. When the current turn already has dispatchable
+    candidates, keep only the invoke gateway visible so the model does not
+    spend extra steps opening groups for tools it already has.
+    """
+
+    if (
+        tool_strategy.get("mode") == "reuse_working_set"
+        and isinstance(tool_strategy.get("candidate_count"), int)
+        and int(tool_strategy["candidate_count"]) > 0
+    ):
+        invoke = [
+            function
+            for function in available_functions
+            if function.name == "capability.invoke"
+        ]
+        if invoke:
+            return invoke
+    return available_functions
+
+
 def _provider_system_prompt(
     provider: AgentProvider,
     functions: list[AgentFunction],
@@ -661,6 +688,10 @@ async def agent_invoke_stream(
                 provider_messages = _agent_messages_from_ycr_packet(context_packet)
                 provider_context = _as_object_dict(context_packet.get("provider_context", {}))
                 tool_strategy = _as_object_dict(provider_context.get("tool_strategy"))
+                provider_available_functions = _provider_functions_for_tool_strategy(
+                    available_functions,
+                    tool_strategy,
+                )
                 record_session_audit_event(
                     session_id,
                     "agent.ycr.build_turn.completed",
@@ -683,6 +714,13 @@ async def agent_invoke_stream(
                             "mode": tool_strategy.get("mode"),
                             "reason": tool_strategy.get("reason"),
                             "candidate_count": tool_strategy.get("candidate_count"),
+                        },
+                        "tool_surface": {
+                            "bootstrap_tool_count": len(available_functions),
+                            "provider_tool_count": len(provider_available_functions),
+                            "provider_tools": [
+                                function.name for function in provider_available_functions
+                            ],
                         },
                     },
                     trace_id=trace_id,
@@ -743,7 +781,7 @@ async def agent_invoke_stream(
                 _ycr_context_event_data(
                     provider,
                     messages=provider_messages,
-                    available_functions=available_functions,
+                    available_functions=provider_available_functions,
                     capability_context=provider_context.get("capability_context")
                     if isinstance(provider_context.get("capability_context"), dict)
                     else capability_context,
@@ -776,7 +814,7 @@ async def agent_invoke_stream(
             try:
                 async for chunk in provider.invoke_stream(
                     "",
-                    available_functions=available_functions,
+                    available_functions=provider_available_functions,
                     messages=provider_messages,
                     context={
                         "call_path": list(call_path),
@@ -882,7 +920,7 @@ async def agent_invoke_stream(
                 _ycr_context_event_data(
                     provider,
                     messages=provider_messages,
-                    available_functions=available_functions,
+                    available_functions=provider_available_functions,
                     capability_context=provider_context.get("capability_context")
                     if isinstance(provider_context.get("capability_context"), dict)
                     else capability_context,

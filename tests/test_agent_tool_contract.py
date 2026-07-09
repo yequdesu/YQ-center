@@ -8,6 +8,46 @@ not leak into provider tools.
 import pytest
 
 
+def test_provider_tool_surface_keeps_bootstrap_when_working_set_empty():
+    from yequ.agent.agent_stream import _provider_functions_for_tool_strategy
+    from yequ.agent.provider import AgentFunction
+
+    functions = [
+        AgentFunction(name="capability.groups", description="", input_schema={}),
+        AgentFunction(name="capability.group.open", description="", input_schema={}),
+        AgentFunction(name="capability.invoke", description="", input_schema={}),
+    ]
+
+    selected = _provider_functions_for_tool_strategy(
+        functions,
+        {"mode": "bootstrap_discovery", "candidate_count": 0},
+    )
+
+    assert [function.name for function in selected] == [
+        "capability.groups",
+        "capability.group.open",
+        "capability.invoke",
+    ]
+
+
+def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
+    from yequ.agent.agent_stream import _provider_functions_for_tool_strategy
+    from yequ.agent.provider import AgentFunction
+
+    functions = [
+        AgentFunction(name="capability.groups", description="", input_schema={}),
+        AgentFunction(name="capability.group.open", description="", input_schema={}),
+        AgentFunction(name="capability.invoke", description="", input_schema={}),
+    ]
+
+    selected = _provider_functions_for_tool_strategy(
+        functions,
+        {"mode": "reuse_working_set", "candidate_count": 2},
+    )
+
+    assert [function.name for function in selected] == ["capability.invoke"]
+
+
 def test_agent_function_uses_capability_description_and_hides_internal_fields():
     from yequ.api.routes.agent import _agent_function_from_capability
     from yequ.models.capability import Capability

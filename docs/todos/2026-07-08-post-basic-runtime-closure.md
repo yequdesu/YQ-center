@@ -369,7 +369,7 @@
 
 - [x] 审查 YCR service 入口和 `build-turn` 输出，确认不输出 `continue`、`wait`、`complete`、`fail` 等生命周期决策。已移除 `tool_strategy.wait_approval` / `tool_strategy.wait_operation`，pending 状态只保留在 TaskState，由 Runtime/Replanner 决策。
 - [x] 在 session audit 中记录每轮 `capability.groups`、`capability.group.open`、`capability.search`、`capability.describe` 次数。实现为 `agent.tool_calls.planned.counts`，记录每轮 provider 计划调用的所有工具名计数。
-- [x] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。2026-07-10 远端 Console 验收：修复前 `sess_54e` 仍出现 `capability.groups` + `capability.group.open` + 多次 `capability.invoke`；修复后 `sess_5b6` 直接使用 working set 候选，只执行 2 次 `capability.invoke`，无 group/open/search。
+- [x] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。2026-07-10 远端 Console 验收发现 `sess_5b6` 可直接使用 working set 候选，但后续 `sess_89c` 在截图已生成后仍调用 `capability.groups` / `capability.group.open` 寻找 `artifact.present`，说明“提示优先候选”不稳定。已改为通用工具面控制：`tool_strategy=reuse_working_set` 且存在候选时，本轮 provider 只暴露 `capability.invoke`；空 working set 或候选不足时才保留 `capability.groups` / `capability.group.open` 渐进发现。
 - [x] 语义 Tool RAG 返回同一 capability 的多个 sources 时，按 query 命中的 `node_id`、`platform_os`、`platform_arch`、`registered_name`、`plugin_id` 排序，避免正确 capability 命中但错误 Node source 排前。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
@@ -379,7 +379,7 @@
 
 验收：
 
-- [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`。
+- [ ] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open，已完成工具面收窄修复，待重新远端验收。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。
