@@ -13,8 +13,9 @@ from sqlalchemy import select
 
 import yequ.db as yequ_db
 from yequ.agent.agent_stream import agent_invoke_stream, is_session_running
+from yequ.agent.provider import AgentFunction
 from yequ.api.agent_providers import resolve_provider
-from yequ.api.agent_tool_catalog import _agent_debug_metadata
+from yequ.api.agent_tool_catalog import _agent_debug_metadata, _available_functions
 from yequ.logconfig import get_logger
 from yequ.models.agent_message import AgentMessage
 from yequ.models.agent_run import AgentRun
@@ -22,6 +23,7 @@ from yequ.models.agent_turn import AgentTurn
 from yequ.models.session import Session
 from yequ.runtime.agent_plan_service import update_agent_plan_status
 from yequ.runtime.agent_run_service import update_agent_run_status
+from yequ.runtime.capability_context import build_capability_context
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
 from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
 from yequ.services.operation_service import OperationService
@@ -29,7 +31,7 @@ from yequ.services.session_audit import record_session_audit_event
 
 log = get_logger(__name__)
 
-REPORT_MAX_STEPS = 1
+REPORT_MAX_STEPS = 4
 REPORT_MAX_DEPTH = 1
 REPORT_MAX_TOTAL_DURATION_SEC = 120
 
@@ -122,6 +124,7 @@ async def report_operation_notification(notification: dict[str, object]) -> None
         provider_name = await _resolve_report_provider(session_id)
         provider = await resolve_provider(provider_name)
         execution_mode = session.execution_mode
+        tool_context = await _load_report_tool_context(target_node_id=None)
         prompt = _operation_report_prompt(
             operation_observation,
             preferred_language=await _preferred_language(session_id),
@@ -134,6 +137,8 @@ async def report_operation_notification(notification: dict[str, object]) -> None
             notification_id=notification_id,
             execution_mode=execution_mode,
             operation_observation=operation_observation,
+            available_functions=tool_context.available_functions,
+            capability_context=tool_context.capability_context,
         )
         async with yequ_db.async_session_factory() as db:
             await reconcile_waiting_operation_agent_state(
@@ -171,6 +176,8 @@ async def _run_internal_report_turn(
     notification_id: str,
     execution_mode: str,
     operation_observation: dict[str, object],
+    available_functions: list[AgentFunction],
+    capability_context: dict[str, object],
 ) -> str:
     turn_id: str | None = None
     completed = False
@@ -193,8 +200,8 @@ async def _run_internal_report_turn(
         user_visible_prompt="",
         target_node_id=None,
         suppress_user_message=True,
-        available_functions=[],
-        capability_context={},
+        available_functions=available_functions,
+        capability_context=capability_context,
         call_path=[],
         max_depth=REPORT_MAX_DEPTH,
         max_steps=REPORT_MAX_STEPS,
@@ -230,10 +237,10 @@ async def _run_internal_report_turn(
                     "operation_observation": operation_observation,
                     "prompt_context": _agent_debug_metadata(
                         provider,
-                        available_functions=[],
+                        available_functions=available_functions,
                         target_node_id=None,
                         execution_mode=execution_mode,
-                        capability_context={},
+                        capability_context=capability_context,
                     ),
                 },
             )
@@ -264,6 +271,34 @@ async def _run_internal_report_turn(
         event_time=datetime.now(UTC),
     )
     return turn_id
+
+
+class _ReportToolContext:
+    def __init__(
+        self,
+        *,
+        available_functions: list[AgentFunction],
+        capability_context: dict[str, object],
+    ) -> None:
+        self.available_functions = available_functions
+        self.capability_context = capability_context
+
+
+async def _load_report_tool_context(
+    *,
+    target_node_id: str | None,
+) -> _ReportToolContext:
+    async with yequ_db.async_session_factory() as db:
+        available = await _available_functions(db, target_node_id=target_node_id)
+        capability_context = await build_capability_context(
+            db,
+            available_functions=available,
+            target_node_id=target_node_id,
+        )
+    return _ReportToolContext(
+        available_functions=available,
+        capability_context=capability_context,
+    )
 
 
 async def reconcile_waiting_operation_agent_state(
@@ -505,10 +540,12 @@ def _operation_report_prompt(
 ) -> str:
     language_rule = "用中文汇报。" if preferred_language == "zh" else "Report in English."
     return (
-        "系统内部任务：根据下面的 Center Operation 终态生成一次用户可见汇报。"
+        "系统内部任务：Center Operation 已进入终态。根据下面的 observation 恢复并推进用户任务。"
         f"{language_rule}"
-        "只总结最终状态、关键结果、必要下一步；不要调用工具，不要重新执行操作，"
-        "不要输出调试字段。Operation observation JSON follows:\n"
+        "如果原任务已经满足，给出简洁最终汇报；如果原任务仍缺少必要事实，继续使用当前可用工具完成任务。"
+        "不要把工具调用协议、JSON tool_calls 或调试字段写成普通文本；"
+        "需要调用工具时必须使用正式 tool call。"
+        "Operation observation JSON follows:\n"
         f"{json.dumps(operation_observation, ensure_ascii=False)}"
     )
 

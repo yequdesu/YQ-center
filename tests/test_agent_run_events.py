@@ -312,6 +312,26 @@ async def test_replanner_blocks_final_candidate_when_error_is_repairable(
     assert state["blockers"][0]["repairable"] is True
 
 
+def test_replanner_blocks_raw_tool_protocol_final_candidate() -> None:
+    decision = final_candidate_gate(
+        {
+            "completion": {
+                "status": "in_progress",
+                "criteria": [],
+                "satisfied": [],
+                "missing": [],
+            },
+            "blockers": [],
+            "pending_operations": [],
+            "pending_approvals": [],
+        },
+        final_message="<｜｜DSML｜｜tool_calls>{\"name\":\"capability.invoke\"}",
+    )
+
+    assert decision.action == "continue_llm"
+    assert decision.reason_code == "final_candidate_contains_tool_protocol"
+
+
 @pytest.mark.asyncio
 async def test_replanner_allows_final_candidate_after_repairable_error_is_fixed(
     db_session: AsyncSession,

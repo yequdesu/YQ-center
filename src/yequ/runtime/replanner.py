@@ -141,13 +141,29 @@ def _all_paths_failed(task_state: JsonDict) -> bool:
     return bool(blockers) and all(item.get("terminal") is True for item in blockers)
 
 
-def final_candidate_gate(task_state: JsonDict) -> ReplannerDecision:
+def final_candidate_gate(
+    task_state: JsonDict,
+    *,
+    final_message: str = "",
+) -> ReplannerDecision:
     """Decide whether a provider final answer may terminate the run.
 
     A normal final answer is allowed unless deterministic runtime facts show
     that the run is waiting or contains a repairable blocker. This gate does
     not generate domain actions; it only prevents premature completion.
     """
+
+    if _looks_like_unexecuted_tool_protocol(final_message):
+        return ReplannerDecision(
+            action="continue_llm",
+            reason_code="final_candidate_contains_tool_protocol",
+            next_prompt=(
+                "Your previous answer contained raw tool-call protocol text. "
+                "Do not write tool calls as plain text. If an action is required, "
+                "call the available tool through the provider tool interface; if "
+                "the task is complete, answer with only the final user-facing result."
+            ),
+        )
 
     decision = decide_next_action(task_state)
     if decision.action in {"wait_approval", "wait_operation", "fail", "ask_user"}:
@@ -166,6 +182,23 @@ def final_candidate_gate(task_state: JsonDict) -> ReplannerDecision:
             ),
         )
     return ReplannerDecision(action="complete", reason_code="final_candidate_allowed")
+
+
+def _looks_like_unexecuted_tool_protocol(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    protocol_markers = (
+        "<｜｜dsml｜｜tool_calls",
+        "<||dsml||tool_calls",
+        "<tool_call",
+        "</tool_call",
+        '"tool_calls"',
+        "'tool_calls'",
+        "function_call",
+        "tool_call_id",
+    )
+    return any(marker in lowered for marker in protocol_markers)
 
 
 def _repairable_blockers(task_state: JsonDict) -> list[JsonDict]:

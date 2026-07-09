@@ -157,12 +157,15 @@
 - [x] 对 `invalid_input`、`missing_required_slot`、`unsupported_enum_value`、`permission_denied`、`target_node_mismatch`、`target_node_required` 建立通用 blocker 分类。
 - [x] Replanner 输出必须写入 AgentRunEvent，便于审计。
 - [x] 系统提示词每次重大能力面变化后必须同步更新，避免 LLM 按旧工具面、旧 profile 名或旧 direct tool 习惯行动。
+- [x] Operation 终态自动恢复入口不能绕开 working set。`agent_operation_reporter` 已从 report-only 一步汇报器改为后端 resume loop：使用与普通 Agent turn 相同的 bootstrap tool surface、capability context、YCR build-turn 和 Replanner；`tool_strategy=reuse_working_set` 时 provider 仍只看到 `capability.invoke`。
+- [x] Provider final answer 出现 raw tool-call protocol 文本时，不能作为任务完成。Runtime final-candidate gate 会将其视为未执行工具调用协议污染，要求模型使用正式 tool call 或给出干净终答。
 
 验收：
 
 - [x] WireGuard/SSH 日志读取任务遇到 `permission denied` 后自动尝试更高只读 profile。prompt contract 已覆盖，待真实会话验收。
 - [x] 工具返回 schema 错误时不直接给用户“建议下一步”，而是修正后继续。prompt contract 和 repairable blocker gate 已覆盖。
 - [x] 无可执行路径时才终止为 failed 或 ask_user。Replanner/final-candidate gate 已覆盖，待真实会话验收。
+- [ ] Operation/Approval 完成后的后端自动恢复 turn 必须继续使用 working set，不能出现 `provider_tools=[]` 或把 tool call 协议文本输出成普通回答；代码已修复，待远端 Console 真实会话复验。
 
 ### C03 TaskState / Reducer 事实抽取增强
 
@@ -265,6 +268,7 @@
 - [ ] Transfer：Windows -> Linux 传输仍走 `transfer.preflight` / `transfer.create` / yq-croc runtime，不走 `exec.run`。
 - [ ] 任意 `exec.run`：必须触发通用 approval。
 - [ ] Approval 通过后：后端自动推进或自动汇报，不要求用户手动 Append。
+- [ ] Approval/Operation 自动恢复：验证恢复 turn 的 audit 中 `agent.ycr.build_turn.completed.tool_surface.provider_tool_count` 非 0，且 `tool_strategy=reuse_working_set` 时 provider tools 为 `["capability.invoke"]`。
 
 记录要求：
 
@@ -370,6 +374,7 @@
 - [x] 审查 YCR service 入口和 `build-turn` 输出，确认不输出 `continue`、`wait`、`complete`、`fail` 等生命周期决策。已移除 `tool_strategy.wait_approval` / `tool_strategy.wait_operation`，pending 状态只保留在 TaskState，由 Runtime/Replanner 决策。
 - [x] 在 session audit 中记录每轮 `capability.groups`、`capability.group.open`、`capability.search`、`capability.describe` 次数。实现为 `agent.tool_calls.planned.counts`，记录每轮 provider 计划调用的所有工具名计数。
 - [x] 对比真实任务中 Tool candidate loading 命中情况：空 working set 时是否由 objective bootstrap 生成候选并直接进入 invoke，后续轮次是否使用 session/task working set，还是仍重复 group/open/search。2026-07-10 远端 Console 验收发现 `sess_5b6` 可直接使用 working set 候选，但后续 `sess_89c` 在截图已生成后仍调用 `capability.groups` / `capability.group.open` 寻找 `artifact.present`，说明“提示优先候选”不稳定。已改为通用工具面控制：`tool_strategy=reuse_working_set` 且存在候选时，本轮 provider 只暴露 `capability.invoke`；空 working set 或候选不足时才保留 `capability.groups` / `capability.group.open` 渐进发现。
+- [x] 对 operation 自动恢复入口做一致性修复。2026-07-10 远端 session `sess_092d39df07474c80` 暴露普通 turn 已使用 working set，但 `agent.operation_reporter` 入口传入 `available_functions=[]`，导致 YCR 候选无法变成 provider 可调用工具面，provider 只能输出 raw tool-call protocol 文本。已修复为与普通 turn 共用 bootstrap functions + capability context，并把 report prompt 改成 resume prompt。
 - [x] 语义 Tool RAG 返回同一 capability 的多个 sources 时，按 query 命中的 `node_id`、`platform_os`、`platform_arch`、`registered_name`、`plugin_id` 排序，避免正确 capability 命中但错误 Node source 排前。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
@@ -380,6 +385,7 @@
 验收：
 
 - [x] Windows 截图任务不需要重复 search/group/open。`sess_5b6`：`capability.invoke:2`，`capability.groups/group.open/search:0`；`sess_89c` 暴露 provider 仍可绕回 group/open。工具面收窄修复后，2026-07-10 远端 Console `sess_289` 验收通过：每轮 `provider_tool_count=1`，实际 provider tools 仅 `capability.invoke`，计划工具调用为 `capability.invoke:2`，无 `capability.groups` / `capability.group.open` / `capability.search`，`ARTIFACTS=1`。
+- [ ] Operation resume 入口复验：approval 通过后自动恢复 turn 的 provider tool surface 必须与普通 turn 一致，不能再出现 `provider_tool_count=0`。
 - [ ] Linux 日志读取任务在定位 `exec.run` 后，不重复打开无关工具组。
 - [x] Result RAG 未命中或未索引时状态可见。
 - [ ] Result RAG 未命中不影响 deterministic read/tail 路径，需要真实会话验收。

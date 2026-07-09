@@ -1625,7 +1625,7 @@ async def _agent_run_final_candidate_gate(
         run = result.scalar_one_or_none()
         if run is None:
             return None
-        decision = final_candidate_gate(get_task_state(run))
+        decision = final_candidate_gate(get_task_state(run), final_message=final_message)
         payload = {
             "goal": run.user_message,
             "chosen_action": decision.action,

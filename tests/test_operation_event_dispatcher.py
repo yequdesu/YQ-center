@@ -13,7 +13,10 @@ from yequ.models.ycr import YcrSessionState
 from yequ.runtime.agent_plan_service import create_agent_plan, update_agent_plan_status
 from yequ.runtime.agent_run_service import create_agent_run, update_agent_run_status
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
-from yequ.services.agent_operation_reporter import reconcile_waiting_operation_agent_state
+from yequ.services.agent_operation_reporter import (
+    _operation_report_prompt,
+    reconcile_waiting_operation_agent_state,
+)
 from yequ.services.operation_event_dispatcher import OperationEventDispatcher
 from yequ.services.operation_scanner import OperationConsistencyScanner
 from yequ.services.operation_service import OperationService
@@ -338,3 +341,14 @@ async def test_operation_report_reconciles_waiting_agent_state(
     ).scalar_one()
     assert turn.status == "succeeded"
     assert turn.completed_at is not None
+
+
+def test_operation_report_prompt_is_resume_prompt_not_report_only() -> None:
+    prompt = _operation_report_prompt(
+        {"operation": {"operation_id": "op_resume_prompt", "status": "succeeded"}},
+        preferred_language="zh",
+    )
+
+    assert "恢复并推进用户任务" in prompt
+    assert "继续使用当前可用工具完成任务" in prompt
+    assert "不要调用工具" not in prompt
