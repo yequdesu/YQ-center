@@ -106,6 +106,8 @@ async def reduce_agent_run_event(
         "operation.timeout",
         "operation.completed",
     }:
+        if event_type in {"operation.succeeded", "operation.completed"}:
+            _resolve_repaired_blockers(state, payload)
         _resolve_pending_operation(state, payload, event_type=event_type)
         if event_type != "operation.succeeded" and event_type != "operation.completed":
             _record_blocker(state, payload, terminal=True)

@@ -22,8 +22,10 @@ from yequ.models.agent_run import AgentRun
 from yequ.models.agent_turn import AgentTurn
 from yequ.models.session import Session
 from yequ.runtime.agent_plan_service import update_agent_plan_status
+from yequ.runtime.agent_run_resume import append_event_and_reduce
 from yequ.runtime.agent_run_service import update_agent_run_status
 from yequ.runtime.capability_context import build_capability_context
+from yequ.runtime.replanner import decide_next_action
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
 from yequ.services.agent_turn_service import create_agent_turn, record_agent_turn_event
 from yequ.services.operation_service import OperationService
@@ -332,6 +334,28 @@ async def reconcile_waiting_operation_agent_state(
     for run in result.scalars().all():
         if not _run_waits_for_operation(run, operation_id):
             continue
+        plan_id = _run_plan_id(run)
+        if agent_status == "succeeded":
+            state = await append_event_and_reduce(
+                db,
+                run,
+                event_type="run.completed",
+                source="agent.operation_reporter",
+                payload={
+                    "message": final_message or "",
+                    "operation_id": operation_id,
+                    "operation_status": operation_status,
+                    "report_turn_id": report_turn_id,
+                },
+                plan_id=plan_id,
+            )
+            decision = decide_next_action(state)
+            extra_metadata = {
+                "task_state": state,
+                "last_replanner_decision": decision.to_dict(),
+            }
+        else:
+            extra_metadata = {}
         await update_agent_run_status(
             db,
             run,
@@ -340,6 +364,7 @@ async def reconcile_waiting_operation_agent_state(
             error_code=_operation_error_code(operation),
             error_message=_operation_error_message(operation),
             metadata={
+                **extra_metadata,
                 "completed_operation": {
                     "operation_id": operation_id,
                     "status": operation_status,
@@ -350,7 +375,6 @@ async def reconcile_waiting_operation_agent_state(
         updated_run_ids.append(run.run_id)
         if run.turn_id:
             updated_turn_ids.add(run.turn_id)
-        plan_id = _run_plan_id(run)
         if plan_id:
             updated_plan_ids.add(plan_id)
 

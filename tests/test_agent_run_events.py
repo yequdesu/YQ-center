@@ -3,8 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.models.session import Session
 from yequ.runtime.agent_plan_service import create_agent_plan, get_agent_plan_projection
-from yequ.runtime.agent_run_resume import append_event_and_reduce
-from yequ.runtime.agent_run_service import create_agent_run
+from yequ.runtime.agent_run_resume import (
+    append_event_and_reduce,
+    append_event_to_latest_waiting_run,
+)
+from yequ.runtime.agent_run_service import create_agent_run, update_agent_run_status
 from yequ.runtime.replanner import final_candidate_gate
 from yequ.runtime.task_state import get_task_state
 
@@ -80,6 +83,75 @@ async def test_agent_run_events_drive_task_state_waits(
     assert state["completion"]["status"] == "in_progress"
     assert state["last_decision"]["action"] == "continue_llm"
     assert state["pending_operations"] == []
+
+
+@pytest.mark.asyncio
+async def test_operation_terminal_event_clears_repaired_schema_blocker(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_operation_repairs_blocker"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="operation-repairs-blocker",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id="linux-node-01",
+        user_message="hash /etc/hostname",
+        trace_id="trace-operation-repairs-blocker",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="tool.failed",
+        source="agent.tool",
+        payload={
+            "call_id": "call_bad",
+            "function_name": "capability.invoke",
+            "capability_ref": "exec.run",
+            "target_node_id": "linux-node-01",
+            "error_code": "missing_required_slot",
+        },
+    )
+    assert get_task_state(run)["blockers"]
+    await update_agent_run_status(
+        db_session,
+        run,
+        status="waiting_operation",
+        metadata={
+            "waiting": {
+                "operation_id": "op_hash",
+                "function_name": "exec.run",
+                "target_node_id": "linux-node-01",
+            }
+        },
+    )
+
+    updated = await append_event_to_latest_waiting_run(
+        db_session,
+        session_id=session_id,
+        operation_id="op_hash",
+        event_type="operation.succeeded",
+        source="operation",
+        payload={"operation_id": "op_hash", "status": "succeeded", "kind": "job"},
+    )
+
+    state = get_task_state(run)
+    assert updated == [run.run_id]
+    assert state["blockers"] == []
+    assert state["pending_operations"] == []
+    assert state["last_decision"]["action"] == "continue_llm"
 
 
 @pytest.mark.asyncio

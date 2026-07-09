@@ -70,12 +70,14 @@ async def append_event_to_latest_waiting_run(
             continue
         if approval_id and waiting.get("approval_id") != approval_id:
             continue
+        enriched_payload = dict(waiting)
+        enriched_payload.update(payload or {})
         state = await append_event_and_reduce(
             db,
             run,
             event_type=event_type,
             source=source,
-            payload=payload or {},
+            payload=enriched_payload,
             plan_id=_string((run.metadata_json or {}).get("plan_id")),
         )
         decision = decide_next_action(state)

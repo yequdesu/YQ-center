@@ -12,6 +12,7 @@ from yequ.models.operation import Operation, OperationEvent
 from yequ.models.ycr import YcrSessionState
 from yequ.runtime.agent_plan_service import create_agent_plan, update_agent_plan_status
 from yequ.runtime.agent_run_service import create_agent_run, update_agent_run_status
+from yequ.runtime.task_state import get_task_state
 from yequ.services.agent_operation_notifications import AgentOperationNotificationService
 from yequ.services.agent_operation_reporter import (
     _operation_report_prompt,
@@ -332,6 +333,9 @@ async def test_operation_report_reconciles_waiting_agent_state(
     assert waiting_run.status == "succeeded"
     assert waiting_run.final_message == "operation completed"
     assert waiting_run.completed_at is not None
+    state = get_task_state(waiting_run)
+    assert state["completion"]["status"] == "complete"
+    assert state["last_decision"]["action"] == "complete"
     assert waiting_plan.status == "succeeded"
     assert waiting_plan.completed_at is not None
     turn = (
