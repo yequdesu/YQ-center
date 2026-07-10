@@ -445,7 +445,53 @@ def _capability_candidates(
                     },
                     source="session_state",
                 )
-    return candidates[:WORKING_SET_LIMIT]
+    return _prioritize_session_candidates(candidates)[:WORKING_SET_LIMIT]
+
+
+def _prioritize_session_candidates(candidates: list[JsonDict]) -> list[JsonDict]:
+    if not any(
+        isinstance(item.get("bound_input"), dict) and item["bound_input"]
+        for item in candidates
+    ):
+        return candidates
+    indexed = list(enumerate(candidates))
+    indexed.sort(key=lambda item: _session_candidate_sort_key(item[1], item[0]))
+    return [candidate for _, candidate in indexed]
+
+
+def _session_candidate_sort_key(candidate: JsonDict, index: int) -> tuple[int, int, int, int]:
+    bound_input = (
+        candidate.get("bound_input") if isinstance(candidate.get("bound_input"), dict) else {}
+    )
+    required = (
+        candidate.get("input_required")
+        if isinstance(candidate.get("input_required"), list)
+        else []
+    )
+    missing_required = sum(
+        1
+        for key in required
+        if isinstance(key, str) and key and key not in bound_input
+    )
+    return (
+        0 if bound_input else 1,
+        missing_required,
+        _effect_sort_rank(candidate.get("effect")),
+        index,
+    )
+
+
+def _effect_sort_rank(value: object) -> int:
+    effect = str(value or "read").casefold()
+    if effect == "read":
+        return 0
+    if effect == "write":
+        return 2
+    if effect == "external":
+        return 3
+    if effect == "destructive":
+        return 4
+    return 1
 
 
 def _entity_bindings_from_session_state(session_state: JsonDict) -> JsonDict:

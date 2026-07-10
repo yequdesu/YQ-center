@@ -1024,6 +1024,39 @@ async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
     assert packet["provider_context"]["tool_strategy"]["mode"] == "reuse_working_set"
 
 
+def test_ycr_prioritizes_bound_read_candidates_before_incomplete_writes() -> None:
+    from yequ.ycr.context_packet import _prioritize_session_candidates
+
+    candidates = [
+        {
+            "capability_ref": "artifact.download_file",
+            "effect": "write",
+            "input_required": ["artifact_id", "output_path"],
+            "bound_input": {"artifact_id": "id_artifact"},
+        },
+        {
+            "capability_ref": "artifact.read_text",
+            "effect": "read",
+            "input_required": [],
+            "bound_input": {"artifact_id": "id_artifact"},
+        },
+        {
+            "capability_ref": "capability.group.open",
+            "effect": "read",
+            "input_required": ["group"],
+            "bound_input": {},
+        },
+    ]
+
+    ordered = _prioritize_session_candidates(candidates)
+
+    assert [item["capability_ref"] for item in ordered] == [
+        "artifact.read_text",
+        "artifact.download_file",
+        "capability.group.open",
+    ]
+
+
 def test_result_ingestion_preserves_small_output() -> None:
     output = {"status": "ok", "value": 1}
 

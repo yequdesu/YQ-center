@@ -386,6 +386,7 @@
 - [x] Registry artifact input contract 修复：`CapabilityDefinition.artifact_inputs` 现在可从 input schema 中的 `artifact_id` / `artifact_ids` / `artifact_pattern` 统一推断，Center meta capabilities 和 Node capabilities 共享同一合同归一化路径。该修复解决了远端 `artifact_input=True` 结构过滤查不到 `artifact.read_text` / `artifact.present` 的问题。
 - [x] Working-set contract enforcement：`tool_strategy=reuse_working_set` 时，provider 看到的 `capability.invoke` schema 会动态收窄到当前 preferred candidates 的 `capability_ref` / `source_id` enum；执行层同时用同一 allowlist 拒绝不在当前 workset 内的 invoke 目标。`bound_input` 只用于参数提示，不作为准入条件。workset 不再只是 prompt 建议，而是当前轮实际工具合同。
 - [x] Entity augment candidate 截断修复：artifact entity 触发的结构化候选不再固定取 4 个，而使用 `WORKING_SET_LIMIT`。远端验证发现 `artifact.read_text` 因排序落在第 5 位被截掉，导致模型只能在 `artifact.get` / `artifact.deploy` / context 工具间绕路；该问题已归因到候选截断而非提示词。
+- [x] Workset candidate ordering 修复：当 session 已有可绑定实体时，YCR 在输出 preferred candidates 前按 `bound_input` 存在性、缺失必填参数数量、effect 风险排序。只读且参数已满足的候选优先，仍缺 `output_path` 等关键槽位的写入/外部候选靠后。该规则作用于所有候选，不按具体工具名做白名单。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
 - [ ] 当 Result RAG 未命中或 ref 未索引时，Agent 必须能通过 `context.inspect` / `context.tail` / `artifact.read_text` 等确定性工具继续，不得假装 RAG 成功。
