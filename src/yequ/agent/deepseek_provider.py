@@ -55,6 +55,7 @@ class DeepSeekProvider(AgentProvider):
             max_retries=0,  # no SDK-level retry --we control retry ourselves
         )
         self._model = settings.deepseek_model
+        self._max_tokens = int(settings.deepseek_max_tokens)
         self._max_retries = 5  # 5 retry attempts with fixed 5s intervals
         self._retry_interval_sec = 5.0
         self._read_timeout = read_timeout
@@ -114,7 +115,7 @@ class DeepSeekProvider(AgentProvider):
                         self._client.chat.completions.create(
                             model=self._model,
                             messages=cast(Any, api_messages),
-                            max_tokens=2048,
+                            max_tokens=self._max_tokens,
                             tools=cast(Any, tools),
                             tool_choice="auto",
                         ),
@@ -125,7 +126,7 @@ class DeepSeekProvider(AgentProvider):
                         self._client.chat.completions.create(
                             model=self._model,
                             messages=cast(Any, api_messages),
-                            max_tokens=2048,
+                            max_tokens=self._max_tokens,
                         ),
                         timeout=self._read_timeout + 5.0,
                     )
@@ -296,7 +297,7 @@ class DeepSeekProvider(AgentProvider):
             stream = await self._client.chat.completions.create(
                 model=self._model,
                 messages=cast(Any, oai_messages),
-                max_tokens=2048,
+                max_tokens=self._max_tokens,
                 stream=True,
                 stream_options={"include_usage": True},
                 tools=cast(Any, tools),
@@ -306,7 +307,7 @@ class DeepSeekProvider(AgentProvider):
             stream = await self._client.chat.completions.create(
                 model=self._model,
                 messages=cast(Any, oai_messages),
-                max_tokens=2048,
+                max_tokens=self._max_tokens,
                 stream=True,
                 stream_options={"include_usage": True},
             )
@@ -390,6 +391,8 @@ class DeepSeekProvider(AgentProvider):
             "usage": usage_info,
             "finish_reason": finish_reason,
             "success": finish_reason != "length",
+            "error_code": "max_tokens" if finish_reason == "length" else None,
+            "error_message": "Response exceeded max tokens" if finish_reason == "length" else None,
         }
 
     def _system_prompt(

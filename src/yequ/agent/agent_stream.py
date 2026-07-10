@@ -917,6 +917,7 @@ async def agent_invoke_stream(
             provider_tool_calls: list[dict[str, object]] = []
             provider_usage: dict[str, object] = {}
             provider_error: str | None = None
+            provider_error_code: str = "llm_error"
             provider_delta_events: list[StreamEvent] = []
             provider_started = perf_counter()
             provider_first_delta_ms: float | None = None
@@ -952,7 +953,17 @@ async def agent_invoke_stream(
                     elif chunk_type == "done":
                         provider_tool_calls = _as_object_dict_list(chunk.get("tool_calls", []))
                         provider_usage = _as_object_dict(chunk.get("usage", {}))
+                        if chunk.get("success") is False:
+                            provider_error_code = _as_str(
+                                chunk.get("error_code"),
+                                "llm_error",
+                            )
+                            provider_error = _as_str(
+                                chunk.get("error_message"),
+                                "Provider returned an unsuccessful completion.",
+                            )
                     elif chunk_type == "error":
+                        provider_error_code = _as_str(chunk.get("error_code"), "llm_error")
                         provider_error = _as_str(
                             chunk.get("message", chunk.get("error_message", "Provider error"))
                         )
@@ -985,14 +996,14 @@ async def agent_invoke_stream(
                     assistant_text=assistant_text,
                     tool_calls=provider_tool_calls,
                     status="failed",
-                    error_code="llm_error",
+                    error_code=provider_error_code,
                     error_message=provider_error,
                     context_packet=context_packet,
                 )
                 await _update_agent_run_checkpoint(
                     agent_run_id,
                     status="failed",
-                    error_code="llm_error",
+                    error_code=provider_error_code,
                     error_message=provider_error,
                 )
                 await _update_agent_plan_checkpoint(agent_plan_id, status="failed")

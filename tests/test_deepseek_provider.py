@@ -219,6 +219,41 @@ class TestDeepSeekProvider:
         assert chunks[-1]["message"] == "visible"
 
     @pytest.mark.asyncio
+    async def test_invoke_stream_reports_length_finish_as_max_tokens(self, deepseek_provider):
+        p = deepseek_provider
+
+        async def fake_stream():
+            yield SimpleNamespace(
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    completion_tokens=p._max_tokens,
+                    total_tokens=100 + p._max_tokens,
+                ),
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=None, tool_calls=None),
+                        finish_reason="length",
+                    )
+                ],
+            )
+
+        p._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+
+        chunks = [
+            chunk
+            async for chunk in p.invoke_stream(
+                "think privately",
+                available_functions=[],
+            )
+        ]
+
+        assert chunks[-1]["type"] == "done"
+        assert chunks[-1]["success"] is False
+        assert chunks[-1]["error_code"] == "max_tokens"
+        assert chunks[-1]["error_message"] == "Response exceeded max tokens"
+        assert chunks[-1]["usage"]["completion_tokens"] == p._max_tokens
+
+    @pytest.mark.asyncio
     async def test_invoke_stream_rejects_unprojected_raw_tool_message(
         self, deepseek_provider
     ):
