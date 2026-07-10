@@ -589,7 +589,7 @@ async def _augment_working_set_from_session_entities(
                 entity_bindings=entity_bindings,
                 filters={"projection": "invoke_ready", "artifact_input": True},
                 source="artifact_entity",
-                limit=4,
+                limit=WORKING_SET_LIMIT,
             )
         )
     return [item for item in augments if item.get("status") != "skipped"]

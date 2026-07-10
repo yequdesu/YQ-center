@@ -930,7 +930,7 @@ async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
             assert rerank is False
             return {"matches": [], "retrieval": {"strategy": "fake_semantic_v1"}}
         assert filters == {"projection": "invoke_ready", "artifact_input": True}
-        assert limit == 4
+        assert limit == 12
         assert rerank is True
         return {
             "matches": [
