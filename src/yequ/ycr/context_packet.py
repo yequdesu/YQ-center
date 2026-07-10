@@ -382,7 +382,9 @@ def _tool_discovery_strategy(
                 "Invoke preferred_candidates first with their exact capability_ref "
                 "and source_id. Treat group/open/search as discovery fallback only "
                 "when the preferred candidates do not contain the needed capability "
-                "or input schema."
+                "or input schema. When a preferred candidate includes bound_input, "
+                "merge those fields into the capability.invoke input instead of "
+                "searching history or context for the same entity id."
             ),
         }
     return {
@@ -439,10 +441,65 @@ def _capability_candidates(
                         "effect": data.get("effect"),
                         "status": item.get("status"),
                         "summary": item.get("summary"),
+                        "bound_input": data.get("bound_input"),
                     },
                     source="session_state",
                 )
     return candidates[:WORKING_SET_LIMIT]
+
+
+def _entity_bindings_from_session_state(session_state: JsonDict) -> JsonDict:
+    items = session_state.get("items")
+    if not isinstance(items, dict):
+        return {}
+    artifact_ids: list[str] = []
+
+    def add_artifact_id(value: object) -> None:
+        artifact_id = _string_or_none(value)
+        if artifact_id and artifact_id not in artifact_ids:
+            artifact_ids.append(artifact_id)
+
+    focus_items = items.get("focus")
+    if isinstance(focus_items, list):
+        for focus in focus_items:
+            if not isinstance(focus, dict):
+                continue
+            data = focus.get("data") if isinstance(focus.get("data"), dict) else {}
+            if data.get("focus_kind") == "artifact":
+                add_artifact_id(data.get("artifact_id") or focus.get("entity_key"))
+    artifact_items = items.get("artifact")
+    if isinstance(artifact_items, list):
+        for artifact in artifact_items:
+            if not isinstance(artifact, dict):
+                continue
+            data = artifact.get("data") if isinstance(artifact.get("data"), dict) else {}
+            add_artifact_id(data.get("artifact_id") or artifact.get("entity_key"))
+    return {"artifact_ids": artifact_ids} if artifact_ids else {}
+
+
+def _bound_input_for_candidate(
+    candidate: JsonDict,
+    *,
+    entity_bindings: JsonDict,
+) -> JsonDict:
+    artifact_ids = entity_bindings.get("artifact_ids")
+    if not isinstance(artifact_ids, list) or not artifact_ids:
+        return {}
+    artifact_id = next((item for item in artifact_ids if isinstance(item, str) and item), None)
+    if not artifact_id:
+        return {}
+    schema = candidate.get("input_schema")
+    if not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    bound: JsonDict = {}
+    if "artifact_id" in properties:
+        bound["artifact_id"] = artifact_id
+    if "artifact_ids" in properties:
+        bound["artifact_ids"] = [artifact_id]
+    return bound
 
 
 async def _bootstrap_working_set_from_intent(
@@ -521,6 +578,7 @@ async def _augment_working_set_from_session_entities(
     working_set: dict[str, JsonDict],
 ) -> list[JsonDict]:
     augments: list[JsonDict] = []
+    entity_bindings = _entity_bindings_from_session_state(session_state)
     if _session_has_entity_type(session_state, "artifact") or _session_has_entity_type(
         session_state, "focus"
     ):
@@ -528,6 +586,7 @@ async def _augment_working_set_from_session_entities(
             await _augment_working_set_by_structured_filter(
                 db,
                 working_set=working_set,
+                entity_bindings=entity_bindings,
                 filters={"projection": "invoke_ready", "artifact_input": True},
                 source="artifact_entity",
                 limit=4,
@@ -540,6 +599,7 @@ async def _augment_working_set_by_structured_filter(
     db: AsyncSession,
     *,
     working_set: dict[str, JsonDict],
+    entity_bindings: JsonDict,
     filters: JsonDict,
     source: str,
     limit: int,
@@ -561,6 +621,9 @@ async def _augment_working_set_by_structured_filter(
             if candidate is None:
                 continue
             candidate["source"] = source
+            bound_input = _bound_input_for_candidate(candidate, entity_bindings=entity_bindings)
+            if bound_input:
+                candidate["bound_input"] = bound_input
             key = str(candidate.get("source_id") or candidate.get("capability_ref"))
             if not key or key in working_set:
                 continue
@@ -798,6 +861,9 @@ def _append_capability_candidate(
             "summary": _string_or_none(item.get("summary") or item.get("description")),
             "input_schema": _compact_schema(item.get("input_schema")),
             "input_required": _schema_required(item.get("input_schema")),
+            "bound_input": item.get("bound_input")
+            if isinstance(item.get("bound_input"), dict)
+            else {},
         }
     )
 

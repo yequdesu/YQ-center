@@ -382,6 +382,7 @@
 - [x] Tool candidate loader 修复半成品候选：当 TaskState 中只有 capability_ref/source_id、缺少 input schema 时，YCR 会基于原始 objective 重新从 registry 补齐候选 schema/summary，不再让模型猜 `_describe` / `operation=describe`。
 - [x] Tool candidate loader 修复候选分层：用户绑定 Node 时，YCR 依据 registry 的 `scope` / `plane` / `dispatch_kind` / `node_id` 优先返回该 Node 的可执行能力，Center discovery/meta tool 不再排在真实 Node 能力前面。
 - [x] Registry `invoke_ready` 投影修复：返回 `agent_description` 和 `input_schema`，使 YCR working set 成为真正可调用合同，而不是只有 capability 名称。
+- [x] Tool candidate loader 修复实体绑定：YCR Session State 已知 `artifact` / `focus` 后，会按 capability input schema 给 artifact-consuming candidates 生成 `bound_input`，例如 `artifact_id` / `artifact_ids`。该实现按 schema 绑定实体，不按具体工具名做白名单；目标是让 Agent 直接 invoke 当前实体相关能力，而不是再用 `context.search` / `context.expand` 查找同一个 artifact id。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
 - [ ] 当 Result RAG 未命中或 ref 未索引时，Agent 必须能通过 `context.inspect` / `context.tail` / `artifact.read_text` 等确定性工具继续，不得假装 RAG 成功。

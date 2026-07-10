@@ -958,6 +958,30 @@ async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
                         "registered_name": "artifact.present",
                         "dispatchable_source_count": 1,
                     },
+                },
+                {
+                    "canonical_name": "artifact.read_text",
+                    "description": "Read bounded text from a Center artifact.",
+                    "risk": "safe",
+                    "effect": "read",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"artifact_id": {"type": "string"}},
+                    },
+                    "sources": [
+                        {
+                            "source_id": "src_artifact_read_text",
+                            "node_id": None,
+                            "registered_name": "artifact.read_text",
+                            "dispatchable": True,
+                        }
+                    ],
+                    "invoke": {
+                        "capability_ref": "artifact.read_text",
+                        "source_id": "src_artifact_read_text",
+                        "registered_name": "artifact.read_text",
+                        "dispatchable_source_count": 1,
+                    },
                 }
             ],
             "retrieval": {"strategy": "registry_filter_v1"},
@@ -992,8 +1016,11 @@ async def test_ycr_build_turn_augments_working_set_from_artifact_entity(
     bootstrap = packet["provider_context"]["working_set_bootstrap"]
     assert candidates[0]["capability_ref"] == "artifact.present"
     assert candidates[0]["source"] == "working_set"
+    assert candidates[0]["bound_input"] == {"artifact_ids": ["id_artifact"]}
+    read_text = next(item for item in candidates if item["capability_ref"] == "artifact.read_text")
+    assert read_text["bound_input"] == {"artifact_id": "id_artifact"}
     assert bootstrap["entity_augments"][0]["source"] == "artifact_entity"
-    assert bootstrap["entity_augments"][0]["candidate_count"] == 1
+    assert bootstrap["entity_augments"][0]["candidate_count"] == 2
     assert packet["provider_context"]["tool_strategy"]["mode"] == "reuse_working_set"
 
 
