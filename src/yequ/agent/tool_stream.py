@@ -794,8 +794,8 @@ async def _capability_invoke_preflight_override(
             target_node_id=fallback.target_node_id,
             risk=risk,
             effect=effect,
-            resource_keys=list(definition.resource_keys or []) if definition else [],
-            conflict_policy=definition.conflict_policy if definition else None,
+            resource_keys=[],
+            conflict_policy=None,
             error_code=fallback.error_code,
             error_message=fallback.error_message,
         )

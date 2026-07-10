@@ -116,6 +116,47 @@ async def test_capability_invoke_preflight_uses_inner_resource_keys(db_session) 
     assert not preflight.is_concurrent_safe
 
 
+async def test_capability_invoke_preflight_handles_center_capability(db_session) -> None:
+    from yequ.agent.tool_stream import _capability_invoke_preflight_override
+    from yequ.application.schemas import ToolPreflightResult
+    from yequ.models.capability_runtime import CapabilityDefinition
+
+    db_session.add(
+        CapabilityDefinition(
+            capability_id="center_artifact_read_text",
+            canonical_name="artifact.read_text",
+            capability_type="function",
+            risk="safe",
+            effect="read",
+            scope="center",
+            dispatch_kind="center_tool",
+            status="active",
+        )
+    )
+    await db_session.flush()
+
+    preflight = await _capability_invoke_preflight_override(
+        db_session,
+        function_name="capability.invoke",
+        tool_input={
+            "capability_ref": "artifact.read_text",
+            "input": {"artifact_id": "id_art", "head": 50},
+        },
+        execution_mode="auto",
+        fallback=ToolPreflightResult(
+            function_name="capability.invoke",
+            status="ok",
+            risk="safe",
+            effect="read",
+        ),
+    )
+
+    assert preflight.risk == "safe"
+    assert preflight.effect == "read"
+    assert preflight.resource_keys == []
+    assert preflight.conflict_policy is None
+
+
 def test_agent_function_uses_capability_description_and_hides_internal_fields():
     from yequ.api.routes.agent import _agent_function_from_capability
     from yequ.models.capability import Capability
