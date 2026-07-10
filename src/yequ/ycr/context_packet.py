@@ -19,6 +19,41 @@ from yequ.ycr.session_state import load_session_state
 JsonDict = dict[str, object]
 
 RECENT_HISTORY_MESSAGES = 10
+PREFERRED_CANDIDATE_LIMIT = 8
+DISCOVERY_FALLBACK_CANDIDATES: tuple[JsonDict, ...] = (
+    {
+        "source": "discovery_fallback",
+        "capability_ref": "capability.group.open",
+        "canonical_name": "capability.group.open",
+        "source_id": "center:capability.group.open",
+        "provider": "center",
+        "scope": "center",
+        "effect": "read",
+        "status": "fallback",
+        "dispatchable": True,
+        "summary": (
+            "Open a capability group when current workset candidates do not cover "
+            "the required domain or schema."
+        ),
+        "input_required": ["group_id"],
+    },
+    {
+        "source": "discovery_fallback",
+        "capability_ref": "capability.search",
+        "canonical_name": "capability.search",
+        "source_id": "center:capability.search",
+        "provider": "center",
+        "scope": "center",
+        "effect": "read",
+        "status": "fallback",
+        "dispatchable": True,
+        "summary": (
+            "Search the capability registry only when current workset candidates "
+            "are insufficient."
+        ),
+        "input_required": ["query"],
+    },
+)
 
 
 async def build_agent_context_packet(
@@ -356,12 +391,15 @@ def _tool_discovery_strategy(
     working_set_items: list[JsonDict],
 ) -> JsonDict:
     if capability_candidates:
+        preferred_candidates = _preferred_candidates_with_discovery_fallbacks(
+            capability_candidates
+        )
         return {
             "mode": "reuse_working_set",
             "reason": "task_state_or_session_has_capability_candidates",
             "candidate_count": len(capability_candidates),
             "working_set_count": len(working_set_items),
-            "preferred_candidates": capability_candidates[:8],
+            "preferred_candidates": preferred_candidates,
             "allowed": [
                 "capability.invoke",
                 (
@@ -398,6 +436,27 @@ def _tool_discovery_strategy(
             "needed capability."
         ),
     }
+
+
+def _preferred_candidates_with_discovery_fallbacks(
+    capability_candidates: list[JsonDict],
+) -> list[JsonDict]:
+    fallback_refs = {
+        str(item.get("capability_ref") or "")
+        for item in DISCOVERY_FALLBACK_CANDIDATES
+    }
+    real_limit = max(1, PREFERRED_CANDIDATE_LIMIT - len(DISCOVERY_FALLBACK_CANDIDATES))
+    preferred = [
+        item
+        for item in capability_candidates
+        if str(item.get("capability_ref") or "") not in fallback_refs
+    ][:real_limit]
+    existing_refs = {str(item.get("capability_ref") or "") for item in preferred}
+    for fallback in DISCOVERY_FALLBACK_CANDIDATES:
+        ref = str(fallback.get("capability_ref") or "")
+        if ref and ref not in existing_refs:
+            preferred.append(dict(fallback))
+    return preferred[:PREFERRED_CANDIDATE_LIMIT]
 
 
 def _session_state_message(session_state: JsonDict) -> JsonDict:

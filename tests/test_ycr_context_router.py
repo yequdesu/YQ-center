@@ -594,6 +594,10 @@ async def test_ycr_task_state_working_set_drives_tool_strategy(
     strategy = packet["provider_context"]["tool_strategy"]
     assert strategy["mode"] == "reuse_working_set"
     assert strategy["preferred_candidates"][0]["capability_ref"] == "screen.capture"
+    assert [item["capability_ref"] for item in strategy["preferred_candidates"]][-2:] == [
+        "capability.group.open",
+        "capability.search",
+    ]
     assert packet["context_estimate"]["tool_strategy_tokens"] > 0
     assert "YCR Tool Strategy" in packet["messages"][0]["content"]
     assert "YCR capability working set" in packet["messages"][2]["content"]

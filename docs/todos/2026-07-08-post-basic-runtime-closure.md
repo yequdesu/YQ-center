@@ -264,9 +264,9 @@
 - [x] Windows：已知目录列一层内容，必须命中当前高质量文件系统能力，优先 `everything.find`，只有 Everything 不能表达时才回退 `windows.exec.run`。2026-07-10 远端 session `sess_58da5eb7d9a34554` 通过：首轮直接 `capability.invoke` -> `everything.find`，input 使用 `root=F:\Desktop`、`recursive=false`，无 `capability.groups` / `capability.group.open` / `capability.search` / `capability.describe`，直接完成。
 - [x] Windows：截图并展示 artifact，只做必要步骤，成功后 complete。2026-07-10 远端 Console session `sess_5b6` 验收通过：6 messages、2 次 `capability.invoke`、无 `capability.groups` / `capability.group.open` / `capability.search`、`Completed (succeeded)`。
 - [x] Artifact：把 screenshot artifact 写到 `winClient` 的 Windows 绝对路径时，必须选择目标 Node 为 `winClient` 且 schema 满足的 artifact placement 候选，不能选择 Linux source。2026-07-10 远端 session `sess_161ff6d1c0274902` 通过：首轮 `screen.capture @ winClient`，随后 `artifact.download_file @ winClient`，`output_path=F:\Desktop\yq-workset-validation.png`，无 Linux source 漂移，最终 succeeded。
-- [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。
+- [ ] Linux：查 SSH 日志，必须使用 `linux.exec.run`，需要 root 时使用 `admin.readonly`。2026-07-10 远端 session `sess_55a70f733bfb40f5` 未通过：Agent 在 artifact log workset 内循环，尝试 `exec.run` 时被 `outside_working_set` 拦截，最终 max steps。失败层为 YCR workset 过窄。已补结构修复：`reuse_working_set` 的 preferred candidates 保留 `capability.group.open` / `capability.search` discovery fallback，且 reducer 不把 discovery capability 写入 task working set，待远端复验。
 - [x] Linux：查文件 hash，必须使用 `linux.exec.run`。2026-07-10 远端 session `sess_9a012c21bc5740cd` 通过：`/etc/hostname` SHA256 为 `a839b15402605681cb77250cb318dcdf34e406f07ad3349472cf0552eb2c4884`，profile 为 `user.readonly`，provider tool surface 全程为 `["capability.invoke"]`。
-- [ ] Artifact：读取文本 artifact 必须使用 `artifact.read_text`，不能全量展开 raw ref。
+- [x] Artifact：读取文本 artifact 必须使用 `artifact.read_text`，不能全量展开 raw ref。2026-07-10 远端 session `sess_0bb6f092fbe94b84` 通过：先 `artifact.upload_log @ linux-node-01`，随后直接 `artifact.read_text`，无 `capability.search` / `capability.group.open` / `context.expand` 绕路，最终 succeeded。
 - [ ] Transfer：Windows -> Linux 传输仍走 `transfer.preflight` / `transfer.create` / yq-croc runtime，不走 `exec.run`。
 - [x] 任意 `exec.run`：必须触发通用 approval。2026-07-10 远端 session `sess_9a012c21bc5740cd` 中 `linux.exec.run` 生成 `apv_f577079e9afa49e6` 并通过 `approve-and-run` 执行。
 - [ ] Approval 通过后：后端自动推进或自动汇报，不要求用户手动 Append。
@@ -274,7 +274,7 @@
 
 记录要求：
 
-- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Windows 文件名查找 `sess_78d833ec0a6c46bd`；Windows 目录列举 `sess_58da5eb7d9a34554`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`。
+- [ ] 每个场景保存 session_id。已记录：Windows 截图展示 `sess_5b6`；Windows 文件名查找 `sess_78d833ec0a6c46bd`；Windows 目录列举 `sess_58da5eb7d9a34554`；Windows artifact placement `sess_161ff6d1c0274902`；Operation resume `sess_dc5967941a2a4510`；Linux hash `sess_9a012c21bc5740cd`；Artifact read_text `sess_0bb6f092fbe94b84`；SSH logs failed validation `sess_55a70f733bfb40f5`。
 - [ ] 每个失败场景写明失败层：LLM 决策、Replanner、YCR、Center runtime、Node runtime、前端展示。
 - [ ] 验收通过后更新本文件状态。
 
@@ -301,6 +301,7 @@
 
 - [x] 对任意最新 session 能列出前三个耗时段。
 - [x] 首次消息慢、工具链慢、operation 等待慢、operation report LLM 可以从 `context_load` / `ycr` / `provider` / `tools` / `operation_wait_segments` / `operation_report` 中区分。
+- [x] `sess_0bb6f092fbe94b84` 耗时归因清晰：`category_totals_ms.provider=21633.38`、`ycr=1575.459`、`tools=635.112`、`context_load=8.343`；前三耗时段均为 provider 调用，说明该任务慢点主要在 LLM，而不是 YCR 或 Node 工具。
 - [ ] approval wait、Node job wait、transfer wait 在真实 Console 会话中完成一次人工验收。已通过 API/远端会话验证 approval wait + Node job wait：`sess_9a012c21bc5740cd`；仍需 Console 人工刷新展示验收和 transfer wait。
 
 ### C08 Meta tool 默认输出继续审计
@@ -387,6 +388,7 @@
 - [x] Working-set contract enforcement：`tool_strategy=reuse_working_set` 时，provider 看到的 `capability.invoke` schema 会动态收窄到当前 preferred candidates 的 `capability_ref` / `source_id` enum；执行层同时用同一 allowlist 拒绝不在当前 workset 内的 invoke 目标。`bound_input` 只用于参数提示，不作为准入条件。workset 不再只是 prompt 建议，而是当前轮实际工具合同。
 - [x] Entity augment candidate 截断修复：artifact entity 触发的结构化候选不再固定取 4 个，而使用 `WORKING_SET_LIMIT`。远端验证发现 `artifact.read_text` 因排序落在第 5 位被截掉，导致模型只能在 `artifact.get` / `artifact.deploy` / context 工具间绕路；该问题已归因到候选截断而非提示词。
 - [x] Workset candidate ordering 修复：当 session 已有可绑定实体时，YCR 在输出 preferred candidates 前按 `bound_input` 存在性、缺失必填参数数量、effect 风险排序。只读且参数已满足的候选优先，仍缺 `output_path` 等关键槽位的写入/外部候选靠后。该规则作用于所有候选，不按具体工具名做白名单。
+- [x] Workset discovery fallback 修复：`reuse_working_set` 仍通过 `capability.invoke` 的 enum 暴露 `capability.group.open` / `capability.search` 作为受控扩检索出口，防止当前候选不覆盖任务时出现 `outside_working_set` 死循环；`capability.search` / `capability.describe` 不会写入 task working set。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。
 - [ ] 当 Result RAG 未命中或 ref 未索引时，Agent 必须能通过 `context.inspect` / `context.tail` / `artifact.read_text` 等确定性工具继续，不得假装 RAG 成功。

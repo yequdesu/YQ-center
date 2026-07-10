@@ -145,6 +145,53 @@ async def test_capability_invoke_request_records_real_working_capability(
     ]
 
 
+@pytest.mark.asyncio
+async def test_discovery_capability_request_does_not_pollute_working_set(
+    db_session: AsyncSession,
+) -> None:
+    session_id = "sess_agent_run_discovery_request"
+    db_session.add(
+        Session(
+            session_id=session_id,
+            actor_type="agent",
+            actor_id="test-agent",
+            status="active",
+            execution_mode="auto",
+            label="discovery-request",
+        )
+    )
+    run = await create_agent_run(
+        db_session,
+        session_id=session_id,
+        provider_name="fake-events",
+        execution_mode="auto",
+        target_node_id=None,
+        user_message="find a tool",
+        trace_id="trace-discovery-request",
+        metadata={},
+    )
+
+    await append_event_and_reduce(
+        db_session,
+        run,
+        event_type="llm.tool_call_requested",
+        source="agent.provider",
+        payload={
+            "call_id": "call_search",
+            "function_name": "capability.invoke",
+            "capability_ref": "capability.invoke",
+            "input": {
+                "capability_ref": "capability.search",
+                "source_id": "center:capability.search",
+                "input": {"query": "ssh logs", "projection": "invoke_ready"},
+            },
+        },
+    )
+
+    state = get_task_state(run)
+    assert state["working_set"]["capabilities"] == []
+
+
 def test_gateway_only_working_set_is_not_viable() -> None:
     decision = decide_next_action(
         {

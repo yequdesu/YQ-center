@@ -92,6 +92,53 @@ def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
     assert "bound_input" in selected[0].description
 
 
+def test_provider_tool_surface_allows_working_set_discovery_fallbacks():
+    from yequ.agent.agent_stream import _provider_functions_for_tool_strategy
+    from yequ.agent.provider import AgentFunction
+
+    functions = [
+        AgentFunction(name="capability.groups", description="", input_schema={}),
+        AgentFunction(name="capability.group.open", description="", input_schema={}),
+        AgentFunction(
+            name="capability.invoke",
+            description="",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capability_ref": {"type": "string"},
+                    "source_id": {"type": "string"},
+                    "input": {"type": "object"},
+                },
+            },
+        ),
+    ]
+
+    selected = _provider_functions_for_tool_strategy(
+        functions,
+        {
+            "mode": "reuse_working_set",
+            "candidate_count": 1,
+            "preferred_candidates": [
+                {"capability_ref": "artifact.read_text", "source_id": "center:artifact.read_text"},
+                {
+                    "capability_ref": "capability.group.open",
+                    "source_id": "center:capability.group.open",
+                    "source": "discovery_fallback",
+                },
+                {
+                    "capability_ref": "capability.search",
+                    "source_id": "center:capability.search",
+                    "source": "discovery_fallback",
+                },
+            ],
+        },
+    )
+
+    schema = selected[0].input_schema or {}
+    refs = schema["properties"]["capability_ref"]["enum"]
+    assert refs == ["artifact.read_text", "capability.group.open", "capability.search"]
+
+
 async def test_capability_invoke_preflight_uses_inner_resource_keys(db_session) -> None:
     from datetime import UTC, datetime
 

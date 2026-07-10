@@ -795,6 +795,8 @@ def _is_bootstrap_gateway_capability(capability_ref: str) -> bool:
         "capability.invoke",
         "capability.groups",
         "capability.group.open",
+        "capability.search",
+        "capability.describe",
     }
 
 
