@@ -146,6 +146,15 @@ async def ingest_tool_observation_state(
             status=status,
             source_name=name,
         )
+    if _string(result.get("artifact_id")):
+        await _upsert_artifact_fact(
+            db,
+            session_id=session_id,
+            artifact=result,
+            ref_id=ref_id,
+            status=status,
+            source_name=name,
+        )
     operation = result.get("operation")
     if isinstance(operation, dict):
         await _upsert_operation_fact(

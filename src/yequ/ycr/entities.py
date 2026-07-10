@@ -189,6 +189,8 @@ def _artifact_candidates(result: dict[str, object]) -> list[dict[str, object]]:
     artifact = result.get("artifact")
     if isinstance(artifact, dict):
         candidates.append(artifact)
+    if _string_or_none(result.get("artifact_id")):
+        candidates.append(result)
     return candidates
 
 

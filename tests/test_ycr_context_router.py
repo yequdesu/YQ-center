@@ -503,6 +503,52 @@ async def test_ycr_tool_observation_updates_session_state_for_next_turn(
     assert "YCR Session State" in packet["messages"][0]["content"]
 
 
+async def test_ycr_session_state_tracks_top_level_artifact_id_result(
+    db_session,
+) -> None:
+    from yequ.ycr.session_state import ingest_tool_observation_state, load_session_state
+
+    result = {
+        "artifact_id": "id_log",
+        "download_url": "/admin/artifacts/id_log/download",
+        "lines": 80,
+        "sha256": "a" * 64,
+        "size_bytes": 4096,
+    }
+    raw_ref = await upsert_ref(
+        db_session,
+        ref_type="tool_result",
+        source_type="tool_call",
+        source_id="call_upload_log",
+        path="$",
+        value=result,
+        summary="capability.invoke succeeded",
+        session_id="sess_top_level_artifact",
+    )
+    await ingest_tool_observation_state(
+        db_session,
+        session_id="sess_top_level_artifact",
+        name="artifact.upload_log",
+        status="succeeded",
+        result=result,
+        raw_ref=raw_ref,
+        target_node_id="linux-node-01",
+    )
+    await db_session.commit()
+
+    state = await load_session_state(
+        db_session,
+        session_id="sess_top_level_artifact",
+    )
+
+    assert state["counts"]["artifact"] == 1
+    assert state["counts"]["focus"] == 1
+    artifact = state["items"]["artifact"][0]
+    assert artifact["entity_key"] == "id_log"
+    assert artifact["data"]["artifact_id"] == "id_log"
+    assert artifact["data"]["node_id"] is None
+
+
 async def test_ycr_task_state_working_set_drives_tool_strategy(
     db_session,
     override_settings,
@@ -976,6 +1022,18 @@ def test_ycr_observation_entities_extract_artifacts() -> None:
 
     assert entities["artifacts"][0]["artifact_id"] == "art_1"
     assert entities["artifacts"][0]["node_id"] == "winClient"
+
+
+def test_ycr_observation_entities_extract_top_level_artifact_id() -> None:
+    entities = observation_entities_from_result(
+        {
+            "artifact_id": "art_log",
+            "size_bytes": 17,
+        }
+    )
+
+    assert entities["artifacts"][0]["artifact_id"] == "art_log"
+    assert entities["artifacts"][0]["size_bytes"] == 17
 
 
 def test_result_ingestion_bounds_large_string_field() -> None:

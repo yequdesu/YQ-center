@@ -518,6 +518,72 @@ async def test_agent_stream_fails_closed_when_ycr_build_turn_fails(
 
 
 @pytest.mark.asyncio
+async def test_agent_stream_persists_failed_run_when_max_steps_exceeded(
+    client: AsyncClient, db_session
+):
+    from sqlalchemy import desc, select
+
+    from yequ.agent.fake_provider import FakeAgentProvider
+    from yequ.agent.provider import ProviderInvokeResult
+    from yequ.api.routes.agent import register_provider
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.task_state import get_task_state
+
+    provider = FakeAgentProvider("turn-max-steps-persist-test")
+    provider.set_sequence(
+        [
+            ProviderInvokeResult(
+                message="I will call a tool.",
+                tool_calls=[
+                    {
+                        "call_id": "call_unknown",
+                        "name": "missing.tool",
+                        "input": {},
+                    }
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    register_provider(provider)
+
+    session_resp = await client.post(
+        "/agent/sessions",
+        json={"actor_id": "turn-max-steps-persist-test", "execution_mode": "auto"},
+    )
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    stream_resp = await client.post(
+        "/agent/invoke/stream",
+        json={
+            "session_id": session_id,
+            "provider_name": "turn-max-steps-persist-test",
+            "prompt": "force max steps",
+            "execution_mode": "auto",
+            "max_steps": 1,
+        },
+    )
+    assert stream_resp.status_code == 200
+
+    events = _parse_sse_events(stream_resp.text)
+    failed = [event for event in events if event["event_type"] == "agent.failed"]
+    assert failed
+    assert failed[-1]["data"]["error_code"] == "max_steps_exceeded"
+
+    result = await db_session.execute(
+        select(AgentRun)
+        .where(AgentRun.session_id == session_id)
+        .order_by(desc(AgentRun.started_at))
+    )
+    run = result.scalars().first()
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_code == "max_steps_exceeded"
+    assert get_task_state(run)["completion"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_delete_session_deletes_turn_events(client: AsyncClient):
     from yequ.agent.fake_provider import FakeAgentProvider
     from yequ.agent.provider import ProviderInvokeResult

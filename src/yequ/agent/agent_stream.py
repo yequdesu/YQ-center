@@ -645,6 +645,19 @@ async def agent_invoke_stream(
             iteration = run_graph.begin_iteration(datetime.now(UTC))
             if isinstance(iteration, AgentRuntimeFailure):
                 loop_state = run_graph.loop_state
+                await _fail_agent_run_checkpoint(
+                    agent_run_id,
+                    plan_id=agent_plan_id,
+                    error_code=iteration.error_code,
+                    error_message=iteration.message,
+                    source="agent.runtime",
+                    payload={
+                        **iteration.as_event_data(),
+                        "phase": "begin_iteration",
+                        "loop_state": loop_state,
+                    },
+                )
+                await _update_agent_plan_checkpoint(agent_plan_id, status="failed")
                 yield _event(
                     "agent.failed",
                     session_id,
@@ -1583,6 +1596,49 @@ async def _update_agent_run_checkpoint(
             error_code=error_code,
             error_message=error_message,
             metadata=metadata,
+        )
+        await db.commit()
+
+
+async def _fail_agent_run_checkpoint(
+    run_id: str | None,
+    *,
+    plan_id: str | None = None,
+    error_code: str,
+    error_message: str,
+    source: str,
+    payload: dict[str, object] | None = None,
+) -> None:
+    if not run_id:
+        return
+    from yequ.db import async_session_factory
+    from yequ.models.agent_run import AgentRun
+    from yequ.runtime.agent_run_resume import append_event_and_reduce
+    from yequ.runtime.agent_run_service import update_agent_run_status
+
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"AgentRun {run_id!r} not found")
+        await update_agent_run_status(
+            db,
+            run,
+            status="failed",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await append_event_and_reduce(
+            db,
+            run,
+            event_type="run.failed",
+            source=source,
+            payload={
+                "error_code": error_code,
+                "error_message": error_message,
+                **(payload or {}),
+            },
+            plan_id=plan_id,
         )
         await db.commit()
 
