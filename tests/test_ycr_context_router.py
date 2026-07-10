@@ -603,6 +603,28 @@ async def test_ycr_task_state_working_set_drives_tool_strategy(
     assert "YCR capability working set" in packet["messages"][2]["content"]
 
 
+def test_ycr_preferred_candidates_match_visible_working_set_contract() -> None:
+    from yequ.ycr.context_packet import _preferred_candidates_with_discovery_fallbacks
+    from yequ.ycr.entities import WORKING_SET_LIMIT
+
+    candidates = [
+        {
+            "capability_ref": f"capability.{index}",
+            "source_id": f"source_{index}",
+            "dispatchable": True,
+        }
+        for index in range(WORKING_SET_LIMIT)
+    ]
+
+    preferred = _preferred_candidates_with_discovery_fallbacks(candidates)
+    refs = [str(item.get("capability_ref")) for item in preferred]
+
+    assert refs[:WORKING_SET_LIMIT] == [
+        f"capability.{index}" for index in range(WORKING_SET_LIMIT)
+    ]
+    assert refs[-2:] == ["capability.group.open", "capability.search"]
+
+
 async def test_ycr_build_turn_bootstraps_empty_working_set_from_intent(
     db_session,
     override_settings,

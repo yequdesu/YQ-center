@@ -19,7 +19,6 @@ from yequ.ycr.session_state import load_session_state
 JsonDict = dict[str, object]
 
 RECENT_HISTORY_MESSAGES = 10
-PREFERRED_CANDIDATE_LIMIT = 8
 DISCOVERY_FALLBACK_CANDIDATES: tuple[JsonDict, ...] = (
     {
         "source": "discovery_fallback",
@@ -445,18 +444,17 @@ def _preferred_candidates_with_discovery_fallbacks(
         str(item.get("capability_ref") or "")
         for item in DISCOVERY_FALLBACK_CANDIDATES
     }
-    real_limit = max(1, PREFERRED_CANDIDATE_LIMIT - len(DISCOVERY_FALLBACK_CANDIDATES))
     preferred = [
         item
         for item in capability_candidates
         if str(item.get("capability_ref") or "") not in fallback_refs
-    ][:real_limit]
+    ][:WORKING_SET_LIMIT]
     existing_refs = {str(item.get("capability_ref") or "") for item in preferred}
     for fallback in DISCOVERY_FALLBACK_CANDIDATES:
         ref = str(fallback.get("capability_ref") or "")
         if ref and ref not in existing_refs:
             preferred.append(dict(fallback))
-    return preferred[:PREFERRED_CANDIDATE_LIMIT]
+    return preferred
 
 
 def _session_state_message(session_state: JsonDict) -> JsonDict:
