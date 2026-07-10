@@ -869,7 +869,11 @@ def _merge_definition_manifest(
     definition.workflow_kind = _string_or_none(manifest.get("workflow_kind"))
     definition.artifact_contract = _json_object_or_none(manifest.get("artifact_contract"))
     definition.operation_contract = _json_object_or_none(manifest.get("operation_contract"))
-    definition.artifact_inputs = _list_of_dicts(manifest.get("artifact_inputs"))
+    artifact_inputs = _list_of_dicts(manifest.get("artifact_inputs"))
+    definition.artifact_inputs = artifact_inputs or _infer_artifact_inputs(
+        definition.input_schema,
+        registered_name=registered_name,
+    )
     artifact_outputs = _list_of_dicts(manifest.get("artifact_outputs"))
     definition.artifact_outputs = artifact_outputs or _infer_artifact_outputs(
         definition.output_schema,
@@ -1128,6 +1132,34 @@ def _infer_artifact_outputs(
             "producer": registered_name,
         }
     ]
+
+
+def _infer_artifact_inputs(
+    input_schema: JsonObject | None,
+    *,
+    registered_name: str,
+) -> list[JsonObject]:
+    if not isinstance(input_schema, dict):
+        return []
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    inputs: list[JsonObject] = []
+    for field in ["artifact_id", "artifact_ids", "artifact_pattern"]:
+        if field not in properties:
+            continue
+        inputs.append(
+            {
+                "field": field,
+                "kind": "center_artifact_reference",
+                "description": (
+                    "Tool input consumes an existing Center artifact reference "
+                    "or artifact selector."
+                ),
+                "consumer": registered_name,
+            }
+        )
+    return inputs
 
 
 def _source_summary(

@@ -839,6 +839,49 @@ async def test_center_capability_search_discovers_workflow_without_node_source(
 
 
 @pytest.mark.asyncio
+async def test_center_capability_search_filters_artifact_consumers(
+    db_session,
+) -> None:
+    from yequ.application.schemas import ExecuteToolCommand
+    from yequ.runtime import CenterExecutionRuntime
+
+    await _sync_center_capabilities(db_session)
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.search",
+            input_data={
+                "artifact_input": True,
+                "projection": "invoke_ready",
+                "limit": 10,
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_data is not None
+    names = {item["canonical_name"] for item in result.output_data["capabilities"]}
+    assert "artifact.read_text" in names
+    assert "artifact.present" in names
+    describe = await CenterExecutionRuntime(db_session).execute(
+        ExecuteToolCommand(
+            function_name="capability.describe",
+            input_data={
+                "capability_ref": "artifact.read_text",
+                "projection": "detail",
+            },
+            actor_type="agent",
+            actor_id="test-agent",
+        )
+    )
+    assert describe.status == "succeeded"
+    assert describe.output_data is not None
+    assert describe.output_data["capability"]["artifact_inputs"][0]["field"] == "artifact_id"
+
+
+@pytest.mark.asyncio
 async def test_capability_invoke_dispatches_center_inline_capability(
     client: AsyncClient,
     db_session,
