@@ -60,6 +60,7 @@ async def execute_tool_calls_scheduled(
     max_total_duration_sec: int,
     started_at: datetime,
     target_node_id: str | None = None,
+    capability_invoke_allowlist: dict[str, set[str]] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Execute tool calls with preflight and concurrency scheduling."""
     from yequ.db import async_session_factory
@@ -128,6 +129,46 @@ async def execute_tool_calls_scheduled(
                     "input": tc_input,
                     "status": "failed",
                     "error": "circular_dependency",
+                }
+            )
+            continue
+
+        if (
+            tc_name == "capability.invoke"
+            and capability_invoke_allowlist
+            and not _capability_invoke_is_allowed(tc_input, capability_invoke_allowlist)
+        ):
+            yield make_event(
+                "agent.tool_call.created",
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "target_node_id": target_node_id,
+                },
+            )
+            yield make_event(
+                "agent.tool_call.failed",
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "error_code": "outside_working_set",
+                    "message": (
+                        "capability.invoke target is outside the current YCR "
+                        "working set; use one of the preferred candidate "
+                        "capability_ref or source_id values."
+                    ),
+                    "target_node_id": target_node_id,
+                },
+            )
+            classified.append(
+                {
+                    "call_id": tc_call_id,
+                    "name": tc_name,
+                    "input": tc_input,
+                    "status": "failed",
+                    "error": "outside_working_set",
                 }
             )
             continue
@@ -734,6 +775,19 @@ def _tool_event_context(tc_name: str, tc_input: dict[str, object]) -> dict[str, 
         "node_id": _string_or_none(tc_input.get("node_id")),
         "input": _small_tool_input(tc_input),
     }
+
+
+def _capability_invoke_is_allowed(
+    tool_input: object,
+    allowlist: dict[str, set[str]],
+) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    capability_ref = _string_or_none(tool_input.get("capability_ref"))
+    source_id = _string_or_none(tool_input.get("source_id"))
+    if source_id and source_id in allowlist.get("source_ids", set()):
+        return True
+    return bool(capability_ref and capability_ref in allowlist.get("capability_refs", set()))
 
 
 async def _capability_invoke_preflight_override(

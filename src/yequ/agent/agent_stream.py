@@ -8,6 +8,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import UTC, datetime
 from time import perf_counter
 
@@ -146,8 +147,109 @@ def _provider_functions_for_tool_strategy(
             if function.name == "capability.invoke"
         ]
         if invoke:
-            return invoke
+            return [_narrow_capability_invoke_function(invoke[0], tool_strategy)]
     return available_functions
+
+
+def _capability_invoke_allowlist(tool_strategy: dict[str, object]) -> dict[str, set[str]] | None:
+    if tool_strategy.get("mode") != "reuse_working_set":
+        return None
+    candidates = _preferred_working_set_candidates(tool_strategy)
+    if not candidates:
+        return None
+    refs = {
+        value
+        for candidate in candidates
+        for value in [
+            _as_str(candidate.get("capability_ref")),
+            _as_str(candidate.get("canonical_name")),
+        ]
+        if value
+    }
+    source_ids = {
+        value
+        for candidate in candidates
+        for value in [_as_str(candidate.get("source_id"))]
+        if value
+    }
+    return {"capability_refs": refs, "source_ids": source_ids}
+
+
+def _narrow_capability_invoke_function(
+    function: AgentFunction,
+    tool_strategy: dict[str, object],
+) -> AgentFunction:
+    candidates = _preferred_working_set_candidates(tool_strategy)
+    if not candidates:
+        return function
+    input_schema = dict(function.input_schema or {})
+    properties = dict(input_schema.get("properties") or {})
+    refs = sorted(
+        {
+            value
+            for candidate in candidates
+            for value in [
+                _as_str(candidate.get("capability_ref")),
+                _as_str(candidate.get("canonical_name")),
+            ]
+            if value
+        }
+    )
+    source_ids = sorted(
+        {
+            value
+            for candidate in candidates
+            for value in [_as_str(candidate.get("source_id"))]
+            if value
+        }
+    )
+    if refs and isinstance(properties.get("capability_ref"), dict):
+        capability_ref = dict(properties["capability_ref"])
+        capability_ref["enum"] = refs
+        properties["capability_ref"] = capability_ref
+    if source_ids and isinstance(properties.get("source_id"), dict):
+        source_id = dict(properties["source_id"])
+        source_id["enum"] = source_ids
+        properties["source_id"] = source_id
+    input_schema["properties"] = properties
+    summary = _candidate_description_summary(candidates)
+    description = function.description
+    if summary:
+        description = f"{description}\nCurrent YCR working-set candidates:\n{summary}"
+    return replace(function, description=description, input_schema=input_schema)
+
+
+def _preferred_working_set_candidates(tool_strategy: dict[str, object]) -> list[dict[str, object]]:
+    raw = tool_strategy.get("preferred_candidates")
+    if not isinstance(raw, list):
+        return []
+    candidates = [dict(item) for item in raw if isinstance(item, dict)]
+    bound = [
+        item
+        for item in candidates
+        if isinstance(item.get("bound_input"), dict) and item["bound_input"]
+    ]
+    return bound or candidates
+
+
+def _candidate_description_summary(candidates: list[dict[str, object]]) -> str:
+    lines: list[str] = []
+    for candidate in candidates[:8]:
+        ref = _as_str(candidate.get("capability_ref") or candidate.get("canonical_name"))
+        if not ref:
+            continue
+        source_id = _as_str(candidate.get("source_id"))
+        required = candidate.get("input_required")
+        bound_input = candidate.get("bound_input")
+        parts = [ref]
+        if source_id:
+            parts.append(f"source_id={source_id}")
+        if isinstance(required, list) and required:
+            parts.append(f"required={','.join(str(item) for item in required[:6])}")
+        if isinstance(bound_input, dict) and bound_input:
+            parts.append(f"bound_input={json.dumps(bound_input, ensure_ascii=False)}")
+        lines.append("- " + "; ".join(parts))
+    return "\n".join(lines)
 
 
 def _provider_system_prompt(
@@ -1104,6 +1206,7 @@ async def agent_invoke_stream(
                     max_total_duration_sec=max_total_duration_sec,
                     started_at=started_at,
                     target_node_id=target_node_id,
+                    capability_invoke_allowlist=_capability_invoke_allowlist(tool_strategy),
                 ):
                     yield ev
                     # Collect results from completed/failed/waiting_approval events

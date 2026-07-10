@@ -15,7 +15,18 @@ def test_provider_tool_surface_keeps_bootstrap_when_working_set_empty():
     functions = [
         AgentFunction(name="capability.groups", description="", input_schema={}),
         AgentFunction(name="capability.group.open", description="", input_schema={}),
-        AgentFunction(name="capability.invoke", description="", input_schema={}),
+        AgentFunction(
+            name="capability.invoke",
+            description="",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capability_ref": {"type": "string"},
+                    "source_id": {"type": "string"},
+                    "input": {"type": "object"},
+                },
+            },
+        ),
     ]
 
     selected = _provider_functions_for_tool_strategy(
@@ -37,15 +48,41 @@ def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
     functions = [
         AgentFunction(name="capability.groups", description="", input_schema={}),
         AgentFunction(name="capability.group.open", description="", input_schema={}),
-        AgentFunction(name="capability.invoke", description="", input_schema={}),
+        AgentFunction(
+            name="capability.invoke",
+            description="",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "capability_ref": {"type": "string"},
+                    "source_id": {"type": "string"},
+                    "input": {"type": "object"},
+                },
+            },
+        ),
     ]
 
     selected = _provider_functions_for_tool_strategy(
         functions,
-        {"mode": "reuse_working_set", "candidate_count": 2},
+        {
+            "mode": "reuse_working_set",
+            "candidate_count": 2,
+            "preferred_candidates": [
+                {
+                    "capability_ref": "artifact.read_text",
+                    "source_id": "center:artifact.read_text",
+                    "bound_input": {"artifact_id": "id_art"},
+                }
+            ],
+        },
     )
 
     assert [function.name for function in selected] == ["capability.invoke"]
+    schema = selected[0].input_schema or {}
+    properties = schema["properties"]
+    assert properties["capability_ref"]["enum"] == ["artifact.read_text"]
+    assert properties["source_id"]["enum"] == ["center:artifact.read_text"]
+    assert "bound_input" in selected[0].description
 
 
 async def test_capability_invoke_preflight_uses_inner_resource_keys(db_session) -> None:
@@ -155,6 +192,28 @@ async def test_capability_invoke_preflight_handles_center_capability(db_session)
     assert preflight.effect == "read"
     assert preflight.resource_keys == []
     assert preflight.conflict_policy is None
+
+
+def test_capability_invoke_allowlist_rejects_non_candidate() -> None:
+    from yequ.agent.tool_stream import _capability_invoke_is_allowed
+
+    allowlist = {
+        "capability_refs": {"artifact.read_text"},
+        "source_ids": {"center:artifact.read_text"},
+    }
+
+    assert _capability_invoke_is_allowed(
+        {"capability_ref": "artifact.read_text", "input": {}},
+        allowlist,
+    )
+    assert _capability_invoke_is_allowed(
+        {"source_id": "center:artifact.read_text", "input": {}},
+        allowlist,
+    )
+    assert not _capability_invoke_is_allowed(
+        {"capability_ref": "context.search", "input": {}},
+        allowlist,
+    )
 
 
 def test_agent_function_uses_capability_description_and_hides_internal_fields():
