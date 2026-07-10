@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Auth
     require_admin_auth: bool = True  # Admin/Agent token scope enforced
 
+    # Approval
+    # Trusted development switch. Policy denials and execution guards still apply.
+    approval_bypass_enabled: bool = False
+    approval_bypass_reason: str = "trusted development approval bypass"
+
     # Timeline
     debug_timeline: bool = False  # Set YEQU_DEBUG_TIMELINE=true to write diagnostic events
     session_audit_enabled: bool = True

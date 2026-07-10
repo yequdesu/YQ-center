@@ -389,6 +389,7 @@ class CenterExecutionRuntime:
     async def _execute_node_job(self, command: RuntimeCommand) -> ExecuteToolResult:
         input_data = dict(command.input_data)
         approval_id = command.approval_id or string_or_none(input_data.get("approval_id"))
+        approval_bypassed = False
 
         if command.declared_risk or command.declared_effect:
             declared_policy = check_policy_l2(
@@ -459,16 +460,20 @@ class CenterExecutionRuntime:
             )
             if not policy.allowed:
                 if policy.decision == "ask":
-                    return await self._create_approval_result(command, resolved, input_data)
-                return ExecuteToolResult(
-                    status="denied",
-                    function_name=command.function_name,
-                    target_node_id=resolved.node_id,
-                    risk=resolved.risk,
-                    effect=resolved.effect,
-                    error_code="policy_denied",
-                    error_message=policy.reason or "Policy denied",
-                )
+                    if get_settings().approval_bypass_enabled:
+                        approval_bypassed = True
+                    else:
+                        return await self._create_approval_result(command, resolved, input_data)
+                else:
+                    return ExecuteToolResult(
+                        status="denied",
+                        function_name=command.function_name,
+                        target_node_id=resolved.node_id,
+                        risk=resolved.risk,
+                        effect=resolved.effect,
+                        error_code="policy_denied",
+                        error_message=policy.reason or "Policy denied",
+                    )
 
         inv = await create_invocation(
             self.db,
@@ -543,6 +548,14 @@ class CenterExecutionRuntime:
                 error_message=str(exc),
             )
 
+        if approval_bypassed:
+            await self._write_approval_bypassed(
+                command,
+                resolved=resolved,
+                invocation_id=inv.invocation_id,
+                job_id=job.job_id,
+            )
+
         await self.db.commit()
 
         if _should_create_job_operation(command, resolved):
@@ -564,6 +577,7 @@ class CenterExecutionRuntime:
                 risk=resolved.risk,
                 effect=resolved.effect,
                 output_data={
+                    **({"approval_bypassed": True} if approval_bypassed else {}),
                     "operation": operation,
                     "wait_handle": wait_handle,
                     "job": {
@@ -586,6 +600,7 @@ class CenterExecutionRuntime:
             job_id=job.job_id,
             risk=resolved.risk,
             effect=resolved.effect,
+            output_data={"approval_bypassed": True} if approval_bypassed else {},
         )
 
         if not command.wait_for_result:
@@ -804,6 +819,35 @@ class CenterExecutionRuntime:
         )
         await add_timeline_event(self.db, event)
         await self.db.commit()
+
+    async def _write_approval_bypassed(
+        self,
+        command: RuntimeCommand,
+        *,
+        resolved: ResolvedCapability,
+        invocation_id: str,
+        job_id: str,
+    ) -> None:
+        settings = get_settings()
+        event = TimelineEvent(
+            global_seq=0,
+            event_type="approval.bypassed",
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            session_id=command.session_id,
+            invocation_id=invocation_id,
+            job_id=job_id,
+            node_id=resolved.node_id,
+            data={
+                "function_name": command.function_name,
+                "target_node_id": resolved.node_id,
+                "risk": resolved.risk,
+                "effect": resolved.effect,
+                "reason": settings.approval_bypass_reason,
+            },
+            timestamp=datetime.now(UTC),
+        )
+        await add_timeline_event(self.db, event)
 
 
 def _as_runtime_command(command: RuntimeCommand | ExecuteToolCommand) -> RuntimeCommand:

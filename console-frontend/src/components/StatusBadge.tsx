@@ -1,7 +1,9 @@
 export function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
   const color =
-    normalized.includes("success") || normalized === "running" || normalized === "online"
+    normalized === "waiting_approval"
+      ? "bg-cyan-50 text-cyan-700"
+      : normalized.includes("success") || normalized === "running" || normalized === "online"
       ? "bg-emerald-50 text-emerald-700"
       : normalized.includes("fail") ||
           normalized.includes("error") ||

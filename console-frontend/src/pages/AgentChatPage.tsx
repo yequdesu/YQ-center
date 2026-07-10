@@ -68,6 +68,7 @@ import {
   Download,
   Gauge,
   Upload,
+  ShieldCheck,
 } from "lucide-react";
 
 const SESSION_STORAGE_KEY = "yequ_agent_session_id";
@@ -119,6 +120,9 @@ export function AgentChatPage() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [approvalActionError, setApprovalActionError] = useState<string | null>(null);
   const [dismissedApprovalIds, setDismissedApprovalIds] = useState<Set<string>>(() => new Set());
+  const [processedApprovalOverrides, setProcessedApprovalOverrides] = useState<
+    Map<string, Partial<ToolCallState>>
+  >(() => new Map());
   const [continuedOperationIds, setContinuedOperationIds] = useState<Set<string>>(() => new Set());
   const [operationContext, setOperationContext] = useState<OperationContextChip | null>(() =>
     readStoredOperationContext(sessionId),
@@ -219,14 +223,17 @@ export function AgentChatPage() {
     setOperationContext(readStoredOperationContext(sessionId));
   }, [sessionId]);
 
-  // Load persisted messages into blocks when session data arrives
   useEffect(() => {
-    if (sessionQuery.data && sessionId) {
-      reconciledApprovalIdsRef.current.clear();
-      setDismissedApprovalIds(new Set());
-      setContinuedOperationIds(new Set());
-      loadPersistedSession(sessionQuery.data);
-    }
+    reconciledApprovalIdsRef.current.clear();
+    setDismissedApprovalIds(new Set());
+    setProcessedApprovalOverrides(new Map());
+    setContinuedOperationIds(new Set());
+  }, [sessionId]);
+
+  // History refreshes must not reset local reconciliation state; doing so makes
+  // already-processed approval controls briefly reappear.
+  useEffect(() => {
+    if (sessionQuery.data && sessionId) loadPersistedSession(sessionQuery.data);
   }, [loadPersistedSession, sessionId, sessionQuery.data]);
 
   // Auto-scroll to bottom
@@ -394,30 +401,45 @@ export function AgentChatPage() {
     });
   }, []);
 
+  const markApprovalProcessed = useCallback(
+    (approvalId: string, patch: Partial<ToolCallState>) => {
+      setProcessedApprovalOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(approvalId, patch);
+        return next;
+      });
+    },
+    [],
+  );
+
   const syncProcessedApproval = useCallback(
     async (approvalId: string): Promise<boolean> => {
       const approval = await getApproval(approvalId);
       if (approval.status === "pending") return false;
 
       if (approval.status === "denied") {
+        markApprovalProcessed(approvalId, { status: "denied", errorMessage: "Approval denied" });
         dismissApproval(approvalId);
         refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "expired") {
+        markApprovalProcessed(approvalId, { status: "denied", errorMessage: "Approval expired" });
         dismissApproval(approvalId);
         refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "consumed") {
+        markApprovalProcessed(approvalId, { status: "waiting_operation", errorMessage: undefined });
         dismissApproval(approvalId);
         refreshSessionHistory();
         return true;
       }
 
       if (approval.status === "approved") {
+        markApprovalProcessed(approvalId, { status: "waiting_operation", errorMessage: undefined });
         dismissApproval(approvalId);
         refreshSessionHistory();
         return true;
@@ -425,7 +447,7 @@ export function AgentChatPage() {
 
       return false;
     },
-    [dismissApproval, refreshSessionHistory],
+    [dismissApproval, markApprovalProcessed, refreshSessionHistory],
   );
 
   useEffect(() => {
@@ -480,10 +502,18 @@ export function AgentChatPage() {
 
         if (decision === "deny") {
           await denyApproval(approvalId, "Denied from Agent chat");
+          markApprovalProcessed(approvalId, { status: "denied", errorMessage: "Approval denied" });
           dismissApproval(approvalId);
           refreshSessionHistory();
         } else {
-          await approveAndRunApproval(approvalId, "Approved from Agent chat");
+          const execution = await approveAndRunApproval(approvalId, "Approved from Agent chat");
+          markApprovalProcessed(approvalId, {
+            status: "waiting_operation",
+            operationId: execution.operation_id ?? undefined,
+            invocationId: execution.invocation_id,
+            jobId: execution.job_id,
+            errorMessage: undefined,
+          });
           refreshSessionHistory();
         }
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
@@ -510,6 +540,7 @@ export function AgentChatPage() {
     [
       approvalBusyId,
       dismissApproval,
+      markApprovalProcessed,
       restoreApproval,
       queryClient,
       refreshSessionHistory,
@@ -588,8 +619,25 @@ export function AgentChatPage() {
     [blocks],
   );
   const toolStatusOverrides = useMemo(
-    () => buildToolStatusOverrides(runtimeStateQuery.data?.run ?? null, runtimeStateQuery.data?.plan ?? null),
-    [runtimeStateQuery.data?.run, runtimeStateQuery.data?.plan],
+    () => {
+      const overrides = buildToolStatusOverrides(
+        runtimeStateQuery.data?.run ?? null,
+        runtimeStateQuery.data?.plan ?? null,
+      );
+      for (const block of blocks) {
+        if (block.type !== "tool_group") continue;
+        for (const tool of block.tool_calls) {
+          if (!tool.approvalId) continue;
+          const processed = processedApprovalOverrides.get(tool.approvalId);
+          if (!processed) continue;
+          const current = overrides.get(tool.callId);
+          if (current?.status && current.status !== "waiting_approval") continue;
+          overrides.set(tool.callId, { ...current, ...processed });
+        }
+      }
+      return overrides;
+    },
+    [blocks, processedApprovalOverrides, runtimeStateQuery.data?.plan, runtimeStateQuery.data?.run],
   );
   const conversationBlocks = useMemo(
     () => blocks.filter((block) => block.type !== "operation_card"),
@@ -1100,15 +1148,15 @@ function ApprovalQueueBar({
   onDeny: () => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--warning-muted)] bg-[var(--surface-solid)] shadow-sm">
-      <div className="flex items-center gap-3 bg-[var(--warning-muted)]/20 px-3 py-2">
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--warning-muted)]/40 text-[var(--warning)]">
-          {busy ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+    <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-solid)] shadow-sm">
+      <div className="flex items-center gap-3 bg-[var(--surface-muted)] px-3 py-2">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-muted)] text-[var(--accent)]">
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-[12px] font-semibold text-[var(--text)]">
-              Approval {index}/{total}
+              Approval request {index}/{total}
             </span>
             <span className="truncate font-mono text-[12px] text-[var(--text-muted)]">
               {toolCall.name}
@@ -1120,7 +1168,7 @@ function ApprovalQueueBar({
             )}
           </div>
           <p className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]">
-            {toolCall.approvalId} · choose one, then the next approval will appear automatically
+            {toolCall.approvalId} · review this action before Center starts it
           </p>
           {error && (
             <p className="mt-1 text-[11px] font-medium text-[var(--danger)]">
@@ -2753,7 +2801,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
     running: <Loader2 size={14} className="animate-spin text-[var(--info)]" />,
     succeeded: <CheckCircle size={14} className="text-[var(--success)]" />,
     failed: <XCircle size={14} className="text-[var(--danger)]" />,
-    waiting_approval: <AlertTriangle size={14} className="text-[var(--warning)]" />,
+    waiting_approval: <ShieldCheck size={14} className="text-[var(--accent)]" />,
     waiting_operation: <RefreshCw size={14} className="text-[var(--info)]" />,
     denied: <XCircle size={14} className="text-[var(--danger)]" />,
   }[toolCall.status];
@@ -2788,7 +2836,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
         {statusIcon}
         <StatusBadge status={toolCall.status} />
       </button>
-      {toolCall.errorMessage && !expanded && (
+      {toolCall.errorMessage && !expanded && (toolCall.status === "failed" || toolCall.status === "denied") && (
         <p className="mt-1.5 line-clamp-2 text-[12px] text-[var(--danger)]">{toolCall.errorMessage}</p>
       )}
       {expanded && (
@@ -2846,17 +2894,17 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallState }) {
               <JsonView data={toolCall.input} />
             </div>
           )}
-          {toolCall.errorMessage && (
+          {toolCall.errorMessage && (toolCall.status === "failed" || toolCall.status === "denied") && (
             <p className="rounded-[var(--radius-sm)] border border-[var(--danger-muted)] bg-[var(--danger-muted)]/20 p-2 text-[12px] text-[var(--danger)]">
               {toolCall.errorMessage}
             </p>
           )}
           {toolCall.status === "waiting_approval" && toolCall.approvalId && (
-            <div className="rounded-[var(--radius-sm)] border border-[var(--warning-muted)] bg-[var(--warning-muted)]/10 p-2.5 space-y-2">
+            <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-muted)] p-2.5">
               <div className="flex items-center gap-1.5">
-                <AlertTriangle size={14} className="text-[var(--warning)]" />
-                <span className="text-[12px] font-medium text-[var(--warning)]">
-                  Waiting for approval in the action bar below
+                <ShieldCheck size={14} className="text-[var(--accent)]" />
+                <span className="text-[12px] font-medium text-[var(--text)]">
+                  Waiting for your approval
                 </span>
               </div>
               {toolCall.approvalId && (

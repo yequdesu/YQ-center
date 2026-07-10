@@ -7,8 +7,10 @@ from sqlalchemy import select
 
 from tests.conftest import make_yqp_envelope
 from yequ.application import ExecuteToolCommand
+from yequ.config import get_settings
 from yequ.models.approval import ApprovalRequest
 from yequ.models.job import Job
+from yequ.models.timeline import TimelineEvent
 from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
 
 pytestmark = pytest.mark.asyncio
@@ -152,6 +154,86 @@ async def test_execute_write_function_returns_approval_required(
     approval = approval_result.scalar_one()
     assert approval.status == "pending"
     assert approval.function_name == "test.write"
+
+
+async def test_execute_write_function_can_bypass_approval_with_audit(
+    client,
+    db_session,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _register_function(
+        client,
+        node.node_id,
+        token,
+        name="test.write",
+        risk="safe",
+        effect="write",
+        resource_keys=["service:{name}"],
+    )
+    await db_session.rollback()
+    get_settings().approval_bypass_enabled = True
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type="agent",
+                actor_id="agent-test",
+                session_id="sess-test",
+                function_name="test.write",
+                input_data={"name": "demo"},
+                target_node_id=node.node_id,
+            )
+        )
+    )
+
+    assert result.status == "created"
+    assert result.job_id
+    assert result.output_data == {"approval_bypassed": True}
+    approvals = await db_session.execute(select(ApprovalRequest))
+    assert approvals.scalars().all() == []
+    audit_result = await db_session.execute(
+        select(TimelineEvent).where(TimelineEvent.event_type == "approval.bypassed")
+    )
+    audit = audit_result.scalar_one()
+    assert audit.job_id == result.job_id
+    assert audit.session_id == "sess-test"
+
+
+async def test_approval_bypass_does_not_override_policy_denial(
+    client,
+    db_session,
+    provisioned_node,
+) -> None:
+    node, token = provisioned_node
+    await _register_function(
+        client,
+        node.node_id,
+        token,
+        name="test.catastrophic",
+        risk="catastrophic",
+        effect="write",
+    )
+    await db_session.rollback()
+    get_settings().approval_bypass_enabled = True
+
+    result = await CenterExecutionRuntime(db_session).execute(
+        RuntimeCommand.from_execute_tool_command(
+            ExecuteToolCommand(
+                actor_type="agent",
+                actor_id="agent-test",
+                session_id="sess-test",
+                function_name="test.catastrophic",
+                target_node_id=node.node_id,
+                execution_mode="readonly",
+            )
+        )
+    )
+
+    assert result.status == "denied"
+    assert result.error_code == "policy_denied"
+    jobs = await db_session.execute(select(Job))
+    assert jobs.scalars().all() == []
 
 
 async def test_execute_exec_run_uses_static_manifest_policy(

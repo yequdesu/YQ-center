@@ -110,6 +110,8 @@ mypy src/                # 类型检查
 | `YEQU_DEBUG_TIMELINE` | `false` | 写入诊断事件 |
 | `YEQU_LOG_FORMAT` | `json` | 日志格式（json / console） |
 | `YEQU_REQUIRE_ADMIN_AUTH` | `true` | 强制 token 认证 |
+| `YEQU_APPROVAL_BYPASS_ENABLED` | `false` | 可信开发环境中跳过 policy `ask` 审批；不绕过 guard 或 policy `deny`，每次跳过均写入 `approval.bypassed` 审计事件 |
+| `YEQU_APPROVAL_BYPASS_REASON` | `trusted development approval bypass` | 写入审批跳过审计事件的原因 |
 | `YEQU_YCR_BACKEND` | `http` | YCR 运行形态；当前只支持独立 HTTP 服务 |
 | `YEQU_YCR_BASE_URL` | `http://127.0.0.1:9810` | Center 调用 YCR 的内部地址 |
 | `YEQU_YCR_TIMEOUT_SEC` | `45` | Center 调用 YCR 的 HTTP 超时 |

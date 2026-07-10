@@ -234,6 +234,9 @@
 - approve / consumed / denied / expired 的处理不再 patch 本地 tool block 状态，只隐藏当前审批条并刷新后端 Runtime/Session 状态。
 - operation 状态变化不再 patch 本地 tool block，聊天流后续以 Center Operation / AgentRunEvent / PlanStep 为事实源。
 - Chat timeline 渲染 tool call 时使用 AgentRunStep / AgentRunEvent / PlanStep 派生的只读状态覆盖表，优先显示后端事实，不写回本地 transcript。
+- approval 展示改为中性授权状态，不再把 `waiting_approval` 的说明当作红色执行错误；session 历史刷新不再清空审批协调状态，避免已处理审批闪现。
+- approved/consumed/denied/expired 的 API 事实可形成临时只读展示覆盖，直到 AgentRunEvent / PlanStep 投影到达；该覆盖不触发 Job、Operation 或 Agent 恢复。
+- 增加默认关闭的 `YEQU_APPROVAL_BYPASS_ENABLED` 可信开发开关；只跳过 policy `ask`，不跳过 guard/policy `deny`，并同步写入 `approval.bypassed` TimelineEvent。
 
 剩余实施项：
 
@@ -245,7 +248,7 @@
 
 验收：
 
-- [ ] approve 后输入栏上方不闪现已处理 approval，需要真实 Console 验收。
+- [ ] approve 后输入栏上方不闪现已处理 approval；刷新状态重置缺陷已修复，仍需真实 Console 验收。
 - [ ] operation 完成后右侧 Activity 和聊天流状态一致。
 - [x] 手动 Append 只添加引用上下文，不重复执行 operation。
 

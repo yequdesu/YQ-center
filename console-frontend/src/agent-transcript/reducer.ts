@@ -155,7 +155,7 @@ export function reduceSseEvent(state: TranscriptState, event: SseEvent): Transcr
         ...tool,
         status: "waiting_approval",
         approvalId: String(data.approval_id ?? ""),
-        errorMessage: String(data.message ?? "Approval required"),
+        errorMessage: undefined,
         targetNodeId: optionalString(data.target_node_id) ?? tool.targetNodeId,
       }));
 
