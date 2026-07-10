@@ -48,6 +48,74 @@ def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
     assert [function.name for function in selected] == ["capability.invoke"]
 
 
+async def test_capability_invoke_preflight_uses_inner_resource_keys(db_session) -> None:
+    from datetime import UTC, datetime
+
+    from yequ.agent.tool_stream import _capability_invoke_preflight_override
+    from yequ.application.schemas import ToolPreflightResult
+    from yequ.models.capability_runtime import CapabilityDefinition, CapabilitySource
+    from yequ.models.node import Node
+    from yequ.services.node_auth import hash_token
+
+    node = Node(
+        node_id="linux-node-test",
+        node_name="linux-node-test",
+        token_hash=hash_token("linux-node-test-token"),
+        status="online",
+        last_heartbeat_at=datetime.now(UTC),
+    )
+    db_session.add(node)
+    await db_session.flush()
+    definition = CapabilityDefinition(
+        canonical_name="exec.run",
+        capability_type="function",
+        risk="maintenance",
+        effect="external",
+        status="active",
+    )
+    db_session.add(definition)
+    await db_session.flush()
+    db_session.add(
+        CapabilitySource(
+            source_id="src_exec",
+            definition_id=definition.id,
+            node_record_id=node.id,
+            plugin_id="test.exec",
+            plugin_version="1.0",
+            registered_name="linux.exec.run",
+            status="loaded",
+            is_active=True,
+            resource_keys=["node.exec"],
+            conflict_policy="serialize",
+        )
+    )
+    await db_session.flush()
+
+    preflight = await _capability_invoke_preflight_override(
+        db_session,
+        function_name="capability.invoke",
+        tool_input={
+            "source_id": "src_exec",
+            "node_id": "linux-node-test",
+            "input": {"profile": "user.readonly", "command": "whoami"},
+        },
+        execution_mode="auto",
+        fallback=ToolPreflightResult(
+            function_name="capability.invoke",
+            status="ok",
+            risk="safe",
+            effect="read",
+        ),
+    )
+
+    assert preflight.target_node_id == "linux-node-test"
+    assert preflight.risk == "maintenance"
+    assert preflight.effect == "external"
+    assert preflight.resource_keys == ["node.exec"]
+    assert preflight.conflict_policy == "serialize"
+    assert not preflight.is_concurrent_safe
+
+
 def test_agent_function_uses_capability_description_and_hides_internal_fields():
     from yequ.api.routes.agent import _agent_function_from_capability
     from yequ.models.capability import Capability

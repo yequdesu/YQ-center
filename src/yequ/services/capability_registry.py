@@ -39,6 +39,8 @@ class CapabilityInvocationTarget:
     node_id: str
     risk: str
     effect: str
+    resource_keys: list[str]
+    conflict_policy: str | None
     timeout_sec: int | None
     input_schema: JsonObject
     available_execution_profiles: list[str]
@@ -525,6 +527,8 @@ async def resolve_capability_invoke_target(
         node_id=node.node_id,
         risk=definition.risk or "safe",
         effect=definition.effect or "read",
+        resource_keys=list(source.resource_keys or []),
+        conflict_policy=source.conflict_policy,
         timeout_sec=source.timeout_sec,
         input_schema=definition.input_schema or {},
         available_execution_profiles=runtime_profiles.get(source.source_id, []),

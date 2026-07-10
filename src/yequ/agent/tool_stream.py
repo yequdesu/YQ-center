@@ -17,7 +17,11 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yequ.agent.provider import AgentFunction
-from yequ.application.schemas import ExecuteToolCommand, ToolPreflightCommand
+from yequ.application.schemas import (
+    ExecuteToolCommand,
+    ToolPreflightCommand,
+    ToolPreflightResult,
+)
 from yequ.application.tool_preflight import ToolPreflightApplicationService
 from yequ.logconfig import get_logger
 from yequ.runtime import CenterExecutionRuntime, RuntimeCommand
@@ -180,6 +184,14 @@ async def execute_tool_calls_scheduled(
                 }
             )
             continue
+
+        preflight = await _capability_invoke_preflight_override(
+            db,
+            function_name=tc_name,
+            tool_input=tc_input,
+            execution_mode=execution_mode,
+            fallback=preflight,
+        )
 
         yield make_event(
             "agent.tool_call.created",
@@ -722,6 +734,108 @@ def _tool_event_context(tc_name: str, tc_input: dict[str, object]) -> dict[str, 
         "node_id": _string_or_none(tc_input.get("node_id")),
         "input": _small_tool_input(tc_input),
     }
+
+
+async def _capability_invoke_preflight_override(
+    db: AsyncSession,
+    *,
+    function_name: str,
+    tool_input: object,
+    execution_mode: str,
+    fallback: ToolPreflightResult,
+) -> ToolPreflightResult:
+    if function_name != "capability.invoke" or not isinstance(tool_input, dict):
+        return fallback
+
+    from yequ.models.capability_runtime import CapabilityDefinition
+    from yequ.services.capability_registry import (
+        resolve_capability_invoke_target,
+        resolve_center_capability_name,
+    )
+    from yequ.services.policy import check_policy_l2
+
+    capability_ref = _string_or_none(tool_input.get("capability_ref"))
+    source_id = _string_or_none(tool_input.get("source_id"))
+    node_id = _string_or_none(tool_input.get("node_id"))
+
+    center_function = await resolve_center_capability_name(
+        db,
+        capability_ref=capability_ref,
+        source_id=source_id,
+    )
+    if center_function:
+        result = await db.execute(
+            select(CapabilityDefinition).where(
+                CapabilityDefinition.canonical_name == center_function,
+                CapabilityDefinition.capability_type == "function",
+            )
+        )
+        definition = result.scalar_one_or_none()
+        risk = (definition.risk if definition else None) or fallback.risk
+        effect = (definition.effect if definition else None) or fallback.effect
+        policy = check_policy_l2(
+            execution_mode=execution_mode,
+            risk_level=risk,
+            effect=effect,
+        )
+        if not policy.allowed and policy.decision != "ask":
+            return ToolPreflightResult(
+                function_name=function_name,
+                status="denied",
+                target_node_id=fallback.target_node_id,
+                risk=risk,
+                effect=effect,
+                error_code="policy_denied",
+                error_message=policy.reason or "Policy denied",
+            )
+        return ToolPreflightResult(
+            function_name=function_name,
+            status=fallback.status,
+            target_node_id=fallback.target_node_id,
+            risk=risk,
+            effect=effect,
+            resource_keys=list(definition.resource_keys or []) if definition else [],
+            conflict_policy=definition.conflict_policy if definition else None,
+            error_code=fallback.error_code,
+            error_message=fallback.error_message,
+        )
+
+    try:
+        target = await resolve_capability_invoke_target(
+            db,
+            capability_ref=capability_ref,
+            source_id=source_id,
+            node_id=node_id,
+        )
+    except ValueError:
+        return fallback
+
+    policy = check_policy_l2(
+        execution_mode=execution_mode,
+        risk_level=target.risk,
+        effect=target.effect,
+    )
+    if not policy.allowed and policy.decision != "ask":
+        return ToolPreflightResult(
+            function_name=function_name,
+            status="denied",
+            target_node_id=target.node_id,
+            risk=target.risk,
+            effect=target.effect,
+            error_code="policy_denied",
+            error_message=policy.reason or "Policy denied",
+        )
+    return ToolPreflightResult(
+        function_name=function_name,
+        status=fallback.status,
+        target_node_id=target.node_id,
+        risk=target.risk,
+        effect=target.effect,
+        resource_keys=list(target.resource_keys),
+        conflict_policy=target.conflict_policy,
+        error_code=fallback.error_code,
+        error_message=fallback.error_message,
+    )
 
 
 def _small_tool_input(value: dict[str, object]) -> dict[str, object]:
