@@ -223,13 +223,7 @@ def _preferred_working_set_candidates(tool_strategy: dict[str, object]) -> list[
     raw = tool_strategy.get("preferred_candidates")
     if not isinstance(raw, list):
         return []
-    candidates = [dict(item) for item in raw if isinstance(item, dict)]
-    bound = [
-        item
-        for item in candidates
-        if isinstance(item.get("bound_input"), dict) and item["bound_input"]
-    ]
-    return bound or candidates
+    return [dict(item) for item in raw if isinstance(item, dict)]
 
 
 def _candidate_description_summary(candidates: list[dict[str, object]]) -> str:

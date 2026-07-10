@@ -384,7 +384,7 @@
 - [x] Registry `invoke_ready` 投影修复：返回 `agent_description` 和 `input_schema`，使 YCR working set 成为真正可调用合同，而不是只有 capability 名称。
 - [x] Tool candidate loader 修复实体绑定：YCR Session State 已知 `artifact` / `focus` 后，会按 capability input schema 给 artifact-consuming candidates 生成 `bound_input`，例如 `artifact_id` / `artifact_ids`。该实现按 schema 绑定实体，不按具体工具名做白名单；目标是让 Agent 直接 invoke 当前实体相关能力，而不是再用 `context.search` / `context.expand` 查找同一个 artifact id。
 - [x] Registry artifact input contract 修复：`CapabilityDefinition.artifact_inputs` 现在可从 input schema 中的 `artifact_id` / `artifact_ids` / `artifact_pattern` 统一推断，Center meta capabilities 和 Node capabilities 共享同一合同归一化路径。该修复解决了远端 `artifact_input=True` 结构过滤查不到 `artifact.read_text` / `artifact.present` 的问题。
-- [x] Working-set contract enforcement：`tool_strategy=reuse_working_set` 时，provider 看到的 `capability.invoke` schema 会动态收窄到当前 preferred candidates 的 `capability_ref` / `source_id` enum；执行层同时用同一 allowlist 拒绝不在当前 workset 内的 invoke 目标。workset 不再只是 prompt 建议，而是当前轮实际工具合同。
+- [x] Working-set contract enforcement：`tool_strategy=reuse_working_set` 时，provider 看到的 `capability.invoke` schema 会动态收窄到当前 preferred candidates 的 `capability_ref` / `source_id` enum；执行层同时用同一 allowlist 拒绝不在当前 workset 内的 invoke 目标。`bound_input` 只用于参数提示，不作为准入条件。workset 不再只是 prompt 建议，而是当前轮实际工具合同。
 - [x] Entity augment candidate 截断修复：artifact entity 触发的结构化候选不再固定取 4 个，而使用 `WORKING_SET_LIMIT`。远端验证发现 `artifact.read_text` 因排序落在第 5 位被截掉，导致模型只能在 `artifact.get` / `artifact.deploy` / context 工具间绕路；该问题已归因到候选截断而非提示词。
 - [x] 对 Result RAG 记录索引状态：`context.search` 返回 `index_status` 和 `result_rag.status`，覆盖 `hit` / `miss` / `not_indexed` / `no_refs`。
 - [ ] 对 Result RAG 真实使用效果做 session 验收：命中内容是否被 LLM 使用，miss 后是否转向确定性读取。

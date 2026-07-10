@@ -72,6 +72,10 @@ def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
                     "capability_ref": "artifact.read_text",
                     "source_id": "center:artifact.read_text",
                     "bound_input": {"artifact_id": "id_art"},
+                },
+                {
+                    "capability_ref": "artifact.get",
+                    "source_id": "center:artifact.get",
                 }
             ],
         },
@@ -80,8 +84,11 @@ def test_provider_tool_surface_uses_invoke_only_for_loaded_working_set():
     assert [function.name for function in selected] == ["capability.invoke"]
     schema = selected[0].input_schema or {}
     properties = schema["properties"]
-    assert properties["capability_ref"]["enum"] == ["artifact.read_text"]
-    assert properties["source_id"]["enum"] == ["center:artifact.read_text"]
+    assert properties["capability_ref"]["enum"] == ["artifact.get", "artifact.read_text"]
+    assert properties["source_id"]["enum"] == [
+        "center:artifact.get",
+        "center:artifact.read_text",
+    ]
     assert "bound_input" in selected[0].description
 
 
